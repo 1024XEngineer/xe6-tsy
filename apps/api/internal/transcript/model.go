@@ -6,6 +6,8 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/apps/api/pkg/speechport"
 )
 
+// Direction states which side of a reception session produced the source
+// speech, allowing both language directions to retain their original text.
 type Direction string
 
 const (
@@ -13,6 +15,8 @@ const (
 	DirectionWorkerToCitizen Direction = "worker_to_citizen"
 )
 
+// TTSMode separates disabled, worker-triggered, and automatic synthesis
+// without changing an immutable transcript result.
 type TTSMode string
 
 const (
@@ -21,6 +25,8 @@ const (
 	TTSModeAuto   TTSMode = "auto"
 )
 
+// RunStatus represents the lifecycle exposed by this skeleton. Recovery and
+// persistence states belong to a later workflow implementation.
 type RunStatus string
 
 const (
@@ -28,6 +34,8 @@ const (
 	RunStatusCompleted RunStatus = "completed"
 )
 
+// SpeakerRole is a session-local generalized label and must never encode a
+// person's real-world identity.
 type SpeakerRole string
 
 const (
@@ -38,12 +46,16 @@ const (
 	SpeakerRoleUnknown SpeakerRole = "unknown"
 )
 
+// TTSStatus represents the initial asynchronous synthesis state reserved by
+// this skeleton; ready and failed transitions are not implemented here.
 type TTSStatus string
 
 const (
 	TTSStatusPending TTSStatus = "pending"
 )
 
+// StartRunCommand fixes access, configuration, session, and media-track
+// references without taking ownership of upstream entities.
 type StartRunCommand struct {
 	OperatorID     string    `json:"operator_id"`
 	OrganizationID string    `json:"organization_id"`
@@ -63,6 +75,8 @@ func (c StartRunCommand) valid() bool {
 		c.SourceLanguage != "" && c.TargetLanguage != "" && c.TTSMode != ""
 }
 
+// SpeechProcessingRun is Module 4's authoritative record for one typed media
+// processing lifecycle. It references, but never mutates, upstream entities.
 type SpeechProcessingRun struct {
 	ID             string    `json:"run_id"`
 	SessionID      string    `json:"session_id"`
@@ -76,6 +90,8 @@ type SpeechProcessingRun struct {
 	StartedAt      time.Time `json:"started_at"`
 }
 
+// SpeechUtterance is the immutable final text artifact. Source and translated
+// text remain distinct so consumers can inspect their separate origins.
 type SpeechUtterance struct {
 	ID                    string                 `json:"utterance_id"`
 	SessionID             string                 `json:"session_id"`
@@ -95,6 +111,8 @@ type SpeechUtterance struct {
 	TranslationProvider   speechport.ProviderRef `json:"translation_provider"`
 }
 
+// AssignSpeakerRoleCommand updates only a generalized session-local role and
+// cannot attach a speaker cluster to an identifiable person.
 type AssignSpeakerRoleCommand struct {
 	OperatorID       string      `json:"operator_id"`
 	OrganizationID   string      `json:"organization_id"`
@@ -103,6 +121,8 @@ type AssignSpeakerRoleCommand struct {
 	Role             SpeakerRole `json:"role"`
 }
 
+// SpeakerRoleBinding records the current generalized role for one anonymous
+// speaker cluster within a single session.
 type SpeakerRoleBinding struct {
 	SessionID        string      `json:"session_id"`
 	SpeakerClusterID string      `json:"speaker_cluster_id"`
@@ -110,6 +130,8 @@ type SpeakerRoleBinding struct {
 	UpdatedBy        string      `json:"updated_by"`
 }
 
+// RequestTTSCommand reserves a synthesis task for a referenced text snapshot
+// and intentionally avoids modifying the source transcript.
 type RequestTTSCommand struct {
 	OperatorID     string `json:"operator_id"`
 	OrganizationID string `json:"organization_id"`
@@ -120,6 +142,8 @@ type RequestTTSCommand struct {
 	VoiceProfileID string `json:"voice_profile_id"`
 }
 
+// TtsSynthesisRun is Module 4's task reference for asynchronously generated
+// audio. The actual audio bytes remain owned by a media capability.
 type TtsSynthesisRun struct {
 	ID             string    `json:"tts_run_id"`
 	SessionID      string    `json:"session_id"`

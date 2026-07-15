@@ -7,6 +7,8 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/apps/api/pkg/speechport"
 )
 
+// Provider is a deterministic ASR adapter for isolated tests. It replays a
+// copied event script and never calls an external recognition provider.
 type Provider struct {
 	mu     sync.Mutex
 	events []speechport.ASREvent
@@ -14,6 +16,8 @@ type Provider struct {
 	calls  int
 }
 
+// NewProvider copies the event script so later test setup cannot mutate the
+// provider's configured events.
 func NewProvider(events []speechport.ASREvent, err error) *Provider {
 	return &Provider{events: append([]speechport.ASREvent(nil), events...), err: err}
 }
@@ -42,6 +46,8 @@ func (p *Provider) Calls() int {
 	return p.calls
 }
 
+// Stream provides the replayed ASR events and records an idempotent close for
+// assertions without modelling a real streaming transport.
 type Stream struct {
 	mu     sync.Mutex
 	events <-chan speechport.ASREvent

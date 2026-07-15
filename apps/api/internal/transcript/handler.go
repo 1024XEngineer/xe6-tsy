@@ -7,14 +7,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Handler maps the versioned HTTP boundary to the Module 4 service contract.
+// It validates transport input but leaves module state decisions to Service.
 type Handler struct {
 	service Service
 }
 
+// NewHandler accepts the narrow service dependency so handlers remain testable
+// without Gin-coupled business logic or external infrastructure.
 func NewHandler(service Service) *Handler {
 	return &Handler{service: service}
 }
 
+// Register reserves the Module 4 HTTP surface for the skeleton. Routes use
+// typed commands and do not expose provider-specific payloads.
 func (h *Handler) Register(routes gin.IRoutes) {
 	routes.POST("/runs", h.startRun)
 	routes.POST("/runs/:run_id/complete", h.completeRun)

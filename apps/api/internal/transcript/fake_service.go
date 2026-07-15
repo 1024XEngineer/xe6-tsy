@@ -5,10 +5,14 @@ import (
 	"time"
 )
 
+// FakeService is deterministic in-memory scaffolding for HTTP and package
+// tests. It deliberately does not persist state or invoke real providers.
 type FakeService struct {
 	DependencyErr error
 }
 
+// NewFakeService creates a usable default service with no external runtime
+// dependency, keeping the skeleton runnable in local and CI environments.
 func NewFakeService() *FakeService {
 	return &FakeService{}
 }

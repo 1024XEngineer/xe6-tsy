@@ -8,6 +8,8 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/apps/api/internal/transcript"
 )
 
+// buildApplication wires deterministic local dependencies so the skeleton
+// starts without real providers, persistence, or a cross-module workflow.
 func buildApplication() *gin.Engine {
 	service := transcript.NewFakeService()
 	return newRouter(func(router *gin.Engine) {

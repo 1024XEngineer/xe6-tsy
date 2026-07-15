@@ -1,4 +1,4 @@
-module github.com/jinyu918/xe6-tsy
+module github.com/1024XEngineer/xe6-tsy
 
 go 1.26.1
 

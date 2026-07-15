@@ -4,7 +4,16 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/1024XEngineer/xe6-tsy/apps/api/internal/transcript"
 )
+
+func buildApplication() *gin.Engine {
+	service := transcript.NewFakeService()
+	return newRouter(func(router *gin.Engine) {
+		transcript.NewHandler(service).Register(router.Group("/api/v1/speech"))
+	})
+}
 
 func serverAddress(port string) string {
 	if port == "" {
@@ -14,7 +23,7 @@ func serverAddress(port string) string {
 }
 
 func run(addr string) error {
-	return http.ListenAndServe(addr, newRouter(nil))
+	return http.ListenAndServe(addr, buildApplication())
 }
 
 func newRouter(register func(*gin.Engine)) *gin.Engine {

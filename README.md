@@ -29,4 +29,5 @@ make run
 
 Issue：<https://github.com/1024XEngineer/xe6-tsy/issues/37>
 
-目录说明见 [`docs/架构/仓库目录规划.md`](docs/架构/仓库目录规划.md)。
+目录规划、前后端边界和工程门禁见
+[`docs/项目前后端统一开发规范.md`](docs/项目前后端统一开发规范.md)。

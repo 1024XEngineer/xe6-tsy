@@ -1,0 +1,337 @@
+openapi: 3.1.0
+info:
+  title: xe6-tsy Reception API
+  version: 1.0.0
+  description: MS1 接待会话与 Fake Media 契约；不接收或返回原始音频。
+servers:
+  - url: http://127.0.0.1:8080
+paths:
+  /healthz:
+    get:
+      operationId: health
+      responses:
+        "200":
+          description: 服务可用
+  /api/v1/reception/sessions:
+    post:
+      operationId: createReceptionSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateReceptionSessionCommand" }
+      responses:
+        "201": { $ref: "#/components/responses/SessionResponse" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "403": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
+        "500": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/reception/sessions/{session_id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    get:
+      operationId: getReceptionSession
+      responses:
+        "200": { $ref: "#/components/responses/SessionResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/reception/sessions/{session_id}/start:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    post:
+      operationId: startReceptionSession
+      requestBody:
+        $ref: "#/components/requestBodies/StartSession"
+      responses:
+        "200":
+          description: 会话已启动或幂等重放
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/StartReceptionSessionResult" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "403": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/reception/sessions/{session_id}/media-tracks:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    post:
+      operationId: attachFakeMediaTrack
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AttachFakeMediaTrackCommand" }
+      responses:
+        "201":
+          description: Fake Media 已接入
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/AttachFakeMediaResult" }
+        "403": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
+        "422": { $ref: "#/components/responses/ErrorResponse" }
+        "503":
+          description: 接入失败，会话保持 active 并降级为人工文本
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DegradedErrorResponse" }
+  /api/v1/reception/sessions/{session_id}/media-tracks/{binding_id}/detach:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+      - $ref: "#/components/parameters/BindingID"
+    post:
+      operationId: detachMediaTrack
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DetachMediaTrackCommand" }
+      responses:
+        "200": { $ref: "#/components/responses/BindingResponse" }
+        "403": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
+        "503": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/reception/sessions/{session_id}/end:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    post:
+      operationId: endReceptionSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EndReceptionSessionCommand" }
+      responses:
+        "200": { $ref: "#/components/responses/SessionResponse" }
+        "403": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
+  /api/v1/reception/sessions/{session_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/SessionID"
+    post:
+      operationId: cancelReceptionSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CancelReceptionSessionCommand" }
+      responses:
+        "200": { $ref: "#/components/responses/SessionResponse" }
+        "400": { $ref: "#/components/responses/ErrorResponse" }
+        "403": { $ref: "#/components/responses/ErrorResponse" }
+        "404": { $ref: "#/components/responses/ErrorResponse" }
+        "409": { $ref: "#/components/responses/ErrorResponse" }
+components:
+  parameters:
+    SessionID:
+      name: session_id
+      in: path
+      required: true
+      schema: { type: string }
+    BindingID:
+      name: binding_id
+      in: path
+      required: true
+      schema: { type: string }
+  requestBodies:
+    StartSession:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/StartReceptionSessionCommand" }
+  responses:
+    SessionResponse:
+      description: 会话快照
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ReceptionSession" }
+    BindingResponse:
+      description: 媒体绑定快照
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Envelope"
+              - type: object
+                properties:
+                  data: { $ref: "#/components/schemas/MediaTrackBinding" }
+    ErrorResponse:
+      description: 稳定错误响应
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+  schemas:
+    Envelope:
+      type: object
+      required: [trace_id]
+      properties:
+        trace_id: { type: string }
+    IdempotencyKey:
+      type: string
+      minLength: 1
+      description: 同一操作和相同请求重放第一次结果；不同请求返回 IDEMPOTENCY_CONFLICT。
+    CreateReceptionSessionCommand:
+      type: object
+      additionalProperties: false
+      required: [idempotency_key, access_context_ref, organization_id, service_point_id, service_window_id, organization_config_version, processing_context_ref]
+      properties:
+        idempotency_key: { $ref: "#/components/schemas/IdempotencyKey" }
+        access_context_ref: { type: string }
+        organization_id: { type: string }
+        service_point_id: { type: string }
+        service_window_id: { type: string }
+        organization_config_version: { type: string }
+        processing_context_ref: { type: string }
+    StartReceptionSessionCommand:
+      type: object
+      additionalProperties: false
+      required: [access_context_ref, expected_version, idempotency_key]
+      properties:
+        access_context_ref: { type: string }
+        expected_version: { type: integer, format: int64, minimum: 1 }
+        idempotency_key: { $ref: "#/components/schemas/IdempotencyKey" }
+    AttachFakeMediaTrackCommand:
+      type: object
+      additionalProperties: false
+      required: [access_context_ref, expected_session_version, idempotency_key, track_ref, scenario]
+      properties:
+        access_context_ref: { type: string }
+        expected_session_version: { type: integer, format: int64, minimum: 1 }
+        idempotency_key: { $ref: "#/components/schemas/IdempotencyKey" }
+        track_ref: { type: string }
+        scenario:
+          type: string
+          enum: [success, attach_failure, runtime_disconnect, detach_failure]
+    DetachMediaTrackCommand:
+      type: object
+      additionalProperties: false
+      required: [access_context_ref, expected_binding_version, idempotency_key]
+      properties:
+        access_context_ref: { type: string }
+        expected_binding_version: { type: integer, format: int64, minimum: 1 }
+        idempotency_key: { $ref: "#/components/schemas/IdempotencyKey" }
+    EndReceptionSessionCommand:
+      type: object
+      additionalProperties: false
+      required: [access_context_ref, expected_version, idempotency_key]
+      properties:
+        access_context_ref: { type: string }
+        expected_version: { type: integer, format: int64, minimum: 1 }
+        idempotency_key: { $ref: "#/components/schemas/IdempotencyKey" }
+    CancelReceptionSessionCommand:
+      allOf:
+        - $ref: "#/components/schemas/EndReceptionSessionCommand"
+        - type: object
+          required: [reason_code]
+          properties:
+            reason_code: { type: string, minLength: 1 }
+    ReceptionSession:
+      type: object
+      required: [session_id, operator_id, organization_id, service_point_id, service_window_id, organization_config_version, processing_context_ref, status, version, created_at, media_capability, media_bindings]
+      properties:
+        session_id: { type: string }
+        operator_id: { type: string }
+        organization_id: { type: string }
+        service_point_id: { type: string }
+        service_window_id: { type: string }
+        organization_config_version: { type: string }
+        processing_context_ref: { type: string }
+        status: { type: string, enum: [created, active, ended, cancelled] }
+        version: { type: integer, format: int64 }
+        created_at: { type: string, format: date-time }
+        started_at: { type: [string, "null"], format: date-time }
+        ended_at: { type: [string, "null"], format: date-time }
+        cancelled_at: { type: [string, "null"], format: date-time }
+        cancellation_reason_code: { type: string }
+        media_capability: { $ref: "#/components/schemas/MediaCapability" }
+        media_bindings:
+          type: array
+          items: { $ref: "#/components/schemas/MediaTrackBinding" }
+    MediaTrackBinding:
+      type: object
+      required: [binding_id, session_id, track_ref, track_kind, source_type, provider, scenario, status, version]
+      properties:
+        binding_id: { type: string }
+        session_id: { type: string }
+        track_ref: { type: string }
+        track_kind: { type: string, const: fake }
+        source_type: { type: string, const: synthetic_audio }
+        provider: { type: string, const: fake }
+        scenario: { type: string, enum: [success, attach_failure, runtime_disconnect, detach_failure] }
+        status: { type: string, enum: [pending, attached, detached, failed] }
+        version: { type: integer, format: int64 }
+        attached_at: { type: [string, "null"], format: date-time }
+        detached_at: { type: [string, "null"], format: date-time }
+        failed_at: { type: [string, "null"], format: date-time }
+        failure_code: { type: string }
+    MediaCapability:
+      type: object
+      required: [audio_track_allowed, manual_text_available]
+      properties:
+        audio_track_allowed: { type: boolean }
+        manual_text_available: { type: boolean }
+    StartReceptionSessionResult:
+      type: object
+      required: [session, media_capability]
+      properties:
+        session: { $ref: "#/components/schemas/ReceptionSession" }
+        media_capability: { $ref: "#/components/schemas/MediaCapability" }
+    Degradation:
+      type: object
+      required: [mode, session_remains_active, reason_code]
+      properties:
+        mode: { type: string, const: manual_text }
+        session_remains_active: { type: boolean, const: true }
+        reason_code: { type: string }
+    AttachFakeMediaResult:
+      type: object
+      required: [binding]
+      properties:
+        binding: { $ref: "#/components/schemas/MediaTrackBinding" }
+        degradation: { $ref: "#/components/schemas/Degradation" }
+    APIError:
+      type: object
+      required: [code, message, retryable, details]
+      properties:
+        code:
+          type: string
+          enum: [VALIDATION_FAILED, ACCESS_CONTEXT_INVALID, ACCESS_DENIED, ORGANIZATION_SCOPE_MISMATCH, CONFIG_NOT_PUBLISHED, CONFIG_VERSION_MISMATCH, PROCESSING_CONTEXT_EXPIRED, RECEPTION_NOT_ALLOWED, REALTIME_AUDIO_NOT_ALLOWED, SESSION_NOT_FOUND, BINDING_NOT_FOUND, INVALID_SESSION_STATE, INVALID_BINDING_STATE, VERSION_MISMATCH, IDEMPOTENCY_CONFLICT, ACTIVE_MEDIA_BINDING_EXISTS, UNSUPPORTED_FAKE_SCENARIO, MEDIA_ATTACH_FAILED, MEDIA_DETACH_FAILED, INTERNAL_ERROR]
+        message: { type: string }
+        retryable: { type: boolean }
+        details: { type: object, additionalProperties: true }
+    ErrorResponse:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          required: [error]
+          properties:
+            error: { $ref: "#/components/schemas/APIError" }
+    DegradedErrorResponse:
+      allOf:
+        - $ref: "#/components/schemas/ErrorResponse"
+        - type: object
+          required: [data, degradation]
+          properties:
+            data:
+              type: object
+              required: [binding]
+              properties:
+                binding: { $ref: "#/components/schemas/MediaTrackBinding" }
+            degradation: { $ref: "#/components/schemas/Degradation" }

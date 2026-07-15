@@ -8,8 +8,12 @@ type Config struct {
 }
 
 func Load() Config {
+	address := valueOrDefault("XE6_API_ADDRESS", "127.0.0.1:8080")
+	if port := os.Getenv("PORT"); port != "" {
+		address = ":" + port
+	}
 	return Config{
-		Address: valueOrDefault("XE6_API_ADDRESS", "127.0.0.1:8080"),
+		Address: address,
 		Mode:    valueOrDefault("XE6_GIN_MODE", "release"),
 	}
 }

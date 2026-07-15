@@ -6,8 +6,9 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/apps/api/internal/config"
 	"github.com/1024XEngineer/xe6-tsy/apps/api/internal/httpserver"
 	"github.com/1024XEngineer/xe6-tsy/apps/api/internal/modules"
+	"github.com/1024XEngineer/xe6-tsy/apps/api/internal/reception"
 )
 
 func New(cfg config.Config) http.Handler {
-	return httpserver.New(cfg, modules.Foundation())
+	return httpserver.New(cfg, modules.Foundation(reception.NewModule()))
 }

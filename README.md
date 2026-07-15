@@ -13,8 +13,8 @@
 - 最小单元测试和本地检查命令。
 - Wails/Vue 前端目录与仓库级目录规划。
 
-七模块当前只有注册边界，没有业务路由、数据模型、provider、数据库或外部服务实现。
-这些内容应由后续独立 Issue 和小范围 PR 增量补充。
+模块 3 已提供接待会话与 Fake Media 的最小可运行骨架；其他模块仍只有注册边界。模块 3
+使用内存状态、deterministic fake、内存 Audit/Outbox，不连接数据库或真实媒体设备。
 
 ## 运行
 
@@ -25,9 +25,19 @@ make check
 make run
 ```
 
-默认监听 `127.0.0.1:8080`。可通过 `XE6_API_ADDRESS` 和 `XE6_GIN_MODE` 覆盖。
+默认监听 `127.0.0.1:8080`。可通过 `XE6_API_ADDRESS` 和 `XE6_GIN_MODE` 覆盖；设置
+`PORT` 时使用 `:<PORT>`，适合容器或平台注入端口。
 
-Issue：<https://github.com/1024XEngineer/xe6-tsy/issues/37>
+模块 3 冒烟验收：
+
+```bash
+make run
+BASE_URL=http://127.0.0.1:8080 bash scripts/smoke/reception.sh
+```
+
+关联 Issue：[#36](https://github.com/1024XEngineer/xe6-tsy/issues/36)、
+[#37](https://github.com/1024XEngineer/xe6-tsy/issues/37)、
+[#42](https://github.com/1024XEngineer/xe6-tsy/issues/42)。
 
 目录规划、前后端边界和工程门禁见
 [`docs/项目前后端统一开发规范.md`](docs/项目前后端统一开发规范.md)。

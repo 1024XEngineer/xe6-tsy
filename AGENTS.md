@@ -37,6 +37,18 @@
 - Codex 不得创建目标为 `main` 的 PR，不得合并或直接推送 `main`。默认在 `dev` 或用户
   明确指定的非 `main` 分支准备改动。
 
+## Git 与 Commit 规范
+
+- 一个 commit 只解决一个明确、独立、可回退的逻辑边界问题。
+- 同一功能中可以独立评审、验证和回退的细节应拆成多个 commits；不要为了提交 PR 把无关
+  或可独立验证的改动压成单个提交。
+- 与某个实现细节强相关的文档回写、注释修正和测试补充，应与该细节一并提交，或作为紧邻
+  的原子提交。
+- 提交前必须检查 `git diff`、`git status` 和 `git diff --staged`，确认只包含本次范围内
+  的改动。
+- Commit message 优先使用 `<type>(<scope>): <subject>`；`subject` 用祈使句或简短动词短语
+  描述行为变化，避免空泛的 `update`、`fix stuff`。
+
 ## 测试门禁
 
 Issue #43 的 Go/Gin 测试约定是本项目后端默认规则：

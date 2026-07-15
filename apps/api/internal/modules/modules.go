@@ -19,14 +19,20 @@ func (m module) Register(parent *gin.RouterGroup) {
 	parent.Group("/" + m.name)
 }
 
-func Foundation() []Registrar {
-	return []Registrar{
-		module{name: "identity"},
-		module{name: "configuration"},
-		module{name: "reception"},
-		module{name: "transcript"},
-		module{name: "matter"},
-		module{name: "knowledge"},
-		module{name: "record"},
+func Foundation(overrides ...Registrar) []Registrar {
+	byName := make(map[string]Registrar, len(overrides))
+	for _, registrar := range overrides {
+		byName[registrar.Name()] = registrar
 	}
+
+	names := []string{"identity", "configuration", "reception", "transcript", "matter", "knowledge", "record"}
+	registrars := make([]Registrar, 0, len(names))
+	for _, name := range names {
+		if registrar, ok := byName[name]; ok {
+			registrars = append(registrars, registrar)
+			continue
+		}
+		registrars = append(registrars, module{name: name})
+	}
+	return registrars
 }

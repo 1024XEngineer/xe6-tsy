@@ -1,0 +1,138 @@
+openapi: 3.1.0
+info:
+  title: xe6-tsy Identity API
+  version: 0.1.0
+  description: >-
+    MS1 deterministic mock identity contract for frontend integration. The
+    endpoint is available only when XE6_IDENTITY_PROVIDER=mock.
+paths:
+  /api/v1/identity/access-sessions:
+    post:
+      operationId: startAccessSession
+      summary: Start a deterministic mock staff access session
+      tags:
+        - identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartAccessSessionRequest"
+      responses:
+        "201":
+          description: Access session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccessSessionResponse"
+        "400":
+          description: Invalid request or unknown fixture
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Mock identity provider unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Unexpected internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    StartAccessSessionRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - provider_code
+        - fixture_code
+      properties:
+        provider_code:
+          type: string
+          const: demo
+        fixture_code:
+          type: string
+          enum:
+            - staff-active
+            - config-maintainer
+            - staff-disabled
+            - provider-error
+    AccessSessionResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - data
+      properties:
+        data:
+          $ref: "#/components/schemas/AccessContext"
+    AccessContext:
+      type: object
+      additionalProperties: false
+      required:
+        - operator_id
+        - organization_id
+        - membership_id
+        - role_codes
+        - service_point_scopes
+        - window_scopes
+        - access_session_id
+        - issued_at
+        - expires_at
+      properties:
+        operator_id:
+          type: string
+        organization_id:
+          type: string
+        membership_id:
+          type: string
+        role_codes:
+          type: array
+          items:
+            type: string
+            enum:
+              - STAFF
+              - CONFIG_MAINTAINER
+        service_point_scopes:
+          type: array
+          items:
+            type: string
+        window_scopes:
+          type: array
+          items:
+            type: string
+        access_session_id:
+          type: string
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+            message:
+              type: string

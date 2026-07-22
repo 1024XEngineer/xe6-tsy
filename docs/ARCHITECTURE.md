@@ -153,7 +153,7 @@ Web / Mobile / Device SDK
   -> context correction
   -> TTS
   -> playback.command
-  -> Lingxi UI state update
+  -> Lingow UI state update
   -> api: state snapshot query
 ```
 

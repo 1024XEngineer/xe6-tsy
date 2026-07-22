@@ -47,25 +47,6 @@ cd services/realtime-audio && go run .
 | PostgreSQL | `5432` |
 | Redis | `6379` |
 
-## 项目结构
-
-```text
-Lingow/
-├── apps/
-│   ├── web/
-│   └── mobile/
-├── services/
-│   ├── api/
-│   └── realtime-audio/
-├── sdks/
-│   └── device/
-├── packages/
-│   └── contracts/
-├── docs/
-├── infra/
-└── scripts/
-```
-
 ## 文档
 
 - [架构设计](docs/ARCHITECTURE.md)

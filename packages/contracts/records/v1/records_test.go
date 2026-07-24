@@ -124,3 +124,21 @@ func TestVoiceTurnJSONExposesPublicFieldNames(t *testing.T) {
 		}
 	}
 }
+
+func TestListTurnsQueryJSONIncludesSessionID(t *testing.T) {
+	query := ListTurnsQuery{SessionID: "vs_01"}
+
+	body, err := json.Marshal(query)
+	if err != nil {
+		t.Fatalf("marshal list turns query: %v", err)
+	}
+
+	var actual map[string]any
+	if err := json.Unmarshal(body, &actual); err != nil {
+		t.Fatalf("unmarshal list turns query: %v", err)
+	}
+
+	if got, want := actual["session_id"], "vs_01"; got != want {
+		t.Fatalf("session_id = %v, want %q", got, want)
+	}
+}

@@ -114,6 +114,7 @@ type ListParticipantsQuery struct {
 type ListTurnsQuery struct {
 	Cursor            string            `json:"cursor"`
 	Limit             int               `json:"limit"`
+	SessionID         string            `json:"session_id"`
 	ParticipantID     string            `json:"participant_id"`
 	SpeakerCode       string            `json:"speaker_code"`
 	AttributionStatus AttributionStatus `json:"attribution_status"`

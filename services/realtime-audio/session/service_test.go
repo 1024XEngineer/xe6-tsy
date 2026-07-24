@@ -14,6 +14,7 @@ var (
 	errPipeline    = errors.New("pipeline cleanup failed")
 	errConnection  = errors.New("connection cleanup failed")
 	errRuntimeSave = errors.New("runtime save failed")
+	errNoDeadline  = errors.New("cleanup context has no deadline")
 )
 
 func TestLifecycleStartCreatedSession(t *testing.T) {
@@ -118,6 +119,38 @@ func TestLifecycleStartCompensatesWhenListeningSaveFails(t *testing.T) {
 	}
 	if connection.closeCalls != 0 {
 		t.Fatalf("connection close calls = %d, want 0", connection.closeCalls)
+	}
+	stored, err := runtimes.Get(context.Background(), "session-1")
+	if err != nil || stored.RuntimeState != RuntimeFailed {
+		t.Fatalf("stored runtime = %#v, %v; want failed", stored, err)
+	}
+}
+
+func TestLifecycleStartCompensationSurvivesRequestCancellation(t *testing.T) {
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	runtimes := NewMemoryRuntimeRepository()
+	pipeline := &fakePipeline{
+		startHook:                cancelRequest,
+		requireActiveStopContext: true,
+		requireStopDeadline:      true,
+	}
+	service, err := NewLifecycleService(Dependencies{
+		Sessions:    &fakeSessionReader{snapshot: SessionSnapshot{SessionID: "session-1", Status: "created"}},
+		Runtimes:    runtimes,
+		Pipelines:   pipeline,
+		Connections: &fakeConnection{},
+		Now:         func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("NewLifecycleService() error = %v", err)
+	}
+
+	got, err := service.Start(requestContext, StartRealtimeCommand{SessionID: "session-1"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start() error = %v, want context canceled", err)
+	}
+	if got.RuntimeState != RuntimeFailed || !pipeline.stopSucceeded {
+		t.Fatalf("Start() = %#v, pipeline stop succeeded = %t", got, pipeline.stopSucceeded)
 	}
 	stored, err := runtimes.Get(context.Background(), "session-1")
 	if err != nil || stored.RuntimeState != RuntimeFailed {
@@ -292,6 +325,32 @@ func TestLifecycleStopFailureCanRetry(t *testing.T) {
 	}
 }
 
+func TestLifecycleStopCleanupSurvivesRequestCancellation(t *testing.T) {
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	pipeline := &fakePipeline{
+		stopHook:                 cancelRequest,
+		requireActiveStopContext: true,
+		requireStopDeadline:      true,
+	}
+	connection := &fakeConnection{requireActiveContext: true, requireDeadline: true}
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "active"}, pipeline, connection)
+	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{SessionID: "session-1", RuntimeState: RuntimeListening}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	got, err := service.Stop(requestContext, StopRealtimeCommand{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if got.RuntimeState != RuntimeStopped || !pipeline.stopSucceeded || !connection.closeSucceeded {
+		t.Fatalf("Stop() = %#v, pipeline stopped = %t, connection closed = %t", got, pipeline.stopSucceeded, connection.closeSucceeded)
+	}
+	stored, err := service.deps.Runtimes.Get(context.Background(), "session-1")
+	if err != nil || stored.RuntimeState != RuntimeStopped {
+		t.Fatalf("stored runtime = %#v, %v; want stopped", stored, err)
+	}
+}
+
 func TestKeyedLockerReleasesIdleEntries(t *testing.T) {
 	locker := newKeyedLocker()
 	for index := 0; index < 100; index++ {
@@ -375,16 +434,21 @@ func (f *fakeSessionReader) GetSession(_ context.Context, _ string) (SessionSnap
 }
 
 type fakePipeline struct {
-	mu           sync.Mutex
-	startCalls   int
-	stopCalls    int
-	startErrors  []error
-	stopError    error
-	stopErrors   []error
-	startEntered chan struct{}
-	releaseStart <-chan struct{}
-	startOnce    sync.Once
-	events       *[]string
+	mu                       sync.Mutex
+	startCalls               int
+	stopCalls                int
+	startErrors              []error
+	stopError                error
+	stopErrors               []error
+	startEntered             chan struct{}
+	releaseStart             <-chan struct{}
+	startOnce                sync.Once
+	startHook                func()
+	stopHook                 func()
+	requireActiveStopContext bool
+	requireStopDeadline      bool
+	stopSucceeded            bool
+	events                   *[]string
 }
 
 func (f *fakePipeline) Start(_ context.Context, _ SessionSnapshot) error {
@@ -395,8 +459,11 @@ func (f *fakePipeline) Start(_ context.Context, _ SessionSnapshot) error {
 		err = f.startErrors[0]
 		f.startErrors = f.startErrors[1:]
 	}
-	entered, release, events := f.startEntered, f.releaseStart, f.events
+	entered, release, hook, events := f.startEntered, f.releaseStart, f.startHook, f.events
 	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	if events != nil {
 		*events = append(*events, "pipeline")
 	}
@@ -409,10 +476,22 @@ func (f *fakePipeline) Start(_ context.Context, _ SessionSnapshot) error {
 	return err
 }
 
-func (f *fakePipeline) Stop(_ context.Context, _ string) error {
+func (f *fakePipeline) Stop(ctx context.Context, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stopCalls++
+	if f.stopHook != nil {
+		f.stopHook()
+	}
+	if f.requireActiveStopContext && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if f.requireStopDeadline {
+		if _, ok := ctx.Deadline(); !ok {
+			return errNoDeadline
+		}
+	}
+	f.stopSucceeded = true
 	if f.events != nil {
 		*f.events = append(*f.events, "pipeline")
 	}
@@ -425,16 +504,28 @@ func (f *fakePipeline) Stop(_ context.Context, _ string) error {
 }
 
 type fakeConnection struct {
-	mu         sync.Mutex
-	closeCalls int
-	closeError error
-	events     *[]string
+	mu                   sync.Mutex
+	closeCalls           int
+	closeError           error
+	requireActiveContext bool
+	requireDeadline      bool
+	closeSucceeded       bool
+	events               *[]string
 }
 
-func (f *fakeConnection) Close(_ context.Context, _ string) error {
+func (f *fakeConnection) Close(ctx context.Context, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closeCalls++
+	if f.requireActiveContext && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if f.requireDeadline {
+		if _, ok := ctx.Deadline(); !ok {
+			return errNoDeadline
+		}
+	}
+	f.closeSucceeded = true
 	if f.events != nil {
 		*f.events = append(*f.events, "connection")
 	}

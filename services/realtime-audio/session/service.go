@@ -8,13 +8,16 @@ import (
 	"time"
 )
 
+const defaultCleanupTimeout = 5 * time.Second
+
 // Dependencies contains the required ports for lifecycle orchestration.
 type Dependencies struct {
-	Sessions    SessionReader
-	Runtimes    RuntimeRepository
-	Pipelines   PipelineManager
-	Connections WebRTCConnectionManager
-	Now         func() time.Time
+	Sessions       SessionReader
+	Runtimes       RuntimeRepository
+	Pipelines      PipelineManager
+	Connections    WebRTCConnectionManager
+	Now            func() time.Time
+	CleanupTimeout time.Duration
 }
 
 // LifecycleService coordinates media resources without changing business state.
@@ -27,6 +30,9 @@ type LifecycleService struct {
 func NewLifecycleService(deps Dependencies) (*LifecycleService, error) {
 	if deps.Sessions == nil || deps.Runtimes == nil || deps.Pipelines == nil || deps.Connections == nil || deps.Now == nil {
 		return nil, ErrInvalidDependency
+	}
+	if deps.CleanupTimeout <= 0 {
+		deps.CleanupTimeout = defaultCleanupTimeout
 	}
 	return &LifecycleService{deps: deps, locks: newKeyedLocker()}, nil
 }
@@ -71,7 +77,7 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 
 	if err := s.deps.Pipelines.Start(ctx, business); err != nil {
 		failed := failureSnapshot(command.SessionID, ErrorCodeStartFailed, s.deps.Now())
-		if saveErr := s.deps.Runtimes.Save(ctx, failed); saveErr != nil {
+		if saveErr := s.saveRuntimeForCleanup(ctx, failed); saveErr != nil {
 			return failed, errors.Join(fmt.Errorf("start pipeline: %w", err), fmt.Errorf("save failed runtime: %w", saveErr))
 		}
 		return failed, fmt.Errorf("start pipeline: %w", err)
@@ -84,9 +90,9 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 	}
 	if err := s.deps.Runtimes.Save(ctx, listening); err != nil {
 		// Start owns the pipeline but not the pre-existing WebRTC connection, so compensation stops only the pipeline.
-		pipelineErr := s.deps.Pipelines.Stop(ctx, command.SessionID)
+		pipelineErr := s.stopPipelineForCleanup(ctx, command.SessionID)
 		failed := failureSnapshot(command.SessionID, ErrorCodeStartFailed, s.deps.Now())
-		saveErr := s.deps.Runtimes.Save(ctx, failed)
+		saveErr := s.saveRuntimeForCleanup(ctx, failed)
 		return failed, errors.Join(
 			fmt.Errorf("save listening runtime: %w", err),
 			wrapCleanupError("compensate pipeline", pipelineErr),
@@ -132,15 +138,15 @@ func (s *LifecycleService) Stop(ctx context.Context, command StopRealtimeCommand
 	}
 
 	// Cleanup is deliberately attempted in order, but the second resource is still closed if the first fails.
-	pipelineErr := s.deps.Pipelines.Stop(ctx, command.SessionID)
-	connectionErr := s.deps.Connections.Close(ctx, command.SessionID)
+	pipelineErr := s.stopPipelineForCleanup(ctx, command.SessionID)
+	connectionErr := s.closeConnectionForCleanup(ctx, command.SessionID)
 	if pipelineErr != nil || connectionErr != nil {
 		failed := failureSnapshot(command.SessionID, ErrorCodeStopFailed, s.deps.Now())
 		cleanupErr := errors.Join(
 			wrapCleanupError("stop pipeline", pipelineErr),
 			wrapCleanupError("close WebRTC connection", connectionErr),
 		)
-		if saveErr := s.deps.Runtimes.Save(ctx, failed); saveErr != nil {
+		if saveErr := s.saveRuntimeForCleanup(ctx, failed); saveErr != nil {
 			return failed, errors.Join(cleanupErr, fmt.Errorf("save failed runtime: %w", saveErr))
 		}
 		return failed, cleanupErr
@@ -152,7 +158,7 @@ func (s *LifecycleService) Stop(ctx context.Context, command StopRealtimeCommand
 	stopped.CurrentPlaybackID = nil
 	stopped.LastErrorCode = nil
 	stopped.UpdatedAt = stopTime(command, s.deps.Now())
-	if err := s.deps.Runtimes.Save(ctx, stopped); err != nil {
+	if err := s.saveRuntimeForCleanup(ctx, stopped); err != nil {
 		return stopped, fmt.Errorf("save stopped runtime: %w", err)
 	}
 	return stopped, nil
@@ -184,6 +190,29 @@ func wrapCleanupError(operation string, err error) error {
 		return nil
 	}
 	return fmt.Errorf("%s: %w", operation, err)
+}
+
+func (s *LifecycleService) stopPipelineForCleanup(parent context.Context, sessionID string) error {
+	ctx, cancel := s.cleanupContext(parent)
+	defer cancel()
+	return s.deps.Pipelines.Stop(ctx, sessionID)
+}
+
+func (s *LifecycleService) closeConnectionForCleanup(parent context.Context, sessionID string) error {
+	ctx, cancel := s.cleanupContext(parent)
+	defer cancel()
+	return s.deps.Connections.Close(ctx, sessionID)
+}
+
+func (s *LifecycleService) saveRuntimeForCleanup(parent context.Context, snapshot RuntimeSnapshot) error {
+	ctx, cancel := s.cleanupContext(parent)
+	defer cancel()
+	return s.deps.Runtimes.Save(ctx, snapshot)
+}
+
+func (s *LifecycleService) cleanupContext(parent context.Context) (context.Context, context.CancelFunc) {
+	// Compensation preserves request values while ignoring cancellation, then adds its own upper bound.
+	return context.WithTimeout(context.WithoutCancel(parent), s.deps.CleanupTimeout)
 }
 
 type keyedLocker struct {

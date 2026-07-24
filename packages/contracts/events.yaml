@@ -1,0 +1,38 @@
+asyncapi: 3.0.0
+info:
+  title: Lingow Internal Usage Events
+  version: 0.1.0
+  description: Internal contracts consumed by the usage domain.
+channels:
+  usageRecorded:
+    address: usage.recorded
+    messages:
+      usageRecorded:
+        $ref: '#/components/messages/UsageRecorded'
+operations:
+  consumeUsageRecorded:
+    action: receive
+    channel:
+      $ref: '#/channels/usageRecorded'
+components:
+  messages:
+    UsageRecorded:
+      name: usage.recorded
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/UsageRecordedPayload'
+  schemas:
+    UsageRecordedPayload:
+      type: object
+      additionalProperties: false
+      required: [id, idempotency_key, account_id, session_id, turn_id, stage, quantity, unit, occurred_at]
+      properties:
+        id: { type: string, format: uuid }
+        idempotency_key: { type: string, minLength: 1, maxLength: 200 }
+        account_id: { type: string, format: uuid }
+        session_id: { type: string, format: uuid }
+        turn_id: { type: string, format: uuid }
+        stage: { type: string, enum: [asr, translation, tts, diarization] }
+        quantity: { type: integer, format: int64, minimum: 0 }
+        unit: { type: string, enum: [audio_millisecond, character, token] }
+        occurred_at: { type: string, format: date-time }

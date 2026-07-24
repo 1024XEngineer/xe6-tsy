@@ -120,70 +120,78 @@ func TestErrorResponseIncludesRequestID(t *testing.T) {
 }
 
 func TestCreateMessageRequiresUniqueTurnsAndEmail(t *testing.T) {
-	tests := []string{
-		`{"channel":"sms","destination_ref":"verified","turn_ids":["turn-1"]}`,
-		`{"channel":"email","destination_ref":"verified","turn_ids":["turn-1","turn-1"]}`,
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"unsupported channel", `{"channel":"sms","destination_ref":"verified","turn_ids":["turn-1"]}`},
+		{"duplicate turn IDs", `{"channel":"email","destination_ref":"verified","turn_ids":["turn-1","turn-1"]}`},
 	}
-	for _, body := range tests {
-		fake := &deliveryFake{}
-		handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake)
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(body))
-		request.Header.Set("X-Account-ID", "account-1")
-		request.Header.Set("Idempotency-Key", "message-key")
-		response := httptest.NewRecorder()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &deliveryFake{}
+			handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake)
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(test.body))
+			request.Header.Set("X-Account-ID", "account-1")
+			request.Header.Set("Idempotency-Key", "message-key")
+			response := httptest.NewRecorder()
 
-		handler.ServeHTTP(response, request)
+			handler.ServeHTTP(response, request)
 
-		if response.Code != http.StatusBadRequest {
-			t.Fatalf("body %s: status = %d, want %d", body, response.Code, http.StatusBadRequest)
-		}
-		if fake.created.AccountID != "" {
-			t.Fatalf("body %s reached service", body)
-		}
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("body %s: status = %d, want %d", test.body, response.Code, http.StatusBadRequest)
+			}
+			if fake.created.AccountID != "" {
+				t.Fatalf("body %s reached service", test.body)
+			}
+		})
 	}
 }
 
 func TestFormalRoutesReachUseCases(t *testing.T) {
 	tests := []struct {
+		name   string
 		method string
 		path   string
 		body   string
 		auth   bool
 		key    bool
 	}{
-		{http.MethodPost, "/api/v1/auth/anonymous", "", false, false},
-		{http.MethodPost, "/api/v1/auth/verification-codes", `{"phone":"+8613800000000"}`, false, false},
-		{http.MethodPost, "/api/v1/auth/phone/login", `{"challenge_id":"challenge-1","code":"123456"}`, false, false},
-		{http.MethodPost, "/api/v1/auth/token/refresh", `{"refresh_token":"opaque"}`, false, false},
-		{http.MethodPost, "/api/v1/auth/logout", `{"refresh_token":"opaque"}`, false, false},
-		{http.MethodGet, "/api/v1/account/me", "", true, false},
-		{http.MethodGet, "/api/v1/voice-sessions/session-1/usage", "", true, false},
-		{http.MethodGet, "/api/v1/usage/summary?period_start=2026-07-01T00:00:00Z&period_end=2026-08-01T00:00:00Z", "", true, false},
-		{http.MethodPost, "/api/v1/outbound-messages", `{"channel":"email","destination_ref":"verified-email","turn_ids":["turn-1"]}`, true, true},
-		{http.MethodGet, "/api/v1/outbound-messages/message-1", "", true, false},
-		{http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", "", true, true},
-		{http.MethodGet, "/api/v1/account/message-preferences", "", true, false},
-		{http.MethodPut, "/api/v1/account/message-preferences/email", `{"enabled":true}`, true, false},
+		{"create anonymous account", http.MethodPost, "/api/v1/auth/anonymous", "", false, false},
+		{"create verification code", http.MethodPost, "/api/v1/auth/verification-codes", `{"phone":"+8613800000000"}`, false, false},
+		{"log in by phone", http.MethodPost, "/api/v1/auth/phone/login", `{"challenge_id":"challenge-1","code":"123456"}`, false, false},
+		{"refresh token", http.MethodPost, "/api/v1/auth/token/refresh", `{"refresh_token":"opaque"}`, false, false},
+		{"log out", http.MethodPost, "/api/v1/auth/logout", `{"refresh_token":"opaque"}`, false, false},
+		{"get account", http.MethodGet, "/api/v1/account/me", "", true, false},
+		{"get session usage", http.MethodGet, "/api/v1/voice-sessions/session-1/usage", "", true, false},
+		{"get account usage", http.MethodGet, "/api/v1/usage/summary?period_start=2026-07-01T00:00:00Z&period_end=2026-08-01T00:00:00Z", "", true, false},
+		{"create outbound message", http.MethodPost, "/api/v1/outbound-messages", `{"channel":"email","destination_ref":"verified-email","turn_ids":["turn-1"]}`, true, true},
+		{"get outbound message", http.MethodGet, "/api/v1/outbound-messages/message-1", "", true, false},
+		{"retry outbound delivery", http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", "", true, true},
+		{"get message preferences", http.MethodGet, "/api/v1/account/message-preferences", "", true, false},
+		{"update message preference", http.MethodPut, "/api/v1/account/message-preferences/email", `{"enabled":true}`, true, false},
 	}
 
 	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases())
 	for _, test := range tests {
-		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
-		if test.body != "" {
-			request.Header.Set("Content-Type", "application/json")
-		}
-		if test.auth {
-			request.Header.Set("X-Account-ID", "account-1")
-		}
-		if test.key {
-			request.Header.Set("Idempotency-Key", "test-key")
-		}
-		response := httptest.NewRecorder()
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			if test.body != "" {
+				request.Header.Set("Content-Type", "application/json")
+			}
+			if test.auth {
+				request.Header.Set("X-Account-ID", "account-1")
+			}
+			if test.key {
+				request.Header.Set("Idempotency-Key", "test-key")
+			}
+			response := httptest.NewRecorder()
 
-		handler.ServeHTTP(response, request)
+			handler.ServeHTTP(response, request)
 
-		if response.Code != http.StatusNotImplemented {
-			t.Errorf("%s %s: status = %d, want %d; body=%s", test.method, test.path, response.Code, http.StatusNotImplemented, response.Body.String())
-		}
+			if response.Code != http.StatusNotImplemented {
+				t.Errorf("%s %s: status = %d, want %d; body=%s", test.method, test.path, response.Code, http.StatusNotImplemented, response.Body.String())
+			}
+		})
 	}
 }

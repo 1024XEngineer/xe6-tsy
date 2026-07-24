@@ -22,17 +22,19 @@ SDK 负责把硬件音频和后端实时能力连接起来，不负责硬件制�
 ```text
 device -> api:
   session.start
-  webrtc.offer
-  webrtc.answer
-  ice.candidate
+  realtime_ticket.request
+  session.end
 
 device -> realtime-audio:
+  webrtc.offer
+  ice.candidate
   WebRTC audio track
   playback.finished
   playback.interrupted
-  session.end
 
 realtime-audio -> device:
+  webrtc.answer
+  ice.candidate
   asr.partial
   asr.final
   translation.final

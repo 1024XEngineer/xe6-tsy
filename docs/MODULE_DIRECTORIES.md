@@ -53,12 +53,13 @@ packages/contracts/
 
 ```text
 services/api/
-├── signaling/
 ├── sessions/
 ├── devices/
+├── realtimeaccess/
 └── webapi/
 
 services/realtime-audio/
+├── webrtc/
 ├── audio/
 ├── vad/
 ├── segment/
@@ -72,8 +73,8 @@ packages/contracts/
 
 边界说明：
 
-- `services/api` 负责会话创建、WebRTC 信令、语言配置和状态快照查询。
-- `services/realtime-audio` 负责 WebRTC 音频接入、运行时状态机、句末检测和播放控制。
+- `services/api` 负责业务会话、语言配置、实时连接票据和状态快照查询。
+- `services/realtime-audio` 负责 WebRTC 信令、PeerConnection、音频接入、运行时状态机、句末检测和播放控制。
 - 音频媒体流走 WebRTC audio track，不通过 WebSocket 传输。
 
 ## 3. 同声传译核心服务模块

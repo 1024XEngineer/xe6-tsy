@@ -23,6 +23,7 @@
 
 ### 实时音频
 
+- WebRTC config、offer/answer 和 ICE candidate 信令
 - WebRTC 音频会话接入
 - WebRTC audio track 接收
 - 说话人识别
@@ -36,7 +37,7 @@
 ### 应用 API
 
 - 会话创建/结束
-- WebRTC 信令
+- 会话鉴权和短期实时连接票据
 - 对话模式状态
 - 可选语言列表和语言对配置
 - 演示客户端/设备接入

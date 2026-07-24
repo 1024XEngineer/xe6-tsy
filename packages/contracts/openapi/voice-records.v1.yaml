@@ -347,7 +347,7 @@ components:
           $ref: '#/components/schemas/AttributionStatus'
         corrected_by:
           type: [string, 'null']
-          enum: [system, 'null']
+          enum: [system, null]
         started_at:
           type: string
           format: date-time

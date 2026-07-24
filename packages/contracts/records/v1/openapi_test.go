@@ -62,3 +62,29 @@ func TestOpenAPIAttributionRequestExcludesServerManagedFields(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAPICorrectedByAllowsJSONNull(t *testing.T) {
+	specPath := filepath.Join("..", "..", "openapi", "voice-records.v1.yaml")
+	spec, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatalf("read OpenAPI spec: %v", err)
+	}
+
+	text := string(spec)
+	start := strings.Index(text, "corrected_by:")
+	if start == -1 {
+		t.Fatal("OpenAPI spec is missing the corrected_by schema")
+	}
+	end := strings.Index(text[start:], "started_at:")
+	if end == -1 {
+		t.Fatal("OpenAPI spec is missing the corrected_by schema end")
+	}
+
+	correctedBySchema := text[start : start+end]
+	if !strings.Contains(correctedBySchema, "enum: [system, null]") {
+		t.Fatal("corrected_by must allow the JSON null value")
+	}
+	if strings.Contains(correctedBySchema, "enum: [system, 'null']") {
+		t.Fatal("corrected_by enum must not use the string literal 'null'")
+	}
+}

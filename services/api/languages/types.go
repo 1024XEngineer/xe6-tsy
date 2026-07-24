@@ -24,7 +24,7 @@ type LanguageConfig struct {
 	LanguagePairs  []LanguagePair `json:"language_pairs"`
 	Status         string         `json:"status"` // active | superseded | expired
 	EffectiveFrom  time.Time      `json:"effective_from"`
-	EffectiveUntil *time.Time     `json:"effective_until,omitempty"`
+	EffectiveUntil *time.Time     `json:"effective_until"`
 	CreatedBy      string         `json:"created_by"`
 	CreatedAt      time.Time      `json:"created_at"`
 }

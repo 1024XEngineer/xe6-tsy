@@ -30,11 +30,13 @@ services/api/
 ├── config/
 ├── devices/
 ├── sessions/
-├── languages/
+├── languages/                 # 语言配置：当前为空接口（HTTP 501 + Reader stub）
 ├── realtimeaccess/            # 会话鉴权和短期实时连接票据
 ├── health/
 └── webapi/
 ```
+
+语言配置契约与空接口说明见 [`languages/README.md`](./languages/README.md)。
 
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。

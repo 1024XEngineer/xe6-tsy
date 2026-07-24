@@ -69,6 +69,32 @@ type DeliveryAttempt struct {
 	CreatedAt     time.Time             `json:"created_at"`
 }
 
+type CreateMessageRecord struct {
+	Message        Message
+	InitialAttempt DeliveryAttempt
+	IdempotencyKey string
+}
+
+type CreateRetryRecord struct {
+	AccountID      string
+	MessageID      string
+	Attempt        DeliveryAttempt
+	IdempotencyKey string
+}
+
+type VerifiedDestination struct {
+	AccountID      string
+	Channel        Channel
+	DestinationRef string
+	ProviderTarget string
+}
+
+type SendRequest struct {
+	Message     Message
+	Attempt     DeliveryAttempt
+	Destination VerifiedDestination
+}
+
 type CreateInput struct {
 	AccountID      string   `json:"-"`
 	IdempotencyKey string   `json:"-"`

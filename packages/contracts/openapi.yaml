@@ -83,7 +83,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
-  /outbound-messages/{id}:
+  /outbound-messages/{message_id}:
     get:
       operationId: getOutboundMessage
       security: [{ accountContext: [] }]
@@ -92,7 +92,7 @@ paths:
         '200': { description: Message, content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
-  /outbound-deliveries/{id}/retry:
+  /outbound-deliveries/{message_id}/retry:
     post:
       operationId: retryOutboundMessage
       security: [{ accountContext: [] }]
@@ -131,7 +131,7 @@ components:
       description: Access token validated by authentication middleware; account_id comes from the trusted request context.
   parameters:
     SessionID: { name: id, in: path, required: true, schema: { type: string } }
-    MessageID: { name: id, in: path, required: true, schema: { type: string } }
+    MessageID: { name: message_id, in: path, required: true, schema: { type: string } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
   requestBodies:
     RefreshToken:

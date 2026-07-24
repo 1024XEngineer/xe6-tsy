@@ -16,7 +16,10 @@ import (
 )
 
 type deliveryFake struct {
-	created delivery.CreateInput
+	created          delivery.CreateInput
+	retryAccountID   string
+	retryMessageID   string
+	retryIdempotency string
 }
 
 func authenticate(request *http.Request) *http.Request {
@@ -31,8 +34,11 @@ func (f *deliveryFake) Create(_ context.Context, input delivery.CreateInput) (de
 func (*deliveryFake) Get(context.Context, string, string) (delivery.Message, error) {
 	return delivery.Message{}, domain.ErrNotImplemented
 }
-func (*deliveryFake) Retry(context.Context, string, string, string) (delivery.Message, error) {
-	return delivery.Message{}, domain.ErrNotImplemented
+func (f *deliveryFake) Retry(_ context.Context, accountID, messageID, idempotencyKey string) (delivery.Message, error) {
+	f.retryAccountID = accountID
+	f.retryMessageID = messageID
+	f.retryIdempotency = idempotencyKey
+	return delivery.Message{ID: messageID, AccountID: accountID, Status: delivery.MessageStatusRetrying}, nil
 }
 func (*deliveryFake) Preferences(context.Context, string) ([]delivery.Preference, error) {
 	return nil, domain.ErrNotImplemented
@@ -150,6 +156,24 @@ func TestCreateMessageRequiresUniqueTurnsAndEmail(t *testing.T) {
 				t.Fatalf("body %s reached service", test.body)
 			}
 		})
+	}
+}
+
+func TestRetryPassesMessageResourceID(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", nil)
+	request = authenticate(request)
+	request.Header.Set("Idempotency-Key", "retry-message-1")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	if fake.retryAccountID != "account-1" || fake.retryMessageID != "message-1" || fake.retryIdempotency != "retry-message-1" {
+		t.Fatalf("unexpected retry input: account=%q message=%q key=%q", fake.retryAccountID, fake.retryMessageID, fake.retryIdempotency)
 	}
 }
 

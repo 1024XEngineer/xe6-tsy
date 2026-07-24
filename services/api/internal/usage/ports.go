@@ -11,6 +11,12 @@ type Repository interface {
 	AccountSummary(context.Context, string, time.Time, time.Time) (Summary, error)
 }
 
+// SessionOwnerReader is implemented by an adapter over the sessions module.
+// Record consumers use it to reject facts whose account and session disagree.
+type SessionOwnerReader interface {
+	AccountIDForSession(context.Context, string) (string, error)
+}
+
 type Service interface {
 	Record(context.Context, RecordInput) (Detail, error)
 	SessionUsage(context.Context, string, string) (Summary, error)

@@ -33,8 +33,8 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/usage", a.sessionUsage)
 	mux.HandleFunc("GET /api/v1/usage/summary", a.accountUsage)
 	mux.HandleFunc("POST /api/v1/outbound-messages", a.createMessage)
-	mux.HandleFunc("GET /api/v1/outbound-messages/{id}", a.getMessage)
-	mux.HandleFunc("POST /api/v1/outbound-deliveries/{id}/retry", a.retryMessage)
+	mux.HandleFunc("GET /api/v1/outbound-messages/{message_id}", a.getMessage)
+	mux.HandleFunc("POST /api/v1/outbound-deliveries/{message_id}/retry", a.retryMessage)
 	mux.HandleFunc("GET /api/v1/account/message-preferences", a.preferences)
 	mux.HandleFunc("PUT /api/v1/account/message-preferences/{channel}", a.putPreference)
 	return mux
@@ -260,7 +260,7 @@ func (a *API) getMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	result, err := a.delivery.Get(r.Context(), id, r.PathValue("id"))
+	result, err := a.delivery.Get(r.Context(), id, r.PathValue("message_id"))
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -278,7 +278,7 @@ func (a *API) retryMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}
-	result, err := a.delivery.Retry(r.Context(), id, r.PathValue("id"), r.Header.Get("Idempotency-Key"))
+	result, err := a.delivery.Retry(r.Context(), id, r.PathValue("message_id"), r.Header.Get("Idempotency-Key"))
 	if err != nil {
 		writeError(w, r, err)
 		return

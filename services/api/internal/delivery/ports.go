@@ -11,9 +11,11 @@ type QueueMessage struct {
 }
 
 type Repository interface {
-	CreateMessage(context.Context, Message) error
+	// CreateMessage atomically persists the message, initial attempt, and outbox record.
+	CreateMessage(context.Context, CreateMessageRecord) error
 	GetMessage(context.Context, string, string) (Message, error)
-	CreateAttempt(context.Context, DeliveryAttempt) error
+	// CreateRetry atomically persists the next attempt, message state, and outbox record.
+	CreateRetry(context.Context, CreateRetryRecord) (Message, error)
 	GetAttempt(context.Context, string) (DeliveryAttempt, error)
 	SetMessageStatus(context.Context, string, MessageStatus, *string) error
 	SetAttemptStatus(context.Context, string, DeliveryAttemptStatus, *string) error
@@ -25,8 +27,13 @@ type TurnReader interface {
 	ReadFinalTurns(context.Context, string, []string) ([]FinalTurnSnapshot, error)
 }
 
+// DestinationReader is implemented by an adapter over the accounts module.
+type DestinationReader interface {
+	ResolveVerifiedDestination(context.Context, string, Channel, string) (VerifiedDestination, error)
+}
+
 type Provider interface {
-	Send(context.Context, Message) error
+	Send(context.Context, SendRequest) error
 }
 
 type Queue interface {

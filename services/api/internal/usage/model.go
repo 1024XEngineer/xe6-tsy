@@ -11,24 +11,22 @@ const (
 	StageDiarization Stage = "diarization"
 )
 
-type Unit string
-
-const (
-	UnitAudioMillisecond Unit = "audio_millisecond"
-	UnitCharacter        Unit = "character"
-	UnitToken            Unit = "token"
-)
-
 type RecordInput struct {
-	ID             string    `json:"id"`
-	IdempotencyKey string    `json:"idempotency_key"`
-	AccountID      string    `json:"account_id"`
-	SessionID      string    `json:"session_id"`
-	TurnID         string    `json:"turn_id"`
-	Stage          Stage     `json:"stage"`
-	Quantity       int64     `json:"quantity"`
-	Unit           Unit      `json:"unit"`
-	OccurredAt     time.Time `json:"occurred_at"`
+	ID              string    `json:"id"`
+	TraceID         string    `json:"trace_id"`
+	IdempotencyKey  string    `json:"idempotency_key"`
+	AccountID       string    `json:"account_id"`
+	SessionID       string    `json:"session_id"`
+	TurnID          string    `json:"turn_id"`
+	ServiceType     Stage     `json:"service_type"`
+	Provider        string    `json:"provider"`
+	Model           string    `json:"model"`
+	InputTokens     int64     `json:"input_tokens"`
+	OutputTokens    int64     `json:"output_tokens"`
+	AudioDurationMS int64     `json:"audio_duration_ms"`
+	CostAmount      string    `json:"cost_amount"`
+	Currency        string    `json:"currency"`
+	OccurredAt      time.Time `json:"occurred_at"`
 }
 
 type Detail struct {

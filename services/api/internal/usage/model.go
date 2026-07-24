@@ -2,17 +2,24 @@ package usage
 
 import "time"
 
+// UsageEventVersion is the only usage.recorded schema version accepted by this module.
 const UsageEventVersion = 1
 
+// Stage identifies the provider stage responsible for a usage fact.
 type Stage string
 
 const (
-	StageASR         Stage = "asr"
+	// StageASR records speech-recognition usage.
+	StageASR Stage = "asr"
+	// StageTranslation records text-translation usage.
 	StageTranslation Stage = "translation"
-	StageTTS         Stage = "tts"
+	// StageTTS records speech-synthesis usage.
+	StageTTS Stage = "tts"
+	// StageDiarization records speaker-diarization usage.
 	StageDiarization Stage = "diarization"
 )
 
+// RecordInput is the versioned usage.recorded fact accepted from realtime processing.
 type RecordInput struct {
 	EventVersion    int       `json:"event_version"`
 	ID              string    `json:"id"`
@@ -32,11 +39,13 @@ type RecordInput struct {
 	OccurredAt      time.Time `json:"occurred_at"`
 }
 
+// Detail is the immutable persisted usage fact with its server recording time.
 type Detail struct {
 	RecordInput
 	RecordedAt time.Time `json:"recorded_at"`
 }
 
+// StageTotal aggregates billable dimensions for one service stage.
 type StageTotal struct {
 	ServiceType     Stage  `json:"service_type"`
 	InputTokens     int64  `json:"input_tokens"`
@@ -46,6 +55,7 @@ type StageTotal struct {
 	Currency        string `json:"currency"`
 }
 
+// Summary reports usage for either one session or an account time period.
 type Summary struct {
 	AccountID   string       `json:"account_id"`
 	SessionID   string       `json:"session_id,omitempty"`

@@ -16,6 +16,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 )
 
+// main wires foundation use cases into the HTTP server and owns graceful shutdown.
 func main() {
 	address := os.Getenv("API_ADDR")
 	if address == "" {

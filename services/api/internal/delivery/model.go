@@ -2,30 +2,44 @@ package delivery
 
 import "time"
 
+// Channel identifies a supported outbound delivery mechanism.
 type Channel string
 
 const (
+	// ChannelEmail is the only channel admitted by the first delivery contract.
 	ChannelEmail Channel = "email"
 )
 
+// MessageStatus describes the user-visible lifecycle of an outbound message.
 type MessageStatus string
 
 const (
-	MessageStatusQueued    MessageStatus = "queued"
-	MessageStatusSending   MessageStatus = "sending"
-	MessageStatusSent      MessageStatus = "sent"
-	MessageStatusFailed    MessageStatus = "failed"
-	MessageStatusRetrying  MessageStatus = "retrying"
+	// MessageStatusQueued means the initial provider attempt is waiting for processing.
+	MessageStatusQueued MessageStatus = "queued"
+	// MessageStatusSending means a worker owns the current provider attempt.
+	MessageStatusSending MessageStatus = "sending"
+	// MessageStatusSent means a provider attempt completed successfully.
+	MessageStatusSent MessageStatus = "sent"
+	// MessageStatusFailed means delivery stopped after a failed attempt.
+	MessageStatusFailed MessageStatus = "failed"
+	// MessageStatusRetrying means another attempt has been scheduled.
+	MessageStatusRetrying MessageStatus = "retrying"
+	// MessageStatusCancelled means no further delivery attempts are allowed.
 	MessageStatusCancelled MessageStatus = "cancelled"
 )
 
+// DeliveryAttemptStatus describes one provider invocation independently of its message.
 type DeliveryAttemptStatus string
 
 const (
-	AttemptStatusQueued    DeliveryAttemptStatus = "queued"
-	AttemptStatusSending   DeliveryAttemptStatus = "sending"
+	// AttemptStatusQueued means the attempt is waiting for a worker.
+	AttemptStatusQueued DeliveryAttemptStatus = "queued"
+	// AttemptStatusSending means the provider call is in progress.
+	AttemptStatusSending DeliveryAttemptStatus = "sending"
+	// AttemptStatusSucceeded means the provider accepted the request.
 	AttemptStatusSucceeded DeliveryAttemptStatus = "succeeded"
-	AttemptStatusFailed    DeliveryAttemptStatus = "failed"
+	// AttemptStatusFailed means the provider call finished with an error.
+	AttemptStatusFailed DeliveryAttemptStatus = "failed"
 )
 
 // FinalTurnSnapshot matches the read boundary provided by the turns module.
@@ -43,6 +57,7 @@ type FinalTurnSnapshot struct {
 	CreatedAt             time.Time `json:"created_at"`
 }
 
+// Message is an immutable outbound content snapshot with mutable delivery state.
 type Message struct {
 	ID              string              `json:"id"`
 	AccountID       string              `json:"account_id"`
@@ -57,6 +72,7 @@ type Message struct {
 	UpdatedAt       time.Time           `json:"updated_at"`
 }
 
+// DeliveryAttempt records one queued or completed provider invocation.
 type DeliveryAttempt struct {
 	ID            string                `json:"id"`
 	MessageID     string                `json:"message_id"`
@@ -69,12 +85,15 @@ type DeliveryAttempt struct {
 	CreatedAt     time.Time             `json:"created_at"`
 }
 
+// CreateMessageRecord groups the message, initial attempt, and idempotency key
+// that a repository must persist atomically with an outbox record.
 type CreateMessageRecord struct {
 	Message        Message
 	InitialAttempt DeliveryAttempt
 	IdempotencyKey string
 }
 
+// CreateRetryRecord groups a manual retry transition and its idempotency key.
 type CreateRetryRecord struct {
 	AccountID      string
 	MessageID      string
@@ -82,6 +101,8 @@ type CreateRetryRecord struct {
 	IdempotencyKey string
 }
 
+// VerifiedDestination is the accounts-module result used only for provider calls.
+// ProviderTarget must not be persisted in messages, events, API output, or logs.
 type VerifiedDestination struct {
 	AccountID      string
 	Channel        Channel
@@ -89,12 +110,14 @@ type VerifiedDestination struct {
 	ProviderTarget string
 }
 
+// SendRequest contains the immutable message snapshot and verified provider target.
 type SendRequest struct {
 	Message     Message
 	Attempt     DeliveryAttempt
 	Destination VerifiedDestination
 }
 
+// CreateInput combines trusted account context, idempotency metadata, and client fields.
 type CreateInput struct {
 	AccountID      string   `json:"-"`
 	IdempotencyKey string   `json:"-"`
@@ -103,6 +126,7 @@ type CreateInput struct {
 	TurnIDs        []string `json:"turn_ids"`
 }
 
+// Preference combines a user's channel choice with authoritative verification state.
 type Preference struct {
 	AccountID string    `json:"account_id"`
 	Channel   Channel   `json:"channel"`

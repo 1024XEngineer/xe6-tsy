@@ -15,12 +15,14 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 )
 
+// API adapts versioned HTTP requests to account, usage, and delivery use cases.
 type API struct {
 	accounts accounts.Service
 	usage    usage.Service
 	delivery delivery.Service
 }
 
+// New registers the member 5 routes and returns a handler with no hidden dependencies.
 func New(accountsService accounts.Service, usageService usage.Service, deliveryService delivery.Service) http.Handler {
 	a := &API{accounts: accountsService, usage: usageService, delivery: deliveryService}
 	mux := http.NewServeMux()
@@ -40,6 +42,7 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	return mux
 }
 
+// errorResponse is the shared public error envelope defined by the OpenAPI contract.
 type errorResponse struct {
 	Error struct {
 		Code      string         `json:"code"`
@@ -50,12 +53,14 @@ type errorResponse struct {
 	} `json:"error"`
 }
 
+// writeJSON emits one JSON response with the requested HTTP status.
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+// writeError maps stable domain errors to the shared HTTP error contract.
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := http.StatusInternalServerError, "internal_error"
 	switch {
@@ -80,6 +85,7 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	writeJSON(w, status, response)
 }
 
+// requestID preserves an upstream request identifier or creates a non-sensitive fallback.
 func requestID(r *http.Request) string {
 	if id := r.Header.Get("X-Request-ID"); id != "" {
 		return id
@@ -91,6 +97,7 @@ func requestID(r *http.Request) string {
 	return "req_" + hex.EncodeToString(bytes)
 }
 
+// decodeJSON accepts one bounded JSON value and rejects unknown fields or trailing content.
 func decodeJSON(r *http.Request, target any) error {
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
@@ -103,6 +110,7 @@ func decodeJSON(r *http.Request, target any) error {
 	return nil
 }
 
+// accountID reads only authentication middleware output, never client account fields.
 func accountID(r *http.Request) (string, error) {
 	id, ok := accountIDFromContext(r.Context())
 	if !ok {
@@ -111,6 +119,7 @@ func accountID(r *http.Request) (string, error) {
 	return id, nil
 }
 
+// createAnonymous starts temporary account ownership and returns initial credentials.
 func (a *API) createAnonymous(w http.ResponseWriter, r *http.Request) {
 	result, err := a.accounts.CreateAnonymous(r.Context())
 	if err != nil {
@@ -120,6 +129,7 @@ func (a *API) createAnonymous(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, result)
 }
 
+// createPhoneChallenge validates the request shape and starts phone verification.
 func (a *API) createPhoneChallenge(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Phone string `json:"phone"`
@@ -136,6 +146,7 @@ func (a *API) createPhoneChallenge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"challenge_id": id})
 }
 
+// verifyPhone exchanges a challenge response for a registered account session.
 func (a *API) verifyPhone(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		ChallengeID        string `json:"challenge_id"`
@@ -154,6 +165,7 @@ func (a *API) verifyPhone(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// refresh rotates credentials using a refresh token supplied in the request body.
 func (a *API) refresh(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		RefreshToken string `json:"refresh_token"`
@@ -170,6 +182,7 @@ func (a *API) refresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// logout revokes the login session selected by the supplied refresh token.
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		RefreshToken string `json:"refresh_token"`
@@ -185,6 +198,7 @@ func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// me returns the account identified by trusted request context.
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {
@@ -199,6 +213,7 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// sessionUsage returns an account-scoped aggregate for one voice session.
 func (a *API) sessionUsage(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {
@@ -213,6 +228,7 @@ func (a *API) sessionUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// accountUsage validates a half-open reporting period and returns account totals.
 func (a *API) accountUsage(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {
@@ -233,6 +249,7 @@ func (a *API) accountUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// createMessage combines trusted ownership and idempotency metadata with client fields.
 func (a *API) createMessage(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {
@@ -254,6 +271,7 @@ func (a *API) createMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, result)
 }
 
+// getMessage returns the current state of an account-owned outbound message.
 func (a *API) getMessage(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {
@@ -268,6 +286,7 @@ func (a *API) getMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// retryMessage requests an idempotent manual retry for a failed message.
 func (a *API) retryMessage(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {
@@ -286,6 +305,7 @@ func (a *API) retryMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, result)
 }
 
+// preferences lists channel settings for the authenticated account.
 func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {
@@ -300,6 +320,7 @@ func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": result})
 }
 
+// putPreference updates the user-controlled enabled flag for one supported channel.
 func (a *API) putPreference(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {
@@ -326,6 +347,7 @@ func (a *API) putPreference(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// hasDuplicates also rejects empty identifiers so Turn selection stays unambiguous.
 func hasDuplicates(values []string) bool {
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {

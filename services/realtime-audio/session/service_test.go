@@ -3,15 +3,17 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 )
 
 var (
-	errProvider   = errors.New("provider unavailable")
-	errPipeline   = errors.New("pipeline cleanup failed")
-	errConnection = errors.New("connection cleanup failed")
+	errProvider    = errors.New("provider unavailable")
+	errPipeline    = errors.New("pipeline cleanup failed")
+	errConnection  = errors.New("connection cleanup failed")
+	errRuntimeSave = errors.New("runtime save failed")
 )
 
 func TestLifecycleStartCreatedSession(t *testing.T) {
@@ -27,6 +29,12 @@ func TestLifecycleStartCreatedSession(t *testing.T) {
 	}
 	if pipeline.startCalls != 1 {
 		t.Fatalf("pipeline start calls = %d, want 1", pipeline.startCalls)
+	}
+	service.locks.mu.Lock()
+	entryCount := len(service.locks.locks)
+	service.locks.mu.Unlock()
+	if entryCount != 0 {
+		t.Fatalf("idle lock entries = %d, want 0", entryCount)
 	}
 }
 
@@ -77,6 +85,43 @@ func TestLifecycleStartFailureCanRetry(t *testing.T) {
 	}
 	if pipeline.startCalls != 2 {
 		t.Fatalf("pipeline start calls = %d, want 2", pipeline.startCalls)
+	}
+}
+
+func TestLifecycleStartCompensatesWhenListeningSaveFails(t *testing.T) {
+	runtimes := &scriptedRuntimeRepository{
+		delegate:   NewMemoryRuntimeRepository(),
+		saveErrors: []error{nil, errRuntimeSave, nil},
+	}
+	pipeline := &fakePipeline{}
+	connection := &fakeConnection{}
+	service, err := NewLifecycleService(Dependencies{
+		Sessions:    &fakeSessionReader{snapshot: SessionSnapshot{SessionID: "session-1", Status: "created"}},
+		Runtimes:    runtimes,
+		Pipelines:   pipeline,
+		Connections: connection,
+		Now:         func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("NewLifecycleService() error = %v", err)
+	}
+
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	if !errors.Is(err, errRuntimeSave) {
+		t.Fatalf("Start() error = %v, want runtime save error", err)
+	}
+	if got.RuntimeState != RuntimeFailed {
+		t.Fatalf("RuntimeState = %q, want failed", got.RuntimeState)
+	}
+	if pipeline.startCalls != 1 || pipeline.stopCalls != 1 {
+		t.Fatalf("pipeline calls = start %d, stop %d; want 1, 1", pipeline.startCalls, pipeline.stopCalls)
+	}
+	if connection.closeCalls != 0 {
+		t.Fatalf("connection close calls = %d, want 0", connection.closeCalls)
+	}
+	stored, err := runtimes.Get(context.Background(), "session-1")
+	if err != nil || stored.RuntimeState != RuntimeFailed {
+		t.Fatalf("stored runtime = %#v, %v; want failed", stored, err)
 	}
 }
 
@@ -247,6 +292,21 @@ func TestLifecycleStopFailureCanRetry(t *testing.T) {
 	}
 }
 
+func TestKeyedLockerReleasesIdleEntries(t *testing.T) {
+	locker := newKeyedLocker()
+	for index := 0; index < 100; index++ {
+		unlock := locker.lock(fmt.Sprintf("session-%d", index))
+		unlock()
+	}
+
+	locker.mu.Lock()
+	entryCount := len(locker.locks)
+	locker.mu.Unlock()
+	if entryCount != 0 {
+		t.Fatalf("idle lock entries = %d, want 0", entryCount)
+	}
+}
+
 func newTestLifecycleService(t *testing.T, snapshot SessionSnapshot, pipeline *fakePipeline, connection *fakeConnection) *LifecycleService {
 	t.Helper()
 	service, err := NewLifecycleService(Dependencies{
@@ -281,6 +341,30 @@ func sameStrings(got, want []string) bool {
 type fakeSessionReader struct {
 	snapshot SessionSnapshot
 	err      error
+}
+
+type scriptedRuntimeRepository struct {
+	delegate   RuntimeRepository
+	mu         sync.Mutex
+	saveErrors []error
+}
+
+func (r *scriptedRuntimeRepository) Get(ctx context.Context, sessionID string) (RuntimeSnapshot, error) {
+	return r.delegate.Get(ctx, sessionID)
+}
+
+func (r *scriptedRuntimeRepository) Save(ctx context.Context, snapshot RuntimeSnapshot) error {
+	r.mu.Lock()
+	var err error
+	if len(r.saveErrors) > 0 {
+		err = r.saveErrors[0]
+		r.saveErrors = r.saveErrors[1:]
+	}
+	r.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return r.delegate.Save(ctx, snapshot)
 }
 
 func (f *fakeSessionReader) GetSession(_ context.Context, _ string) (SessionSnapshot, error) {

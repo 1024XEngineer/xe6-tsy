@@ -83,7 +83,15 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 		UpdatedAt:    s.deps.Now(),
 	}
 	if err := s.deps.Runtimes.Save(ctx, listening); err != nil {
-		return listening, fmt.Errorf("save listening runtime: %w", err)
+		// Start owns the pipeline but not the pre-existing WebRTC connection, so compensation stops only the pipeline.
+		pipelineErr := s.deps.Pipelines.Stop(ctx, command.SessionID)
+		failed := failureSnapshot(command.SessionID, ErrorCodeStartFailed, s.deps.Now())
+		saveErr := s.deps.Runtimes.Save(ctx, failed)
+		return failed, errors.Join(
+			fmt.Errorf("save listening runtime: %w", err),
+			wrapCleanupError("compensate pipeline", pipelineErr),
+			wrapCleanupError("save failed runtime", saveErr),
+		)
 	}
 	return listening, nil
 }
@@ -180,22 +188,38 @@ func wrapCleanupError(operation string, err error) error {
 
 type keyedLocker struct {
 	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	locks map[string]*keyedLockEntry
+}
+
+type keyedLockEntry struct {
+	mutex      sync.Mutex
+	references int
 }
 
 func newKeyedLocker() keyedLocker {
-	return keyedLocker{locks: make(map[string]*sync.Mutex)}
+	return keyedLocker{locks: make(map[string]*keyedLockEntry)}
 }
 
 func (l *keyedLocker) lock(key string) func() {
 	l.mu.Lock()
-	mutex := l.locks[key]
-	if mutex == nil {
-		mutex = &sync.Mutex{}
-		l.locks[key] = mutex
+	entry := l.locks[key]
+	if entry == nil {
+		entry = &keyedLockEntry{}
+		l.locks[key] = entry
 	}
+	entry.references++
 	l.mu.Unlock()
 
-	mutex.Lock()
-	return mutex.Unlock
+	entry.mutex.Lock()
+	return func() {
+		entry.mutex.Unlock()
+
+		// Waiters increment references before blocking, so zero means the entry is safe to reclaim.
+		l.mu.Lock()
+		entry.references--
+		if entry.references == 0 && l.locks[key] == entry {
+			delete(l.locks, key)
+		}
+		l.mu.Unlock()
+	}
 }

@@ -20,12 +20,14 @@ type RuntimeRepository interface {
 }
 
 // PipelineManager owns processing contexts created for a realtime session.
+// Stop must be idempotent: an already stopped or absent pipeline returns nil.
 type PipelineManager interface {
 	Start(ctx context.Context, snapshot SessionSnapshot) error
 	Stop(ctx context.Context, sessionID string) error
 }
 
 // WebRTCConnectionManager closes all connection resources for a session.
+// Close must be idempotent so lifecycle retries can finish partial cleanup.
 type WebRTCConnectionManager interface {
 	Close(ctx context.Context, sessionID string) error
 }

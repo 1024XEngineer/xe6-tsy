@@ -51,6 +51,9 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 	defer unlock()
 
 	current, err := s.deps.Runtimes.Get(ctx, command.SessionID)
+	if err == nil && current.RuntimeState == RuntimeFailed && current.LastErrorCode != nil && *current.LastErrorCode == ErrorCodeStopFailed {
+		return current, ErrRuntimeCleanupRequired
+	}
 	if err == nil && current.RuntimeState != RuntimeStopped && current.RuntimeState != RuntimeFailed {
 		return current, nil
 	}

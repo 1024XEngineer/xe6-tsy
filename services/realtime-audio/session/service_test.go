@@ -89,6 +89,28 @@ func TestLifecycleStartFailureCanRetry(t *testing.T) {
 	}
 }
 
+func TestLifecycleStartRejectsRetryAfterStopFailure(t *testing.T) {
+	pipeline := &fakePipeline{}
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, pipeline, &fakeConnection{})
+	errorCode := ErrorCodeStopFailed
+	failed := RuntimeSnapshot{
+		SessionID:     "session-1",
+		RuntimeState:  RuntimeFailed,
+		LastErrorCode: &errorCode,
+	}
+	if err := service.deps.Runtimes.Save(context.Background(), failed); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	if !errors.Is(err, ErrRuntimeCleanupRequired) {
+		t.Fatalf("Start() error = %v, want ErrRuntimeCleanupRequired", err)
+	}
+	if got.RuntimeState != RuntimeFailed || pipeline.startCalls != 0 {
+		t.Fatalf("Start() = %#v, pipeline calls = %d; want failed snapshot and no start", got, pipeline.startCalls)
+	}
+}
+
 func TestLifecycleStartCompensatesWhenListeningSaveFails(t *testing.T) {
 	runtimes := &scriptedRuntimeRepository{
 		delegate:   NewMemoryRuntimeRepository(),

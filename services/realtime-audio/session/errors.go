@@ -11,6 +11,8 @@ var (
 	ErrInvalidDependency = errors.New("invalid lifecycle dependency")
 	// ErrSessionIDRequired prevents repository entries without an ownership key.
 	ErrSessionIDRequired = errors.New("session id is required")
+	// ErrRuntimeCleanupRequired prevents startup while a previous stop remains incomplete.
+	ErrRuntimeCleanupRequired = errors.New("runtime cleanup must complete before restart")
 )
 
 const (

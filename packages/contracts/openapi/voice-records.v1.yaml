@@ -1,0 +1,432 @@
+openapi: 3.1.0
+info:
+  title: Lingow Voice Record API
+  version: 1.0.0
+  description: Public read and system-attribution APIs for final translation records.
+paths:
+  /api/v1/voice-sessions/{id}/participants:
+    get:
+      operationId: listSessionParticipants
+      parameters:
+        - $ref: '#/components/parameters/VoiceSessionID'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Session participants ordered by speaker_code ascending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipantListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/VoiceSessionNotFound'
+  /api/v1/voice-sessions/{id}/participants/{participant_id}:
+    patch:
+      operationId: updateSessionParticipant
+      parameters:
+        - $ref: '#/components/parameters/VoiceSessionID'
+        - $ref: '#/components/parameters/ParticipantID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateParticipantRequest'
+      responses:
+        '200':
+          description: Updated session participant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Participant'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ParticipantNotFound'
+  /api/v1/voice-sessions/{id}/turns:
+    get:
+      operationId: listSessionVoiceTurns
+      parameters:
+        - $ref: '#/components/parameters/VoiceSessionID'
+        - $ref: '#/components/parameters/ParticipantFilter'
+        - $ref: '#/components/parameters/SpeakerCodeFilter'
+        - $ref: '#/components/parameters/AttributionStatusFilter'
+        - $ref: '#/components/parameters/SourceLanguageFilter'
+        - $ref: '#/components/parameters/TargetLanguageFilter'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Final voice turns ordered by sequence_no ascending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceTurnListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/VoiceSessionNotFound'
+  /api/v1/voice-turns/{id}:
+    get:
+      operationId: getVoiceTurn
+      parameters:
+        - $ref: '#/components/parameters/VoiceTurnID'
+      responses:
+        '200':
+          description: Final voice turn.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceTurn'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/VoiceTurnNotFound'
+  /api/v1/voice-turns/{id}/attribution:
+    patch:
+      operationId: updateVoiceTurnAttribution
+      parameters:
+        - $ref: '#/components/parameters/VoiceTurnID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAttributionRequest'
+      responses:
+        '200':
+          description: Voice turn with corrected attribution.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceTurn'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/VoiceTurnNotFound'
+  /api/v1/translation-history:
+    get:
+      operationId: listTranslationHistory
+      parameters:
+        - $ref: '#/components/parameters/SessionFilter'
+        - $ref: '#/components/parameters/ParticipantFilter'
+        - $ref: '#/components/parameters/SourceLanguageFilter'
+        - $ref: '#/components/parameters/TargetLanguageFilter'
+        - $ref: '#/components/parameters/CreatedFromFilter'
+        - $ref: '#/components/parameters/CreatedToFilter'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Account-scoped final turns ordered by created_at descending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceTurnListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+components:
+  parameters:
+    VoiceSessionID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    ParticipantID:
+      name: participant_id
+      in: path
+      required: true
+      schema:
+        type: string
+    VoiceTurnID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    SessionFilter:
+      name: session_id
+      in: query
+      schema:
+        type: string
+    ParticipantFilter:
+      name: participant_id
+      in: query
+      schema:
+        type: string
+    SpeakerCodeFilter:
+      name: speaker_code
+      in: query
+      schema:
+        type: string
+    AttributionStatusFilter:
+      name: attribution_status
+      in: query
+      schema:
+        $ref: '#/components/schemas/AttributionStatus'
+    SourceLanguageFilter:
+      name: source_language
+      in: query
+      schema:
+        type: string
+    TargetLanguageFilter:
+      name: target_language
+      in: query
+      schema:
+        type: string
+    CreatedFromFilter:
+      name: created_from
+      in: query
+      schema:
+        type: string
+        format: date-time
+    CreatedToFilter:
+      name: created_to
+      in: query
+      schema:
+        type: string
+        format: date-time
+  responses:
+    InvalidRequest:
+      description: Request syntax or filter is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthenticated:
+      description: Authentication is required.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: The resource does not belong to the authenticated account.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    VoiceSessionNotFound:
+      description: The voice session does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ParticipantNotFound:
+      description: The participant does not exist in the requested session.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    VoiceTurnNotFound:
+      description: The voice turn does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    AttributionStatus:
+      type: string
+      enum:
+        - pending
+        - provisional
+        - confirmed
+        - corrected
+    Participant:
+      type: object
+      required:
+        - participant_id
+        - session_id
+        - speaker_code
+        - created_at
+        - updated_at
+      properties:
+        participant_id:
+          type: string
+        session_id:
+          type: string
+        speaker_code:
+          type: string
+        display_name:
+          type: [string, 'null']
+        provider_speaker_id:
+          type: [string, 'null']
+        voice_profile_id:
+          type: [string, 'null']
+        confidence:
+          type: [number, 'null']
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    VoiceTurn:
+      type: object
+      required:
+        - id
+        - session_id
+        - speaker_code
+        - sequence_no
+        - source_language
+        - target_language
+        - language_config_version
+        - source_text
+        - translated_text
+        - attribution_status
+        - started_at
+        - ended_at
+        - created_at
+      properties:
+        id:
+          type: string
+        session_id:
+          type: string
+        participant_id:
+          type: [string, 'null']
+        speaker_code:
+          type: string
+        display_name:
+          type: [string, 'null']
+        provider_speaker_id:
+          type: [string, 'null']
+        voice_profile_id:
+          type: [string, 'null']
+        sequence_no:
+          type: integer
+          format: int64
+        source_language:
+          type: string
+        target_language:
+          type: string
+        language_config_version:
+          type: integer
+          format: int64
+        source_text:
+          type: string
+        translated_text:
+          type: string
+        speaker_confidence:
+          type: [number, 'null']
+        attribution_status:
+          $ref: '#/components/schemas/AttributionStatus'
+        corrected_by:
+          type: [string, 'null']
+          enum: [system, 'null']
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        corrected_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    ParticipantListResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Participant'
+        next_cursor:
+          type: [string, 'null']
+    VoiceTurnListResponse:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/VoiceTurn'
+        next_cursor:
+          type: [string, 'null']
+    UpdateParticipantRequest:
+      type: object
+      properties:
+        display_name:
+          type: [string, 'null']
+        provider_speaker_id:
+          type: [string, 'null']
+        voice_profile_id:
+          type: [string, 'null']
+      additionalProperties: false
+    UpdateAttributionRequest:
+      type: object
+      required: [participant_id, attribution_status]
+      properties:
+        participant_id:
+          type: string
+        attribution_status:
+          type: string
+          enum: [confirmed, corrected]
+        speaker_confidence:
+          type: [number, 'null']
+      additionalProperties: false
+    ErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - unauthenticated
+        - forbidden
+        - voice_session_not_found
+        - participant_not_found
+        - voice_turn_not_found
+        - invalid_attribution
+        - not_implemented
+        - internal_error
+    APIError:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+        request_id:
+          type: string
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/APIError'

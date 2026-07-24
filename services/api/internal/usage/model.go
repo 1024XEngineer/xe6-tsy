@@ -2,6 +2,8 @@ package usage
 
 import "time"
 
+const UsageEventVersion = 1
+
 type Stage string
 
 const (
@@ -12,6 +14,7 @@ const (
 )
 
 type RecordInput struct {
+	EventVersion    int       `json:"event_version"`
 	ID              string    `json:"id"`
 	TraceID         string    `json:"trace_id"`
 	IdempotencyKey  string    `json:"idempotency_key"`

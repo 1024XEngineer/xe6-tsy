@@ -8,38 +8,65 @@ const (
 	ChannelEmail Channel = "email"
 )
 
-type Status string
+type MessageStatus string
 
 const (
-	StatusQueued    Status = "queued"
-	StatusSending   Status = "sending"
-	StatusSent      Status = "sent"
-	StatusFailed    Status = "failed"
-	StatusRetrying  Status = "retrying"
-	StatusCancelled Status = "cancelled"
+	MessageStatusQueued    MessageStatus = "queued"
+	MessageStatusSending   MessageStatus = "sending"
+	MessageStatusSent      MessageStatus = "sent"
+	MessageStatusFailed    MessageStatus = "failed"
+	MessageStatusRetrying  MessageStatus = "retrying"
+	MessageStatusCancelled MessageStatus = "cancelled"
 )
 
-type TurnSnapshot struct {
-	TurnID               string `json:"turn_id"`
-	SpeakerLabelSnapshot string `json:"speaker_label_snapshot,omitempty"`
-	SourceLanguage       string `json:"source_language"`
-	TargetLanguage       string `json:"target_language"`
-	SourceText           string `json:"source_text"`
-	TranslatedText       string `json:"translated_text"`
+type DeliveryAttemptStatus string
+
+const (
+	AttemptStatusQueued    DeliveryAttemptStatus = "queued"
+	AttemptStatusSending   DeliveryAttemptStatus = "sending"
+	AttemptStatusSucceeded DeliveryAttemptStatus = "succeeded"
+	AttemptStatusFailed    DeliveryAttemptStatus = "failed"
+)
+
+// FinalTurnSnapshot matches the read boundary provided by the turns module.
+// Once copied into a Message, these fields are never refreshed during retries.
+type FinalTurnSnapshot struct {
+	TurnID                string    `json:"turn_id"`
+	SessionID             string    `json:"session_id"`
+	ParticipantID         *string   `json:"participant_id"`
+	SpeakerLabelSnapshot  *string   `json:"speaker_label_snapshot"`
+	SourceLanguage        string    `json:"source_language"`
+	TargetLanguage        string    `json:"target_language"`
+	LanguageConfigVersion *int64    `json:"language_config_version"`
+	SourceText            string    `json:"source_text"`
+	TranslatedText        string    `json:"translated_text"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type Message struct {
-	ID              string         `json:"id"`
-	AccountID       string         `json:"account_id"`
-	Channel         Channel        `json:"channel"`
-	DestinationRef  string         `json:"destination_ref"`
-	SnapshotVersion int            `json:"snapshot_version"`
-	Turns           []TurnSnapshot `json:"turns"`
-	Status          Status         `json:"status"`
-	Attempts        int            `json:"attempts"`
-	LastErrorCode   string         `json:"last_error_code,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	ID              string              `json:"id"`
+	AccountID       string              `json:"account_id"`
+	Channel         Channel             `json:"channel"`
+	DestinationRef  string              `json:"destination_ref"`
+	SnapshotVersion int                 `json:"snapshot_version"`
+	Turns           []FinalTurnSnapshot `json:"turns"`
+	Status          MessageStatus       `json:"status"`
+	Attempts        int                 `json:"attempts"`
+	LastErrorCode   *string             `json:"last_error_code"`
+	CreatedAt       time.Time           `json:"created_at"`
+	UpdatedAt       time.Time           `json:"updated_at"`
+}
+
+type DeliveryAttempt struct {
+	ID            string                `json:"id"`
+	MessageID     string                `json:"message_id"`
+	AttemptNumber int                   `json:"attempt_number"`
+	Status        DeliveryAttemptStatus `json:"status"`
+	ErrorCode     *string               `json:"error_code"`
+	NextAttemptAt *time.Time            `json:"next_attempt_at"`
+	StartedAt     *time.Time            `json:"started_at"`
+	FinishedAt    *time.Time            `json:"finished_at"`
+	CreatedAt     time.Time             `json:"created_at"`
 }
 
 type CreateInput struct {

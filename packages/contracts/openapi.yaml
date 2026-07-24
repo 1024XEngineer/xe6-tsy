@@ -125,10 +125,10 @@ paths:
 components:
   securitySchemes:
     accountContext:
-      type: apiKey
-      in: header
-      name: X-Account-ID
-      description: Temporary trusted account context; replace with access-token middleware.
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token validated by authentication middleware; account_id comes from the trusted request context.
   parameters:
     SessionID: { name: id, in: path, required: true, schema: { type: string } }
     MessageID: { name: id, in: path, required: true, schema: { type: string } }
@@ -191,23 +191,33 @@ components:
       additionalProperties: false
       required: [channel, destination_ref, turn_ids]
       properties: { channel: { $ref: '#/components/schemas/Channel' }, destination_ref: { type: string }, turn_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string } } }
-    TurnSnapshot:
+    FinalTurnSnapshot:
       type: object
-      required: [turn_id, source_language, target_language, source_text, translated_text]
-      properties: { turn_id: { type: string }, speaker_label_snapshot: { type: string }, source_language: { type: string }, target_language: { type: string }, source_text: { type: string }, translated_text: { type: string } }
+      required: [turn_id, session_id, participant_id, speaker_label_snapshot, source_language, target_language, language_config_version, source_text, translated_text, created_at]
+      properties:
+        turn_id: { type: string }
+        session_id: { type: string }
+        participant_id: { type: [string, 'null'] }
+        speaker_label_snapshot: { type: [string, 'null'] }
+        source_language: { type: string }
+        target_language: { type: string }
+        language_config_version: { type: [integer, 'null'], format: int64 }
+        source_text: { type: string }
+        translated_text: { type: string }
+        created_at: { type: string, format: date-time }
     Message:
       type: object
-      required: [id, account_id, channel, destination_ref, snapshot_version, turns, status, attempts, created_at, updated_at]
+      required: [id, account_id, channel, destination_ref, snapshot_version, turns, status, attempts, last_error_code, created_at, updated_at]
       properties:
         id: { type: string }
         account_id: { type: string }
         channel: { $ref: '#/components/schemas/Channel' }
         destination_ref: { type: string }
         snapshot_version: { type: integer, minimum: 1 }
-        turns: { type: array, items: { $ref: '#/components/schemas/TurnSnapshot' } }
+        turns: { type: array, items: { $ref: '#/components/schemas/FinalTurnSnapshot' } }
         status: { type: string, enum: [queued, sending, sent, failed, retrying, cancelled] }
         attempts: { type: integer, minimum: 0 }
-        last_error_code: { type: string }
+        last_error_code: { type: [string, 'null'] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     Preference:

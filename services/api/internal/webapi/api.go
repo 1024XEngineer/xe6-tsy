@@ -104,8 +104,8 @@ func decodeJSON(r *http.Request, target any) error {
 }
 
 func accountID(r *http.Request) (string, error) {
-	id := r.Header.Get("X-Account-ID")
-	if id == "" {
+	id, ok := accountIDFromContext(r.Context())
+	if !ok {
 		return "", domain.ErrUnauthorized
 	}
 	return id, nil

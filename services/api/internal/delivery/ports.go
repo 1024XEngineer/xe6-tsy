@@ -1,20 +1,28 @@
 package delivery
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+type QueueMessage struct {
+	AttemptID string
+	Receipt   string
+}
 
 type Repository interface {
-	Create(context.Context, Message) error
-	Get(context.Context, string, string) (Message, error)
-	MarkSending(context.Context, string) error
-	MarkSent(context.Context, string) error
-	MarkFailed(context.Context, string, string) error
-	ScheduleRetry(context.Context, string) error
+	CreateMessage(context.Context, Message) error
+	GetMessage(context.Context, string, string) (Message, error)
+	CreateAttempt(context.Context, DeliveryAttempt) error
+	GetAttempt(context.Context, string) (DeliveryAttempt, error)
+	SetMessageStatus(context.Context, string, MessageStatus, *string) error
+	SetAttemptStatus(context.Context, string, DeliveryAttemptStatus, *string) error
 	ListPreferences(context.Context, string) ([]Preference, error)
 	PutPreference(context.Context, Preference) (Preference, error)
 }
 
 type TurnReader interface {
-	ReadFinalTurns(context.Context, string, []string) ([]TurnSnapshot, error)
+	ReadFinalTurns(context.Context, string, []string) ([]FinalTurnSnapshot, error)
 }
 
 type Provider interface {
@@ -22,8 +30,10 @@ type Provider interface {
 }
 
 type Queue interface {
-	Enqueue(context.Context, string) error
-	Receive(context.Context) (string, error)
+	Enqueue(context.Context, string, string) error // attempt ID, idempotency key
+	Receive(context.Context) (QueueMessage, error)
+	Ack(context.Context, string) error
+	Nack(context.Context, string, time.Time) error
 }
 
 type Service interface {

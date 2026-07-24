@@ -19,6 +19,11 @@ type deliveryFake struct {
 	created delivery.CreateInput
 }
 
+func authenticate(request *http.Request) *http.Request {
+	request.Header.Set("Authorization", "Bearer access-token")
+	return request.WithContext(webapi.WithAccountID(request.Context(), "account-1"))
+}
+
 func (f *deliveryFake) Create(_ context.Context, input delivery.CreateInput) (delivery.Message, error) {
 	f.created = input
 	return delivery.Message{ID: "message-1", AccountID: input.AccountID, Channel: input.Channel}, nil
@@ -42,7 +47,7 @@ func TestCreateMessagePassesAuthenticatedAccount(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(
 		`{"channel":"email","destination_ref":"verified-email","turn_ids":["turn-1"]}`,
 	))
-	request.Header.Set("X-Account-ID", "account-1")
+	request = authenticate(request)
 	request.Header.Set("Idempotency-Key", "create-message-1")
 	response := httptest.NewRecorder()
 
@@ -60,7 +65,7 @@ func TestInvalidMessageDoesNotReachService(t *testing.T) {
 	fake := &deliveryFake{}
 	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(`{"channel":"email"}`))
-	request.Header.Set("X-Account-ID", "account-1")
+	request = authenticate(request)
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
@@ -93,7 +98,7 @@ func TestAccountUsageRejectsReversedPeriod(t *testing.T) {
 	end := time.Now().UTC()
 	start := end.Add(time.Hour)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/usage/summary?period_start="+start.Format(time.RFC3339)+"&period_end="+end.Format(time.RFC3339), nil)
-	request.Header.Set("X-Account-ID", "account-1")
+	request = authenticate(request)
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
@@ -132,7 +137,7 @@ func TestCreateMessageRequiresUniqueTurnsAndEmail(t *testing.T) {
 			fake := &deliveryFake{}
 			handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake)
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(test.body))
-			request.Header.Set("X-Account-ID", "account-1")
+			request = authenticate(request)
 			request.Header.Set("Idempotency-Key", "message-key")
 			response := httptest.NewRecorder()
 
@@ -180,7 +185,7 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 				request.Header.Set("Content-Type", "application/json")
 			}
 			if test.auth {
-				request.Header.Set("X-Account-ID", "account-1")
+				request = authenticate(request)
 			}
 			if test.key {
 				request.Header.Set("Idempotency-Key", "test-key")
@@ -193,5 +198,18 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 				t.Errorf("%s %s: status = %d, want %d; body=%s", test.method, test.path, response.Code, http.StatusNotImplemented, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestClientSuppliedAccountIDIsNotTrusted(t *testing.T) {
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases())
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/account/me", nil)
+	request.Header.Set("X-Account-ID", "forged-account")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 func TestRecordInputUsesUsageFactContractFields(t *testing.T) {
 	input := RecordInput{
+		EventVersion:    UsageEventVersion,
 		ID:              "usage-1",
 		TraceID:         "trace-1",
 		IdempotencyKey:  "usage-1",
@@ -33,7 +34,9 @@ func TestRecordInputUsesUsageFactContractFields(t *testing.T) {
 
 	encoded := string(payload)
 	for _, field := range []string{
-		`"trace_id"`, `"service_type"`, `"provider"`, `"model"`,
+		`"event_version":1`, `"id"`, `"trace_id"`, `"idempotency_key"`,
+		`"account_id"`, `"session_id"`, `"turn_id"`, `"service_type"`,
+		`"provider"`, `"model"`, `"occurred_at"`,
 		`"input_tokens"`, `"output_tokens"`, `"audio_duration_ms"`,
 		`"cost_amount"`, `"currency"`,
 	} {

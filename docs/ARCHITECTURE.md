@@ -178,3 +178,16 @@ idle
 - 每个会话只允许两个语言槽，由用户在语言选择页确定，默认 `source=zh-CN,target=en-US` 或反向。
 - `services/realtime-audio` 是 WebRTC 连接和运行时状态机事实来源；`services/api` 只负责业务会话、配置、实时连接票据和状态快照查询。
 - UI 首页只展示最新一条字幕预览，详情页展示完整识别内容。
+
+会话结束链路：
+
+```text
+Client / Device -> api: end session
+api -> realtime-audio: idempotent Stop(session_id)
+realtime-audio: stop pipeline and close DataChannel / Track / PeerConnection
+realtime-audio -> api: stopped
+api: mark business session as ended
+```
+
+`Stop` 失败时 API 不得直接写入 `ended`，应保留可重试状态并重试。客户端发出结束请求后立即
+停止本地采集并关闭本地 PeerConnection；realtime-audio 使用连接租约或空闲超时兜底回收孤立连接。

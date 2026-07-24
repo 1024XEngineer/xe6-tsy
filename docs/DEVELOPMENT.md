@@ -123,6 +123,8 @@ apps/mobile/
 - 控制事件：WebRTC data channel，或通过 `services/realtime-audio` 的 HTTP 实时接口传递
 - API 职责：创建业务会话、校验会话归属、签发短期实时连接票据
 - Realtime 职责：交换 offer/answer、交换 ICE candidate、绑定 PeerConnection 与会话
+- 结束职责：API 幂等调用 realtime `Stop`；realtime 关闭 Pipeline 和 WebRTC 连接后，API 才写入 `ended`
+- 失败处理：`Stop` 失败时 API 保持可重试状态，客户端关闭本地连接，realtime 通过租约或空闲超时兜底清理
 - 音频编码：优先 Opus；如硬件仅支持 PCM，则由 SDK 或边缘适配层转码
 
 核心事件：

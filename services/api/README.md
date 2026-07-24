@@ -5,6 +5,7 @@ Go 应用控制服务，负责业务会话、语言配置、数据访问和状�
 ## 职责
 
 - 会话创建/结束
+- 编排实时会话启动和停止
 - 可选语言列表和语言对配置
 - 演示客户端/设备接入
 - 校验会话归属并签发短期实时连接票据
@@ -37,3 +38,6 @@ services/api/
 
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
+
+结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
+本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。

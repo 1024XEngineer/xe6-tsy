@@ -43,3 +43,7 @@ realtime-audio -> device:
   playback.stop
   error
 ```
+
+设备结束会话时只向 API 发送 `session.end`，随后立即停止本地采集并关闭本地 PeerConnection。
+API 负责幂等调用 realtime `Stop`；realtime 停止 Pipeline 并关闭服务端连接后，API 才把业务会话
+标记为 `ended`。`Stop` 失败时由 API 重试，realtime 同时使用连接租约或空闲超时回收孤立连接。

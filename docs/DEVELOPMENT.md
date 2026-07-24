@@ -65,13 +65,14 @@ services/api/
 ├── config/
 ├── auth/
 ├── devices/
-├── signaling/
 ├── sessions/
+├── realtimeaccess/
 └── webapi/
 
 services/realtime-audio/
 ├── main.go
 ├── config/
+├── webrtc/
 ├── audio/
 ├── vad/
 ├── segment/
@@ -114,11 +115,16 @@ apps/mobile/
 
 ## 6. 协议规范
 
-实时音频首期用 WebRTC 传输音频。信令优先走 HTTP，由 `services/api` 负责创建会话、交换 offer/answer、交换 ICE candidate 和返回会话状态快照；音频媒体流不走 WebSocket。
+实时音频首期用 WebRTC 传输音频。信令优先走 HTTP，由 `services/realtime-audio`
+负责 WebRTC config、offer/answer、ICE candidate 和 PeerConnection 生命周期；
+`services/api` 负责业务会话、语言配置、短期实时连接票据和状态快照。音频媒体流不走 WebSocket。
 
 - 媒体通道：WebRTC audio track
-- 控制事件：WebRTC data channel，或通过 API 信令通道传递
-- 信令职责：创建会话、交换 offer/answer、交换 ICE candidate、绑定设备和会话
+- 控制事件：WebRTC data channel，或通过 `services/realtime-audio` 的 HTTP 实时接口传递
+- API 职责：创建业务会话、校验会话归属、签发短期实时连接票据
+- Realtime 职责：交换 offer/answer、交换 ICE candidate、绑定 PeerConnection 与会话
+- 结束职责：API 幂等调用 realtime `Stop`；realtime 关闭 Pipeline 和 WebRTC 连接后，API 才写入 `ended`
+- 失败处理：`Stop` 失败时 API 保持可重试状态，客户端关闭本地连接，realtime 通过租约或空闲超时兜底清理
 - 音频编码：优先 Opus；如硬件仅支持 PCM，则由 SDK 或边缘适配层转码
 
 核心事件：
@@ -138,7 +144,7 @@ session.end
 error
 ```
 
-运行时状态机由 `services/realtime-audio` 维护。`services/api` 只暴露创建会话、信令交换、语言配置和状态快照查询，不在 API 内重复维护播放状态机。
+WebRTC 连接和运行时状态机由 `services/realtime-audio` 维护。`services/api` 只暴露业务会话、语言配置、实时连接票据和状态快照查询，不交换 SDP/ICE，也不重复维护播放状态机。
 
 ## 7. 模型服务适配规范
 

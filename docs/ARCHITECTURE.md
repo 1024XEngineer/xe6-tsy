@@ -60,7 +60,7 @@ Web 是 Lingow 对话入口，负责极简产品交互，不做管理后台。
 
 - 会话创建/结束
 - 设备或演示客户端接入
-- WebRTC 信令：交换 offer/answer、ICE candidate
+- 校验会话归属并签发短期实时连接票据
 - 对话模式配置
 - 当前语言对配置和可选语言列表
 - 会话状态快照查询
@@ -70,6 +70,8 @@ Web 是 Lingow 对话入口，负责极简产品交互，不做管理后台。
 不负责：
 
 - 长连接音频流
+- SDP offer/answer 和 ICE candidate 交换
+- PeerConnection、DataChannel 和 Track 生命周期
 - 句末检测和实时播放状态机
 - 运行时状态机事实来源
 - 订单、支付、发票、控制台页面
@@ -80,6 +82,8 @@ Web 是 Lingow 对话入口，负责极简产品交互，不做管理后台。
 
 职责：
 
+- WebRTC config、offer/answer 和 ICE candidate 信令
+- PeerConnection、DataChannel 和 Track 生命周期
 - WebRTC 音频接入
 - 运行时会话状态机事实来源
 - 音频帧鉴权和会话绑定
@@ -137,8 +141,8 @@ Web 是 Lingow 对话入口，负责极简产品交互，不做管理后台。
 
 ```text
 Web / Mobile / Device SDK
-  -> api: create session / language config / WebRTC signaling
-  -> realtime-audio: WebRTC audio track
+  -> api: create session / language config / realtime ticket
+  -> realtime-audio: WebRTC signaling / audio track / data channel
   -> speaker identification
   -> language identification
   -> noise / VAD
@@ -172,5 +176,18 @@ idle
 - 只有句末确认后的 final 译文才能进入 TTS。
 - 如果对方在 TTS 播放时开始说话，realtime-audio 发送 `playback.stop` 并进入 `interrupted`。
 - 每个会话只允许两个语言槽，由用户在语言选择页确定，默认 `source=zh-CN,target=en-US` 或反向。
-- `services/realtime-audio` 是运行时状态机事实来源；`services/api` 只负责会话创建、信令、配置和状态快照查询。
+- `services/realtime-audio` 是 WebRTC 连接和运行时状态机事实来源；`services/api` 只负责业务会话、配置、实时连接票据和状态快照查询。
 - UI 首页只展示最新一条字幕预览，详情页展示完整识别内容。
+
+会话结束链路：
+
+```text
+Client / Device -> api: end session
+api -> realtime-audio: idempotent Stop(session_id)
+realtime-audio: stop pipeline and close DataChannel / Track / PeerConnection
+realtime-audio -> api: stopped
+api: mark business session as ended
+```
+
+`Stop` 失败时 API 不得直接写入 `ended`，应保留可重试状态并重试。客户端发出结束请求后立即
+停止本地采集并关闭本地 PeerConnection；realtime-audio 使用连接租约或空闲超时兜底回收孤立连接。

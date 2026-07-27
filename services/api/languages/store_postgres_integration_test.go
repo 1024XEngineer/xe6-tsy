@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/oklog/ulid/v2"
 )
 
 func testDatabaseURL(t *testing.T) string {
@@ -218,6 +220,71 @@ func TestPostgresGetActiveConfigMissing(t *testing.T) {
 	_, err := store.GetActiveConfig(context.Background(), "vs_missing_session")
 	if !errors.Is(err, ErrNoActiveConfig) {
 		t.Fatalf("error = %v, want ErrNoActiveConfig", err)
+	}
+}
+
+func TestPostgresConcurrentFirstCreateDifferentIdempotencyKeys(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	sessionID := "vs_lang_it_concurrent_001"
+	cleanupSession(t, pool, sessionID)
+
+	pairsJSON := `[{"source":"zh-CN","target":"en-US"},{"source":"en-US","target":"zh-CN"}]`
+
+	tx1, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx1: %v", err)
+	}
+	defer tx1.Rollback(ctx)
+
+	tx2, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+	defer tx2.Rollback(ctx)
+
+	// Both observe "no active row" before either inserts — FOR UPDATE cannot
+	// serialize this case, which is the race the constraint mapping must handle.
+	for i, tx := range []interface {
+		QueryRow(context.Context, string, ...any) pgx.Row
+	}{tx1, tx2} {
+		var id string
+		scanErr := tx.QueryRow(ctx, `
+SELECT id FROM voice_session_language_configs
+WHERE session_id = $1 AND status = 'active'
+FOR UPDATE`, sessionID).Scan(&id)
+		if !errors.Is(scanErr, pgx.ErrNoRows) {
+			t.Fatalf("tx%d lock scan = %v, want ErrNoRows", i+1, scanErr)
+		}
+	}
+
+	now := time.Now().UTC()
+	if _, err := tx1.Exec(ctx, `
+INSERT INTO voice_session_language_configs (
+    id, session_id, version, language_pairs, status,
+    effective_from, effective_until, created_by, idempotency_key, created_at, updated_at
+) VALUES ($1,$2,1,$3::jsonb,'active',$4,NULL,'user_a','ik_concurrent_a',$4,$4)`,
+		ulid.Make().String(), sessionID, pairsJSON, now,
+	); err != nil {
+		t.Fatalf("tx1 insert: %v", err)
+	}
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("tx1 commit: %v", err)
+	}
+
+	_, err = tx2.Exec(ctx, `
+INSERT INTO voice_session_language_configs (
+    id, session_id, version, language_pairs, status,
+    effective_from, effective_until, created_by, idempotency_key, created_at, updated_at
+) VALUES ($1,$2,1,$3::jsonb,'active',$4,NULL,'user_b','ik_concurrent_b',$4,$4)`,
+		ulid.Make().String(), sessionID, pairsJSON, now,
+	)
+	mapped := mapInsertUniqueViolation(err)
+	if !errors.Is(mapped, ErrVersionConflict) {
+		t.Fatalf("lost first-create race mapped to %v (raw=%v), want ErrVersionConflict", mapped, err)
+	}
+	if errors.Is(mapped, ErrIdempotencyConflict) {
+		t.Fatalf("must not classify active/version race as idempotency conflict")
 	}
 }
 

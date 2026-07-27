@@ -170,11 +170,8 @@ INSERT INTO voice_session_language_configs (
 		id, input.SessionID, nextVersion, pairsJSON, now, input.CreatedBy, idempotency,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
-			if input.IdempotencyKey != "" {
-				return LanguageConfig{}, ErrIdempotencyConflict
-			}
-			return LanguageConfig{}, ErrVersionConflict
+		if mapped := mapInsertUniqueViolation(err); mapped != nil {
+			return LanguageConfig{}, mapped
 		}
 		return LanguageConfig{}, fmt.Errorf("insert active config: %w", err)
 	}
@@ -296,4 +293,21 @@ func scanConfigRow(row rowScanner) (LanguageConfig, error) {
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// mapInsertUniqueViolation classifies Postgres unique violations from CreateActiveConfig.
+// Only the idempotency index maps to ErrIdempotencyConflict; active/version races map to
+// ErrVersionConflict so a lost first-create race is not mislabeled (and retried forever
+// against a key that was never stored).
+func mapInsertUniqueViolation(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return nil
+	}
+	switch pgErr.ConstraintName {
+	case "idx_lang_config_idempotency":
+		return ErrIdempotencyConflict
+	default:
+		return ErrVersionConflict
+	}
 }

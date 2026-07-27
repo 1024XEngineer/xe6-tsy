@@ -14,7 +14,6 @@ const (
 // Dependencies contains the external authorization, SDP, and connection boundaries used by signaling.
 type Dependencies struct {
 	Tickets     TicketValidator
-	Answers     SDPAnswerer
 	Connections ConnectionManager
 	Now         func() time.Time
 }
@@ -22,22 +21,20 @@ type Dependencies struct {
 // SignalingService coordinates authorized offer and candidate commands without owning a PeerConnection implementation.
 type SignalingService struct {
 	tickets     TicketValidator
-	answers     SDPAnswerer
 	connections ConnectionManager
 	now         func() time.Time
 }
 
 // NewSignalingService validates the required boundaries before accepting signaling commands.
 func NewSignalingService(dependencies Dependencies) (*SignalingService, error) {
-	if dependencies.Tickets == nil || dependencies.Answers == nil || dependencies.Connections == nil {
+	if dependencies.Tickets == nil || dependencies.Connections == nil {
 		return nil, ErrInvalidDependency
 	}
 	if dependencies.Now == nil {
 		dependencies.Now = func() time.Time { return time.Now().UTC() }
 	}
 	return &SignalingService{
-		tickets: dependencies.Tickets, answers: dependencies.Answers,
-		connections: dependencies.Connections, now: dependencies.Now,
+		tickets: dependencies.Tickets, connections: dependencies.Connections, now: dependencies.Now,
 	}, nil
 }
 
@@ -52,22 +49,10 @@ func (s *SignalingService) Offer(ctx context.Context, token, sessionID string, r
 	if err := s.validateTicket(ctx, token, sessionID); err != nil {
 		return OfferResponse{}, err
 	}
-	existing, found, err := s.connections.Find(ctx, sessionID, request.IdempotencyKey)
-	if err != nil {
-		return OfferResponse{}, fmt.Errorf("find WebRTC connection: %w", err)
-	}
-	if found {
-		return offerResponse(existing), nil
-	}
-
 	offer := SessionDescription{SDP: request.SDP, Type: request.Type}
-	answer, err := s.answers.Answer(ctx, offer)
-	if err != nil {
-		return OfferResponse{}, fmt.Errorf("create SDP answer: %w", err)
-	}
 	connection, err := s.connections.Open(ctx, OpenConnectionRequest{
 		SessionID: sessionID, IdempotencyKey: request.IdempotencyKey,
-		Offer: offer, Answer: answer, CreatedAt: s.now(),
+		Offer: offer, CreatedAt: s.now(),
 	})
 	if err != nil {
 		return OfferResponse{}, fmt.Errorf("open WebRTC connection: %w", err)

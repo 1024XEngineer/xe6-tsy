@@ -7,14 +7,20 @@ type TicketValidator interface {
 	Validate(ctx context.Context, token, sessionID string) (ConnectionTicket, error)
 }
 
-// SDPAnswerer isolates future PeerConnection implementations from signaling orchestration.
-type SDPAnswerer interface {
+// ConnectionTransport is the lifecycle-owned handle for one future PeerConnection.
+type ConnectionTransport interface {
 	Answer(ctx context.Context, offer SessionDescription) (SessionDescription, error)
+	AddCandidate(ctx context.Context, candidate ICECandidate) error
+	Close(ctx context.Context) error
 }
 
-// ConnectionManager owns connection metadata and idempotent candidate acceptance for one realtime process.
+// ConnectionTransportFactory creates session-bound transport handles for a connection manager.
+type ConnectionTransportFactory interface {
+	Create(ctx context.Context, sessionID, connectionID string) (ConnectionTransport, error)
+}
+
+// ConnectionManager owns connection metadata, transport handles, and idempotent candidate acceptance.
 type ConnectionManager interface {
-	Find(ctx context.Context, sessionID, idempotencyKey string) (Connection, bool, error)
 	Open(ctx context.Context, request OpenConnectionRequest) (Connection, error)
 	AddCandidates(ctx context.Context, sessionID string, request CandidateRequest) (CandidateResponse, error)
 	Close(ctx context.Context, sessionID string) error

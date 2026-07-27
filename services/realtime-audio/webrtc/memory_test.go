@@ -3,12 +3,14 @@ package webrtc
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
 
 func TestMemoryConnectionManagerOpenIsIdempotentPerSession(t *testing.T) {
-	manager := NewMemoryConnectionManager()
+	factory := &fakeTransportFactory{transport: &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}}
+	manager := NewMemoryConnectionManager(factory)
 	request := validOpenConnectionRequest()
 
 	first, err := manager.Open(context.Background(), request)
@@ -22,14 +24,14 @@ func TestMemoryConnectionManagerOpenIsIdempotentPerSession(t *testing.T) {
 	if first.ID == "" || first.ID != second.ID || first.State != ConnectionConnecting {
 		t.Fatalf("connections = %#v, %#v", first, second)
 	}
-	found, ok, err := manager.Find(context.Background(), request.SessionID, request.IdempotencyKey)
-	if err != nil || !ok || found.ID != first.ID {
-		t.Fatalf("Find() = %#v, %t, %v", found, ok, err)
+	if factory.createCalls != 1 || factory.transport.answerCalls != 1 {
+		t.Fatalf("factory calls = %d, answer calls = %d", factory.createCalls, factory.transport.answerCalls)
 	}
 }
 
 func TestMemoryConnectionManagerCandidatesAreIdempotent(t *testing.T) {
-	manager := NewMemoryConnectionManager()
+	transport := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
+	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: transport})
 	connection, err := manager.Open(context.Background(), validOpenConnectionRequest())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -52,10 +54,13 @@ func TestMemoryConnectionManagerCandidatesAreIdempotent(t *testing.T) {
 	if got, want := response.DeduplicatedCandidateIDs, []string{"candidate-1"}; !sameStrings(got, want) || !response.EndOfCandidates {
 		t.Fatalf("response = %#v", response)
 	}
+	if len(transport.candidates) != 1 {
+		t.Fatalf("transport candidates = %#v", transport.candidates)
+	}
 }
 
 func TestMemoryConnectionManagerRejectsInvalidRequests(t *testing.T) {
-	manager := NewMemoryConnectionManager()
+	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}})
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -81,7 +86,8 @@ func TestMemoryConnectionManagerRejectsInvalidRequests(t *testing.T) {
 }
 
 func TestMemoryConnectionManagerCloseIsIdempotent(t *testing.T) {
-	manager := NewMemoryConnectionManager()
+	transport := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
+	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: transport})
 	connection, err := manager.Open(context.Background(), validOpenConnectionRequest())
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -95,16 +101,110 @@ func TestMemoryConnectionManagerCloseIsIdempotent(t *testing.T) {
 	if _, err := manager.AddCandidates(context.Background(), connection.SessionID, CandidateRequest{ConnectionID: connection.ID}); !errors.Is(err, ErrConnectionNotFound) {
 		t.Fatalf("AddCandidates() error = %v, want ErrConnectionNotFound", err)
 	}
+	if transport.closeCalls != 1 {
+		t.Fatalf("transport close calls = %d, want 1", transport.closeCalls)
+	}
+}
+
+func TestMemoryConnectionManagerSerializesConcurrentOffers(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	factory := &fakeTransportFactory{
+		transport: &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}},
+		started:   started, release: release,
+	}
+	manager := NewMemoryConnectionManager(factory)
+	results := make(chan Connection, 2)
+	errs := make(chan error, 2)
+	request := validOpenConnectionRequest()
+
+	for range 2 {
+		go func() {
+			connection, err := manager.Open(context.Background(), request)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- connection
+		}()
+	}
+	<-started
+	close(release)
+	first := <-results
+	second := <-results
+	if first.ID != second.ID || factory.createCalls != 1 {
+		t.Fatalf("connections = %#v, %#v; factory calls = %d", first, second, factory.createCalls)
+	}
+	select {
+	case err := <-errs:
+		t.Fatalf("Open() error = %v", err)
+	default:
+	}
 }
 
 func validOpenConnectionRequest() OpenConnectionRequest {
 	return OpenConnectionRequest{
 		SessionID: "session-1", IdempotencyKey: "offer-device-1",
 		Offer:     SessionDescription{SDP: "offer-sdp", Type: "offer"},
-		Answer:    SessionDescription{SDP: "answer-sdp", Type: "answer"},
 		CreatedAt: time.Unix(1700000000, 0).UTC(),
 	}
 }
+
+type fakeTransportFactory struct {
+	transport   *fakeTransport
+	err         error
+	started     chan struct{}
+	release     <-chan struct{}
+	createCalls int
+	once        sync.Once
+}
+
+func (f *fakeTransportFactory) Create(_ context.Context, _, _ string) (ConnectionTransport, error) {
+	f.createCalls++
+	if f.started != nil {
+		f.once.Do(func() { close(f.started) })
+	}
+	if f.release != nil {
+		<-f.release
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.transport, nil
+}
+
+type fakeTransport struct {
+	answer       SessionDescription
+	answerErr    error
+	candidateErr error
+	candidates   []ICECandidate
+	answerCalls  int
+	closeCalls   int
+}
+
+func (f *fakeTransport) Answer(_ context.Context, _ SessionDescription) (SessionDescription, error) {
+	f.answerCalls++
+	if f.answerErr != nil {
+		return SessionDescription{}, f.answerErr
+	}
+	return f.answer, nil
+}
+
+func (f *fakeTransport) AddCandidate(_ context.Context, candidate ICECandidate) error {
+	if f.candidateErr != nil {
+		return f.candidateErr
+	}
+	f.candidates = append(f.candidates, candidate)
+	return nil
+}
+
+func (f *fakeTransport) Close(context.Context) error {
+	f.closeCalls++
+	return nil
+}
+
+var _ ConnectionTransportFactory = (*fakeTransportFactory)(nil)
+var _ ConnectionTransport = (*fakeTransport)(nil)
 
 func sameStrings(got, want []string) bool {
 	if len(got) != len(want) {

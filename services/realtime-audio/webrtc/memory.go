@@ -2,6 +2,7 @@ package webrtc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -11,6 +12,7 @@ import (
 // MemoryConnectionManager is a deterministic, process-local signaling store for the skeleton.
 type MemoryConnectionManager struct {
 	mu        sync.Mutex
+	factory   ConnectionTransportFactory
 	sessions  map[string]*sessionConnections
 	sequences map[string]int64
 }
@@ -22,50 +24,30 @@ type sessionConnections struct {
 
 type connectionRecord struct {
 	connection      Connection
+	transport       ConnectionTransport
 	candidateIDs    map[string]struct{}
 	endOfCandidates bool
 }
 
 // NewMemoryConnectionManager creates an empty manager with session-isolated connection state.
-func NewMemoryConnectionManager() *MemoryConnectionManager {
+func NewMemoryConnectionManager(factory ConnectionTransportFactory) *MemoryConnectionManager {
 	return &MemoryConnectionManager{
+		factory:   factory,
 		sessions:  make(map[string]*sessionConnections),
 		sequences: make(map[string]int64),
 	}
 }
 
-// Find returns the connection retained for a session-local offer idempotency key.
-func (m *MemoryConnectionManager) Find(ctx context.Context, sessionID, idempotencyKey string) (Connection, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return Connection{}, false, err
-	}
-	if sessionID == "" {
-		return Connection{}, false, ErrSessionIDRequired
-	}
-	if idempotencyKey == "" {
-		return Connection{}, false, ErrIdempotencyKeyRequired
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	connections := m.sessions[sessionID]
-	if connections == nil {
-		return Connection{}, false, nil
-	}
-	connectionID, found := connections.byIdempotencyKey[idempotencyKey]
-	if !found {
-		return Connection{}, false, nil
-	}
-	return connections.byID[connectionID].connection, true, nil
-}
-
-// Open creates one connecting record or returns the record retained for the same idempotency key.
+// Open reserves one idempotency key while the manager creates and retains its transport handle.
 func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnectionRequest) (Connection, error) {
 	if err := ctx.Err(); err != nil {
 		return Connection{}, err
 	}
 	if err := validateOpenRequest(request); err != nil {
 		return Connection{}, err
+	}
+	if m == nil || m.factory == nil {
+		return Connection{}, ErrInvalidDependency
 	}
 
 	m.mu.Lock()
@@ -83,12 +65,22 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 	}
 
 	m.sequences[request.SessionID]++
-	connection := Connection{
-		ID:        fmt.Sprintf("rtc_%s_%06d", request.SessionID, m.sequences[request.SessionID]),
-		SessionID: request.SessionID, IdempotencyKey: request.IdempotencyKey,
-		Offer: request.Offer, Answer: request.Answer, State: ConnectionConnecting, CreatedAt: request.CreatedAt,
+	connectionID := fmt.Sprintf("rtc_%s_%06d", request.SessionID, m.sequences[request.SessionID])
+	transport, err := m.factory.Create(ctx, request.SessionID, connectionID)
+	if err != nil {
+		return Connection{}, fmt.Errorf("create WebRTC transport: %w", err)
 	}
-	connections.byID[connection.ID] = &connectionRecord{connection: connection, candidateIDs: make(map[string]struct{})}
+	answer, err := transport.Answer(ctx, request.Offer)
+	if err != nil {
+		closeErr := transport.Close(context.WithoutCancel(ctx))
+		return Connection{}, errors.Join(fmt.Errorf("create SDP answer: %w", err), closeErr)
+	}
+	connection := Connection{
+		ID:        connectionID,
+		SessionID: request.SessionID, IdempotencyKey: request.IdempotencyKey,
+		Offer: request.Offer, Answer: answer, State: ConnectionConnecting, CreatedAt: request.CreatedAt,
+	}
+	connections.byID[connection.ID] = &connectionRecord{connection: connection, transport: transport, candidateIDs: make(map[string]struct{})}
 	connections.byIdempotencyKey[connection.IdempotencyKey] = connection.ID
 	return connection, nil
 }
@@ -134,6 +126,9 @@ func (m *MemoryConnectionManager) AddCandidates(ctx context.Context, sessionID s
 			response.DeduplicatedCandidateIDs = append(response.DeduplicatedCandidateIDs, candidate.ID)
 			continue
 		}
+		if err := record.transport.AddCandidate(ctx, candidate); err != nil {
+			return CandidateResponse{}, fmt.Errorf("apply ICE candidate: %w", err)
+		}
 		record.candidateIDs[candidate.ID] = struct{}{}
 		response.AcceptedCandidateIDs = append(response.AcceptedCandidateIDs, candidate.ID)
 	}
@@ -155,6 +150,17 @@ func (m *MemoryConnectionManager) Close(ctx context.Context, sessionID string) e
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	connections := m.sessions[sessionID]
+	if connections == nil {
+		return nil
+	}
+	var closeErr error
+	for _, record := range connections.byID {
+		closeErr = errors.Join(closeErr, record.transport.Close(ctx))
+	}
+	if closeErr != nil {
+		return closeErr
+	}
 	delete(m.sessions, sessionID)
 	return nil
 }
@@ -165,9 +171,9 @@ func validateOpenRequest(request OpenConnectionRequest) error {
 		return ErrSessionIDRequired
 	case request.IdempotencyKey == "":
 		return ErrIdempotencyKeyRequired
-	case request.Offer.SDP == "" || request.Answer.SDP == "":
+	case request.Offer.SDP == "":
 		return ErrOfferSDPRequired
-	case request.Offer.Type != "offer" || request.Answer.Type != "answer":
+	case request.Offer.Type != "offer":
 		return ErrOfferTypeInvalid
 	case request.CreatedAt.IsZero():
 		return ErrInvalidDependency

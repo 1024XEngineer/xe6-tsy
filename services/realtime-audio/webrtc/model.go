@@ -67,12 +67,11 @@ type CandidateResponse struct {
 	EndOfCandidates          bool     `json:"end_of_candidates"`
 }
 
-// OpenConnectionRequest is the manager command after ticket validation and SDP answer creation.
+// OpenConnectionRequest is the manager command after ticket validation and before transport creation.
 type OpenConnectionRequest struct {
 	SessionID      string
 	IdempotencyKey string
 	Offer          SessionDescription
-	Answer         SessionDescription
 	CreatedAt      time.Time
 }
 

@@ -92,6 +92,7 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 		{name: "target language", mutate: func(event *FinalTurnEvent) { event.TargetLanguage = "" }},
 		{name: "source text", mutate: func(event *FinalTurnEvent) { event.SourceText = "" }},
 		{name: "translated text", mutate: func(event *FinalTurnEvent) { event.TranslatedText = "" }},
+		{name: "speaker code", mutate: func(event *FinalTurnEvent) { event.SpeakerCode = "" }},
 		{name: "language config version", mutate: func(event *FinalTurnEvent) { event.LanguageConfigVersion = 0 }},
 		{name: "attribution status", mutate: func(event *FinalTurnEvent) { event.AttributionStatus = "unknown" }},
 		{name: "started at", mutate: func(event *FinalTurnEvent) { event.StartedAt = time.Time{} }},

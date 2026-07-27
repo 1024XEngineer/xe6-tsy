@@ -77,6 +77,16 @@ func TestConsumeFinalTurnRejectsUnknownAttributionStatus(t *testing.T) {
 	}
 }
 
+func TestConsumeFinalTurnRejectsEmptySpeakerCode(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
+	event := validEvent()
+	event.SpeakerCode = ""
+
+	if err := service.ConsumeFinalTurn(context.Background(), event); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
+	}
+}
+
 func TestCorrectAttributionPreservesImmutableTurnFields(t *testing.T) {
 	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
 	participantID := "p_02"
@@ -181,6 +191,7 @@ func validEvent() recordsv1.FinalTurnEvent {
 		ParticipantID:     &participantID,
 		SourceLanguage:    "en-US",
 		TargetLanguage:    "zh-CN",
+		SpeakerCode:       "speaker_01",
 		AttributionStatus: recordsv1.AttributionProvisional,
 	}
 }

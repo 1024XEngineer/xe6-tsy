@@ -180,7 +180,7 @@ func (s *PipelineService) publishUsage(ctx context.Context, turn TurnContext, se
 
 func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, result asr.FinalResult, startedAt, endedAt time.Time) recordsv1.SpeakerAttribution {
 	if s.speakers == nil || result.ProviderSpeakerID == "" {
-		return recordsv1.SpeakerAttribution{AttributionStatus: recordsv1.AttributionPending}
+		return pendingSpeakerAttribution()
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, s.speakerTimeout)
 	defer cancel()
@@ -190,15 +190,25 @@ func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, 
 		AudioStartMS: result.AudioStart.Milliseconds(), AudioEndMS: result.AudioEnd.Milliseconds(),
 	})
 	if err != nil {
-		return recordsv1.SpeakerAttribution{AttributionStatus: recordsv1.AttributionPending}
+		return pendingSpeakerAttribution()
 	}
 	if attribution.ParticipantID == nil {
 		attribution.AttributionStatus = recordsv1.AttributionPending
+		if attribution.SpeakerCode == "" {
+			attribution.SpeakerCode = recordsv1.PendingSpeakerCode
+		}
 	}
 	if attribution.AttributionStatus == "" {
 		attribution.AttributionStatus = recordsv1.AttributionPending
 	}
 	return attribution
+}
+
+func pendingSpeakerAttribution() recordsv1.SpeakerAttribution {
+	return recordsv1.SpeakerAttribution{
+		SpeakerCode:       recordsv1.PendingSpeakerCode,
+		AttributionStatus: recordsv1.AttributionPending,
+	}
 }
 
 func turnBounds(turn TurnContext, result asr.FinalResult, fallback time.Time) (time.Time, time.Time) {

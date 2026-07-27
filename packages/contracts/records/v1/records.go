@@ -20,6 +20,8 @@ const (
 const CorrectedBySystem = "system"
 
 const (
+	// PendingSpeakerCode identifies a FinalTurn whose speaker cannot yet be attributed.
+	PendingSpeakerCode = "speaker_pending"
 	// FinalTurnTopic is the durable AsyncAPI topic for completed translations.
 	FinalTurnTopic = "translation.final"
 	// FinalTurnEventVersion is the only FinalTurnEvent schema version accepted by v1 consumers.
@@ -186,6 +188,8 @@ func (event FinalTurnEvent) Validate() error {
 		return invalidFinalTurnField("source_text")
 	case event.TranslatedText == "":
 		return invalidFinalTurnField("translated_text")
+	case event.SpeakerCode == "":
+		return invalidFinalTurnField("speaker_code")
 	case event.LanguageConfigVersion <= 0:
 		return invalidFinalTurnField("language_config_version")
 	case event.StartedAt.IsZero():

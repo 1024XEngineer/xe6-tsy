@@ -282,6 +282,7 @@ components:
           type: string
         speaker_code:
           type: string
+          description: A temporary speaker code. When attribution_status is pending and no speaker is available, this is speaker_pending.
         display_name:
           type: [string, 'null']
         provider_speaker_id:

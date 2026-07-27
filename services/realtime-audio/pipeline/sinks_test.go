@@ -104,6 +104,7 @@ func validFinalTurnEvent() FinalTurnEvent {
 		EventID:      "event-1", TraceID: "trace-1", TurnID: "turn-1", SessionID: "session-1",
 		SequenceNo: 1, SourceLanguage: "zh-CN", TargetLanguage: "en-US",
 		LanguageConfigVersion: 1, SourceText: "你好", TranslatedText: "hello",
+		SpeakerCode:       recordsv1.PendingSpeakerCode,
 		AttributionStatus: recordsv1.AttributionPending,
 		StartedAt:         time.Unix(1700000000, 0).UTC(), EndedAt: time.Unix(1700000001, 0).UTC(),
 		OccurredAt: time.Unix(1700000001, 0).UTC(),

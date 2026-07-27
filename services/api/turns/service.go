@@ -154,7 +154,7 @@ func (s *Service) requireOwner(ctx context.Context, accountID, sessionID string)
 }
 
 func validFinalTurnEvent(event recordsv1.FinalTurnEvent) bool {
-	if event.EventID == "" || event.TurnID == "" || event.SessionID == "" || event.SourceLanguage == "" || event.TargetLanguage == "" {
+	if event.EventID == "" || event.TurnID == "" || event.SessionID == "" || event.SourceLanguage == "" || event.TargetLanguage == "" || event.SpeakerCode == "" {
 		return false
 	}
 	switch event.AttributionStatus {

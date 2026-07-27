@@ -91,8 +91,45 @@ func TestPipelineSpeakerTimeoutProducesPendingAttribution(t *testing.T) {
 		t.Fatalf("speaker lookup blocked pipeline for %v", elapsed)
 	}
 	event := service.finalTurns.(*recordingFinalSink).events[0]
-	if event.ParticipantID != nil || event.AttributionStatus != recordsv1.AttributionPending {
+	if event.ParticipantID != nil || event.AttributionStatus != recordsv1.AttributionPending || event.SpeakerCode != recordsv1.PendingSpeakerCode {
 		t.Fatalf("FinalTurn attribution = %#v", event)
+	}
+}
+
+func TestPipelineMissingSpeakerInputsProducePendingAttribution(t *testing.T) {
+	tests := []struct {
+		name     string
+		speakers recordsv1.SpeakerAttributionReader
+		result   asr.FinalResult
+	}{
+		{
+			name:   "speaker reader missing",
+			result: asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", ProviderSpeakerID: "speaker-1", Provider: "mock-asr", Model: "v1"},
+		},
+		{
+			name:     "provider speaker ID missing",
+			speakers: &fixedSpeakerReader{participantID: "participant-1"},
+			result:   asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			finalSink := &recordingFinalSink{}
+			service := NewPipelineService(PipelineDependencies{
+				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+				TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+				Speakers:   test.speakers, FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
+			})
+
+			if err := service.HandleASRFinal(context.Background(), testTurn(), test.result); err != nil {
+				t.Fatalf("HandleASRFinal() error = %v", err)
+			}
+			event := finalSink.events[0]
+			if event.ParticipantID != nil || event.AttributionStatus != recordsv1.AttributionPending || event.SpeakerCode != recordsv1.PendingSpeakerCode {
+				t.Fatalf("FinalTurn attribution = %#v", event)
+			}
+		})
 	}
 }
 

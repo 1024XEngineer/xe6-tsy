@@ -98,9 +98,7 @@ func (o *TurnOpener) OpenTurn(ctx context.Context, request TurnOpenRequest) (Tur
 	if err != nil {
 		return TurnContext{}, fmt.Errorf("read language configuration: %w", err)
 	}
-	if config.SessionID == "" {
-		config.SessionID = request.SessionID
-	} else if config.SessionID != request.SessionID {
+	if config.SessionID != request.SessionID {
 		return TurnContext{}, fmt.Errorf("%w: got %q for %q", ErrLanguageConfigSessionMismatch, config.SessionID, request.SessionID)
 	}
 	if config.Status == "" || config.Status != "active" || len(config.LanguagePairs) == 0 {

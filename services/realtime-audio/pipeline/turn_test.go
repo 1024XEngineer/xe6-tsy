@@ -113,20 +113,31 @@ func TestTurnOpenerSnapshotsLanguageConfig(t *testing.T) {
 	}
 }
 
-func TestTurnOpenerRejectsLanguageConfigForDifferentSession(t *testing.T) {
-	reader := &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
-		SessionID: "session-2",
-		Version:   7,
-		Status:    "active",
-		LanguagePairs: []session.LanguagePair{
-			{Source: "zh-CN", Target: "en-US"},
-		},
-	}}
-	opener := NewTurnOpener(NewMemoryTurnAllocator(), reader)
+func TestTurnOpenerRejectsLanguageConfigWithoutMatchingSession(t *testing.T) {
+	tests := []struct {
+		name            string
+		configSessionID string
+	}{
+		{name: "empty", configSessionID: ""},
+		{name: "different", configSessionID: "session-2"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+				SessionID: test.configSessionID,
+				Version:   7,
+				Status:    "active",
+				LanguagePairs: []session.LanguagePair{
+					{Source: "zh-CN", Target: "en-US"},
+				},
+			}}
+			opener := NewTurnOpener(NewMemoryTurnAllocator(), reader)
 
-	_, err := opener.OpenTurn(context.Background(), TurnOpenRequest{SessionID: "session-1"})
-	if !errors.Is(err, ErrLanguageConfigSessionMismatch) {
-		t.Fatalf("OpenTurn() error = %v, want ErrLanguageConfigSessionMismatch", err)
+			_, err := opener.OpenTurn(context.Background(), TurnOpenRequest{SessionID: "session-1"})
+			if !errors.Is(err, ErrLanguageConfigSessionMismatch) {
+				t.Fatalf("OpenTurn() error = %v, want ErrLanguageConfigSessionMismatch", err)
+			}
+		})
 	}
 }
 

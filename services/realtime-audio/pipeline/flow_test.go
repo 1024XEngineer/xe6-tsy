@@ -1,0 +1,108 @@
+package pipeline
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
+)
+
+func TestTurnProcessorRunsMockASRTranslationTTSFlow(t *testing.T) {
+	asrProvider := asr.NewFakeProvider(asr.FakeProviderConfig{
+		Partial: asr.Event{Text: "你"},
+		Final: asr.FinalResult{
+			Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+			AudioDuration: time.Second,
+		},
+	})
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1", InputTokens: 2, OutputTokens: 1}}
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{
+		Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1}}, {SequenceNo: 2, Data: []byte{2}}},
+		Result: tts.Result{Provider: "mock-tts", Model: "v1", AudioDuration: 250 * time.Millisecond},
+	})
+	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{}
+	audioSink := &recordingAudioSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: translator, TTS: ttsProvider, FinalTurns: finalSink,
+		Usage: usageSink, Audio: audioSink, VoiceID: "voice-1",
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: asrProvider,
+		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 3, Status: "active",
+			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}),
+		Pipeline: service,
+	})
+
+	turn, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{
+		SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1",
+		StartedAt: time.Unix(1700000000, 0).UTC(), AudioChunks: [][]byte{{1, 2}, {3}},
+	})
+	if err != nil {
+		t.Fatalf("ProcessAudio() error = %v", err)
+	}
+	if turn.SequenceNo != 1 || turn.ID == "" {
+		t.Fatalf("turn = %#v", turn)
+	}
+	requests := asrProvider.Requests()
+	if len(requests) != 1 || requests[0].TurnID != turn.ID {
+		t.Fatalf("ASR requests = %#v", requests)
+	}
+	translationRequests := translator.Requests()
+	if len(translationRequests) != 1 || translationRequests[0].TurnID != turn.ID || translationRequests[0].TargetLanguage != "en-US" {
+		t.Fatalf("translation requests = %#v", translationRequests)
+	}
+	ttsRequests := ttsProvider.Requests()
+	if len(ttsRequests) != 1 || ttsRequests[0].TurnID != turn.ID {
+		t.Fatalf("TTS requests = %#v", ttsRequests)
+	}
+	if len(finalSink.events) != 1 || finalSink.events[0].TurnID != turn.ID || finalSink.events[0].LanguageConfigVersion != 3 {
+		t.Fatalf("FinalTurn events = %#v", finalSink.events)
+	}
+	if len(usageSink.facts) != 3 {
+		t.Fatalf("UsageFacts = %#v, want ASR, translation, TTS", usageSink.facts)
+	}
+	if len(audioSink.chunks) != 2 || audioSink.chunks[0].TurnID != turn.ID || audioSink.chunks[1].TurnID != turn.ID {
+		t.Fatalf("audio chunks = %#v", audioSink.chunks)
+	}
+	for _, fact := range usageSink.facts {
+		if fact.TurnID != turn.ID {
+			t.Fatalf("UsageFact turn ID = %q, want %q", fact.TurnID, turn.ID)
+		}
+	}
+}
+
+func TestTurnProcessorPropagatesUsageAcceptanceFailure(t *testing.T) {
+	wantErr := errors.New("usage sink unavailable")
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: rejectingUsageSink{err: wantErr}, Audio: &recordingAudioSink{},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}}),
+		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active",
+			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}),
+		Pipeline: service,
+	})
+
+	_, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ProcessAudio() error = %v, want %v", err, wantErr)
+	}
+}
+
+type rejectingUsageSink struct{ err error }
+
+func (s rejectingUsageSink) Publish(context.Context, UsageFact) error { return s.err }
+
+var _ UsageFactSink = rejectingUsageSink{}

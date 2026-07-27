@@ -48,6 +48,7 @@ type Provider interface {
 }
 
 // Stream accepts audio and exposes provisional and final recognition data.
+// Finish finalizes the stream and closes Events before it returns.
 type Stream interface {
 	PushAudio(ctx context.Context, audio []byte) error
 	Events() <-chan Event

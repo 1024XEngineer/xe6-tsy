@@ -12,7 +12,12 @@ func WithAccountID(ctx context.Context, accountID string) context.Context {
 	return authcontext.WithAccountID(ctx, accountID)
 }
 
-// accountIDFromContext returns a non-empty account ID previously set by trusted middleware.
-func accountIDFromContext(ctx context.Context) (string, bool) {
+// AccountIDFromContext returns a non-empty account ID previously set by trusted middleware.
+func AccountIDFromContext(ctx context.Context) (string, bool) {
 	return authcontext.AccountID(ctx)
+}
+
+// accountIDFromContext keeps the previous unexported helper for existing call sites.
+func accountIDFromContext(ctx context.Context) (string, bool) {
+	return AccountIDFromContext(ctx)
 }

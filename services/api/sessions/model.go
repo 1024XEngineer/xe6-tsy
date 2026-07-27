@@ -31,6 +31,29 @@ const (
 	RuntimeFailed        RuntimeState = "failed"
 )
 
+// ConnectionState is the WebRTC connection lifecycle owned by the connection
+// manager. It must not be used as a substitute for RuntimeState.
+type ConnectionState string
+
+const (
+	ConnectionNew          ConnectionState = "new"
+	ConnectionConnecting   ConnectionState = "connecting"
+	ConnectionConnected    ConnectionState = "connected"
+	ConnectionDisconnected ConnectionState = "disconnected"
+	ConnectionFailed       ConnectionState = "failed"
+	ConnectionClosed       ConnectionState = "closed"
+)
+
+// LanguageConfigStatus is the persisted language-config lifecycle exposed by
+// the language module through an adapter.
+type LanguageConfigStatus string
+
+const (
+	LanguageConfigActive     LanguageConfigStatus = "active"
+	LanguageConfigSuperseded LanguageConfigStatus = "superseded"
+	LanguageConfigExpired    LanguageConfigStatus = "expired"
+)
+
 // EndReason is the stable reason accepted by the session end use case.
 type EndReason string
 
@@ -84,6 +107,18 @@ type VoiceSession struct {
 	CreatedAt    time.Time       `json:"created_at"`
 }
 
+// VoiceSessionListItem is the persistent-only list projection. Keeping this
+// separate prevents list queries from loading large configuration snapshots or
+// reaching into realtime and WebRTC providers.
+type VoiceSessionListItem struct {
+	ID        string     `json:"id"`
+	AccountID string     `json:"account_id"`
+	Status    Status     `json:"status"`
+	StartedAt *time.Time `json:"started_at"`
+	EndedAt   *time.Time `json:"ended_at"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
 // RuntimeSnapshot is the read-only media-plane state consumed by this module.
 type RuntimeSnapshot struct {
 	SessionID         string
@@ -99,7 +134,7 @@ type RuntimeSnapshot struct {
 type WebRTCConnectionSnapshot struct {
 	SessionID       string
 	ConnectionID    string
-	ConnectionState string
+	ConnectionState ConnectionState
 	UpdatedAt       time.Time
 }
 
@@ -164,6 +199,37 @@ func (s RuntimeState) Valid() bool {
 		RuntimePlaying,
 		RuntimeStopping,
 		RuntimeFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Valid reports whether the state belongs to the WebRTC connection lifecycle.
+func (s ConnectionState) Valid() bool {
+	switch s {
+	case ConnectionNew,
+		ConnectionConnecting,
+		ConnectionConnected,
+		ConnectionDisconnected,
+		ConnectionFailed,
+		ConnectionClosed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Ready reports whether WebRTC satisfies the session-start precondition.
+func (s ConnectionState) Ready() bool {
+	return s == ConnectionConnected
+}
+
+// Valid reports whether the status belongs to the language-config lifecycle
+// defined by Issue #88.
+func (s LanguageConfigStatus) Valid() bool {
+	switch s {
+	case LanguageConfigActive, LanguageConfigSuperseded, LanguageConfigExpired:
 		return true
 	default:
 		return false

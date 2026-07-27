@@ -42,6 +42,46 @@ func TestVoiceSessionJSONKeepsStateBoundaries(t *testing.T) {
 	}
 }
 
+func TestVoiceSessionListItemJSONIsPersistentSummary(t *testing.T) {
+	item := VoiceSessionListItem{
+		ID:        "vs_01TEST",
+		AccountID: "acct_01TEST",
+		Status:    StatusEnded,
+		CreatedAt: time.Date(2026, 7, 27, 8, 0, 0, 0, time.UTC),
+	}
+
+	body, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal list item: %v", err)
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatalf("unmarshal list item: %v", err)
+	}
+
+	for _, field := range []string{"id", "account_id", "status", "started_at", "ended_at", "created_at"} {
+		if _, exists := fields[field]; !exists {
+			t.Errorf("list item omits %q", field)
+		}
+	}
+	for _, field := range []string{
+		"audio_config",
+		"capabilities",
+		"runtime_state",
+		"connection_state",
+		"current_turn_id",
+		"current_playback_id",
+		"last_error_code",
+		"retryable",
+		"runtime_updated_at",
+	} {
+		if _, exists := fields[field]; exists {
+			t.Errorf("list item unexpectedly contains %q", field)
+		}
+	}
+}
+
 func TestDefaultAudioConfigMatchesP0BrowserProfile(t *testing.T) {
 	got := DefaultAudioConfig()
 
@@ -98,6 +138,39 @@ func TestRuntimeStateValidation(t *testing.T) {
 	}
 	if RuntimeState("connected").Valid() {
 		t.Fatal("WebRTC connection state must not be accepted as a runtime state")
+	}
+}
+
+func TestConnectionStateValidationAndReadiness(t *testing.T) {
+	validStates := []ConnectionState{
+		ConnectionNew,
+		ConnectionConnecting,
+		ConnectionConnected,
+		ConnectionDisconnected,
+		ConnectionFailed,
+		ConnectionClosed,
+	}
+
+	for _, state := range validStates {
+		t.Run(string(state), func(t *testing.T) {
+			if !state.Valid() {
+				t.Fatalf("%q should be a valid connection state", state)
+			}
+			if got, want := state.Ready(), state == ConnectionConnected; got != want {
+				t.Fatalf("Ready() = %t, want %t", got, want)
+			}
+		})
+	}
+
+	for _, state := range []ConnectionState{"", "unknown", ConnectionState(RuntimeListening)} {
+		t.Run("invalid_"+string(state), func(t *testing.T) {
+			if state.Valid() {
+				t.Fatalf("%q must not be accepted as a connection state", state)
+			}
+			if state.Ready() {
+				t.Fatalf("%q must not satisfy WebRTC readiness", state)
+			}
+		})
 	}
 }
 

@@ -78,11 +78,20 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 		connections.mu.Unlock()
 		return Connection{}, fmt.Errorf("create WebRTC transport: %w", err)
 	}
+	if transport == nil {
+		connections.mu.Unlock()
+		return Connection{}, fmt.Errorf("create WebRTC transport: %w", ErrTransportRequired)
+	}
 	answer, err := transport.Answer(ctx, request.Offer)
 	if err != nil {
 		connections.mu.Unlock()
 		closeErr := transport.Close(context.WithoutCancel(ctx))
 		return Connection{}, errors.Join(fmt.Errorf("create SDP answer: %w", err), closeErr)
+	}
+	if err := validateAnswer(answer); err != nil {
+		connections.mu.Unlock()
+		closeErr := transport.Close(context.WithoutCancel(ctx))
+		return Connection{}, errors.Join(fmt.Errorf("validate SDP answer: %w", err), closeErr)
 	}
 	connection := Connection{
 		ID:        connectionID,
@@ -303,6 +312,16 @@ func validateOpenRequest(request OpenConnectionRequest) error {
 		return ErrOfferTypeInvalid
 	case request.CreatedAt.IsZero():
 		return ErrInvalidDependency
+	}
+	return nil
+}
+
+func validateAnswer(answer SessionDescription) error {
+	switch {
+	case answer.SDP == "":
+		return ErrAnswerSDPRequired
+	case answer.Type != "answer":
+		return ErrAnswerTypeInvalid
 	}
 	return nil
 }

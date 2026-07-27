@@ -45,6 +45,29 @@ func TestMemoryConnectionManagerRejectsChangedOfferForIdempotencyKey(t *testing.
 	}
 }
 
+func TestMemoryConnectionManagerRejectsInvalidTransportResults(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport *fakeTransport
+		want      error
+	}{
+		{name: "missing transport", want: ErrTransportRequired},
+		{name: "empty answer SDP", transport: &fakeTransport{answer: SessionDescription{Type: "answer"}}, want: ErrAnswerSDPRequired},
+		{name: "unexpected answer type", transport: &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "offer"}}, want: ErrAnswerTypeInvalid},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: test.transport})
+			if _, err := manager.Open(context.Background(), validOpenConnectionRequest()); !errors.Is(err, test.want) {
+				t.Fatalf("Open() error = %v, want %v", err, test.want)
+			}
+			if test.transport != nil && test.transport.closeCalls != 1 {
+				t.Fatalf("transport close calls = %d, want 1", test.transport.closeCalls)
+			}
+		})
+	}
+}
+
 func TestMemoryConnectionManagerCandidatesAreIdempotent(t *testing.T) {
 	transport := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
 	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: transport})
@@ -404,6 +427,9 @@ func (f *fakeTransportFactory) Create(_ context.Context, _, _ string) (Connectio
 	}
 	if f.err != nil {
 		return nil, f.err
+	}
+	if f.transport == nil {
+		return nil, nil
 	}
 	return f.transport, nil
 }

@@ -17,6 +17,12 @@ var (
 	ErrOfferSDPRequired = errors.New("session description sdp is required")
 	// ErrOfferTypeInvalid rejects SDP descriptions with an unexpected type.
 	ErrOfferTypeInvalid = errors.New("invalid session description type")
+	// ErrTransportRequired rejects a factory result without an owned transport handle.
+	ErrTransportRequired = errors.New("WebRTC transport is required")
+	// ErrAnswerSDPRequired rejects an adapter answer without SDP content.
+	ErrAnswerSDPRequired = errors.New("SDP answer is required")
+	// ErrAnswerTypeInvalid rejects an adapter result that is not an SDP answer.
+	ErrAnswerTypeInvalid = errors.New("invalid SDP answer type")
 	// ErrCandidateIDRequired prevents a candidate from bypassing idempotent delivery.
 	ErrCandidateIDRequired = errors.New("candidate id is required")
 	// ErrCandidateRequired rejects a candidate record without its SDP candidate value.

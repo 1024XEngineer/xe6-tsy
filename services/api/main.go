@@ -13,8 +13,9 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
-	"github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
+	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
+	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
 // main wires foundation use cases into the HTTP server and owns graceful shutdown.
@@ -24,8 +25,7 @@ func main() {
 		address = ":8080"
 	}
 
-	mux := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases())
-	languages.NewHandler().Register(mux)
+	mux := buildMux()
 
 	server := &http.Server{
 		Addr:              address,
@@ -59,4 +59,11 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+func buildMux() *http.ServeMux {
+	mux := internalwebapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases())
+	languages.NewHandler().Register(mux)
+	recordswebapi.NewNotImplementedHandler().Register(mux)
+	return mux
 }

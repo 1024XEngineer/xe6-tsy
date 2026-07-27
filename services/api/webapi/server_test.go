@@ -177,12 +177,15 @@ func newHandler(t *testing.T, participantRepository *participantRepository, turn
 	turnService := turns.NewService(turnRepository, owners, func() time.Time {
 		return time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
 	})
-	return NewHandler(Dependencies{
+	handler := NewHandler(Dependencies{
 		Participants: participantService,
 		Turns:        turnService,
 		Accounts:     ContextAccountProvider{},
 		System:       ContextSystemAuthorizer{},
 	})
+	mux := http.NewServeMux()
+	handler.Register(mux)
+	return mux
 }
 
 func accountRequest(method, target string, body *strings.Reader, accountID string, system bool) *http.Request {

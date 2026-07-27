@@ -73,7 +73,7 @@ type Server struct {
 	requestSeq   atomic.Uint64
 }
 
-func NewHandler(dependencies Dependencies) http.Handler {
+func NewHandler(dependencies Dependencies) *Server {
 	if dependencies.Participants == nil {
 		panic("webapi participants service is required")
 	}
@@ -93,14 +93,17 @@ func NewHandler(dependencies Dependencies) http.Handler {
 		accounts:     dependencies.Accounts,
 		system:       dependencies.System,
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/participants", server.listParticipants)
-	mux.HandleFunc("PATCH /api/v1/voice-sessions/{id}/participants/{participant_id}", server.updateParticipant)
-	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/turns", server.listSessionTurns)
-	mux.HandleFunc("GET /api/v1/voice-turns/{id}", server.getTurn)
-	mux.HandleFunc("PATCH /api/v1/voice-turns/{id}/attribution", server.correctAttribution)
-	mux.HandleFunc("GET /api/v1/translation-history", server.listHistory)
-	return mux
+	return server
+}
+
+// Register attaches all voice-record routes to the application mux.
+func (s *Server) Register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/participants", s.listParticipants)
+	mux.HandleFunc("PATCH /api/v1/voice-sessions/{id}/participants/{participant_id}", s.updateParticipant)
+	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/turns", s.listSessionTurns)
+	mux.HandleFunc("GET /api/v1/voice-turns/{id}", s.getTurn)
+	mux.HandleFunc("PATCH /api/v1/voice-turns/{id}/attribution", s.correctAttribution)
+	mux.HandleFunc("GET /api/v1/translation-history", s.listHistory)
 }
 
 func (s *Server) listParticipants(writer http.ResponseWriter, request *http.Request) {
@@ -225,6 +228,8 @@ func (s *Server) requireAccount(writer http.ResponseWriter, request *http.Reques
 
 func (s *Server) writeDomainError(writer http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, errNotImplemented):
+		s.writeError(writer, recordsv1.ErrorNotImplemented, err)
 	case errors.Is(err, participants.ErrSessionNotFound), errors.Is(err, turns.ErrSessionNotFound):
 		s.writeError(writer, recordsv1.ErrorVoiceSessionAbsent, err)
 	case errors.Is(err, participants.ErrParticipantNotFound), errors.Is(err, turns.ErrParticipantNotFound):
@@ -253,6 +258,8 @@ func (s *Server) writeError(writer http.ResponseWriter, code recordsv1.ErrorCode
 		status = http.StatusForbidden
 	case recordsv1.ErrorVoiceSessionAbsent, recordsv1.ErrorParticipantAbsent, recordsv1.ErrorVoiceTurnAbsent:
 		status = http.StatusNotFound
+	case recordsv1.ErrorNotImplemented:
+		status = http.StatusNotImplemented
 	}
 	s.writeJSON(writer, status, recordsv1.ErrorResponse{Error: recordsv1.APIError{
 		Code:      code,

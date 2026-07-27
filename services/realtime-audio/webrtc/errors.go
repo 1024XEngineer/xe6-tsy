@@ -25,6 +25,10 @@ var (
 	ErrConnectionSessionMismatch = errors.New("WebRTC connection session mismatch")
 	// ErrTicketSessionMismatch prevents a ticket for one session from authorizing another.
 	ErrTicketSessionMismatch = errors.New("realtime ticket session mismatch")
+	// ErrTicketAccountRequired prevents unowned tickets from authorizing realtime media access.
+	ErrTicketAccountRequired = errors.New("realtime ticket account is required")
 	// ErrTicketExpired prevents a stale realtime ticket from opening a connection.
 	ErrTicketExpired = errors.New("realtime ticket expired")
+	// ErrRealtimeTokenRequired prevents unauthenticated signaling commands from reaching the ticket validator.
+	ErrRealtimeTokenRequired = errors.New("realtime ticket token is required")
 )

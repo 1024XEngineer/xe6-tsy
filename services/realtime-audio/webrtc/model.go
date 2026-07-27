@@ -27,18 +27,20 @@ type SessionDescription struct {
 
 // OfferRequest is the authenticated signaling command for one client offer.
 type OfferRequest struct {
-	Description    SessionDescription
-	IdempotencyKey string
+	SDP            string `json:"sdp"`
+	Type           string `json:"type"`
+	IdempotencyKey string `json:"-"`
 }
 
 // OfferResponse is the transport-neutral result returned after a connection is reserved.
 type OfferResponse struct {
-	Answer           SessionDescription `json:"answer"`
-	SessionID        string             `json:"session_id"`
-	ConnectionID     string             `json:"connection_id"`
-	DataChannelLabel string             `json:"data_channel_label"`
-	TTSTrackID       string             `json:"tts_track_id"`
-	ConnectionState  ConnectionState    `json:"connection_state"`
+	SDP              string          `json:"sdp"`
+	Type             string          `json:"type"`
+	SessionID        string          `json:"session_id"`
+	ConnectionID     string          `json:"connection_id"`
+	DataChannelLabel string          `json:"data_channel_label"`
+	TTSTrackID       string          `json:"tts_track_id"`
+	ConnectionState  ConnectionState `json:"connection_state"`
 }
 
 // ICECandidate is one idempotent candidate supplied after an offer.
@@ -52,9 +54,9 @@ type ICECandidate struct {
 
 // CandidateRequest batches candidates belonging to one connection.
 type CandidateRequest struct {
-	ConnectionID    string
-	Candidates      []ICECandidate
-	EndOfCandidates bool
+	ConnectionID    string         `json:"connection_id"`
+	Candidates      []ICECandidate `json:"candidates"`
+	EndOfCandidates bool           `json:"end_of_candidates"`
 }
 
 // CandidateResponse distinguishes new candidates from idempotent repeats.

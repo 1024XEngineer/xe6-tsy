@@ -27,25 +27,46 @@ type ListFilter struct {
 
 // ListPage contains persistent sessions only, ordered by created_at and ID.
 type ListPage struct {
-	Sessions   []VoiceSession
-	NextCursor *string
+	Sessions   []VoiceSessionListItem `json:"sessions"`
+	NextCursor *string                `json:"next_cursor"`
 }
 
-// TransitionParams describes a conditional business-state update.
-type TransitionParams struct {
+// StartTransitionParams atomically records the created-to-active transition
+// and the start request's idempotent result. Implementations check an existing
+// key and request hash before Expected so an already-active replay can return
+// its stored result without invoking realtime again.
+type StartTransitionParams struct {
 	SessionID      string
 	AccountID      string
 	Expected       Status
-	Target         Status
-	StartedAt      *time.Time
-	EndedAt        *time.Time
-	EndReason      *EndReason
+	StartedAt      time.Time
 	IdempotencyKey string
 	RequestHash    string
 }
 
+// EndTransitionParams records a cleanup-confirmed transition to ended. End
+// request idempotency belongs to EndIntent and is deliberately absent here.
+type EndTransitionParams struct {
+	SessionID string
+	AccountID string
+	Expected  Status
+	EndedAt   time.Time
+	EndReason EndReason
+}
+
+// FailureTransitionParams records an unrecoverable active-session failure only
+// after realtime confirms that every owned resource has been cleaned up.
+type FailureTransitionParams struct {
+	SessionID string
+	AccountID string
+	Expected  Status
+	FailedAt  time.Time
+	ErrorCode string
+}
+
 // EndIntent persists a requested shutdown before cross-service cleanup is
-// confirmed, allowing a worker or repeated request to retry idempotent Stop.
+// confirmed. CompletedAt distinguishes a resumable intent from an audited,
+// completed request without deleting its idempotency record.
 type EndIntent struct {
 	SessionID      string
 	AccountID      string
@@ -53,18 +74,35 @@ type EndIntent struct {
 	IdempotencyKey string
 	RequestHash    string
 	RequestedAt    time.Time
+	CompletedAt    *time.Time
+}
+
+// MatchesRequest reports whether a repeated end request is an idempotent replay.
+// A reused key with a different hash must be reported as a conflict.
+func (i EndIntent) MatchesRequest(idempotencyKey string, requestHash string) bool {
+	return i.IdempotencyKey == idempotencyKey && i.RequestHash == requestHash
+}
+
+// Completed reports whether cleanup and the terminal transition were confirmed.
+func (i EndIntent) Completed() bool {
+	return i.CompletedAt != nil
 }
 
 // Repository owns voice_sessions persistence and operation idempotency.
-// Implementations must make each create or transition and its idempotency
-// record atomic, retain failed end attempts, and report ErrConcurrentTransition
-// when Expected changed.
+// Implementations atomically own create and start idempotency, while EndIntent
+// exclusively owns end idempotency. GetOwned must not reveal whether a missing
+// session belongs to another account. AccountID is mandatory on every external
+// read or mutation, and Expected changes return ErrConcurrentTransition.
 type Repository interface {
 	Create(ctx context.Context, params CreateParams) (session VoiceSession, replayed bool, err error)
-	Get(ctx context.Context, sessionID string) (VoiceSession, error)
+	GetOwned(ctx context.Context, accountID string, sessionID string) (VoiceSession, error)
 	List(ctx context.Context, filter ListFilter) (ListPage, error)
-	SaveEndIntent(ctx context.Context, intent EndIntent) (replayed bool, err error)
-	Transition(ctx context.Context, params TransitionParams) (session VoiceSession, replayed bool, err error)
+	SaveEndIntent(ctx context.Context, intent EndIntent) (saved EndIntent, replayed bool, err error)
+	GetEndIntent(ctx context.Context, accountID string, sessionID string) (EndIntent, error)
+	CompleteEndIntent(ctx context.Context, accountID string, sessionID string, completedAt time.Time) error
+	TransitionToActive(ctx context.Context, params StartTransitionParams) (session VoiceSession, replayed bool, err error)
+	TransitionToEnded(ctx context.Context, params EndTransitionParams) (VoiceSession, error)
+	TransitionToFailed(ctx context.Context, params FailureTransitionParams) (VoiceSession, error)
 }
 
 // RealtimeLifecycle is the only media-plane lifecycle dependency used by
@@ -95,12 +133,19 @@ type LanguageConfigReader interface {
 	GetCurrentConfig(ctx context.Context, sessionID string) (LanguageConfigSnapshot, error)
 }
 
-// LanguageConfigSnapshot is sufficient to verify an active two-language config.
+// LanguageConfigSnapshot is the consumer-owned readiness projection. The
+// language adapter derives LanguagePairCount from Issue #88's validated pairs.
 type LanguageConfigSnapshot struct {
 	SessionID         string
 	Version           int
 	LanguagePairCount int
-	Status            string
+	Status            LanguageConfigStatus
+}
+
+// Ready reports whether the P0 session has the active two-direction language
+// configuration required by Issues #86 and #88.
+func (s LanguageConfigSnapshot) Ready() bool {
+	return s.Status == LanguageConfigActive && s.LanguagePairCount == 2
 }
 
 // WebRTCConnectionReader reads connection readiness without conflating it with runtime state.

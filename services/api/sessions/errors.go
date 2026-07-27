@@ -9,6 +9,7 @@ const (
 	CodeInvalidRequest         ErrorCode = "invalid_request"
 	CodeUnauthorized           ErrorCode = "unauthorized"
 	CodeVoiceSessionNotFound   ErrorCode = "voice_session_not_found"
+	CodeEndIntentNotFound      ErrorCode = "end_intent_not_found"
 	CodeSessionStateConflict   ErrorCode = "session_state_conflict"
 	CodeIdempotencyKeyConflict ErrorCode = "idempotency_key_conflict"
 	CodeLanguageConfigNotReady ErrorCode = "language_config_not_ready"
@@ -24,6 +25,7 @@ const (
 
 var (
 	ErrVoiceSessionNotFound   = errors.New(string(CodeVoiceSessionNotFound))
+	ErrEndIntentNotFound      = errors.New(string(CodeEndIntentNotFound))
 	ErrConcurrentTransition   = errors.New(string(CodeSessionStateConflict))
 	ErrIdempotencyKeyConflict = errors.New(string(CodeIdempotencyKeyConflict))
 	ErrNotImplemented         = errors.New(string(CodeNotImplemented))

@@ -1,10 +1,12 @@
 package webapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -165,10 +167,42 @@ func TestErrorMappingReturnsNotFoundAndInternalError(t *testing.T) {
 	assertError(t, serve(handler, request), http.StatusNotFound, recordsv1.ErrorVoiceTurnAbsent)
 
 	turnRepository.findErr = errors.New("database unavailable")
-	assertError(t, serve(handler, accountRequest(http.MethodGet, "/api/v1/voice-turns/vt_01", nil, "acct_01", false)), http.StatusInternalServerError, recordsv1.ErrorInternal)
+	response := serve(handler, accountRequest(http.MethodGet, "/api/v1/voice-turns/vt_01", nil, "acct_01", false))
+	assertError(t, response, http.StatusInternalServerError, recordsv1.ErrorInternal)
+	var body recordsv1.ErrorResponse
+	decodeBody(t, response, &body)
+	if body.Error.Message != "internal server error" {
+		t.Fatalf("internal error message = %q, want generic message", body.Error.Message)
+	}
+}
+
+func TestInternalErrorLogsCauseWithoutExposingIt(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	turnRepository := &turnRepository{
+		turn:    recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
+		findErr: errors.New("dial postgres password=secret table=voice_turns"),
+	}
+	handler := newHandlerWithLogger(t, &participantRepository{}, turnRepository, "acct_01", logger)
+	response := serve(handler, accountRequest(http.MethodGet, "/api/v1/voice-turns/vt_01", nil, "acct_01", false))
+
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusInternalServerError)
+	}
+	if strings.Contains(response.Body.String(), "password=secret") {
+		t.Fatalf("response exposed internal error: %s", response.Body.String())
+	}
+	if !strings.Contains(logs.String(), "password=secret") {
+		t.Fatalf("logger did not record internal error: %s", logs.String())
+	}
 }
 
 func newHandler(t *testing.T, participantRepository *participantRepository, turnRepository *turnRepository, ownerID string) http.Handler {
+	t.Helper()
+	return newHandlerWithLogger(t, participantRepository, turnRepository, ownerID, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func newHandlerWithLogger(t *testing.T, participantRepository *participantRepository, turnRepository *turnRepository, ownerID string, logger *slog.Logger) http.Handler {
 	t.Helper()
 	owners := sessionOwners{ownerID: ownerID}
 	participantService := participants.NewService(participantRepository, owners, func() time.Time {
@@ -182,6 +216,7 @@ func newHandler(t *testing.T, participantRepository *participantRepository, turn
 		Turns:        turnService,
 		Accounts:     ContextAccountProvider{},
 		System:       ContextSystemAuthorizer{},
+		Logger:       logger,
 	})
 	mux := http.NewServeMux()
 	handler.Register(mux)

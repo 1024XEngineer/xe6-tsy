@@ -3,6 +3,7 @@ package webapi
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
@@ -13,13 +14,14 @@ var errNotImplemented = errors.New("voice record persistence is not implemented"
 
 // NewNotImplementedHandler returns a route-ready records adapter for application composition.
 // It exposes the public paths as 501 until production persistence adapters are supplied.
-func NewNotImplementedHandler() *Server {
+func NewNotImplementedHandler(logger *slog.Logger) *Server {
 	adapters := notImplementedAdapters{}
 	return NewHandler(Dependencies{
 		Participants: participants.NewService(adapters, adapters, nil),
 		Turns:        turns.NewService(adapters, adapters, nil),
 		Accounts:     ContextAccountProvider{},
 		System:       ContextSystemAuthorizer{},
+		Logger:       logger,
 	})
 }
 

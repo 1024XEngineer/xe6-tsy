@@ -7,21 +7,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync/atomic"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/authcontext"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 )
 
-type accountIDContextKey struct{}
 type systemActorContextKey struct{}
 
 // WithAccountID attaches an account identity established by trusted authentication middleware.
 // HTTP handlers never derive the account ID from request headers, query values, or JSON bodies.
 func WithAccountID(ctx context.Context, accountID string) context.Context {
-	return context.WithValue(ctx, accountIDContextKey{}, accountID)
+	return authcontext.WithAccountID(ctx, accountID)
 }
 
 // WithSystemActor marks an internally authenticated request as allowed to correct attribution.
@@ -44,8 +45,7 @@ type SystemAuthorizer interface {
 type ContextAccountProvider struct{}
 
 func (ContextAccountProvider) AccountID(ctx context.Context) (string, bool) {
-	accountID, ok := ctx.Value(accountIDContextKey{}).(string)
-	return accountID, ok && accountID != ""
+	return authcontext.AccountID(ctx)
 }
 
 // ContextSystemAuthorizer is the bridge for future system authentication middleware.
@@ -62,6 +62,7 @@ type Dependencies struct {
 	Turns        *turns.Service
 	Accounts     AccountProvider
 	System       SystemAuthorizer
+	Logger       *slog.Logger
 }
 
 // Server owns the HTTP adapter. It deliberately has no storage or authentication implementation.
@@ -70,6 +71,7 @@ type Server struct {
 	turns        *turns.Service
 	accounts     AccountProvider
 	system       SystemAuthorizer
+	logger       *slog.Logger
 	requestSeq   atomic.Uint64
 }
 
@@ -86,12 +88,16 @@ func NewHandler(dependencies Dependencies) *Server {
 	if dependencies.System == nil {
 		panic("webapi system authorizer is required")
 	}
+	if dependencies.Logger == nil {
+		panic("webapi logger is required")
+	}
 
 	server := &Server{
 		participants: dependencies.Participants,
 		turns:        dependencies.Turns,
 		accounts:     dependencies.Accounts,
 		system:       dependencies.System,
+		logger:       dependencies.Logger,
 	}
 	return server
 }
@@ -118,7 +124,7 @@ func (s *Server) listParticipants(writer http.ResponseWriter, request *http.Requ
 	}
 	response, err := s.participants.List(request.Context(), accountID, request.PathValue("id"), query)
 	if err != nil {
-		s.writeDomainError(writer, err)
+		s.writeDomainError(writer, request, err)
 		return
 	}
 	s.writeJSON(writer, http.StatusOK, response)
@@ -140,7 +146,7 @@ func (s *Server) updateParticipant(writer http.ResponseWriter, request *http.Req
 	}
 	participant, err := s.participants.Update(request.Context(), accountID, request.PathValue("id"), request.PathValue("participant_id"), body)
 	if err != nil {
-		s.writeDomainError(writer, err)
+		s.writeDomainError(writer, request, err)
 		return
 	}
 	s.writeJSON(writer, http.StatusOK, participant)
@@ -158,7 +164,7 @@ func (s *Server) listSessionTurns(writer http.ResponseWriter, request *http.Requ
 	}
 	response, err := s.turns.ListSession(request.Context(), accountID, request.PathValue("id"), query)
 	if err != nil {
-		s.writeDomainError(writer, err)
+		s.writeDomainError(writer, request, err)
 		return
 	}
 	s.writeJSON(writer, http.StatusOK, response)
@@ -171,7 +177,7 @@ func (s *Server) getTurn(writer http.ResponseWriter, request *http.Request) {
 	}
 	turn, err := s.turns.Get(request.Context(), accountID, request.PathValue("id"))
 	if err != nil {
-		s.writeDomainError(writer, err)
+		s.writeDomainError(writer, request, err)
 		return
 	}
 	s.writeJSON(writer, http.StatusOK, turn)
@@ -193,7 +199,7 @@ func (s *Server) correctAttribution(writer http.ResponseWriter, request *http.Re
 	}
 	turn, err := s.turns.CorrectAttribution(request.Context(), accountID, request.PathValue("id"), body)
 	if err != nil {
-		s.writeDomainError(writer, err)
+		s.writeDomainError(writer, request, err)
 		return
 	}
 	s.writeJSON(writer, http.StatusOK, turn)
@@ -211,7 +217,7 @@ func (s *Server) listHistory(writer http.ResponseWriter, request *http.Request) 
 	}
 	response, err := s.turns.ListHistory(request.Context(), accountID, query)
 	if err != nil {
-		s.writeDomainError(writer, err)
+		s.writeDomainError(writer, request, err)
 		return
 	}
 	s.writeJSON(writer, http.StatusOK, response)
@@ -226,7 +232,7 @@ func (s *Server) requireAccount(writer http.ResponseWriter, request *http.Reques
 	return accountID, true
 }
 
-func (s *Server) writeDomainError(writer http.ResponseWriter, err error) {
+func (s *Server) writeDomainError(writer http.ResponseWriter, request *http.Request, err error) {
 	switch {
 	case errors.Is(err, errNotImplemented):
 		s.writeError(writer, recordsv1.ErrorNotImplemented, err)
@@ -243,7 +249,8 @@ func (s *Server) writeDomainError(writer http.ResponseWriter, err error) {
 	case errors.Is(err, participants.ErrInvalidRequest), errors.Is(err, turns.ErrInvalidRequest):
 		s.writeError(writer, recordsv1.ErrorInvalidRequest, err)
 	default:
-		s.writeError(writer, recordsv1.ErrorInternal, err)
+		s.logger.ErrorContext(request.Context(), "voice record request failed", "error", err)
+		s.writeError(writer, recordsv1.ErrorInternal, errors.New("internal server error"))
 	}
 }
 

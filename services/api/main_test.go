@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
@@ -36,7 +37,7 @@ func TestBuildMuxRegistersVoiceRecordRoutes(t *testing.T) {
 				body = strings.NewReader(test.body)
 			}
 			request := httptest.NewRequest(test.method, test.path, body)
-			ctx := recordswebapi.WithAccountID(request.Context(), "acct_01")
+			ctx := internalwebapi.WithAccountID(request.Context(), "acct_01")
 			if test.system {
 				ctx = recordswebapi.WithSystemActor(ctx)
 			}

@@ -15,6 +15,8 @@ var (
 	ErrSessionIDRequired = errors.New("session id is required")
 	// ErrLanguageConfigUnavailable indicates that no active language configuration was captured.
 	ErrLanguageConfigUnavailable = errors.New("active language configuration is required")
+	// ErrLanguageConfigSessionMismatch indicates that a reader returned another session's configuration.
+	ErrLanguageConfigSessionMismatch = errors.New("language configuration session mismatch")
 )
 
 // TurnAllocator creates the member-3-owned identifiers used by the pipeline.
@@ -98,6 +100,8 @@ func (o *TurnOpener) OpenTurn(ctx context.Context, request TurnOpenRequest) (Tur
 	}
 	if config.SessionID == "" {
 		config.SessionID = request.SessionID
+	} else if config.SessionID != request.SessionID {
+		return TurnContext{}, fmt.Errorf("%w: got %q for %q", ErrLanguageConfigSessionMismatch, config.SessionID, request.SessionID)
 	}
 	if config.Status == "" || config.Status != "active" || len(config.LanguagePairs) == 0 {
 		return TurnContext{}, ErrLanguageConfigUnavailable

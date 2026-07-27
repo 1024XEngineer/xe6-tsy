@@ -113,6 +113,23 @@ func TestTurnOpenerSnapshotsLanguageConfig(t *testing.T) {
 	}
 }
 
+func TestTurnOpenerRejectsLanguageConfigForDifferentSession(t *testing.T) {
+	reader := &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		SessionID: "session-2",
+		Version:   7,
+		Status:    "active",
+		LanguagePairs: []session.LanguagePair{
+			{Source: "zh-CN", Target: "en-US"},
+		},
+	}}
+	opener := NewTurnOpener(NewMemoryTurnAllocator(), reader)
+
+	_, err := opener.OpenTurn(context.Background(), TurnOpenRequest{SessionID: "session-1"})
+	if !errors.Is(err, ErrLanguageConfigSessionMismatch) {
+		t.Fatalf("OpenTurn() error = %v, want ErrLanguageConfigSessionMismatch", err)
+	}
+}
+
 type fakeLanguageConfigReader struct {
 	snapshot session.LanguageConfigSnapshot
 	calls    int

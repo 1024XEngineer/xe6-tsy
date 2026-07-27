@@ -3,6 +3,8 @@ package recordsv1
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -16,6 +18,8 @@ const (
 )
 
 const CorrectedBySystem = "system"
+
+var ErrInvalidFinalTurnEvent = errors.New("invalid final turn event")
 
 type ErrorCode string
 
@@ -146,6 +150,49 @@ type FinalTurnEvent struct {
 	OccurredAt            time.Time         `json:"occurred_at"`
 }
 
+// Validate enforces the required v1 fields before a FinalTurn enters durable delivery.
+func (event FinalTurnEvent) Validate() error {
+	switch {
+	case event.EventID == "":
+		return invalidFinalTurnField("event_id")
+	case event.TraceID == "":
+		return invalidFinalTurnField("trace_id")
+	case event.TurnID == "":
+		return invalidFinalTurnField("turn_id")
+	case event.SessionID == "":
+		return invalidFinalTurnField("session_id")
+	case event.SequenceNo <= 0:
+		return invalidFinalTurnField("sequence_no")
+	case event.SourceLanguage == "":
+		return invalidFinalTurnField("source_language")
+	case event.TargetLanguage == "":
+		return invalidFinalTurnField("target_language")
+	case event.SourceText == "":
+		return invalidFinalTurnField("source_text")
+	case event.TranslatedText == "":
+		return invalidFinalTurnField("translated_text")
+	case event.LanguageConfigVersion <= 0:
+		return invalidFinalTurnField("language_config_version")
+	case event.StartedAt.IsZero():
+		return invalidFinalTurnField("started_at")
+	case event.EndedAt.IsZero() || event.EndedAt.Before(event.StartedAt):
+		return invalidFinalTurnField("ended_at")
+	case event.OccurredAt.IsZero():
+		return invalidFinalTurnField("occurred_at")
+	}
+
+	switch event.AttributionStatus {
+	case AttributionPending, AttributionProvisional, AttributionConfirmed, AttributionCorrected:
+		return nil
+	default:
+		return invalidFinalTurnField("attribution_status")
+	}
+}
+
+func invalidFinalTurnField(field string) error {
+	return fmt.Errorf("%w: %s", ErrInvalidFinalTurnEvent, field)
+}
+
 type SpeakerObservation struct {
 	SessionID         string    `json:"session_id"`
 	TurnID            string    `json:"turn_id"`
@@ -180,7 +227,7 @@ type FinalTurnSnapshot struct {
 
 // FinalTurnSink is the producer-side port used by realtime translation to enqueue final events.
 type FinalTurnSink interface {
-	TryPublish(event FinalTurnEvent) error
+	Publish(ctx context.Context, event FinalTurnEvent) error
 }
 
 // FinalTurnConsumer is the record module's idempotent final-event consumption port.

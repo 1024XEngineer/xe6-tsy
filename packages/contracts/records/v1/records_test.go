@@ -3,13 +3,14 @@ package recordsv1
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
 
 type finalTurnSinkStub struct{}
 
-func (finalTurnSinkStub) TryPublish(FinalTurnEvent) error { return nil }
+func (finalTurnSinkStub) Publish(context.Context, FinalTurnEvent) error { return nil }
 
 type finalTurnConsumerStub struct{}
 
@@ -42,23 +43,7 @@ var (
 )
 
 func TestFinalTurnEventJSONPreservesNullableAttribution(t *testing.T) {
-	event := FinalTurnEvent{
-		EventID:               "evt_01",
-		TraceID:               "trace_01",
-		TurnID:                "vt_01",
-		SessionID:             "vs_01",
-		SequenceNo:            1,
-		SourceLanguage:        "zh-CN",
-		TargetLanguage:        "en-US",
-		LanguageConfigVersion: 3,
-		SourceText:            "hello",
-		TranslatedText:        "hello",
-		SpeakerCode:           "speaker_01",
-		AttributionStatus:     AttributionPending,
-		StartedAt:             time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC),
-		EndedAt:               time.Date(2026, 7, 24, 8, 0, 1, 0, time.UTC),
-		OccurredAt:            time.Date(2026, 7, 24, 8, 0, 2, 0, time.UTC),
-	}
+	event := validFinalTurnEvent()
 
 	body, err := json.Marshal(event)
 	if err != nil {
@@ -81,6 +66,62 @@ func TestFinalTurnEventJSONPreservesNullableAttribution(t *testing.T) {
 	}
 	if got, want := actual["attribution_status"], string(AttributionPending); got != want {
 		t.Fatalf("attribution_status = %v, want %q", got, want)
+	}
+}
+
+func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
+	valid := validFinalTurnEvent()
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid FinalTurnEvent error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*FinalTurnEvent)
+	}{
+		{name: "event id", mutate: func(event *FinalTurnEvent) { event.EventID = "" }},
+		{name: "trace id", mutate: func(event *FinalTurnEvent) { event.TraceID = "" }},
+		{name: "turn id", mutate: func(event *FinalTurnEvent) { event.TurnID = "" }},
+		{name: "session id", mutate: func(event *FinalTurnEvent) { event.SessionID = "" }},
+		{name: "sequence number", mutate: func(event *FinalTurnEvent) { event.SequenceNo = 0 }},
+		{name: "source language", mutate: func(event *FinalTurnEvent) { event.SourceLanguage = "" }},
+		{name: "target language", mutate: func(event *FinalTurnEvent) { event.TargetLanguage = "" }},
+		{name: "source text", mutate: func(event *FinalTurnEvent) { event.SourceText = "" }},
+		{name: "translated text", mutate: func(event *FinalTurnEvent) { event.TranslatedText = "" }},
+		{name: "language config version", mutate: func(event *FinalTurnEvent) { event.LanguageConfigVersion = 0 }},
+		{name: "attribution status", mutate: func(event *FinalTurnEvent) { event.AttributionStatus = "unknown" }},
+		{name: "started at", mutate: func(event *FinalTurnEvent) { event.StartedAt = time.Time{} }},
+		{name: "ended before start", mutate: func(event *FinalTurnEvent) { event.EndedAt = event.StartedAt.Add(-time.Second) }},
+		{name: "occurred at", mutate: func(event *FinalTurnEvent) { event.OccurredAt = time.Time{} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event := validFinalTurnEvent()
+			test.mutate(&event)
+			if err := event.Validate(); !errors.Is(err, ErrInvalidFinalTurnEvent) {
+				t.Fatalf("Validate() error = %v, want ErrInvalidFinalTurnEvent", err)
+			}
+		})
+	}
+}
+
+func validFinalTurnEvent() FinalTurnEvent {
+	return FinalTurnEvent{
+		EventID:               "evt_01",
+		TraceID:               "trace_01",
+		TurnID:                "vt_01",
+		SessionID:             "vs_01",
+		SequenceNo:            1,
+		SourceLanguage:        "zh-CN",
+		TargetLanguage:        "en-US",
+		LanguageConfigVersion: 3,
+		SourceText:            "hello",
+		TranslatedText:        "hello",
+		SpeakerCode:           "speaker_01",
+		AttributionStatus:     AttributionPending,
+		StartedAt:             time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC),
+		EndedAt:               time.Date(2026, 7, 24, 8, 0, 1, 0, time.UTC),
+		OccurredAt:            time.Date(2026, 7, 24, 8, 0, 2, 0, time.UTC),
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,7 +102,7 @@ func (o *TurnOpener) OpenTurn(ctx context.Context, request TurnOpenRequest) (Tur
 	if config.SessionID != request.SessionID {
 		return TurnContext{}, fmt.Errorf("%w: got %q for %q", ErrLanguageConfigSessionMismatch, config.SessionID, request.SessionID)
 	}
-	if config.Status == "" || config.Status != "active" || len(config.LanguagePairs) == 0 {
+	if !validLanguageConfig(config) {
 		return TurnContext{}, ErrLanguageConfigUnavailable
 	}
 	config.LanguagePairs = append([]session.LanguagePair(nil), config.LanguagePairs...)
@@ -118,4 +119,18 @@ func (o *TurnOpener) OpenTurn(ctx context.Context, request TurnOpenRequest) (Tur
 		LanguageConfig: config,
 		StartedAt:      startedAt,
 	}, nil
+}
+
+func validLanguageConfig(config session.LanguageConfigSnapshot) bool {
+	if config.Status != "active" || config.Version <= 0 || len(config.LanguagePairs) == 0 {
+		return false
+	}
+	for _, pair := range config.LanguagePairs {
+		source := strings.TrimSpace(pair.Source)
+		target := strings.TrimSpace(pair.Target)
+		if source == "" || target == "" || source == target {
+			return false
+		}
+	}
+	return true
 }

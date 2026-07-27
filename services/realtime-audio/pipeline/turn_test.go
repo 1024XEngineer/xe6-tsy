@@ -141,6 +141,32 @@ func TestTurnOpenerRejectsLanguageConfigWithoutMatchingSession(t *testing.T) {
 	}
 }
 
+func TestTurnOpenerRejectsInvalidLanguageConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		version int64
+		pairs   []session.LanguagePair
+	}{
+		{name: "zero version", pairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}},
+		{name: "no pairs", version: 1},
+		{name: "empty source", version: 1, pairs: []session.LanguagePair{{Target: "en-US"}}},
+		{name: "empty target", version: 1, pairs: []session.LanguagePair{{Source: "zh-CN"}}},
+		{name: "same source and target", version: 1, pairs: []session.LanguagePair{{Source: "zh-CN", Target: "zh-CN"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			opener := NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+				SessionID: "session-1", Version: test.version, Status: "active", LanguagePairs: test.pairs,
+			}})
+
+			_, err := opener.OpenTurn(context.Background(), TurnOpenRequest{SessionID: "session-1"})
+			if !errors.Is(err, ErrLanguageConfigUnavailable) {
+				t.Fatalf("OpenTurn() error = %v, want ErrLanguageConfigUnavailable", err)
+			}
+		})
+	}
+}
+
 type fakeLanguageConfigReader struct {
 	snapshot session.LanguageConfigSnapshot
 	calls    int

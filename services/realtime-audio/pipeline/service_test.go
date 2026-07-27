@@ -66,7 +66,7 @@ func TestPipelineRejectsUnsupportedSourceBeforeTranslation(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "unused"}}
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
 	service := NewPipelineService(PipelineDependencies{Translator: translator, TTS: ttsProvider, FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}})
-	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{Text: "bonjour", SourceLanguage: "fr-FR"})
+	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{Text: "bonjour", SourceLanguage: "fr-FR", Provider: "mock-asr", Model: "v1"})
 	if !errors.Is(err, ErrUnsupportedSourceLanguage) {
 		t.Fatalf("error = %v, want ErrUnsupportedSourceLanguage", err)
 	}
@@ -77,13 +77,13 @@ func TestPipelineRejectsUnsupportedSourceBeforeTranslation(t *testing.T) {
 
 func TestPipelineSpeakerTimeoutProducesPendingAttribution(t *testing.T) {
 	service := NewPipelineService(PipelineDependencies{
-		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello"}},
-		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
 		Speakers:   blockingSpeakerReader{}, FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
 		SpeakerTimeout: 5 * time.Millisecond,
 	})
 	started := time.Now()
-	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", ProviderSpeakerID: "speaker-1"})
+	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", ProviderSpeakerID: "speaker-1", Provider: "mock-asr", Model: "v1"})
 	if err != nil {
 		t.Fatalf("HandleASRFinal() error = %v", err)
 	}
@@ -93,6 +93,25 @@ func TestPipelineSpeakerTimeoutProducesPendingAttribution(t *testing.T) {
 	event := service.finalTurns.(*recordingFinalSink).events[0]
 	if event.ParticipantID != nil || event.AttributionStatus != recordsv1.AttributionPending {
 		t.Fatalf("FinalTurn attribution = %#v", event)
+	}
+}
+
+func TestPipelineRejectsInvalidUsageBeforePublication(t *testing.T) {
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "unused"}}
+	usageSink := &recordingUsageSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: usageSink, Audio: &recordingAudioSink{},
+	})
+	turn := testTurn()
+	turn.TraceID = ""
+
+	err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"})
+	if !errors.Is(err, ErrInvalidUsageFact) {
+		t.Fatalf("HandleASRFinal() error = %v, want ErrInvalidUsageFact", err)
+	}
+	if len(usageSink.facts) != 0 || len(translator.Requests()) != 0 {
+		t.Fatalf("invalid UsageFact reached dependencies")
 	}
 }
 

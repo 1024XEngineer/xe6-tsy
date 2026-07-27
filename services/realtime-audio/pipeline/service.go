@@ -150,7 +150,16 @@ func (s *PipelineService) validate() error {
 }
 
 func (s *PipelineService) publishUsage(ctx context.Context, turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string) error {
-	fact := UsageFact{EventVersion: UsageEventVersion, ID: fmt.Sprintf("usage_%s_%s", turn.ID, serviceType), TraceID: turn.TraceID, IdempotencyKey: fmt.Sprintf("usage:%s:%s", turn.ID, serviceType), AccountID: turn.AccountID, SessionID: turn.SessionID, TurnID: turn.ID, ServiceType: serviceType, Provider: provider, Model: model, InputTokens: inputTokens, OutputTokens: outputTokens, AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: s.now()}
+	fact := UsageFact{
+		EventVersion: UsageEventVersion, ID: fmt.Sprintf("usage_%s_%s", turn.ID, serviceType),
+		TraceID: turn.TraceID, IdempotencyKey: fmt.Sprintf("usage:%s:%s", turn.ID, serviceType),
+		AccountID: turn.AccountID, SessionID: turn.SessionID, TurnID: turn.ID, ServiceType: serviceType,
+		Provider: provider, Model: model, InputTokens: inputTokens, OutputTokens: outputTokens,
+		AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: s.now(),
+	}
+	if err := fact.Validate(); err != nil {
+		return fmt.Errorf("validate UsageFact: %w", err)
+	}
 	return s.usage.Publish(ctx, fact)
 }
 

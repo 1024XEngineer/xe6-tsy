@@ -13,7 +13,7 @@ func TestOutboxSinksPublishTypedEvents(t *testing.T) {
 	finalSink := NewOutboxFinalTurnSink(outbox)
 	usageSink := NewOutboxUsageFactSink(outbox)
 	final := FinalTurnEvent{EventID: "event-1", TurnID: "turn-1", SessionID: "session-1"}
-	fact := UsageFact{ID: "fact-1", IdempotencyKey: "usage:turn-1:asr", TurnID: "turn-1"}
+	fact := validUsageFact()
 
 	if err := finalSink.Publish(context.Background(), final); err != nil {
 		t.Fatalf("FinalTurn Publish() error = %v", err)
@@ -43,8 +43,22 @@ func TestOutboxSinksPropagateAcceptanceErrors(t *testing.T) {
 	if err := finalSink.Publish(context.Background(), FinalTurnEvent{EventID: "event-1"}); !errors.Is(err, wantErr) {
 		t.Fatalf("FinalTurn error = %v, want %v", err, wantErr)
 	}
-	if err := usageSink.Publish(context.Background(), UsageFact{ID: "fact-1", IdempotencyKey: "key-1"}); !errors.Is(err, wantErr) {
+	if err := usageSink.Publish(context.Background(), validUsageFact()); !errors.Is(err, wantErr) {
 		t.Fatalf("UsageFact error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestOutboxUsageSinkRejectsInvalidFactBeforeAppend(t *testing.T) {
+	outbox := &recordingOutbox{}
+	sink := NewOutboxUsageFactSink(outbox)
+	fact := validUsageFact()
+	fact.Provider = ""
+
+	if err := sink.Publish(context.Background(), fact); !errors.Is(err, ErrInvalidUsageFact) {
+		t.Fatalf("Publish() error = %v, want ErrInvalidUsageFact", err)
+	}
+	if len(outbox.entries) != 0 {
+		t.Fatalf("outbox entries = %d, want 0", len(outbox.entries))
 	}
 }
 

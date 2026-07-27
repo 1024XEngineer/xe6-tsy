@@ -73,6 +73,9 @@ func (s *OutboxUsageFactSink) Publish(ctx context.Context, fact UsageFact) error
 	if fact.ID == "" || fact.IdempotencyKey == "" {
 		return ErrUsageIdentityRequired
 	}
+	if err := fact.Validate(); err != nil {
+		return err
+	}
 	if s == nil || s.outbox == nil {
 		return ErrOutboxRequired
 	}

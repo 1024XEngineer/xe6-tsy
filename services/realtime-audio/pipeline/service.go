@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
@@ -18,17 +19,6 @@ var (
 	// ErrPipelineDependencyRequired indicates that a required processing boundary is missing.
 	ErrPipelineDependencyRequired = errors.New("pipeline dependency is required")
 )
-
-// SpeakerAttribution is the provisional member-4 result for a provider speaker ID.
-type SpeakerAttribution struct {
-	ParticipantID string
-	Confidence    float64
-}
-
-// SpeakerAttributionReader resolves a provider speaker without owning Turn IDs.
-type SpeakerAttributionReader interface {
-	Resolve(ctx context.Context, sessionID, providerSpeakerID string) (SpeakerAttribution, error)
-}
 
 // AudioChunk is the media-plane chunk emitted to the playback boundary.
 type AudioChunk struct {
@@ -48,7 +38,7 @@ type AudioChunkSink interface {
 type PipelineDependencies struct {
 	Translator     translate.Provider
 	TTS            tts.Provider
-	Speakers       SpeakerAttributionReader
+	Speakers       recordsv1.SpeakerAttributionReader
 	FinalTurns     FinalTurnSink
 	Usage          UsageFactSink
 	Audio          AudioChunkSink
@@ -61,7 +51,7 @@ type PipelineDependencies struct {
 type PipelineService struct {
 	translator     translate.Provider
 	tts            tts.Provider
-	speakers       SpeakerAttributionReader
+	speakers       recordsv1.SpeakerAttributionReader
 	finalTurns     FinalTurnSink
 	usage          UsageFactSink
 	audio          AudioChunkSink
@@ -117,19 +107,17 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err := s.publishUsage(ctx, turn, "translation", translationResult.Provider, translationResult.Model, 0, translationResult.InputTokens, translationResult.OutputTokens, translationResult.CostAmount, translationResult.Currency); err != nil {
 		return fmt.Errorf("publish translation usage: %w", err)
 	}
-	attribution := s.resolveSpeaker(ctx, turn, result.ProviderSpeakerID)
+	startedAt, endedAt := turnBounds(turn, result, s.now())
+	attribution := s.resolveSpeaker(ctx, turn, result, startedAt, endedAt)
 	finalEvent := FinalTurnEvent{
 		EventID: "final_" + turn.ID, TraceID: turn.TraceID, SessionID: turn.SessionID, TurnID: turn.ID,
 		SequenceNo: turn.SequenceNo, SourceLanguage: result.SourceLanguage, TargetLanguage: target,
-		SourceText: result.Text, TranslatedText: translationResult.Text, ProviderSpeakerID: result.ProviderSpeakerID,
-		SpeakerConfidence: attribution.Confidence, AttributionStatus: "pending", LanguageConfigVersion: turn.LanguageConfig.Version,
-		OccurredAt: s.now(),
+		SourceText: result.Text, TranslatedText: translationResult.Text, SpeakerCode: attribution.SpeakerCode,
+		SpeakerLabelSnapshot: attribution.DisplayName, SpeakerConfidence: attribution.Confidence,
+		AttributionStatus: attribution.AttributionStatus, LanguageConfigVersion: turn.LanguageConfig.Version,
+		StartedAt: startedAt, EndedAt: endedAt, OccurredAt: s.now(),
 	}
-	if attribution.ParticipantID != "" {
-		participantID := attribution.ParticipantID
-		finalEvent.ParticipantID = &participantID
-		finalEvent.AttributionStatus = "resolved"
-	}
+	finalEvent.ParticipantID = attribution.ParticipantID
 	if err := s.finalTurns.Publish(ctx, finalEvent); err != nil {
 		return fmt.Errorf("publish FinalTurn: %w", err)
 	}
@@ -162,21 +150,43 @@ func (s *PipelineService) validate() error {
 }
 
 func (s *PipelineService) publishUsage(ctx context.Context, turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string) error {
-	fact := UsageFact{EventVersion: "v1", ID: fmt.Sprintf("usage_%s_%s", turn.ID, serviceType), TraceID: turn.TraceID, IdempotencyKey: fmt.Sprintf("usage:%s:%s", turn.ID, serviceType), AccountID: turn.AccountID, SessionID: turn.SessionID, TurnID: turn.ID, ServiceType: serviceType, Provider: provider, Model: model, InputTokens: inputTokens, OutputTokens: outputTokens, AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: s.now()}
+	fact := UsageFact{EventVersion: UsageEventVersion, ID: fmt.Sprintf("usage_%s_%s", turn.ID, serviceType), TraceID: turn.TraceID, IdempotencyKey: fmt.Sprintf("usage:%s:%s", turn.ID, serviceType), AccountID: turn.AccountID, SessionID: turn.SessionID, TurnID: turn.ID, ServiceType: serviceType, Provider: provider, Model: model, InputTokens: inputTokens, OutputTokens: outputTokens, AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: s.now()}
 	return s.usage.Publish(ctx, fact)
 }
 
-func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, providerSpeakerID string) SpeakerAttribution {
-	if s.speakers == nil || providerSpeakerID == "" {
-		return SpeakerAttribution{}
+func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, result asr.FinalResult, startedAt, endedAt time.Time) recordsv1.SpeakerAttribution {
+	if s.speakers == nil || result.ProviderSpeakerID == "" {
+		return recordsv1.SpeakerAttribution{AttributionStatus: recordsv1.AttributionPending}
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, s.speakerTimeout)
 	defer cancel()
-	attribution, err := s.speakers.Resolve(lookupCtx, turn.SessionID, providerSpeakerID)
+	attribution, err := s.speakers.GetProvisionalAttribution(lookupCtx, recordsv1.SpeakerObservation{
+		SessionID: turn.SessionID, TurnID: turn.ID, ProviderSpeakerID: result.ProviderSpeakerID,
+		StartedAt: startedAt, EndedAt: endedAt,
+		AudioStartMS: result.AudioStart.Milliseconds(), AudioEndMS: result.AudioEnd.Milliseconds(),
+	})
 	if err != nil {
-		return SpeakerAttribution{}
+		return recordsv1.SpeakerAttribution{AttributionStatus: recordsv1.AttributionPending}
+	}
+	if attribution.ParticipantID == nil {
+		attribution.AttributionStatus = recordsv1.AttributionPending
+	}
+	if attribution.AttributionStatus == "" {
+		attribution.AttributionStatus = recordsv1.AttributionPending
 	}
 	return attribution
+}
+
+func turnBounds(turn TurnContext, result asr.FinalResult, fallback time.Time) (time.Time, time.Time) {
+	startedAt := turn.StartedAt
+	if startedAt.IsZero() {
+		startedAt = fallback
+	}
+	duration := result.AudioDuration
+	if duration <= 0 && result.AudioEnd > result.AudioStart {
+		duration = result.AudioEnd - result.AudioStart
+	}
+	return startedAt, startedAt.Add(duration)
 }
 
 func targetLanguage(config session.LanguageConfigSnapshot, source string) (string, bool) {

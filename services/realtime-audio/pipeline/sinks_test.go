@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 )
 
 func TestOutboxSinksPublishTypedEvents(t *testing.T) {
@@ -25,7 +27,7 @@ func TestOutboxSinksPublishTypedEvents(t *testing.T) {
 	if outbox.entries[0].topic != "final_turn.recorded" || outbox.entries[0].key != final.EventID {
 		t.Fatalf("final entry = %#v", outbox.entries[0])
 	}
-	if got, ok := outbox.entries[0].payload.(FinalTurnEvent); !ok || got.EventID != final.EventID {
+	if got, ok := outbox.entries[0].payload.(recordsv1.FinalTurnEvent); !ok || got.EventID != final.EventID {
 		t.Fatalf("final payload = %#v", outbox.entries[0].payload)
 	}
 	if outbox.entries[1].topic != "usage.recorded" || outbox.entries[1].key != fact.IdempotencyKey {

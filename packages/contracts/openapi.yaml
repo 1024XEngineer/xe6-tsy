@@ -142,6 +142,22 @@ components:
     Unauthorized: { description: Missing or invalid account context, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotImplemented: { description: Business implementation is intentionally pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
+    WebRTCConnectionState:
+      type: string
+      enum: [new, connecting, connected, disconnected, failed, closed]
+    WebRTCErrorCode:
+      type: string
+      enum: [webrtc_connection_not_found, webrtc_connection_not_ready, webrtc_connection_failed]
+    WebRTCConnectionSnapshot:
+      type: object
+      additionalProperties: false
+      required: [session_id, connection_id, state, version, updated_at]
+      properties:
+        session_id: { type: string }
+        connection_id: { type: string }
+        state: { $ref: '#/components/schemas/WebRTCConnectionState' }
+        version: { type: integer, format: int64, minimum: 1 }
+        updated_at: { type: string, format: date-time }
     Account:
       type: object
       required: [id, kind, created_at]

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 )
@@ -12,7 +13,7 @@ func TestOutboxSinksPublishTypedEvents(t *testing.T) {
 	outbox := &recordingOutbox{}
 	finalSink := NewOutboxFinalTurnSink(outbox)
 	usageSink := NewOutboxUsageFactSink(outbox)
-	final := FinalTurnEvent{EventID: "event-1", TurnID: "turn-1", SessionID: "session-1"}
+	final := validFinalTurnEvent()
 	fact := validUsageFact()
 
 	if err := finalSink.Publish(context.Background(), final); err != nil {
@@ -40,11 +41,25 @@ func TestOutboxSinksPropagateAcceptanceErrors(t *testing.T) {
 	outbox := &recordingOutbox{err: wantErr}
 	finalSink := NewOutboxFinalTurnSink(outbox)
 	usageSink := NewOutboxUsageFactSink(outbox)
-	if err := finalSink.Publish(context.Background(), FinalTurnEvent{EventID: "event-1"}); !errors.Is(err, wantErr) {
+	if err := finalSink.Publish(context.Background(), validFinalTurnEvent()); !errors.Is(err, wantErr) {
 		t.Fatalf("FinalTurn error = %v, want %v", err, wantErr)
 	}
 	if err := usageSink.Publish(context.Background(), validUsageFact()); !errors.Is(err, wantErr) {
 		t.Fatalf("UsageFact error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestOutboxFinalTurnSinkRejectsInvalidEventBeforeAppend(t *testing.T) {
+	outbox := &recordingOutbox{}
+	sink := NewOutboxFinalTurnSink(outbox)
+	event := validFinalTurnEvent()
+	event.TargetLanguage = ""
+
+	if err := sink.Publish(context.Background(), event); !errors.Is(err, recordsv1.ErrInvalidFinalTurnEvent) {
+		t.Fatalf("Publish() error = %v, want ErrInvalidFinalTurnEvent", err)
+	}
+	if len(outbox.entries) != 0 {
+		t.Fatalf("outbox entries = %d, want 0", len(outbox.entries))
 	}
 }
 
@@ -82,3 +97,14 @@ func (r *recordingOutbox) Append(_ context.Context, topic, key string, payload a
 }
 
 var _ DurableOutbox = (*recordingOutbox)(nil)
+
+func validFinalTurnEvent() FinalTurnEvent {
+	return FinalTurnEvent{
+		EventID: "event-1", TraceID: "trace-1", TurnID: "turn-1", SessionID: "session-1",
+		SequenceNo: 1, SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+		LanguageConfigVersion: 1, SourceText: "你好", TranslatedText: "hello",
+		AttributionStatus: recordsv1.AttributionPending,
+		StartedAt:         time.Unix(1700000000, 0).UTC(), EndedAt: time.Unix(1700000001, 0).UTC(),
+		OccurredAt: time.Unix(1700000001, 0).UTC(),
+	}
+}

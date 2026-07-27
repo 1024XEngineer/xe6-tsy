@@ -13,8 +13,6 @@ const (
 )
 
 var (
-	// ErrFinalTurnIDRequired indicates that a FinalTurn event cannot be deduplicated.
-	ErrFinalTurnIDRequired = errors.New("final Turn event id is required")
 	// ErrUsageIdentityRequired indicates that a UsageFact cannot be deduplicated.
 	ErrUsageIdentityRequired = errors.New("usage fact identity is required")
 	// ErrOutboxRequired indicates that a production sink has no durable publisher.
@@ -43,8 +41,8 @@ func NewOutboxFinalTurnSink(outbox DurableOutbox) *OutboxFinalTurnSink {
 
 // Publish reports success only after the outbox accepts the typed event.
 func (s *OutboxFinalTurnSink) Publish(ctx context.Context, event FinalTurnEvent) error {
-	if event.EventID == "" {
-		return ErrFinalTurnIDRequired
+	if err := event.Validate(); err != nil {
+		return err
 	}
 	if s == nil || s.outbox == nil {
 		return ErrOutboxRequired

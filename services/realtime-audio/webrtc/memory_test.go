@@ -37,14 +37,15 @@ func TestMemoryConnectionManagerCandidatesAreIdempotent(t *testing.T) {
 		t.Fatalf("Open() error = %v", err)
 	}
 
-	response, err := manager.AddCandidates(context.Background(), connection.SessionID, CandidateRequest{
+	request := CandidateRequest{
 		ConnectionID: connection.ID,
 		Candidates: []ICECandidate{
 			{ID: "candidate-1", Candidate: "candidate:1"},
 			{ID: "candidate-1", Candidate: "candidate:1"},
 		},
 		EndOfCandidates: true,
-	})
+	}
+	response, err := manager.AddCandidates(context.Background(), connection.SessionID, request)
 	if err != nil {
 		t.Fatalf("AddCandidates() error = %v", err)
 	}
@@ -56,6 +57,15 @@ func TestMemoryConnectionManagerCandidatesAreIdempotent(t *testing.T) {
 	}
 	if len(transport.candidates) != 1 {
 		t.Fatalf("transport candidates = %#v", transport.candidates)
+	}
+	if transport.endCandidatesCalls != 1 {
+		t.Fatalf("transport end candidates calls = %d, want 1", transport.endCandidatesCalls)
+	}
+	if _, err := manager.AddCandidates(context.Background(), connection.SessionID, request); err != nil {
+		t.Fatalf("repeated AddCandidates() error = %v", err)
+	}
+	if transport.endCandidatesCalls != 1 {
+		t.Fatalf("transport end candidates calls after retry = %d, want 1", transport.endCandidatesCalls)
 	}
 }
 
@@ -124,6 +134,44 @@ func TestMemoryConnectionManagerDoesNotReuseIDsAfterClose(t *testing.T) {
 	}
 	if second.ID == first.ID {
 		t.Fatalf("connection ID was reused after close: %q", second.ID)
+	}
+}
+
+func TestMemoryConnectionManagerRetainsOnlyFailedCloses(t *testing.T) {
+	closeErr := errors.New("close failed")
+	failing := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}, closeErr: closeErr}
+	successful := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
+	manager := NewMemoryConnectionManager(&sequenceTransportFactory{transports: []ConnectionTransport{failing, successful}})
+	first, err := manager.Open(context.Background(), validOpenConnectionRequest())
+	if err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+	secondRequest := validOpenConnectionRequest()
+	secondRequest.IdempotencyKey = "offer-device-2"
+	if _, err := manager.Open(context.Background(), secondRequest); err != nil {
+		t.Fatalf("second Open() error = %v", err)
+	}
+
+	if err := manager.Close(context.Background(), first.SessionID); !errors.Is(err, closeErr) {
+		t.Fatalf("Close() error = %v, want %v", err, closeErr)
+	}
+	connections := manager.getSession(first.SessionID)
+	if connections == nil || len(connections.byID) != 1 || connections.byID[first.ID] == nil {
+		t.Fatalf("remaining connections = %#v", connections)
+	}
+	if successful.closeCalls != 1 || failing.closeCalls != 1 {
+		t.Fatalf("close calls = successful:%d failing:%d", successful.closeCalls, failing.closeCalls)
+	}
+
+	failing.closeErr = nil
+	if err := manager.Close(context.Background(), first.SessionID); err != nil {
+		t.Fatalf("retry Close() error = %v", err)
+	}
+	if successful.closeCalls != 1 || failing.closeCalls != 2 {
+		t.Fatalf("close calls after retry = successful:%d failing:%d", successful.closeCalls, failing.closeCalls)
+	}
+	if connections := manager.getSession(first.SessionID); connections != nil {
+		t.Fatalf("connections after retry = %#v, want nil", connections)
 	}
 }
 
@@ -221,6 +269,17 @@ type blockingTransportFactory struct {
 	calls        int
 }
 
+type sequenceTransportFactory struct {
+	transports []ConnectionTransport
+	calls      int
+}
+
+func (f *sequenceTransportFactory) Create(_ context.Context, _, _ string) (ConnectionTransport, error) {
+	transport := f.transports[f.calls]
+	f.calls++
+	return transport, nil
+}
+
 func (f *blockingTransportFactory) Create(_ context.Context, _, _ string) (ConnectionTransport, error) {
 	f.mu.Lock()
 	f.calls++
@@ -250,12 +309,15 @@ func (f *fakeTransportFactory) Create(_ context.Context, _, _ string) (Connectio
 }
 
 type fakeTransport struct {
-	answer       SessionDescription
-	answerErr    error
-	candidateErr error
-	candidates   []ICECandidate
-	answerCalls  int
-	closeCalls   int
+	answer             SessionDescription
+	answerErr          error
+	candidateErr       error
+	endErr             error
+	closeErr           error
+	candidates         []ICECandidate
+	answerCalls        int
+	endCandidatesCalls int
+	closeCalls         int
 }
 
 func (f *fakeTransport) Answer(_ context.Context, _ SessionDescription) (SessionDescription, error) {
@@ -274,13 +336,19 @@ func (f *fakeTransport) AddCandidate(_ context.Context, candidate ICECandidate) 
 	return nil
 }
 
+func (f *fakeTransport) EndCandidates(context.Context) error {
+	f.endCandidatesCalls++
+	return f.endErr
+}
+
 func (f *fakeTransport) Close(context.Context) error {
 	f.closeCalls++
-	return nil
+	return f.closeErr
 }
 
 var _ ConnectionTransportFactory = (*fakeTransportFactory)(nil)
 var _ ConnectionTransportFactory = (*blockingTransportFactory)(nil)
+var _ ConnectionTransportFactory = (*sequenceTransportFactory)(nil)
 var _ ConnectionTransport = (*fakeTransport)(nil)
 
 func sameStrings(got, want []string) bool {

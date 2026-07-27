@@ -11,6 +11,7 @@ type TicketValidator interface {
 type ConnectionTransport interface {
 	Answer(ctx context.Context, offer SessionDescription) (SessionDescription, error)
 	AddCandidate(ctx context.Context, candidate ICECandidate) error
+	EndCandidates(ctx context.Context) error
 	Close(ctx context.Context) error
 }
 

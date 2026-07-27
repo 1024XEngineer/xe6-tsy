@@ -137,7 +137,10 @@ func (m *MemoryConnectionManager) AddCandidates(ctx context.Context, sessionID s
 		record.candidateIDs[candidate.ID] = struct{}{}
 		response.AcceptedCandidateIDs = append(response.AcceptedCandidateIDs, candidate.ID)
 	}
-	if request.EndOfCandidates {
+	if request.EndOfCandidates && !record.endOfCandidates {
+		if err := record.transport.EndCandidates(ctx); err != nil {
+			return CandidateResponse{}, fmt.Errorf("complete ICE candidates: %w", err)
+		}
 		record.endOfCandidates = true
 	}
 	response.EndOfCandidates = record.endOfCandidates
@@ -164,10 +167,16 @@ func (m *MemoryConnectionManager) Close(ctx context.Context, sessionID string) e
 	}
 	connections.closed = true
 	var closeErr error
-	for _, record := range connections.byID {
-		closeErr = errors.Join(closeErr, record.transport.Close(ctx))
+	for connectionID, record := range connections.byID {
+		if err := record.transport.Close(ctx); err != nil {
+			closeErr = errors.Join(closeErr, err)
+			continue
+		}
+		delete(connections.byID, connectionID)
+		delete(connections.byIdempotencyKey, record.connection.IdempotencyKey)
 	}
 	if closeErr != nil {
+		connections.closed = false
 		return closeErr
 	}
 	m.mu.Lock()

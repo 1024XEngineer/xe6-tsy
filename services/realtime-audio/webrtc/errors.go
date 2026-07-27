@@ -11,6 +11,8 @@ var (
 	ErrConnectionIDRequired = errors.New("connection id is required")
 	// ErrIdempotencyKeyRequired prevents repeated offer requests from creating duplicate connections.
 	ErrIdempotencyKeyRequired = errors.New("idempotency key is required")
+	// ErrIdempotencyPayloadConflict rejects reuse of an idempotency identifier for different content.
+	ErrIdempotencyPayloadConflict = errors.New("idempotency payload conflicts with the existing request")
 	// ErrOfferSDPRequired rejects offer or answer descriptions without SDP content.
 	ErrOfferSDPRequired = errors.New("session description sdp is required")
 	// ErrOfferTypeInvalid rejects SDP descriptions with an unexpected type.

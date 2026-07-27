@@ -29,6 +29,22 @@ func TestMemoryConnectionManagerOpenIsIdempotentPerSession(t *testing.T) {
 	}
 }
 
+func TestMemoryConnectionManagerRejectsChangedOfferForIdempotencyKey(t *testing.T) {
+	factory := &fakeTransportFactory{transport: &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}}
+	manager := NewMemoryConnectionManager(factory)
+	request := validOpenConnectionRequest()
+	if _, err := manager.Open(context.Background(), request); err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+	request.Offer.SDP = "different-offer-sdp"
+	if _, err := manager.Open(context.Background(), request); !errors.Is(err, ErrIdempotencyPayloadConflict) {
+		t.Fatalf("second Open() error = %v, want %v", err, ErrIdempotencyPayloadConflict)
+	}
+	if factory.createCalls != 1 {
+		t.Fatalf("factory calls = %d, want 1", factory.createCalls)
+	}
+}
+
 func TestMemoryConnectionManagerCandidatesAreIdempotent(t *testing.T) {
 	transport := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
 	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: transport})
@@ -66,6 +82,26 @@ func TestMemoryConnectionManagerCandidatesAreIdempotent(t *testing.T) {
 	}
 	if transport.endCandidatesCalls != 1 {
 		t.Fatalf("transport end candidates calls after retry = %d, want 1", transport.endCandidatesCalls)
+	}
+}
+
+func TestMemoryConnectionManagerRejectsChangedCandidateForID(t *testing.T) {
+	transport := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
+	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: transport})
+	connection, err := manager.Open(context.Background(), validOpenConnectionRequest())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	first := CandidateRequest{ConnectionID: connection.ID, Candidates: []ICECandidate{{ID: "candidate-1", Candidate: "candidate:1"}}}
+	if _, err := manager.AddCandidates(context.Background(), connection.SessionID, first); err != nil {
+		t.Fatalf("first AddCandidates() error = %v", err)
+	}
+	changed := CandidateRequest{ConnectionID: connection.ID, Candidates: []ICECandidate{{ID: "candidate-1", Candidate: "candidate:2"}}}
+	if _, err := manager.AddCandidates(context.Background(), connection.SessionID, changed); !errors.Is(err, ErrIdempotencyPayloadConflict) {
+		t.Fatalf("second AddCandidates() error = %v, want %v", err, ErrIdempotencyPayloadConflict)
+	}
+	if len(transport.candidates) != 1 {
+		t.Fatalf("transport candidates = %#v, want one candidate", transport.candidates)
 	}
 }
 

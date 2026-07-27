@@ -27,7 +27,7 @@ type sessionConnections struct {
 type connectionRecord struct {
 	connection      Connection
 	transport       ConnectionTransport
-	candidateIDs    map[string]struct{}
+	candidateIDs    map[string]ICECandidate
 	endOfCandidates bool
 }
 
@@ -59,7 +59,12 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 			continue
 		}
 		if existingID, ok := connections.byIdempotencyKey[request.IdempotencyKey]; ok {
-			connection := connections.byID[existingID].connection
+			existing := connections.byID[existingID]
+			if existing.connection.Offer != request.Offer {
+				connections.mu.Unlock()
+				return Connection{}, ErrIdempotencyPayloadConflict
+			}
+			connection := existing.connection
 			connections.mu.Unlock()
 			return connection, nil
 		}
@@ -81,7 +86,7 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 			SessionID: request.SessionID, IdempotencyKey: request.IdempotencyKey,
 			Offer: request.Offer, Answer: answer, State: ConnectionConnecting, CreatedAt: request.CreatedAt,
 		}
-		connections.byID[connection.ID] = &connectionRecord{connection: connection, transport: transport, candidateIDs: make(map[string]struct{})}
+		connections.byID[connection.ID] = &connectionRecord{connection: connection, transport: transport, candidateIDs: make(map[string]ICECandidate)}
 		connections.byIdempotencyKey[connection.IdempotencyKey] = connection.ID
 		connections.mu.Unlock()
 		return connection, nil
@@ -127,14 +132,17 @@ func (m *MemoryConnectionManager) AddCandidates(ctx context.Context, sessionID s
 
 	response := CandidateResponse{ConnectionID: request.ConnectionID}
 	for _, candidate := range request.Candidates {
-		if _, exists := record.candidateIDs[candidate.ID]; exists {
+		if previous, exists := record.candidateIDs[candidate.ID]; exists {
+			if !sameICECandidate(previous, candidate) {
+				return CandidateResponse{}, ErrIdempotencyPayloadConflict
+			}
 			response.DeduplicatedCandidateIDs = append(response.DeduplicatedCandidateIDs, candidate.ID)
 			continue
 		}
 		if err := record.transport.AddCandidate(ctx, candidate); err != nil {
 			return CandidateResponse{}, fmt.Errorf("apply ICE candidate: %w", err)
 		}
-		record.candidateIDs[candidate.ID] = struct{}{}
+		record.candidateIDs[candidate.ID] = candidate
 		response.AcceptedCandidateIDs = append(response.AcceptedCandidateIDs, candidate.ID)
 	}
 	if request.EndOfCandidates && !record.endOfCandidates {
@@ -211,6 +219,22 @@ func (m *MemoryConnectionManager) nextConnectionID() string {
 	defer m.mu.Unlock()
 	m.nextID++
 	return fmt.Sprintf("rtc_%06d", m.nextID)
+}
+
+func sameICECandidate(left, right ICECandidate) bool {
+	return left.ID == right.ID &&
+		left.Candidate == right.Candidate &&
+		sameStringPointer(left.SDPMid, right.SDPMid) &&
+		sameUint16Pointer(left.SDPMLineIndex, right.SDPMLineIndex) &&
+		sameStringPointer(left.UsernameFragment, right.UsernameFragment)
+}
+
+func sameStringPointer(left, right *string) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func sameUint16Pointer(left, right *uint16) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
 }
 
 func validateOpenRequest(request OpenConnectionRequest) error {

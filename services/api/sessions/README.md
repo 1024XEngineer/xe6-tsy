@@ -111,8 +111,15 @@ resources were cleaned up.
 - List never calls realtime per row or in batch and never filters by runtime or
   connection state.
 
-`ErrRuntimeSnapshotNotFound` is an internal adapter boundary signal. It is not
-an HTTP error code and must not be exposed directly to clients.
+`ErrRuntimeSnapshotNotFound` is an internal consumer-owned adapter boundary
+signal. Realtime adapters must translate provider-specific missing-runtime
+errors into this sentinel. For example, the adapter between
+`services/realtime-audio/session` and this package must map the provider's
+`ErrRuntimeNotFound` to `sessions.ErrRuntimeSnapshotNotFound`.
+
+The session service must not import provider packages or compare error strings.
+This sentinel is not an HTTP error code and must not be exposed directly to
+clients.
 
 ## Idempotency ownership
 

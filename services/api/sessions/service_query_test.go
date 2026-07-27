@@ -290,6 +290,23 @@ func TestServiceGetStateSynthesizesStoppedForCreatedSessionWithoutRuntime(t *tes
 	}
 }
 
+func TestServiceDetailDoesNotTreatUnknownNotFoundAsMissingSnapshot(t *testing.T) {
+	session := queryTestSession(StatusCreated)
+	repository := &fakeRepository{getOwnedResult: session}
+	realtime := &fakeRealtimeLifecycle{
+		getErr: errors.New(ErrRuntimeSnapshotNotFound.Error()),
+	}
+	service := newQueryTestService(t, repository, realtime)
+
+	_, err := service.GetDetail(context.Background(), DetailInput{
+		AccountID: session.AccountID,
+		SessionID: session.ID,
+	})
+	if !errors.Is(err, ErrRuntimeUnavailable) {
+		t.Fatalf("GetDetail() error = %v, want ErrRuntimeUnavailable", err)
+	}
+}
+
 func TestServiceDetailRejectsInvalidRuntimeSnapshots(t *testing.T) {
 	now := time.Date(2026, 7, 27, 11, 0, 0, 0, time.UTC)
 	tests := []struct {

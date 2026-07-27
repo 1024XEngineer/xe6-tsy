@@ -18,15 +18,16 @@ type LanguagePair struct {
 
 // LanguageConfig is the HTTP/API representation of a versioned session config.
 type LanguageConfig struct {
-	ID             string         `json:"id"`
-	SessionID      string         `json:"session_id"`
-	Version        int            `json:"version"`
-	LanguagePairs  []LanguagePair `json:"language_pairs"`
-	Status         string         `json:"status"` // active | superseded | expired
-	EffectiveFrom  time.Time      `json:"effective_from"`
-	EffectiveUntil *time.Time     `json:"effective_until"`
-	CreatedBy      string         `json:"created_by"`
-	CreatedAt      time.Time      `json:"created_at"`
+	ID                 string         `json:"id"`
+	SessionID          string         `json:"session_id"`
+	Version            int            `json:"version"`
+	LanguagePairs      []LanguagePair `json:"language_pairs"`
+	Status             string         `json:"status"` // active | superseded | expired
+	EffectiveFrom      time.Time      `json:"effective_from"`
+	EffectiveUntil     *time.Time     `json:"effective_until"`
+	CreatedBy          string         `json:"created_by"`
+	CreatedAt          time.Time      `json:"created_at"`
+	RequestFingerprint string         `json:"-"` // internal idempotency fingerprint
 }
 
 // LanguageConfigSnapshot is the internal read model for session management

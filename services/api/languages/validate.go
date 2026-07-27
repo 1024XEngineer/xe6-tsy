@@ -1,6 +1,11 @@
 package languages
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+)
 
 // validateP0LanguagePairs enforces issue #88 P0 bilingual rules:
 // exactly two opposite directions covering two supported active languages.
@@ -48,20 +53,28 @@ func validateP0LanguagePairs(pairs []LanguagePair, catalog map[string]SupportedL
 	return nil
 }
 
-func languagePairsEqual(a, b []LanguagePair) bool {
-	if len(a) != len(b) {
-		return false
+// requestFingerprint hashes the full create request body for idempotent replay.
+// Languages keep request order; expected_version is included when present.
+func requestFingerprint(req CreateLanguageConfigRequest) string {
+	payload := struct {
+		Languages       []LanguagePair `json:"languages"`
+		ExpectedVersion *int           `json:"expected_version"`
+	}{
+		Languages:       req.Languages,
+		ExpectedVersion: req.ExpectedVersion,
 	}
-	left := make(map[string]string, len(a))
-	for _, pair := range a {
-		left[pair.Source] = pair.Target
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
 	}
-	for _, pair := range b {
-		if left[pair.Source] != pair.Target {
-			return false
-		}
-	}
-	return true
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func sameIdempotentRequest(existing LanguageConfig, sessionID, fingerprint string) bool {
+	return existing.SessionID == sessionID &&
+		existing.RequestFingerprint != "" &&
+		existing.RequestFingerprint == fingerprint
 }
 
 func toSnapshot(cfg LanguageConfig) LanguageConfigSnapshot {

@@ -3,6 +3,7 @@ package languages
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -127,6 +128,29 @@ func TestServiceIdempotency(t *testing.T) {
 	if !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("error = %v, want idempotency_conflict", err)
 	}
+
+	t.Run("invalid_body_before_replay", func(t *testing.T) {
+		_, err := svc.CreateConfig(ctx, "acct_1", "vs_1", "ik_same", CreateLanguageConfigRequest{
+			Languages: []LanguagePair{
+				{Source: "zh-CN", Target: "en-US"},
+				{Source: "zh-CN", Target: "en-US"},
+			},
+		})
+		if !errors.Is(err, ErrInvalidLanguagePair) {
+			t.Fatalf("error = %v, want invalid_language_pair", err)
+		}
+	})
+
+	t.Run("expected_version_change_conflicts", func(t *testing.T) {
+		expected := 1
+		_, err := svc.CreateConfig(ctx, "acct_1", "vs_1", "ik_same", CreateLanguageConfigRequest{
+			Languages:       bilingualPairs(),
+			ExpectedVersion: &expected,
+		})
+		if !errors.Is(err, ErrIdempotencyConflict) {
+			t.Fatalf("error = %v, want idempotency_conflict", err)
+		}
+	})
 }
 
 func TestServiceVersionConflict(t *testing.T) {
@@ -150,6 +174,41 @@ func TestServiceVersionConflict(t *testing.T) {
 	}
 }
 
+func TestServiceConcurrentIdenticalIdempotentRetry(t *testing.T) {
+	base := NewMemoryStore(nil, nil)
+	store := &concurrentIdempotencyStore{MemoryStore: base}
+	svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})
+	ctx := context.Background()
+	req := CreateLanguageConfigRequest{Languages: bilingualPairs()}
+
+	start := make(chan struct{})
+	type result struct {
+		cfg LanguageConfig
+		err error
+	}
+	results := make(chan result, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			cfg, err := svc.CreateConfig(ctx, "acct_1", "vs_1", "ik_race", req)
+			results <- result{cfg: cfg, err: err}
+		}()
+	}
+	close(start)
+
+	var success []LanguageConfig
+	for i := 0; i < 2; i++ {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("concurrent identical retry error = %v, want success", got.err)
+		}
+		success = append(success, got.cfg)
+	}
+	if success[0].ID != success[1].ID || success[0].Version != success[1].Version {
+		t.Fatalf("loser should recover the winner config: %#v vs %#v", success[0], success[1])
+	}
+}
+
 func TestValidateP0LanguagePairs(t *testing.T) {
 	catalog := map[string]SupportedLanguage{
 		"zh-CN": {LanguageCode: "zh-CN", SupportsAsSource: true, SupportsAsTarget: true},
@@ -158,4 +217,53 @@ func TestValidateP0LanguagePairs(t *testing.T) {
 	if err := validateP0LanguagePairs(bilingualPairs(), catalog); err != nil {
 		t.Fatalf("valid pairs rejected: %v", err)
 	}
+}
+
+// concurrentIdempotencyStore forces both callers to miss the pre-insert lookup,
+// then lets both enter CreateActiveConfig so one hits ErrIdempotencyConflict.
+type concurrentIdempotencyStore struct {
+	*MemoryStore
+	mu           sync.Mutex
+	lookups      int
+	creators     int
+	lookupsDone  chan struct{}
+	secondCreate chan struct{}
+}
+
+func (s *concurrentIdempotencyStore) GetConfigByIdempotencyKey(ctx context.Context, key string) (LanguageConfig, error) {
+	s.mu.Lock()
+	s.lookups++
+	n := s.lookups
+	if s.lookupsDone == nil {
+		s.lookupsDone = make(chan struct{})
+	}
+	done := s.lookupsDone
+	if n == 2 {
+		close(done)
+	}
+	s.mu.Unlock()
+
+	<-done
+	if n <= 2 {
+		return LanguageConfig{}, ErrNoActiveConfig
+	}
+	return s.MemoryStore.GetConfigByIdempotencyKey(ctx, key)
+}
+
+func (s *concurrentIdempotencyStore) CreateActiveConfig(ctx context.Context, input CreateConfigInput) (LanguageConfig, error) {
+	s.mu.Lock()
+	s.creators++
+	n := s.creators
+	if s.secondCreate == nil {
+		s.secondCreate = make(chan struct{})
+	}
+	second := s.secondCreate
+	s.mu.Unlock()
+
+	if n == 1 {
+		<-second
+	} else if n == 2 {
+		close(second)
+	}
+	return s.MemoryStore.CreateActiveConfig(ctx, input)
 }

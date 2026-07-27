@@ -7,11 +7,12 @@ import (
 
 // CreateConfigInput is the persistence payload for inserting a new active config.
 type CreateConfigInput struct {
-	SessionID       string
-	LanguagePairs   []LanguagePair
-	CreatedBy       string
-	IdempotencyKey  string // empty means no idempotency key
-	ExpectedVersion *int   // optional optimistic lock against current active version
+	SessionID          string
+	LanguagePairs      []LanguagePair
+	CreatedBy          string
+	IdempotencyKey     string // empty means no idempotency key
+	ExpectedVersion    *int   // optional optimistic lock against current active version
+	RequestFingerprint string // hash of the full create request body for idempotent replay
 }
 
 // ListConfigsQuery pages version history for one session (version DESC).

@@ -52,8 +52,8 @@ func (s *Service) ListConfigHistory(ctx context.Context, accountID, sessionID, c
 
 // CreateConfig creates or switches the active bilingual config for a session.
 //
-// Idempotency (issue #88): same key + same language pairs + same session returns
-// the original config; same key with a different payload returns conflict.
+// Idempotency (issue #88): same key + same full request body + same session
+// returns the original config; same key with a different body returns conflict.
 func (s *Service) CreateConfig(
 	ctx context.Context,
 	accountID, sessionID, idempotencyKey string,
@@ -69,11 +69,20 @@ func (s *Service) CreateConfig(
 		return LanguageConfig{}, fmt.Errorf("%w: languages is required", ErrInvalidRequest)
 	}
 
+	catalog, err := s.activeCatalog(ctx)
+	if err != nil {
+		return LanguageConfig{}, err
+	}
+	if err := validateP0LanguagePairs(req.Languages, catalog); err != nil {
+		return LanguageConfig{}, err
+	}
+
+	fingerprint := requestFingerprint(req)
 	if idempotencyKey != "" {
 		existing, err := s.store.GetConfigByIdempotencyKey(ctx, idempotencyKey)
 		switch {
 		case err == nil:
-			if existing.SessionID != sessionID || !languagePairsEqual(existing.LanguagePairs, req.Languages) {
+			if !sameIdempotentRequest(existing, sessionID, fingerprint) {
 				return LanguageConfig{}, ErrIdempotencyConflict
 			}
 			return existing, nil
@@ -84,21 +93,31 @@ func (s *Service) CreateConfig(
 		}
 	}
 
-	catalog, err := s.activeCatalog(ctx)
-	if err != nil {
-		return LanguageConfig{}, err
+	created, err := s.store.CreateActiveConfig(ctx, CreateConfigInput{
+		SessionID:          sessionID,
+		LanguagePairs:      req.Languages,
+		CreatedBy:          accountID,
+		IdempotencyKey:     idempotencyKey,
+		ExpectedVersion:    req.ExpectedVersion,
+		RequestFingerprint: fingerprint,
+	})
+	if err == nil {
+		return created, nil
 	}
-	if err := validateP0LanguagePairs(req.Languages, catalog); err != nil {
+	if idempotencyKey == "" || !errors.Is(err, ErrIdempotencyConflict) {
 		return LanguageConfig{}, err
 	}
 
-	return s.store.CreateActiveConfig(ctx, CreateConfigInput{
-		SessionID:       sessionID,
-		LanguagePairs:   req.Languages,
-		CreatedBy:       accountID,
-		IdempotencyKey:  idempotencyKey,
-		ExpectedVersion: req.ExpectedVersion,
-	})
+	// Concurrent identical retries: both missed the pre-insert lookup; the loser
+	// hit the idempotency unique index. Re-read and return when the body matches.
+	existing, lookupErr := s.store.GetConfigByIdempotencyKey(ctx, idempotencyKey)
+	if lookupErr != nil {
+		return LanguageConfig{}, err
+	}
+	if !sameIdempotentRequest(existing, sessionID, fingerprint) {
+		return LanguageConfig{}, ErrIdempotencyConflict
+	}
+	return existing, nil
 }
 
 // GetCurrentConfig implements LanguageConfigReader for session management and

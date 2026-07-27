@@ -105,14 +105,15 @@ func (s *MemoryStore) CreateActiveConfig(_ context.Context, input CreateConfigIn
 	}
 
 	cfg := LanguageConfig{
-		ID:            ulid.Make().String(),
-		SessionID:     input.SessionID,
-		Version:       nextVersion,
-		LanguagePairs: append([]LanguagePair(nil), input.LanguagePairs...),
-		Status:        StatusActive,
-		EffectiveFrom: now,
-		CreatedBy:     input.CreatedBy,
-		CreatedAt:     now,
+		ID:                 ulid.Make().String(),
+		SessionID:          input.SessionID,
+		Version:            nextVersion,
+		LanguagePairs:      append([]LanguagePair(nil), input.LanguagePairs...),
+		Status:             StatusActive,
+		EffectiveFrom:      now,
+		CreatedBy:          input.CreatedBy,
+		CreatedAt:          now,
+		RequestFingerprint: input.RequestFingerprint,
 	}
 	s.configs = append(s.configs, cfg)
 	if input.IdempotencyKey != "" {

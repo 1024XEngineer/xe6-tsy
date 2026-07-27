@@ -163,6 +163,39 @@ func TestMemoryConnectionManagerSerializesConcurrentOffers(t *testing.T) {
 	}
 }
 
+func TestMemoryConnectionManagerDoesNotBlockOtherSessionsDuringOffer(t *testing.T) {
+	releaseFirst := make(chan struct{})
+	factory := &blockingTransportFactory{firstStarted: make(chan struct{}), releaseFirst: releaseFirst, otherStarted: make(chan struct{})}
+	manager := NewMemoryConnectionManager(factory)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Open(context.Background(), validOpenConnectionRequest())
+		firstDone <- err
+	}()
+	<-factory.firstStarted
+
+	secondRequest := validOpenConnectionRequest()
+	secondRequest.SessionID = "session-2"
+	secondRequest.IdempotencyKey = "offer-device-2"
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Open(context.Background(), secondRequest)
+		secondDone <- err
+	}()
+	select {
+	case <-factory.otherStarted:
+	case <-time.After(time.Second):
+		t.Fatal("offer for a second session was blocked by the first session transport")
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second Open() error = %v", err)
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+}
+
 func validOpenConnectionRequest() OpenConnectionRequest {
 	return OpenConnectionRequest{
 		SessionID: "session-1", IdempotencyKey: "offer-device-1",
@@ -178,6 +211,28 @@ type fakeTransportFactory struct {
 	release     <-chan struct{}
 	createCalls int
 	once        sync.Once
+}
+
+type blockingTransportFactory struct {
+	mu           sync.Mutex
+	firstStarted chan struct{}
+	releaseFirst <-chan struct{}
+	otherStarted chan struct{}
+	calls        int
+}
+
+func (f *blockingTransportFactory) Create(_ context.Context, _, _ string) (ConnectionTransport, error) {
+	f.mu.Lock()
+	f.calls++
+	call := f.calls
+	f.mu.Unlock()
+	if call == 1 {
+		close(f.firstStarted)
+		<-f.releaseFirst
+	} else {
+		close(f.otherStarted)
+	}
+	return &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}, nil
 }
 
 func (f *fakeTransportFactory) Create(_ context.Context, _, _ string) (ConnectionTransport, error) {
@@ -225,6 +280,7 @@ func (f *fakeTransport) Close(context.Context) error {
 }
 
 var _ ConnectionTransportFactory = (*fakeTransportFactory)(nil)
+var _ ConnectionTransportFactory = (*blockingTransportFactory)(nil)
 var _ ConnectionTransport = (*fakeTransport)(nil)
 
 func sameStrings(got, want []string) bool {

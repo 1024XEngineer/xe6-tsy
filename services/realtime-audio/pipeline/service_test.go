@@ -42,7 +42,7 @@ func TestPipelineFinalFlowCarriesTurnID(t *testing.T) {
 	if requests := ttsProvider.Requests(); len(requests) != 1 || requests[0].TurnID != turn.ID || requests[0].VoiceID != "voice-1" {
 		t.Fatalf("TTS requests = %#v", requests)
 	}
-	if len(finalSink.events) != 1 || finalSink.events[0].TurnID != turn.ID || finalSink.events[0].TargetLanguage != "en-US" || finalSink.events[0].LanguageConfigVersion != 3 || finalSink.events[0].AttributionStatus != recordsv1.AttributionProvisional {
+	if len(finalSink.events) != 1 || finalSink.events[0].EventVersion != recordsv1.FinalTurnEventVersion || finalSink.events[0].TurnID != turn.ID || finalSink.events[0].TargetLanguage != "en-US" || finalSink.events[0].LanguageConfigVersion != 3 || finalSink.events[0].AttributionStatus != recordsv1.AttributionProvisional {
 		t.Fatalf("FinalTurn events = %#v", finalSink.events)
 	}
 	if finalSink.events[0].SpeakerCode != "speaker-1" || finalSink.events[0].SpeakerLabelSnapshot == nil || *finalSink.events[0].SpeakerLabelSnapshot != "Speaker 1" {

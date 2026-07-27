@@ -25,7 +25,7 @@ func TestOutboxSinksPublishTypedEvents(t *testing.T) {
 	if len(outbox.entries) != 2 {
 		t.Fatalf("outbox entries = %d, want 2", len(outbox.entries))
 	}
-	if outbox.entries[0].topic != "final_turn.recorded" || outbox.entries[0].key != final.EventID {
+	if outbox.entries[0].topic != recordsv1.FinalTurnTopic || outbox.entries[0].key != final.EventID {
 		t.Fatalf("final entry = %#v", outbox.entries[0])
 	}
 	if got, ok := outbox.entries[0].payload.(recordsv1.FinalTurnEvent); !ok || got.EventID != final.EventID {
@@ -100,7 +100,8 @@ var _ DurableOutbox = (*recordingOutbox)(nil)
 
 func validFinalTurnEvent() FinalTurnEvent {
 	return FinalTurnEvent{
-		EventID: "event-1", TraceID: "trace-1", TurnID: "turn-1", SessionID: "session-1",
+		EventVersion: recordsv1.FinalTurnEventVersion,
+		EventID:      "event-1", TraceID: "trace-1", TurnID: "turn-1", SessionID: "session-1",
 		SequenceNo: 1, SourceLanguage: "zh-CN", TargetLanguage: "en-US",
 		LanguageConfigVersion: 1, SourceText: "你好", TranslatedText: "hello",
 		AttributionStatus: recordsv1.AttributionPending,

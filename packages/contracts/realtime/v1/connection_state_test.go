@@ -1,0 +1,94 @@
+package realtimev1
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+var contractStates = []ConnectionState{
+	ConnectionNew,
+	ConnectionConnecting,
+	ConnectionConnected,
+	ConnectionDisconnected,
+	ConnectionFailed,
+	ConnectionClosed,
+}
+
+var contractErrorCodes = []ErrorCode{
+	ErrorConnectionNotFound,
+	ErrorConnectionNotReady,
+	ErrorConnectionFailed,
+}
+
+func TestConnectionStateContract(t *testing.T) {
+	for _, state := range contractStates {
+		if !state.Valid() {
+			t.Fatalf("ConnectionState(%q).Valid() = false", state)
+		}
+		if got := state.Ready(); got != (state == ConnectionConnected) {
+			t.Fatalf("ConnectionState(%q).Ready() = %t", state, got)
+		}
+	}
+	if ConnectionState("unknown").Valid() {
+		t.Fatal("unknown connection state must be invalid")
+	}
+}
+
+func TestOpenAPIWebRTCContractMatchesGoTypes(t *testing.T) {
+	specPath := filepath.Join("..", "..", "openapi.yaml")
+	specData, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatalf("read OpenAPI spec: %v", err)
+	}
+
+	var spec openAPISpec
+	if err := yaml.Unmarshal(specData, &spec); err != nil {
+		t.Fatalf("parse OpenAPI spec: %v", err)
+	}
+
+	stateSchema := spec.Components.Schemas["WebRTCConnectionState"]
+	if !reflect.DeepEqual(stateSchema.Enum, stringValues(contractStates)) {
+		t.Fatalf("WebRTCConnectionState enum = %v, want %v", stateSchema.Enum, contractStates)
+	}
+	errorSchema := spec.Components.Schemas["WebRTCErrorCode"]
+	if !reflect.DeepEqual(errorSchema.Enum, stringValues(contractErrorCodes)) {
+		t.Fatalf("WebRTCErrorCode enum = %v, want %v", errorSchema.Enum, contractErrorCodes)
+	}
+
+	snapshot := spec.Components.Schemas["WebRTCConnectionSnapshot"]
+	wantFields := []string{"session_id", "connection_id", "state", "version", "updated_at"}
+	if !reflect.DeepEqual(snapshot.Required, wantFields) {
+		t.Fatalf("WebRTCConnectionSnapshot required = %v, want %v", snapshot.Required, wantFields)
+	}
+	if got := snapshot.Properties["state"].Ref; got != "#/components/schemas/WebRTCConnectionState" {
+		t.Fatalf("WebRTCConnectionSnapshot.state ref = %q", got)
+	}
+}
+
+func stringValues[T ~string](values []T) []string {
+	result := make([]string, len(values))
+	for index, value := range values {
+		result[index] = string(value)
+	}
+	return result
+}
+
+type openAPISpec struct {
+	Components struct {
+		Schemas map[string]openAPISchema `yaml:"schemas"`
+	} `yaml:"components"`
+}
+
+type openAPISchema struct {
+	Enum       []string                   `yaml:"enum"`
+	Required   []string                   `yaml:"required"`
+	Properties map[string]openAPIProperty `yaml:"properties"`
+}
+
+type openAPIProperty struct {
+	Ref string `yaml:"$ref"`
+}

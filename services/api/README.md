@@ -56,3 +56,17 @@ WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webr
 
 账户、用量和消息投递当前为可编译契约骨架。未接入数据库、验证码发送、Token
 签发、队列或 Email Provider 的业务方法必须返回 `not_implemented`，不得伪造成功结果。
+
+## Voice record storage integration tests
+
+Voice record migrations use PostgreSQL and are isolated behind the `integration` build tag. Create
+a dedicated local database whose name ends in `_test`, then set its URL before running the tests:
+
+```powershell
+docker compose -f ../../infra/docker-compose.yml exec postgres createdb -U postgres lingow_records_test
+$env:RECORDSTORE_TEST_DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/lingow_records_test?sslmode=disable'
+go test -count=1 -tags=integration ./recordstore/...
+```
+
+The test helper creates and removes a random schema for each test and refuses a database not named
+as a test database. It never uses `DATABASE_URL`.

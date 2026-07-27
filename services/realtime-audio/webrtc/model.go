@@ -2,14 +2,16 @@ package webrtc
 
 import "time"
 
-// ConnectionState describes WebRTC transport progress independently of the realtime pipeline state.
+// ConnectionState mirrors RTCPeerConnectionState independently of signaling and pipeline state.
 type ConnectionState string
 
 const (
-	ConnectionSignaling    ConnectionState = "signaling"
+	ConnectionNew          ConnectionState = "new"
 	ConnectionConnecting   ConnectionState = "connecting"
 	ConnectionConnected    ConnectionState = "connected"
 	ConnectionDisconnected ConnectionState = "disconnected"
+	ConnectionFailed       ConnectionState = "failed"
+	ConnectionClosed       ConnectionState = "closed"
 )
 
 // ConnectionTicket is the short-lived session authorization issued by the API service.

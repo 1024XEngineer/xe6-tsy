@@ -22,7 +22,9 @@ type API struct {
 	delivery delivery.Service
 }
 
-func New(accountsService accounts.Service, usageService usage.Service, deliveryService delivery.Service) http.Handler {
+// New builds the account/usage/delivery HTTP mux. Callers may register
+// additional module routes on the returned ServeMux before serving.
+func New(accountsService accounts.Service, usageService usage.Service, deliveryService delivery.Service) *http.ServeMux {
 	a := &API{accounts: accountsService, usage: usageService, delivery: deliveryService}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/auth/anonymous", a.createAnonymous)

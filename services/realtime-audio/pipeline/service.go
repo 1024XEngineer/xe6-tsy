@@ -127,10 +127,8 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("start TTS: %w", err)
 	}
 	defer stream.Close()
-	for chunk := range stream.Chunks() {
-		if err := s.audio.Publish(ctx, AudioChunk{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, SequenceNo: chunk.SequenceNo, Data: append([]byte(nil), chunk.Data...)}); err != nil {
-			return fmt.Errorf("publish audio chunk: %w", err)
-		}
+	if err := s.publishTTSChunks(ctx, turn, playbackID, stream.Chunks()); err != nil {
+		return fmt.Errorf("stream TTS audio: %w", err)
 	}
 	ttsResult, err := stream.Finish(ctx)
 	if err != nil {
@@ -140,6 +138,22 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("publish TTS usage: %w", err)
 	}
 	return nil
+}
+
+func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, chunks <-chan tts.AudioChunk) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case chunk, ok := <-chunks:
+			if !ok {
+				return nil
+			}
+			if err := s.audio.Publish(ctx, AudioChunk{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, SequenceNo: chunk.SequenceNo, Data: append([]byte(nil), chunk.Data...)}); err != nil {
+				return fmt.Errorf("publish audio chunk: %w", err)
+			}
+		}
+	}
 }
 
 func (s *PipelineService) validate() error {

@@ -115,6 +115,42 @@ func TestPipelineRejectsInvalidUsageBeforePublication(t *testing.T) {
 	}
 }
 
+func TestPipelineCancellationClosesBlockedTTSStream(t *testing.T) {
+	stream := &blockingTTSStream{chunks: make(chan tts.AudioChunk), closed: make(chan struct{})}
+	provider := &blockingTTSProvider{stream: stream, started: make(chan struct{})}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        provider, FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- service.HandleASRFinal(ctx, testTurn(), asr.FinalResult{
+			Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+		})
+	}()
+
+	select {
+	case <-provider.started:
+		cancel()
+	case <-time.After(time.Second):
+		t.Fatal("TTS stream did not start")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("HandleASRFinal() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HandleASRFinal() did not return after cancellation")
+	}
+	select {
+	case <-stream.closed:
+	default:
+		t.Fatal("TTS stream was not closed")
+	}
+}
+
 func TestPipelineIgnoresPartialASREvents(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "unused"}}
 	service := NewPipelineService(PipelineDependencies{Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}), FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}})
@@ -173,7 +209,35 @@ func (blockingSpeakerReader) GetProvisionalAttribution(ctx context.Context, _ re
 	return recordsv1.SpeakerAttribution{}, ctx.Err()
 }
 
+type blockingTTSProvider struct {
+	stream  *blockingTTSStream
+	started chan struct{}
+}
+
+func (p *blockingTTSProvider) StartStream(context.Context, tts.Request) (tts.Stream, error) {
+	close(p.started)
+	return p.stream, nil
+}
+
+type blockingTTSStream struct {
+	chunks <-chan tts.AudioChunk
+	closed chan struct{}
+}
+
+func (s *blockingTTSStream) Chunks() <-chan tts.AudioChunk { return s.chunks }
+
+func (*blockingTTSStream) Finish(context.Context) (tts.Result, error) {
+	return tts.Result{}, errors.New("Finish must not be called while chunks are blocked")
+}
+
+func (s *blockingTTSStream) Close() error {
+	close(s.closed)
+	return nil
+}
+
 var _ recordsv1.FinalTurnSink = (*recordingFinalSink)(nil)
 var _ UsageFactSink = (*recordingUsageSink)(nil)
 var _ AudioChunkSink = (*recordingAudioSink)(nil)
 var _ recordsv1.SpeakerAttributionReader = (*fixedSpeakerReader)(nil)
+var _ tts.Provider = (*blockingTTSProvider)(nil)
+var _ tts.Stream = (*blockingTTSStream)(nil)

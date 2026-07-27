@@ -42,8 +42,20 @@ services/realtime-audio/
 └── session/
 ```
 
-`webrtc` 对外提供 `/realtime/v1` 信令接口，并校验 `services/api` 签发的短期实时连接票据。
-API Gateway 可以转发该路径，但 PeerConnection 和连接状态始终由本服务管理。
+`webrtc` 规划通过 `/realtime/v1` 提供信令接口，并校验 `services/api` 签发的短期实时连接票据。
+当前仅提供服务层信令骨架，尚未注册公网 HTTP 路由。后续可以由 API Gateway 转发该路径，
+但 PeerConnection 和连接状态始终由本服务管理。
+
+当前内存 manager 在 Offer 成功后产生初始的 `connecting` 快照，并支持读取当前连接及应用
+`new/connecting/connected/disconnected/failed/closed` 状态回调。Pion Adapter 尚未接入，
+因此骨架不会自动进入 `connected`，也不能作为 Pipeline 启动就绪依据。接入 Pion 后仍须以
+`connected` 作为启动条件。Adapter 可以在 manager 关闭前报告 `closed` transport 状态；
+manager 的 `Close` 本身不发布可查询的 `closed` 快照，成功后立即删除记录，后续查询返回
+`not_found`。
+
+当前票据校验也是 `Open` 前的单次授权检查。接入正式会话生命周期时，必须在 `Open` 准入点
+重新校验可撤销的生命周期授权，或由 manager 强制校验 session generation/终止标记，使已通过
+前置校验但尚未开户的旧请求无法越过 `Stop(session_id)`。
 
 `Stop(session_id)` 必须幂等，并在返回成功前停止 Pipeline、取消 Provider Context、关闭
 DataChannel、Track 和 PeerConnection。连接租约或空闲超时负责兜底清理失去控制面的孤立连接。

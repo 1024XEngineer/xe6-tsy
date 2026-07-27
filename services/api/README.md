@@ -54,8 +54,10 @@ WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webr
 结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
 本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。
 
-账户、用量和消息投递当前为可编译契约骨架。未接入数据库、验证码发送、Token
-签发、队列或 Email Provider 的业务方法必须返回 `not_implemented`，不得伪造成功结果。
+账户、用量和消息投递当前为可编译契约骨架。受保护路由只接受经过
+`AccessTokenVerifier` 验证后写入 Context 的账户身份；具体 Token 签发和验证策略接入前
+默认拒绝请求。未接入数据库、验证码发送、Token 签发、队列或 Email Provider 的业务方法
+必须返回 `not_implemented`，不得伪造成功结果。
 
 ## 语音记录存储集成测试
 

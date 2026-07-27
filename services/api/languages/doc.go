@@ -2,11 +2,11 @@
 //
 // Contract source: GitHub issue #88.
 //
-// This package currently exposes only empty boundary surfaces:
-//   - HTTP handlers under /api/v1 that return 501 not_implemented
-//   - LanguageConfigReader / LanguageTargetResolver stubs for the
-//     session-management and realtime-translation modules
-//
-// Persistence, validation, versioning, and idempotency are intentionally
-// unimplemented until the internal service is filled in.
+// This package provides:
+//   - Postgres schema migrations for supported_languages and
+//     voice_session_language_configs
+//   - Store persistence with versioned active configs, idempotency keys,
+//     and optimistic expected_version checks
+//   - HTTP / internal port stubs that return not_implemented until the
+//     service layer is wired on top of Store
 package languages

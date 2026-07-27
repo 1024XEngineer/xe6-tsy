@@ -2,21 +2,32 @@
 
 语言配置模块（契约真源：[Issue #88](https://github.com/1024XEngineer/xe6-tsy/issues/88)）。
 
-## 当前阶段（空接口）
-
-已暴露、可联调对齐：
+## 当前阶段
 
 | 边界 | 内容 | 行为 |
 | --- | --- | --- |
-| 前端 / HTTP | `GET /api/v1/languages` 等四条路由 | 一律 `501 not_implemented` |
-| 会话管理 / 实时转译 | `LanguageConfigReader`、`LanguageTargetResolver` | 返回 `ErrNotImplemented` |
+| 数据库 | `supported_languages`、`voice_session_language_configs` | 迁移 + Postgres `Store` 已可用 |
+| 前端 / HTTP | 四条 `/api/v1` 路由 | 仍返回 `501 not_implemented`（下一阶段接 Service） |
+| 会话管理 / 实时转译 | `LanguageConfigReader` / `LanguageTargetResolver` | Stub 仍返回 `not_implemented` |
 
-尚未实现：持久化、校验、版本切换、幂等、乐观锁、会话归属鉴权。
+## 数据库
+
+迁移文件：`migrations/001_language_config.sql`（权威配置表；暂不建 `voice_sessions` FK）。
+
+```bash
+# 默认连接（可用 DATABASE_URL 覆盖）
+postgres://postgres:123456@localhost:5432/lingow?sslmode=disable
+
+cd services/api
+go test -tags=integration ./languages/ -count=1
+```
+
+`ApplyMigrations` 幂等；P0 种子语言为 `zh-CN` / `en-US`。
 
 ## 给其它模块
 
 ```go
-reader := languages.NewStub() // 后续替换为真实 Service
+reader := languages.NewStub() // 后续替换为基于 Store 的 Service
 snapshot, err := reader.GetCurrentConfig(ctx, sessionID)
 ```
 

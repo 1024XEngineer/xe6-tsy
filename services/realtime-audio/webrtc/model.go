@@ -1,17 +1,9 @@
 package webrtc
 
-import "time"
+import (
+	"time"
 
-// ConnectionState mirrors RTCPeerConnectionState independently of signaling and pipeline state.
-type ConnectionState string
-
-const (
-	ConnectionNew          ConnectionState = "new"
-	ConnectionConnecting   ConnectionState = "connecting"
-	ConnectionConnected    ConnectionState = "connected"
-	ConnectionDisconnected ConnectionState = "disconnected"
-	ConnectionFailed       ConnectionState = "failed"
-	ConnectionClosed       ConnectionState = "closed"
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 // ConnectionTicket is the short-lived session authorization issued by the API service.
@@ -36,13 +28,13 @@ type OfferRequest struct {
 
 // OfferResponse is the transport-neutral result returned after a connection is reserved.
 type OfferResponse struct {
-	SDP              string          `json:"sdp"`
-	Type             string          `json:"type"`
-	SessionID        string          `json:"session_id"`
-	ConnectionID     string          `json:"connection_id"`
-	DataChannelLabel string          `json:"data_channel_label"`
-	TTSTrackID       string          `json:"tts_track_id"`
-	ConnectionState  ConnectionState `json:"connection_state"`
+	SDP              string                     `json:"sdp"`
+	Type             string                     `json:"type"`
+	SessionID        string                     `json:"session_id"`
+	ConnectionID     string                     `json:"connection_id"`
+	DataChannelLabel string                     `json:"data_channel_label"`
+	TTSTrackID       string                     `json:"tts_track_id"`
+	ConnectionState  realtimev1.ConnectionState `json:"connection_state"`
 }
 
 // ICECandidate is one idempotent candidate supplied after an offer.
@@ -85,6 +77,6 @@ type Connection struct {
 	IdempotencyKey string
 	Offer          SessionDescription
 	Answer         SessionDescription
-	State          ConnectionState
+	State          realtimev1.ConnectionState
 	CreatedAt      time.Time
 }

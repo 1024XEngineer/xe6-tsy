@@ -35,6 +35,12 @@ var (
 	ErrConnectionClosing = errors.New("WebRTC session connections are closing")
 	// ErrConnectionSessionMismatch prevents one session from mutating another session's connection.
 	ErrConnectionSessionMismatch = errors.New("WebRTC connection session mismatch")
+	// ErrConnectionStateInvalid rejects transport states outside the shared six-state contract.
+	ErrConnectionStateInvalid = errors.New("invalid WebRTC connection state")
+	// ErrConnectionStateTransition rejects callbacks that violate the transport state machine.
+	ErrConnectionStateTransition = errors.New("invalid WebRTC connection state transition")
+	// ErrConnectionStateTimeRequired rejects state callbacks without an observation timestamp.
+	ErrConnectionStateTimeRequired = errors.New("WebRTC connection state time is required")
 	// ErrTicketSessionMismatch prevents a ticket for one session from authorizing another.
 	ErrTicketSessionMismatch = errors.New("realtime ticket session mismatch")
 	// ErrTicketAccountRequired prevents unowned tickets from authorizing realtime media access.

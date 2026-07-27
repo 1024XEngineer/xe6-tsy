@@ -1,6 +1,11 @@
 package webrtc
 
-import "context"
+import (
+	"context"
+	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+)
 
 // TicketValidator validates API-issued, short-lived realtime tickets at the service boundary.
 type TicketValidator interface {
@@ -24,5 +29,7 @@ type ConnectionTransportFactory interface {
 type ConnectionManager interface {
 	Open(ctx context.Context, request OpenConnectionRequest) (Connection, error)
 	AddCandidates(ctx context.Context, sessionID string, request CandidateRequest) (CandidateResponse, error)
+	GetCurrent(ctx context.Context, sessionID string) (realtimev1.ConnectionSnapshot, error)
+	ApplyState(ctx context.Context, sessionID, connectionID string, state realtimev1.ConnectionState, updatedAt time.Time) (realtimev1.ConnectionSnapshot, error)
 	Close(ctx context.Context, sessionID string) error
 }

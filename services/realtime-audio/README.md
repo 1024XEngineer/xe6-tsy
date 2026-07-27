@@ -46,9 +46,11 @@ services/realtime-audio/
 当前仅提供服务层信令骨架，尚未注册公网 HTTP 路由。后续可以由 API Gateway 转发该路径，
 但 PeerConnection 和连接状态始终由本服务管理。
 
-当前内存骨架在 Offer 成功后只产生初始的 `connecting` 快照，尚未接入真实 PeerConnection
-状态事件，不能作为 Pipeline 启动就绪依据。接入 Pion 时必须补齐
-`new/connecting/connected/disconnected/failed/closed` 状态迁移，并以 `connected` 作为启动条件。
+当前内存 manager 在 Offer 成功后产生初始的 `connecting` 快照，并支持读取当前连接及应用
+`new/connecting/connected/disconnected/failed/closed` 状态回调。Pion Adapter 尚未接入，
+因此骨架不会自动进入 `connected`，也不能作为 Pipeline 启动就绪依据。接入 Pion 后仍须以
+`connected` 作为启动条件。`Close` 成功后删除快照，后续查询返回 `not_found`；`closed` 只作为
+删除前可见的 transport 状态，不承诺持久保留。
 
 当前票据校验也是 `Open` 前的单次授权检查。接入正式会话生命周期时，必须在 `Open` 准入点
 重新校验可撤销的生命周期授权，或由 manager 强制校验 session generation/终止标记，使已通过

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
@@ -21,12 +23,14 @@ type sessionConnections struct {
 	mu               sync.Mutex
 	closeDone        chan struct{}
 	closed           bool
+	currentID        string
 	byID             map[string]*connectionRecord
 	byIdempotencyKey map[string]string
 }
 
 type connectionRecord struct {
 	connection      Connection
+	snapshot        realtimev1.ConnectionSnapshot
 	transport       ConnectionTransport
 	candidateIDs    map[string]ICECandidate
 	endOfCandidates bool
@@ -96,12 +100,88 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 	connection := Connection{
 		ID:        connectionID,
 		SessionID: request.SessionID, IdempotencyKey: request.IdempotencyKey,
-		Offer: request.Offer, Answer: answer, State: ConnectionConnecting, CreatedAt: request.CreatedAt,
+		Offer: request.Offer, Answer: answer, State: realtimev1.ConnectionConnecting, CreatedAt: request.CreatedAt,
 	}
-	connections.byID[connection.ID] = &connectionRecord{connection: connection, transport: transport, candidateIDs: make(map[string]ICECandidate)}
+	connections.byID[connection.ID] = &connectionRecord{
+		connection: connection,
+		snapshot: realtimev1.ConnectionSnapshot{
+			SessionID: connection.SessionID, ConnectionID: connection.ID,
+			State: connection.State, Version: 1, UpdatedAt: request.CreatedAt,
+		},
+		transport: transport, candidateIDs: make(map[string]ICECandidate),
+	}
+	connections.currentID = connection.ID
 	connections.byIdempotencyKey[connection.IdempotencyKey] = connection.ID
 	connections.mu.Unlock()
 	return connection, nil
+}
+
+// GetCurrent returns the latest connection generation retained for a session.
+func (m *MemoryConnectionManager) GetCurrent(ctx context.Context, sessionID string) (realtimev1.ConnectionSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return realtimev1.ConnectionSnapshot{}, err
+	}
+	if sessionID == "" {
+		return realtimev1.ConnectionSnapshot{}, ErrSessionIDRequired
+	}
+	connections := m.getSession(sessionID)
+	if connections == nil {
+		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
+	}
+	connections.mu.Lock()
+	defer connections.mu.Unlock()
+	record := connections.byID[connections.currentID]
+	if connections.closed || record == nil {
+		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
+	}
+	return record.snapshot, nil
+}
+
+// ApplyState accepts a transport callback only for the session's current connection generation.
+func (m *MemoryConnectionManager) ApplyState(
+	ctx context.Context,
+	sessionID, connectionID string,
+	state realtimev1.ConnectionState,
+	updatedAt time.Time,
+) (realtimev1.ConnectionSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return realtimev1.ConnectionSnapshot{}, err
+	}
+	switch {
+	case sessionID == "":
+		return realtimev1.ConnectionSnapshot{}, ErrSessionIDRequired
+	case connectionID == "":
+		return realtimev1.ConnectionSnapshot{}, ErrConnectionIDRequired
+	case !state.Valid():
+		return realtimev1.ConnectionSnapshot{}, ErrConnectionStateInvalid
+	case updatedAt.IsZero():
+		return realtimev1.ConnectionSnapshot{}, ErrConnectionStateTimeRequired
+	}
+
+	connections := m.getSession(sessionID)
+	if connections == nil {
+		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
+	}
+	connections.mu.Lock()
+	defer connections.mu.Unlock()
+	if connections.closed || connections.currentID != connectionID {
+		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
+	}
+	record := connections.byID[connectionID]
+	if record == nil {
+		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
+	}
+	if record.snapshot.State == state {
+		return record.snapshot, nil
+	}
+	if !validConnectionStateTransition(record.snapshot.State, state) {
+		return realtimev1.ConnectionSnapshot{}, ErrConnectionStateTransition
+	}
+	record.connection.State = state
+	record.snapshot.State = state
+	record.snapshot.Version++
+	record.snapshot.UpdatedAt = updatedAt
+	return record.snapshot, nil
 }
 
 // AddCandidates records new candidate IDs and reports repeats without duplicating them.

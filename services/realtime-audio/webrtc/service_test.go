@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 var errTicket = errors.New("ticket rejected")
@@ -21,7 +23,7 @@ func TestSignalingServiceOfferAndCandidateFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Offer() error = %v", err)
 	}
-	if offer.ConnectionID == "" || offer.SessionID != "session-1" || offer.Type != "answer" || offer.ConnectionState != ConnectionConnecting {
+	if offer.ConnectionID == "" || offer.SessionID != "session-1" || offer.Type != "answer" || offer.ConnectionState != realtimev1.ConnectionConnecting {
 		t.Fatalf("Offer() = %#v", offer)
 	}
 	retry, err := service.Offer(context.Background(), "ticket-1", "session-1", OfferRequest{

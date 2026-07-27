@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 func TestMemoryConnectionManagerOpenIsIdempotentPerSession(t *testing.T) {
@@ -21,7 +23,7 @@ func TestMemoryConnectionManagerOpenIsIdempotentPerSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Open() error = %v", err)
 	}
-	if first.ID == "" || first.ID != second.ID || first.State != ConnectionConnecting {
+	if first.ID == "" || first.ID != second.ID || first.State != realtimev1.ConnectionConnecting {
 		t.Fatalf("connections = %#v, %#v", first, second)
 	}
 	if factory.createCalls != 1 || factory.transport.answerCalls != 1 {
@@ -194,6 +196,9 @@ func TestMemoryConnectionManagerCloseIsIdempotent(t *testing.T) {
 	}
 	if err := manager.Close(context.Background(), connection.SessionID); err != nil {
 		t.Fatalf("second Close() error = %v", err)
+	}
+	if _, err := manager.GetCurrent(context.Background(), connection.SessionID); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("GetCurrent() error = %v, want ErrConnectionNotFound", err)
 	}
 	if _, err := manager.AddCandidates(context.Background(), connection.SessionID, CandidateRequest{ConnectionID: connection.ID}); !errors.Is(err, ErrConnectionNotFound) {
 		t.Fatalf("AddCandidates() error = %v, want ErrConnectionNotFound", err)

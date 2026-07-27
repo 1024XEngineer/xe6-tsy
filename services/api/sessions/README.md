@@ -115,9 +115,12 @@ resources were cleaned up.
 
 ## Current slice
 
-This foundation defines domain models, errors, and ports only. Service
-orchestration, HTTP handlers, route registration, OpenAPI, repositories, and
-production adapters belong to follow-up reviewable slices. No stub in this
-package returns fabricated success data. It does not change `main.go`,
-`go.work`, shared authentication, shared error responses, or request-ID
-middleware.
+The service currently implements Create plus account-scoped Detail, State, and
+List queries. Detail and State combine an owned persistent session with one
+validated runtime snapshot; List remains persistent-only.
+
+Start, End, runtime-failure handling, HTTP handlers, route registration,
+OpenAPI, repositories, and production adapters belong to follow-up reviewable
+slices. No stub in this package returns fabricated success data. It does not
+change `main.go`, `go.work`, shared authentication, shared error responses, or
+request-ID middleware.

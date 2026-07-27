@@ -33,5 +33,6 @@ var (
 	ErrConcurrentTransition   = errors.New(string(CodeSessionStateConflict))
 	ErrIdempotencyKeyConflict = errors.New(string(CodeIdempotencyKeyConflict))
 	ErrUnsupportedAudio       = errors.New(string(CodeUnsupportedAudio))
+	ErrRuntimeUnavailable     = errors.New(string(CodeRuntimeUnavailable))
 	ErrNotImplemented         = errors.New(string(CodeNotImplemented))
 )

@@ -19,6 +19,7 @@ type MemoryConnectionManager struct {
 
 type sessionConnections struct {
 	mu               sync.Mutex
+	closeDone        chan struct{}
 	closed           bool
 	byID             map[string]*connectionRecord
 	byIdempotencyKey map[string]string
@@ -51,46 +52,47 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 		return Connection{}, ErrInvalidDependency
 	}
 
-	for {
-		connections := m.getOrCreateSession(request.SessionID)
-		connections.mu.Lock()
-		if connections.closed {
+	connections, err := m.getOrCreateOpenSession(request.SessionID)
+	if err != nil {
+		return Connection{}, err
+	}
+	connections.mu.Lock()
+	if connections.closed {
+		connections.mu.Unlock()
+		return Connection{}, ErrConnectionClosing
+	}
+	if existingID, ok := connections.byIdempotencyKey[request.IdempotencyKey]; ok {
+		existing := connections.byID[existingID]
+		if existing.connection.Offer != request.Offer {
 			connections.mu.Unlock()
-			continue
+			return Connection{}, ErrIdempotencyPayloadConflict
 		}
-		if existingID, ok := connections.byIdempotencyKey[request.IdempotencyKey]; ok {
-			existing := connections.byID[existingID]
-			if existing.connection.Offer != request.Offer {
-				connections.mu.Unlock()
-				return Connection{}, ErrIdempotencyPayloadConflict
-			}
-			connection := existing.connection
-			connections.mu.Unlock()
-			return connection, nil
-		}
-
-		connectionID := m.nextConnectionID()
-		transport, err := m.factory.Create(ctx, request.SessionID, connectionID)
-		if err != nil {
-			connections.mu.Unlock()
-			return Connection{}, fmt.Errorf("create WebRTC transport: %w", err)
-		}
-		answer, err := transport.Answer(ctx, request.Offer)
-		if err != nil {
-			connections.mu.Unlock()
-			closeErr := transport.Close(context.WithoutCancel(ctx))
-			return Connection{}, errors.Join(fmt.Errorf("create SDP answer: %w", err), closeErr)
-		}
-		connection := Connection{
-			ID:        connectionID,
-			SessionID: request.SessionID, IdempotencyKey: request.IdempotencyKey,
-			Offer: request.Offer, Answer: answer, State: ConnectionConnecting, CreatedAt: request.CreatedAt,
-		}
-		connections.byID[connection.ID] = &connectionRecord{connection: connection, transport: transport, candidateIDs: make(map[string]ICECandidate)}
-		connections.byIdempotencyKey[connection.IdempotencyKey] = connection.ID
+		connection := existing.connection
 		connections.mu.Unlock()
 		return connection, nil
 	}
+
+	connectionID := m.nextConnectionID()
+	transport, err := m.factory.Create(ctx, request.SessionID, connectionID)
+	if err != nil {
+		connections.mu.Unlock()
+		return Connection{}, fmt.Errorf("create WebRTC transport: %w", err)
+	}
+	answer, err := transport.Answer(ctx, request.Offer)
+	if err != nil {
+		connections.mu.Unlock()
+		closeErr := transport.Close(context.WithoutCancel(ctx))
+		return Connection{}, errors.Join(fmt.Errorf("create SDP answer: %w", err), closeErr)
+	}
+	connection := Connection{
+		ID:        connectionID,
+		SessionID: request.SessionID, IdempotencyKey: request.IdempotencyKey,
+		Offer: request.Offer, Answer: answer, State: ConnectionConnecting, CreatedAt: request.CreatedAt,
+	}
+	connections.byID[connection.ID] = &connectionRecord{connection: connection, transport: transport, candidateIDs: make(map[string]ICECandidate)}
+	connections.byIdempotencyKey[connection.IdempotencyKey] = connection.ID
+	connections.mu.Unlock()
+	return connection, nil
 }
 
 // AddCandidates records new candidate IDs and reports repeats without duplicating them.
@@ -164,15 +166,29 @@ func (m *MemoryConnectionManager) Close(ctx context.Context, sessionID string) e
 		return ErrSessionIDRequired
 	}
 
-	connections := m.getSession(sessionID)
-	if connections == nil {
-		return nil
+	for {
+		connections, waiting := m.beginClose(sessionID)
+		if connections == nil {
+			return nil
+		}
+		if waiting != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-waiting:
+				continue
+			}
+		}
+
+		closeErr := closeSession(ctx, connections)
+		m.finishClose(sessionID, connections, closeErr)
+		return closeErr
 	}
+}
+
+func closeSession(ctx context.Context, connections *sessionConnections) error {
 	connections.mu.Lock()
 	defer connections.mu.Unlock()
-	if connections.closed {
-		return nil
-	}
 	connections.closed = true
 	var closeErr error
 	for connectionID, record := range connections.byID {
@@ -187,25 +203,49 @@ func (m *MemoryConnectionManager) Close(ctx context.Context, sessionID string) e
 		connections.closed = false
 		return closeErr
 	}
-	m.mu.Lock()
-	if m.sessions[sessionID] == connections {
-		delete(m.sessions, sessionID)
-	}
-	m.mu.Unlock()
 	return nil
 }
 
-func (m *MemoryConnectionManager) getOrCreateSession(sessionID string) *sessionConnections {
+func (m *MemoryConnectionManager) beginClose(sessionID string) (*sessionConnections, <-chan struct{}) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	connections := m.sessions[sessionID]
+	if connections == nil {
+		return nil, nil
+	}
+	if connections.closeDone != nil {
+		return connections, connections.closeDone
+	}
+	connections.closeDone = make(chan struct{})
+	return connections, nil
+}
+
+func (m *MemoryConnectionManager) finishClose(sessionID string, connections *sessionConnections, closeErr error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	done := connections.closeDone
+	if closeErr == nil && m.sessions[sessionID] == connections {
+		delete(m.sessions, sessionID)
+	} else if m.sessions[sessionID] == connections {
+		connections.closeDone = nil
+	}
+	close(done)
+}
+
+func (m *MemoryConnectionManager) getOrCreateOpenSession(sessionID string) (*sessionConnections, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	connections := m.sessions[sessionID]
+	if connections != nil && connections.closeDone != nil {
+		return nil, ErrConnectionClosing
+	}
 	if connections == nil {
 		connections = &sessionConnections{
 			byID: make(map[string]*connectionRecord), byIdempotencyKey: make(map[string]string),
 		}
 		m.sessions[sessionID] = connections
 	}
-	return connections
+	return connections, nil
 }
 
 func (m *MemoryConnectionManager) getSession(sessionID string) *sessionConnections {

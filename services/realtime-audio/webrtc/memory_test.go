@@ -152,6 +152,42 @@ func TestMemoryConnectionManagerCloseIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMemoryConnectionManagerRejectsOfferWhileCloseIsInProgress(t *testing.T) {
+	closeStarted := make(chan struct{})
+	closeRelease := make(chan struct{})
+	transport := &fakeTransport{
+		answer:       SessionDescription{SDP: "answer-sdp", Type: "answer"},
+		closeStarted: closeStarted,
+		closeRelease: closeRelease,
+	}
+	factory := &fakeTransportFactory{transport: transport}
+	manager := NewMemoryConnectionManager(factory)
+	first, err := manager.Open(context.Background(), validOpenConnectionRequest())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	closeResult := make(chan error, 1)
+	go func() {
+		closeResult <- manager.Close(context.Background(), first.SessionID)
+	}()
+	<-closeStarted
+
+	secondRequest := validOpenConnectionRequest()
+	secondRequest.IdempotencyKey = "offer-device-2"
+	if _, err := manager.Open(context.Background(), secondRequest); !errors.Is(err, ErrConnectionClosing) {
+		t.Fatalf("concurrent Open() error = %v, want %v", err, ErrConnectionClosing)
+	}
+	if factory.createCalls != 1 {
+		t.Fatalf("factory calls during close = %d, want 1", factory.createCalls)
+	}
+
+	close(closeRelease)
+	if err := <-closeResult; err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func TestMemoryConnectionManagerDoesNotReuseIDsAfterClose(t *testing.T) {
 	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}})
 	first, err := manager.Open(context.Background(), validOpenConnectionRequest())
@@ -354,6 +390,9 @@ type fakeTransport struct {
 	answerCalls        int
 	endCandidatesCalls int
 	closeCalls         int
+	closeStarted       chan struct{}
+	closeRelease       <-chan struct{}
+	closeOnce          sync.Once
 }
 
 func (f *fakeTransport) Answer(_ context.Context, _ SessionDescription) (SessionDescription, error) {
@@ -379,6 +418,12 @@ func (f *fakeTransport) EndCandidates(context.Context) error {
 
 func (f *fakeTransport) Close(context.Context) error {
 	f.closeCalls++
+	if f.closeStarted != nil {
+		f.closeOnce.Do(func() { close(f.closeStarted) })
+	}
+	if f.closeRelease != nil {
+		<-f.closeRelease
+	}
 	return f.closeErr
 }
 

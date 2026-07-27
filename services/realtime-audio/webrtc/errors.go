@@ -23,6 +23,8 @@ var (
 	ErrCandidateRequired = errors.New("candidate is required")
 	// ErrConnectionNotFound reports a missing or already closed session connection.
 	ErrConnectionNotFound = errors.New("WebRTC connection not found")
+	// ErrConnectionClosing rejects offers while the session's current transport generation is closing.
+	ErrConnectionClosing = errors.New("WebRTC session connections are closing")
 	// ErrConnectionSessionMismatch prevents one session from mutating another session's connection.
 	ErrConnectionSessionMismatch = errors.New("WebRTC connection session mismatch")
 	// ErrTicketSessionMismatch prevents a ticket for one session from authorizing another.

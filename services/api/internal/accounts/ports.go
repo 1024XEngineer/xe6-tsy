@@ -38,6 +38,12 @@ type TokenIssuer interface {
 	HashRefreshToken(string) string
 }
 
+// AccessTokenVerifier validates an access token before its account identity is trusted.
+// Implementations must reject invalid, expired, or otherwise unacceptable tokens.
+type AccessTokenVerifier interface {
+	VerifyAccessToken(context.Context, string) (AccessTokenClaims, error)
+}
+
 // Service defines the account use cases consumed by the HTTP adapter.
 type Service interface {
 	// CreateAnonymous establishes temporary ownership and returns initial credentials.

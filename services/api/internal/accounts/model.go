@@ -50,3 +50,10 @@ type AuthResult struct {
 	Account Account `json:"account"`
 	Tokens  Tokens  `json:"tokens"`
 }
+
+// AccessTokenClaims contains only identity established by access-token validation.
+// HTTP adapters must not populate these claims from client account fields.
+type AccessTokenClaims struct {
+	AccountID string
+	SessionID string
+}

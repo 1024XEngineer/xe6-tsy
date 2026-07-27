@@ -31,3 +31,8 @@ func (*UseCases) Logout(context.Context, string) error { return domain.ErrNotImp
 func (*UseCases) Me(context.Context, string) (Account, error) {
 	return Account{}, domain.ErrNotImplemented
 }
+
+// VerifyAccessToken fails closed until the concrete signing policy is wired.
+func (*UseCases) VerifyAccessToken(context.Context, string) (AccessTokenClaims, error) {
+	return AccessTokenClaims{}, domain.ErrNotImplemented
+}

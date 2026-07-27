@@ -93,6 +93,7 @@ func testTurnConstraints(t *testing.T, pool *pgxpool.Pool) {
 	if err := insertTurn(t.Context(), pool, "turn_01", "event_01", "session_01", nil, 1, createdAt); err != nil {
 		t.Fatalf("insert voice turn: %v", err)
 	}
+	assertPostgresCode(t, insertTurnWithPayloadHash(t.Context(), pool, "turn_hash", "event_hash", "session_hash", nil, 1, createdAt, []byte{1}), "23514")
 	assertPostgresCode(t, insertTurn(t.Context(), pool, "turn_02", "event_01", "session_02", nil, 1, createdAt), "23505")
 	assertPostgresCode(t, insertTurn(t.Context(), pool, "turn_03", "event_03", "session_01", nil, 1, createdAt), "23505")
 
@@ -122,18 +123,23 @@ func insertParticipant(ctx context.Context, pool *pgxpool.Pool, id, sessionID, s
 }
 
 func insertTurn(ctx context.Context, pool *pgxpool.Pool, id, eventID, sessionID string, participantID *string, sequenceNo int64, createdAt time.Time) error {
+	return insertTurnWithPayloadHash(ctx, pool, id, eventID, sessionID, participantID, sequenceNo, createdAt, make([]byte, 32))
+}
+
+func insertTurnWithPayloadHash(ctx context.Context, pool *pgxpool.Pool, id, eventID, sessionID string, participantID *string, sequenceNo int64, createdAt time.Time, payloadHash []byte) error {
 	_, err := pool.Exec(ctx, `
 		INSERT INTO voice_turns (
-			id, event_id, session_id, participant_id, speaker_code, sequence_no,
+			id, event_id, event_payload_hash, session_id, participant_id, speaker_code, sequence_no,
 			source_language, target_language, language_config_version, source_text,
 			translated_text, attribution_status, started_at, ended_at, created_at
 		) VALUES (
-			$1, $2, $3, $4, 'speaker_01', $5,
+			$1, $2, $3, $4, $5, 'speaker_01', $6,
 			'zh-CN', 'en-US', 1, 'source',
-			'translation', 'pending', $6, $6, $6
+			'translation', 'pending', $7, $7, $7
 		)`,
 		id,
 		eventID,
+		payloadHash,
 		sessionID,
 		participantID,
 		sequenceNo,

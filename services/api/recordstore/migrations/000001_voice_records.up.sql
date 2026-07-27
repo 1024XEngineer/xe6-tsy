@@ -25,6 +25,7 @@ CREATE INDEX voice_session_participants_session_speaker_order_idx
 CREATE TABLE voice_turns (
     id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL UNIQUE,
+    event_payload_hash BYTEA NOT NULL,
     session_id TEXT NOT NULL,
     participant_id TEXT,
     speaker_code TEXT NOT NULL,
@@ -46,6 +47,7 @@ CREATE TABLE voice_turns (
     created_at TIMESTAMPTZ NOT NULL,
     CONSTRAINT voice_turns_id_not_empty CHECK (id <> ''),
     CONSTRAINT voice_turns_event_id_not_empty CHECK (event_id <> ''),
+    CONSTRAINT voice_turns_event_payload_hash_length CHECK (octet_length(event_payload_hash) = 32),
     CONSTRAINT voice_turns_session_id_not_empty CHECK (session_id <> ''),
     CONSTRAINT voice_turns_speaker_code_not_empty CHECK (speaker_code <> ''),
     CONSTRAINT voice_turns_sequence_no_positive CHECK (sequence_no >= 1),
@@ -78,6 +80,7 @@ AS $$
 BEGIN
     IF NEW.id IS DISTINCT FROM OLD.id
         OR NEW.event_id IS DISTINCT FROM OLD.event_id
+        OR NEW.event_payload_hash IS DISTINCT FROM OLD.event_payload_hash
         OR NEW.session_id IS DISTINCT FROM OLD.session_id
         OR NEW.speaker_code IS DISTINCT FROM OLD.speaker_code
         OR NEW.display_name IS DISTINCT FROM OLD.display_name

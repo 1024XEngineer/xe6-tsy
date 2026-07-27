@@ -110,6 +110,37 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 	}
 }
 
+func TestFinalTurnEventPayloadHashCoversCompleteEvent(t *testing.T) {
+	event := validFinalTurnEvent()
+	hash, err := FinalTurnEventPayloadHash(event)
+	if err != nil {
+		t.Fatalf("FinalTurnEventPayloadHash() error = %v", err)
+	}
+	replayHash, err := FinalTurnEventPayloadHash(event)
+	if err != nil {
+		t.Fatalf("FinalTurnEventPayloadHash() replay error = %v", err)
+	}
+	if hash != replayHash {
+		t.Fatalf("replay hash = %x, want %x", replayHash, hash)
+	}
+
+	for _, mutate := range []func(*FinalTurnEvent){
+		func(event *FinalTurnEvent) { event.TraceID = "trace_02" },
+		func(event *FinalTurnEvent) { event.OccurredAt = event.OccurredAt.Add(time.Second) },
+		func(event *FinalTurnEvent) { event.TranslatedText = "different translation" },
+	} {
+		changed := event
+		mutate(&changed)
+		changedHash, err := FinalTurnEventPayloadHash(changed)
+		if err != nil {
+			t.Fatalf("FinalTurnEventPayloadHash() changed event error = %v", err)
+		}
+		if changedHash == hash {
+			t.Fatalf("changed event hash = %x, want a different hash", changedHash)
+		}
+	}
+}
+
 func validFinalTurnEvent() FinalTurnEvent {
 	return FinalTurnEvent{
 		EventVersion:          FinalTurnEventVersion,

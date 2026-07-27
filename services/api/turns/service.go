@@ -19,8 +19,10 @@ var (
 	ErrInvalidAttribution  = errors.New("invalid voice turn attribution")
 )
 
-// Repository persists final turns. StoreFinalTurn must atomically deduplicate a FinalTurnEvent
-// by event ID or turn ID, and CorrectAttribution must change only attribution fields.
+// Repository persists final turns. StoreFinalTurn must atomically deduplicate a FinalTurnEvent by
+// event ID, turn ID, or session and sequence number. It accepts a duplicate only when
+// recordsv1.FinalTurnEventPayloadHash matches the stored value; otherwise it returns a conflict.
+// CorrectAttribution must change only attribution fields.
 type Repository interface {
 	StoreFinalTurn(ctx context.Context, event recordsv1.FinalTurnEvent) error
 	ListSession(ctx context.Context, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)

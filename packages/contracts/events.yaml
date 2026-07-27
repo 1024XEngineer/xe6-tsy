@@ -69,7 +69,7 @@ components:
     FinalTurnEvent:
       type: object
       additionalProperties: false
-      description: A final translation event. Producers emit it after translation final succeeds and do not wait for TTS acceptance or playback. Partial ASR or translation data must never use this topic.
+      description: A final translation event. Producers emit it after translation final succeeds and do not wait for TTS acceptance or playback. Partial ASR or translation data must never use this topic. Consumers compare the SHA-256 hash of the complete event JSON for every idempotency-key conflict; only an identical payload is a replay.
       required: [event_version, event_id, trace_id, turn_id, session_id, participant_id, sequence_no, source_language, target_language, language_config_version, source_text, translated_text, speaker_code, speaker_label_snapshot, speaker_confidence, attribution_status, started_at, ended_at, occurred_at]
       properties:
         event_version:

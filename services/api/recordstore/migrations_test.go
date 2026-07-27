@@ -22,4 +22,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 			t.Fatalf("migration SQL does not create %s", table)
 		}
 	}
+	for _, constraint := range []string{"event_payload_hash BYTEA NOT NULL", "octet_length(event_payload_hash) = 32"} {
+		if !strings.Contains(migration.SQL, constraint) {
+			t.Fatalf("migration SQL does not contain %q", constraint)
+		}
+	}
 }

@@ -13,13 +13,6 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// Extra store-level sentinel errors used by CreateActiveConfig and lookups.
-var (
-	ErrInvalidRequest      = errors.New(CodeInvalidRequest)
-	ErrVersionConflict     = errors.New(CodeVersionConflict)
-	ErrIdempotencyConflict = errors.New(CodeIdempotencyConflict)
-)
-
 // PostgresStore persists language configuration in PostgreSQL.
 type PostgresStore struct {
 	pool  *pgxpool.Pool

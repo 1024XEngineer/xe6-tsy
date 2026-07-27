@@ -106,6 +106,27 @@ func TestMemoryConnectionManagerCloseIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMemoryConnectionManagerDoesNotReuseIDsAfterClose(t *testing.T) {
+	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}})
+	first, err := manager.Open(context.Background(), validOpenConnectionRequest())
+	if err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+	if err := manager.Close(context.Background(), first.SessionID); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	secondRequest := validOpenConnectionRequest()
+	secondRequest.IdempotencyKey = "offer-device-2"
+	second, err := manager.Open(context.Background(), secondRequest)
+	if err != nil {
+		t.Fatalf("second Open() error = %v", err)
+	}
+	if second.ID == first.ID {
+		t.Fatalf("connection ID was reused after close: %q", second.ID)
+	}
+}
+
 func TestMemoryConnectionManagerSerializesConcurrentOffers(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

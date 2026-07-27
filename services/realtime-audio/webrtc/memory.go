@@ -11,10 +11,10 @@ import (
 
 // MemoryConnectionManager is a deterministic, process-local signaling store for the skeleton.
 type MemoryConnectionManager struct {
-	mu        sync.Mutex
-	factory   ConnectionTransportFactory
-	sessions  map[string]*sessionConnections
-	sequences map[string]int64
+	mu       sync.Mutex
+	factory  ConnectionTransportFactory
+	sessions map[string]*sessionConnections
+	nextID   int64
 }
 
 type sessionConnections struct {
@@ -32,9 +32,8 @@ type connectionRecord struct {
 // NewMemoryConnectionManager creates an empty manager with session-isolated connection state.
 func NewMemoryConnectionManager(factory ConnectionTransportFactory) *MemoryConnectionManager {
 	return &MemoryConnectionManager{
-		factory:   factory,
-		sessions:  make(map[string]*sessionConnections),
-		sequences: make(map[string]int64),
+		factory:  factory,
+		sessions: make(map[string]*sessionConnections),
 	}
 }
 
@@ -64,8 +63,8 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 		return connections.byID[existingID].connection, nil
 	}
 
-	m.sequences[request.SessionID]++
-	connectionID := fmt.Sprintf("rtc_%s_%06d", request.SessionID, m.sequences[request.SessionID])
+	m.nextID++
+	connectionID := fmt.Sprintf("rtc_%06d", m.nextID)
 	transport, err := m.factory.Create(ctx, request.SessionID, connectionID)
 	if err != nil {
 		return Connection{}, fmt.Errorf("create WebRTC transport: %w", err)

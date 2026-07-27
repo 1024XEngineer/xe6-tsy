@@ -180,7 +180,7 @@ type FinalTurnSnapshot struct {
 
 // FinalTurnSink is the producer-side port used by realtime translation to enqueue final events.
 type FinalTurnSink interface {
-	TryPublish(event FinalTurnEvent) error
+	Publish(ctx context.Context, event FinalTurnEvent) error
 }
 
 // FinalTurnConsumer is the record module's idempotent final-event consumption port.

@@ -39,7 +39,7 @@ type PipelineDependencies struct {
 	Translator     translate.Provider
 	TTS            tts.Provider
 	Speakers       recordsv1.SpeakerAttributionReader
-	FinalTurns     FinalTurnSink
+	FinalTurns     recordsv1.FinalTurnSink
 	Usage          UsageFactSink
 	Audio          AudioChunkSink
 	SpeakerTimeout time.Duration
@@ -52,7 +52,7 @@ type PipelineService struct {
 	translator     translate.Provider
 	tts            tts.Provider
 	speakers       recordsv1.SpeakerAttributionReader
-	finalTurns     FinalTurnSink
+	finalTurns     recordsv1.FinalTurnSink
 	usage          UsageFactSink
 	audio          AudioChunkSink
 	speakerTimeout time.Duration

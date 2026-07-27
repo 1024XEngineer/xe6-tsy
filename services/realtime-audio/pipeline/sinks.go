@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"errors"
+
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 )
 
 const (
@@ -22,11 +24,6 @@ var (
 // DurableOutbox accepts an event before a sink reports successful publication.
 type DurableOutbox interface {
 	Append(ctx context.Context, topic, idempotencyKey string, payload any) error
-}
-
-// FinalTurnSink publishes durable FinalTurn events.
-type FinalTurnSink interface {
-	Publish(ctx context.Context, event FinalTurnEvent) error
 }
 
 // UsageFactSink publishes durable UsageFact events.
@@ -84,3 +81,5 @@ func (s *OutboxUsageFactSink) Publish(ctx context.Context, fact UsageFact) error
 	}
 	return s.outbox.Append(ctx, usageTopic, fact.IdempotencyKey, fact)
 }
+
+var _ recordsv1.FinalTurnSink = (*OutboxFinalTurnSink)(nil)

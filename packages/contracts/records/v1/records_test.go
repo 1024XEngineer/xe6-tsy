@@ -9,7 +9,7 @@ import (
 
 type finalTurnSinkStub struct{}
 
-func (finalTurnSinkStub) TryPublish(FinalTurnEvent) error { return nil }
+func (finalTurnSinkStub) Publish(context.Context, FinalTurnEvent) error { return nil }
 
 type finalTurnConsumerStub struct{}
 

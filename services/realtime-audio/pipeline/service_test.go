@@ -173,7 +173,7 @@ func (blockingSpeakerReader) GetProvisionalAttribution(ctx context.Context, _ re
 	return recordsv1.SpeakerAttribution{}, ctx.Err()
 }
 
-var _ FinalTurnSink = (*recordingFinalSink)(nil)
+var _ recordsv1.FinalTurnSink = (*recordingFinalSink)(nil)
 var _ UsageFactSink = (*recordingUsageSink)(nil)
 var _ AudioChunkSink = (*recordingAudioSink)(nil)
 var _ recordsv1.SpeakerAttributionReader = (*fixedSpeakerReader)(nil)

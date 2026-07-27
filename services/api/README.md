@@ -12,6 +12,9 @@ Go 应用控制服务，负责业务会话、语言配置、数据访问和状�
 - 会话状态快照查询
 - 健康检查
 - 必要的调试记录
+- 匿名账户、手机号登录和 Token 生命周期边界
+- 会话与账户用量查询边界
+- final Turn 的异步消息投递边界
 
 ## 非职责
 
@@ -20,7 +23,8 @@ Go 应用控制服务，负责业务会话、语言配置、数据访问和状�
 - 不创建和保存 PeerConnection、DataChannel、Audio Track
 - 不直接调用 ASR/翻译/TTS
 - 不维护播放状态机
-- 不做账号组织、订单、套餐、发票、术语库和管理后台
+- 不做组织权限、订单、套餐、支付、发票、术语库和管理后台
+- 不在实时主链路中调用第三方消息 Provider
 
 ## 建议包结构
 
@@ -32,6 +36,12 @@ services/api/
 ├── sessions/
 ├── languages/                 # 语言配置：当前为空接口（HTTP 501 + Reader stub）
 ├── realtimeaccess/            # 会话鉴权和短期实时连接票据
+├── internal/
+│   ├── accounts/
+│   ├── usage/
+│   ├── delivery/
+│   ├── domain/
+│   └── webapi/
 ├── health/
 └── webapi/
 ```
@@ -43,3 +53,6 @@ WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webr
 
 结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
 本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。
+
+账户、用量和消息投递当前为可编译契约骨架。未接入数据库、验证码发送、Token
+签发、队列或 Email Provider 的业务方法必须返回 `not_implemented`，不得伪造成功结果。

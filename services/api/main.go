@@ -3,33 +3,32 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 )
 
+// main wires foundation use cases into the HTTP server and owns graceful shutdown.
 func main() {
-	if err := run(); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func run() error {
-	addr := os.Getenv("API_ADDR")
-	if addr == "" {
-		addr = ":8080"
+	address := os.Getenv("API_ADDR")
+	if address == "" {
+		address = ":8080"
 	}
 
-	mux := http.NewServeMux()
+	mux := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases())
 	languages.NewHandler().Register(mux)
 
 	server := &http.Server{
-		Addr:              addr,
+		Addr:              address,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -37,24 +36,27 @@ func run() error {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	errCh := make(chan error, 1)
-	go func() {
-		log.Printf("api listening on %s (languages routes are stubs returning 501)", addr)
-		errCh <- server.ListenAndServe()
-	}()
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	serverErrors := make(chan error, 1)
+	go func() {
+		slog.Info("Lingow API listening", "address", address)
+		serverErrors <- server.ListenAndServe()
+	}()
+
 	select {
+	case err := <-serverErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("API server stopped", "error", err)
+			os.Exit(1)
+		}
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return server.Shutdown(shutdownCtx)
-	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			slog.Error("API shutdown failed", "error", err)
+			os.Exit(1)
 		}
-		return err
 	}
 }

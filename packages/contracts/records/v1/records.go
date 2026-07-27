@@ -19,6 +19,13 @@ const (
 
 const CorrectedBySystem = "system"
 
+const (
+	// FinalTurnTopic is the durable AsyncAPI topic for completed translations.
+	FinalTurnTopic = "translation.final"
+	// FinalTurnEventVersion is the only FinalTurnEvent schema version accepted by v1 consumers.
+	FinalTurnEventVersion = 1
+)
+
 var ErrInvalidFinalTurnEvent = errors.New("invalid final turn event")
 
 type ErrorCode string
@@ -130,6 +137,7 @@ type ListTurnsQuery struct {
 
 // FinalTurnEvent is the durable, at-least-once event emitted after translation is final.
 type FinalTurnEvent struct {
+	EventVersion          int               `json:"event_version"`
 	EventID               string            `json:"event_id"`
 	TraceID               string            `json:"trace_id"`
 	TurnID                string            `json:"turn_id"`
@@ -153,6 +161,8 @@ type FinalTurnEvent struct {
 // Validate enforces the required v1 fields before a FinalTurn enters durable delivery.
 func (event FinalTurnEvent) Validate() error {
 	switch {
+	case event.EventVersion != FinalTurnEventVersion:
+		return invalidFinalTurnField("event_version")
 	case event.EventID == "":
 		return invalidFinalTurnField("event_id")
 	case event.TraceID == "":

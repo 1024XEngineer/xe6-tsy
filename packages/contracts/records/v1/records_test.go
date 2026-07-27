@@ -64,6 +64,9 @@ func TestFinalTurnEventJSONPreservesNullableAttribution(t *testing.T) {
 	if got, want := actual["language_config_version"], float64(3); got != want {
 		t.Fatalf("language_config_version = %v, want %v", got, want)
 	}
+	if got, want := actual["event_version"], float64(FinalTurnEventVersion); got != want {
+		t.Fatalf("event_version = %v, want %v", got, want)
+	}
 	if got, want := actual["attribution_status"], string(AttributionPending); got != want {
 		t.Fatalf("attribution_status = %v, want %q", got, want)
 	}
@@ -79,6 +82,7 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 		name   string
 		mutate func(*FinalTurnEvent)
 	}{
+		{name: "event version", mutate: func(event *FinalTurnEvent) { event.EventVersion = 2 }},
 		{name: "event id", mutate: func(event *FinalTurnEvent) { event.EventID = "" }},
 		{name: "trace id", mutate: func(event *FinalTurnEvent) { event.TraceID = "" }},
 		{name: "turn id", mutate: func(event *FinalTurnEvent) { event.TurnID = "" }},
@@ -107,6 +111,7 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 
 func validFinalTurnEvent() FinalTurnEvent {
 	return FinalTurnEvent{
+		EventVersion:          FinalTurnEventVersion,
 		EventID:               "evt_01",
 		TraceID:               "trace_01",
 		TurnID:                "vt_01",

@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -10,8 +11,9 @@ const (
 	maxListLimit     = 100
 )
 
-// GetDetail combines one account-scoped persistent read with one live runtime
-// read. It never substitutes persisted data when the runtime read fails.
+// GetDetail combines one account-scoped persistent read with one runtime
+// snapshot. Missing snapshots are synthesized as stopped only when the
+// persistent business state makes their absence valid.
 func (s *Service) GetDetail(ctx context.Context, input DetailInput) (VoiceSessionDetail, error) {
 	session, runtime, err := s.readOwnedWithRuntime(ctx, input)
 	if err != nil {
@@ -29,7 +31,7 @@ func (s *Service) GetDetail(ctx context.Context, input DetailInput) (VoiceSessio
 }
 
 // GetState returns the compact polling projection from the same authoritative
-// business and runtime sources used by GetDetail.
+// sources and applies the same business-state rules for missing snapshots.
 func (s *Service) GetState(ctx context.Context, input DetailInput) (StateSnapshot, error) {
 	session, runtime, err := s.readOwnedWithRuntime(ctx, input)
 	if err != nil {
@@ -93,12 +95,54 @@ func (s *Service) readOwnedWithRuntime(
 	if err != nil {
 		return VoiceSession{}, RuntimeSnapshot{}, fmt.Errorf("read owned voice session: %w", err)
 	}
-	runtime, err := s.deps.Realtime.GetRuntimeState(ctx, input.SessionID)
+
+	runtime, err := s.readRuntimeForSession(ctx, session)
 	if err != nil {
-		return VoiceSession{}, RuntimeSnapshot{}, mapDependencyError(ctx, err, ErrRuntimeUnavailable)
-	}
-	if err := validateRuntimeSnapshot(runtime, input.SessionID); err != nil {
 		return VoiceSession{}, RuntimeSnapshot{}, err
 	}
 	return session, runtime, nil
+}
+
+func (s *Service) readRuntimeForSession(
+	ctx context.Context,
+	session VoiceSession,
+) (RuntimeSnapshot, error) {
+	snapshot, err := s.deps.Realtime.GetRuntimeState(ctx, session.ID)
+	if errors.Is(err, ErrRuntimeSnapshotNotFound) {
+		return synthesizeMissingRuntime(session)
+	}
+	if err != nil {
+		return RuntimeSnapshot{}, mapDependencyError(ctx, err, ErrRuntimeUnavailable)
+	}
+	if err := validateRuntimeSnapshot(snapshot, session.ID); err != nil {
+		return RuntimeSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+// synthesizeMissingRuntime interprets an explicitly absent runtime record only
+// for business states where no active media resources are expected.
+func synthesizeMissingRuntime(session VoiceSession) (RuntimeSnapshot, error) {
+	switch session.Status {
+	case StatusCreated:
+		if session.CreatedAt.IsZero() {
+			return RuntimeSnapshot{}, ErrRuntimeUnavailable
+		}
+		return RuntimeSnapshot{
+			SessionID:    session.ID,
+			RuntimeState: RuntimeStopped,
+			UpdatedAt:    session.CreatedAt.UTC(),
+		}, nil
+	case StatusEnded:
+		if session.EndedAt == nil || session.EndedAt.IsZero() {
+			return RuntimeSnapshot{}, ErrRuntimeUnavailable
+		}
+		return RuntimeSnapshot{
+			SessionID:    session.ID,
+			RuntimeState: RuntimeStopped,
+			UpdatedAt:    session.EndedAt.UTC(),
+		}, nil
+	default:
+		return RuntimeSnapshot{}, ErrRuntimeUnavailable
+	}
 }

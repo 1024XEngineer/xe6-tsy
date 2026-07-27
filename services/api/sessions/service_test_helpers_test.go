@@ -57,7 +57,7 @@ type fakeRealtimeLifecycle struct {
 	getErr       error
 	getCalls     int
 	getSessionID string
-	getHook      func()
+	getHook      func(context.Context)
 }
 
 func (*fakeRealtimeLifecycle) Start(
@@ -75,13 +75,13 @@ func (*fakeRealtimeLifecycle) Stop(
 }
 
 func (f *fakeRealtimeLifecycle) GetRuntimeState(
-	_ context.Context,
+	ctx context.Context,
 	sessionID string,
 ) (RuntimeSnapshot, error) {
 	f.getCalls++
 	f.getSessionID = sessionID
 	if f.getHook != nil {
-		f.getHook()
+		f.getHook(ctx)
 	}
 	return f.getResult, f.getErr
 }

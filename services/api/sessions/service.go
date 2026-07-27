@@ -21,7 +21,7 @@ type Service struct {
 	deps Dependencies
 }
 
-// NewService rejects a partially wired Create service.
+// NewService rejects a partially wired session service.
 func NewService(deps Dependencies) (*Service, error) {
 	if deps.Repository == nil {
 		return nil, fmt.Errorf("%w: repository is required", ErrInvalidDependency)
@@ -88,8 +88,12 @@ func validateRuntimeSnapshot(snapshot RuntimeSnapshot, sessionID string) error {
 }
 
 func mapDependencyError(ctx context.Context, err error, boundary error) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return err
 	}
 	if errors.Is(err, ErrNotImplemented) {
 		return ErrNotImplemented

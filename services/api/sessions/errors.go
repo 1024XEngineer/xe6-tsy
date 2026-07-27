@@ -34,5 +34,8 @@ var (
 	ErrIdempotencyKeyConflict = errors.New(string(CodeIdempotencyKeyConflict))
 	ErrUnsupportedAudio       = errors.New(string(CodeUnsupportedAudio))
 	ErrRuntimeUnavailable     = errors.New(string(CodeRuntimeUnavailable))
-	ErrNotImplemented         = errors.New(string(CodeNotImplemented))
+	// ErrRuntimeSnapshotNotFound is an adapter-only signal whose query meaning
+	// depends on the persisted business state.
+	ErrRuntimeSnapshotNotFound = errors.New("sessions: runtime snapshot not found")
+	ErrNotImplemented          = errors.New(string(CodeNotImplemented))
 )

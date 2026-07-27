@@ -101,9 +101,18 @@ resources were cleaned up.
 
 - Detail reads an owned persistent session and one live runtime snapshot.
 - State reads only the owned business state and polling runtime fields.
+- When a runtime snapshot is explicitly absent:
+  - `created` sessions are represented as `stopped` using `created_at`;
+  - `ended` sessions are represented as `stopped` using `ended_at`;
+  - `active` sessions return `runtime_state_unavailable`.
+- Runtime dependency failures and invalid snapshots are never synthesized as
+  `stopped`.
 - List returns `VoiceSessionListItem` values from persistent storage only.
 - List never calls realtime per row or in batch and never filters by runtime or
   connection state.
+
+`ErrRuntimeSnapshotNotFound` is an internal adapter boundary signal. It is not
+an HTTP error code and must not be exposed directly to clients.
 
 ## Idempotency ownership
 

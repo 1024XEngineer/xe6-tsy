@@ -1,0 +1,45 @@
+asyncapi: 3.0.0
+info:
+  title: Lingow Internal Usage Events
+  version: 0.1.0
+  description: Internal contracts consumed by the usage domain.
+channels:
+  usageRecorded:
+    address: usage.recorded
+    messages:
+      usageRecorded:
+        $ref: '#/components/messages/UsageRecorded'
+operations:
+  consumeUsageRecorded:
+    action: receive
+    channel:
+      $ref: '#/channels/usageRecorded'
+components:
+  messages:
+    UsageRecorded:
+      name: usage.recorded
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/UsageRecordedPayload'
+  schemas:
+    UsageRecordedPayload:
+      type: object
+      additionalProperties: false
+      required: [event_version, id, trace_id, idempotency_key, account_id, session_id, turn_id, service_type, provider, model, input_tokens, output_tokens, audio_duration_ms, cost_amount, currency, occurred_at]
+      properties:
+        event_version: { type: integer, const: 1, description: Payload schema version. }
+        id: { type: string, minLength: 1 }
+        trace_id: { type: string, minLength: 1 }
+        idempotency_key: { type: string, minLength: 1, maxLength: 200 }
+        account_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        turn_id: { type: string, minLength: 1 }
+        service_type: { type: string, enum: [asr, translation, tts, diarization] }
+        provider: { type: string, minLength: 1 }
+        model: { type: string, minLength: 1 }
+        input_tokens: { type: integer, format: int64, minimum: 0, description: Translation input usage measured in tokens; zero for non-token services. }
+        output_tokens: { type: integer, format: int64, minimum: 0, description: Translation output usage measured in tokens; zero for non-token services. }
+        audio_duration_ms: { type: integer, format: int64, minimum: 0, description: Billable audio duration in milliseconds; zero for non-audio services. }
+        cost_amount: { type: string, pattern: '^(?:|(?:0|[1-9][0-9]*)(?:\.[0-9]+)?)$', description: Decimal amount, or an empty string when cost is not available. }
+        currency: { type: string, pattern: '^(?:|[A-Z]{3})$', description: ISO 4217 currency, or an empty string when cost is not available. }
+        occurred_at: { type: string, format: date-time }

@@ -6,6 +6,7 @@ import "errors"
 type ErrorCode string
 
 const (
+	CodeInvalidDependency      ErrorCode = "invalid_dependency"
 	CodeInvalidRequest         ErrorCode = "invalid_request"
 	CodeUnauthorized           ErrorCode = "unauthorized"
 	CodeVoiceSessionNotFound   ErrorCode = "voice_session_not_found"
@@ -24,9 +25,13 @@ const (
 )
 
 var (
+	ErrInvalidDependency      = errors.New(string(CodeInvalidDependency))
+	ErrInvalidRequest         = errors.New(string(CodeInvalidRequest))
+	ErrUnauthorized           = errors.New(string(CodeUnauthorized))
 	ErrVoiceSessionNotFound   = errors.New(string(CodeVoiceSessionNotFound))
 	ErrEndIntentNotFound      = errors.New(string(CodeEndIntentNotFound))
 	ErrConcurrentTransition   = errors.New(string(CodeSessionStateConflict))
 	ErrIdempotencyKeyConflict = errors.New(string(CodeIdempotencyKeyConflict))
+	ErrUnsupportedAudio       = errors.New(string(CodeUnsupportedAudio))
 	ErrNotImplemented         = errors.New(string(CodeNotImplemented))
 )

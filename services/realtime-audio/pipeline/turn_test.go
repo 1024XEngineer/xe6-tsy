@@ -151,6 +151,8 @@ func TestTurnOpenerRejectsInvalidLanguageConfig(t *testing.T) {
 		{name: "no pairs", version: 1},
 		{name: "empty source", version: 1, pairs: []session.LanguagePair{{Target: "en-US"}}},
 		{name: "empty target", version: 1, pairs: []session.LanguagePair{{Source: "zh-CN"}}},
+		{name: "source has surrounding whitespace", version: 1, pairs: []session.LanguagePair{{Source: " zh-CN ", Target: "en-US"}}},
+		{name: "target has surrounding whitespace", version: 1, pairs: []session.LanguagePair{{Source: "zh-CN", Target: " en-US "}}},
 		{name: "same source and target", version: 1, pairs: []session.LanguagePair{{Source: "zh-CN", Target: "zh-CN"}}},
 	}
 	for _, test := range tests {

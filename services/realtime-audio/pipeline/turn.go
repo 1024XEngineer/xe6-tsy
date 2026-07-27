@@ -128,7 +128,7 @@ func validLanguageConfig(config session.LanguageConfigSnapshot) bool {
 	for _, pair := range config.LanguagePairs {
 		source := strings.TrimSpace(pair.Source)
 		target := strings.TrimSpace(pair.Target)
-		if source == "" || target == "" || source == target {
+		if source == "" || target == "" || source != pair.Source || target != pair.Target || source == target {
 			return false
 		}
 	}

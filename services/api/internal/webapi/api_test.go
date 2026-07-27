@@ -22,9 +22,18 @@ type deliveryFake struct {
 	retryIdempotency string
 }
 
+type tokenVerifierFake struct{}
+
+func (tokenVerifierFake) VerifyAccessToken(_ context.Context, token string) (accounts.AccessTokenClaims, error) {
+	if token != "access-token" {
+		return accounts.AccessTokenClaims{}, domain.ErrUnauthorized
+	}
+	return accounts.AccessTokenClaims{AccountID: "account-1", SessionID: "session-1"}, nil
+}
+
 func authenticate(request *http.Request) *http.Request {
 	request.Header.Set("Authorization", "Bearer access-token")
-	return request.WithContext(webapi.WithAccountID(request.Context(), "account-1"))
+	return request
 }
 
 func (f *deliveryFake) Create(_ context.Context, input delivery.CreateInput) (delivery.Message, error) {
@@ -49,11 +58,12 @@ func (*deliveryFake) PutPreference(context.Context, string, delivery.Channel, bo
 
 func TestCreateMessagePassesAuthenticatedAccount(t *testing.T) {
 	fake := &deliveryFake{}
-	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake)
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(
 		`{"channel":"email","destination_ref":"verified-email","turn_ids":["turn-1"]}`,
 	))
 	request = authenticate(request)
+	request.Header.Set("X-Account-ID", "forged-account")
 	request.Header.Set("Idempotency-Key", "create-message-1")
 	response := httptest.NewRecorder()
 
@@ -69,7 +79,7 @@ func TestCreateMessagePassesAuthenticatedAccount(t *testing.T) {
 
 func TestInvalidMessageDoesNotReachService(t *testing.T) {
 	fake := &deliveryFake{}
-	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake)
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(`{"channel":"email"}`))
 	request = authenticate(request)
 	response := httptest.NewRecorder()
@@ -85,7 +95,7 @@ func TestInvalidMessageDoesNotReachService(t *testing.T) {
 }
 
 func TestPlaceholderUseCaseReturnsNotImplemented(t *testing.T) {
-	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases())
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/anonymous", nil)
 	response := httptest.NewRecorder()
 
@@ -100,7 +110,7 @@ func TestPlaceholderUseCaseReturnsNotImplemented(t *testing.T) {
 }
 
 func TestAccountUsageRejectsReversedPeriod(t *testing.T) {
-	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases())
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
 	end := time.Now().UTC()
 	start := end.Add(time.Hour)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/usage/summary?period_start="+start.Format(time.RFC3339)+"&period_end="+end.Format(time.RFC3339), nil)
@@ -115,7 +125,7 @@ func TestAccountUsageRejectsReversedPeriod(t *testing.T) {
 }
 
 func TestErrorResponseIncludesRequestID(t *testing.T) {
-	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases())
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/account/me", nil)
 	request.Header.Set("X-Request-ID", "req-test-1")
 	response := httptest.NewRecorder()
@@ -141,7 +151,7 @@ func TestCreateMessageRequiresUniqueTurnsAndEmail(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fake := &deliveryFake{}
-			handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake)
+			handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(test.body))
 			request = authenticate(request)
 			request.Header.Set("Idempotency-Key", "message-key")
@@ -161,7 +171,7 @@ func TestCreateMessageRequiresUniqueTurnsAndEmail(t *testing.T) {
 
 func TestRetryPassesMessageResourceID(t *testing.T) {
 	fake := &deliveryFake{}
-	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake)
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", nil)
 	request = authenticate(request)
 	request.Header.Set("Idempotency-Key", "retry-message-1")
@@ -201,7 +211,7 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 		{"update message preference", http.MethodPut, "/api/v1/account/message-preferences/email", `{"enabled":true}`, true, false},
 	}
 
-	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases())
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
@@ -226,9 +236,23 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 }
 
 func TestClientSuppliedAccountIDIsNotTrusted(t *testing.T) {
-	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases())
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/account/me", nil)
 	request.Header.Set("X-Account-ID", "forged-account")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestInvalidBearerTokenCannotReuseInjectedAccountContext(t *testing.T) {
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/account/me", nil)
+	request.Header.Set("Authorization", "Bearer invalid-token")
+	request = request.WithContext(webapi.WithAccountID(request.Context(), "forged-account"))
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)

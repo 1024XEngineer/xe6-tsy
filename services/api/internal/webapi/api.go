@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
@@ -20,27 +21,50 @@ type API struct {
 	accounts accounts.Service
 	usage    usage.Service
 	delivery delivery.Service
+	tokens   accounts.AccessTokenVerifier
 }
 
 // New builds the account/usage/delivery HTTP mux. Callers may register
-// additional module routes on the returned ServeMux before serving.
-func New(accountsService accounts.Service, usageService usage.Service, deliveryService delivery.Service) *http.ServeMux {
-	a := &API{accounts: accountsService, usage: usageService, delivery: deliveryService}
+// additional module routes on the returned ServeMux before serving. Protected
+// routes fail closed unless the required token verifier establishes an account.
+func New(accountsService accounts.Service, usageService usage.Service, deliveryService delivery.Service, tokens accounts.AccessTokenVerifier) *http.ServeMux {
+	a := &API{accounts: accountsService, usage: usageService, delivery: deliveryService, tokens: tokens}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/auth/anonymous", a.createAnonymous)
 	mux.HandleFunc("POST /api/v1/auth/verification-codes", a.createPhoneChallenge)
 	mux.HandleFunc("POST /api/v1/auth/phone/login", a.verifyPhone)
 	mux.HandleFunc("POST /api/v1/auth/token/refresh", a.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
-	mux.HandleFunc("GET /api/v1/account/me", a.me)
-	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/usage", a.sessionUsage)
-	mux.HandleFunc("GET /api/v1/usage/summary", a.accountUsage)
-	mux.HandleFunc("POST /api/v1/outbound-messages", a.createMessage)
-	mux.HandleFunc("GET /api/v1/outbound-messages/{message_id}", a.getMessage)
-	mux.HandleFunc("POST /api/v1/outbound-deliveries/{message_id}/retry", a.retryMessage)
-	mux.HandleFunc("GET /api/v1/account/message-preferences", a.preferences)
-	mux.HandleFunc("PUT /api/v1/account/message-preferences/{channel}", a.putPreference)
+	mux.Handle("GET /api/v1/account/me", a.authenticate(http.HandlerFunc(a.me)))
+	mux.Handle("GET /api/v1/voice-sessions/{id}/usage", a.authenticate(http.HandlerFunc(a.sessionUsage)))
+	mux.Handle("GET /api/v1/usage/summary", a.authenticate(http.HandlerFunc(a.accountUsage)))
+	mux.Handle("POST /api/v1/outbound-messages", a.authenticate(http.HandlerFunc(a.createMessage)))
+	mux.Handle("GET /api/v1/outbound-messages/{message_id}", a.authenticate(http.HandlerFunc(a.getMessage)))
+	mux.Handle("POST /api/v1/outbound-deliveries/{message_id}/retry", a.authenticate(http.HandlerFunc(a.retryMessage)))
+	mux.Handle("GET /api/v1/account/message-preferences", a.authenticate(http.HandlerFunc(a.preferences)))
+	mux.Handle("PUT /api/v1/account/message-preferences/{channel}", a.authenticate(http.HandlerFunc(a.putPreference)))
 	return mux
+}
+
+// authenticate accepts only a verified Bearer token and replaces any preexisting
+// account context with the identity returned by the verifier.
+func (a *API) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Fields(r.Header.Get("Authorization"))
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || a.tokens == nil {
+			writeError(w, r, domain.ErrUnauthorized)
+			return
+		}
+
+		claims, err := a.tokens.VerifyAccessToken(r.Context(), parts[1])
+		if err != nil || claims.AccountID == "" {
+			writeError(w, r, domain.ErrUnauthorized)
+			return
+		}
+
+		ctx := WithAccountID(r.Context(), claims.AccountID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 // errorResponse is the shared public error envelope defined by the OpenAPI contract.

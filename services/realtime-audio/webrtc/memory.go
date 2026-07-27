@@ -133,6 +133,20 @@ func (m *MemoryConnectionManager) AddCandidates(ctx context.Context, sessionID s
 	}
 
 	response := CandidateResponse{ConnectionID: request.ConnectionID}
+	if record.endOfCandidates {
+		for _, candidate := range request.Candidates {
+			previous, exists := record.candidateIDs[candidate.ID]
+			if !exists {
+				return CandidateResponse{}, ErrCandidatesCompleted
+			}
+			if !sameICECandidate(previous, candidate) {
+				return CandidateResponse{}, ErrIdempotencyPayloadConflict
+			}
+			response.DeduplicatedCandidateIDs = append(response.DeduplicatedCandidateIDs, candidate.ID)
+		}
+		response.EndOfCandidates = true
+		return response, nil
+	}
 	for _, candidate := range request.Candidates {
 		if previous, exists := record.candidateIDs[candidate.ID]; exists {
 			if !sameICECandidate(previous, candidate) {

@@ -85,6 +85,34 @@ func TestMemoryConnectionManagerCandidatesAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestMemoryConnectionManagerRejectsNewCandidateAfterEnd(t *testing.T) {
+	transport := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
+	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: transport})
+	connection, err := manager.Open(context.Background(), validOpenConnectionRequest())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	first := CandidateRequest{
+		ConnectionID:    connection.ID,
+		Candidates:      []ICECandidate{{ID: "candidate-1", Candidate: "candidate:1"}},
+		EndOfCandidates: true,
+	}
+	if _, err := manager.AddCandidates(context.Background(), connection.SessionID, first); err != nil {
+		t.Fatalf("first AddCandidates() error = %v", err)
+	}
+
+	late := CandidateRequest{
+		ConnectionID: connection.ID,
+		Candidates:   []ICECandidate{{ID: "candidate-2", Candidate: "candidate:2"}},
+	}
+	if _, err := manager.AddCandidates(context.Background(), connection.SessionID, late); !errors.Is(err, ErrCandidatesCompleted) {
+		t.Fatalf("late AddCandidates() error = %v, want %v", err, ErrCandidatesCompleted)
+	}
+	if len(transport.candidates) != 1 {
+		t.Fatalf("transport candidates = %#v, want only the pre-EOC candidate", transport.candidates)
+	}
+}
+
 func TestMemoryConnectionManagerRejectsChangedCandidateForID(t *testing.T) {
 	transport := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
 	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: transport})

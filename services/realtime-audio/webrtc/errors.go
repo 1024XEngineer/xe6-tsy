@@ -21,6 +21,8 @@ var (
 	ErrCandidateIDRequired = errors.New("candidate id is required")
 	// ErrCandidateRequired rejects a candidate record without its SDP candidate value.
 	ErrCandidateRequired = errors.New("candidate is required")
+	// ErrCandidatesCompleted rejects previously unseen candidates after the remote ICE generation is final.
+	ErrCandidatesCompleted = errors.New("ICE candidate collection is complete")
 	// ErrConnectionNotFound reports a missing or already closed session connection.
 	ErrConnectionNotFound = errors.New("WebRTC connection not found")
 	// ErrConnectionClosing rejects offers while the session's current transport generation is closing.

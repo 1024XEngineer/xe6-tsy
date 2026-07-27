@@ -1,3 +1,6 @@
 go 1.25
 
-use ./services/api
+use (
+	./packages/contracts
+	./services/api
+)

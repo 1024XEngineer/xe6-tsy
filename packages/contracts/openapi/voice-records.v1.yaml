@@ -337,6 +337,7 @@ components:
         language_config_version:
           type: integer
           format: int64
+          minimum: 1
         source_text:
           type: string
         translated_text:

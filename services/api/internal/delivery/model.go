@@ -51,7 +51,7 @@ type FinalTurnSnapshot struct {
 	SpeakerLabelSnapshot  *string   `json:"speaker_label_snapshot"`
 	SourceLanguage        string    `json:"source_language"`
 	TargetLanguage        string    `json:"target_language"`
-	LanguageConfigVersion *int64    `json:"language_config_version"`
+	LanguageConfigVersion int64     `json:"language_config_version"`
 	SourceText            string    `json:"source_text"`
 	TranslatedText        string    `json:"translated_text"`
 	CreatedAt             time.Time `json:"created_at"`

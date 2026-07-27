@@ -31,5 +31,6 @@ type ConnectionManager interface {
 	AddCandidates(ctx context.Context, sessionID string, request CandidateRequest) (CandidateResponse, error)
 	GetCurrent(ctx context.Context, sessionID string) (realtimev1.ConnectionSnapshot, error)
 	ApplyState(ctx context.Context, sessionID, connectionID string, state realtimev1.ConnectionState, updatedAt time.Time) (realtimev1.ConnectionSnapshot, error)
+	// Close removes a successful connection immediately and does not publish a queryable closed snapshot.
 	Close(ctx context.Context, sessionID string) error
 }

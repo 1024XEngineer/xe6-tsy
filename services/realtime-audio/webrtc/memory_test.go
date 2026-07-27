@@ -265,41 +265,73 @@ func TestMemoryConnectionManagerDoesNotReuseIDsAfterClose(t *testing.T) {
 	}
 }
 
-func TestMemoryConnectionManagerRetainsOnlyFailedCloses(t *testing.T) {
+func TestMemoryConnectionManagerRetainsFailedCloseForRetry(t *testing.T) {
 	closeErr := errors.New("close failed")
 	failing := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}, closeErr: closeErr}
-	successful := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
-	manager := NewMemoryConnectionManager(&sequenceTransportFactory{transports: []ConnectionTransport{failing, successful}})
-	first, err := manager.Open(context.Background(), validOpenConnectionRequest())
+	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: failing})
+	connection, err := manager.Open(context.Background(), validOpenConnectionRequest())
 	if err != nil {
-		t.Fatalf("first Open() error = %v", err)
-	}
-	secondRequest := validOpenConnectionRequest()
-	secondRequest.IdempotencyKey = "offer-device-2"
-	if _, err := manager.Open(context.Background(), secondRequest); err != nil {
-		t.Fatalf("second Open() error = %v", err)
+		t.Fatalf("Open() error = %v", err)
 	}
 
-	if err := manager.Close(context.Background(), first.SessionID); !errors.Is(err, closeErr) {
+	if err := manager.Close(context.Background(), connection.SessionID); !errors.Is(err, closeErr) {
 		t.Fatalf("Close() error = %v, want %v", err, closeErr)
 	}
-	connections := manager.getSession(first.SessionID)
-	if connections == nil || len(connections.byID) != 1 || connections.byID[first.ID] == nil {
+	connections := manager.getSession(connection.SessionID)
+	if connections == nil || len(connections.byID) != 1 || connections.byID[connection.ID] == nil {
 		t.Fatalf("remaining connections = %#v", connections)
 	}
-	if successful.closeCalls != 1 || failing.closeCalls != 1 {
-		t.Fatalf("close calls = successful:%d failing:%d", successful.closeCalls, failing.closeCalls)
+	if failing.closeCalls != 1 {
+		t.Fatalf("close calls = %d, want 1", failing.closeCalls)
 	}
 
 	failing.closeErr = nil
-	if err := manager.Close(context.Background(), first.SessionID); err != nil {
+	if err := manager.Close(context.Background(), connection.SessionID); err != nil {
 		t.Fatalf("retry Close() error = %v", err)
 	}
-	if successful.closeCalls != 1 || failing.closeCalls != 2 {
-		t.Fatalf("close calls after retry = successful:%d failing:%d", successful.closeCalls, failing.closeCalls)
+	if failing.closeCalls != 2 {
+		t.Fatalf("close calls after retry = %d, want 2", failing.closeCalls)
 	}
-	if connections := manager.getSession(first.SessionID); connections != nil {
+	if connections := manager.getSession(connection.SessionID); connections != nil {
 		t.Fatalf("connections after retry = %#v, want nil", connections)
+	}
+}
+
+func TestMemoryConnectionManagerRejectsConcurrentSecondConnection(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	factory := &fakeTransportFactory{
+		transport: &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}},
+		started:   started, release: release,
+	}
+	manager := NewMemoryConnectionManager(factory)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Open(context.Background(), validOpenConnectionRequest())
+		firstDone <- err
+	}()
+	<-started
+
+	secondRequest := validOpenConnectionRequest()
+	secondRequest.IdempotencyKey = "offer-device-2"
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		_, err := manager.Open(context.Background(), secondRequest)
+		secondDone <- err
+	}()
+	<-secondStarted
+	close(release)
+
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+	if err := <-secondDone; !errors.Is(err, ErrConnectionAlreadyExists) {
+		t.Fatalf("second Open() error = %v, want ErrConnectionAlreadyExists", err)
+	}
+	if factory.createCalls != 1 {
+		t.Fatalf("factory calls = %d, want 1", factory.createCalls)
 	}
 }
 

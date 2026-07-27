@@ -49,8 +49,9 @@ services/realtime-audio/
 当前内存 manager 在 Offer 成功后产生初始的 `connecting` 快照，并支持读取当前连接及应用
 `new/connecting/connected/disconnected/failed/closed` 状态回调。Pion Adapter 尚未接入，
 因此骨架不会自动进入 `connected`，也不能作为 Pipeline 启动就绪依据。接入 Pion 后仍须以
-`connected` 作为启动条件。`Close` 成功后删除快照，后续查询返回 `not_found`；`closed` 只作为
-删除前可见的 transport 状态，不承诺持久保留。
+`connected` 作为启动条件。Adapter 可以在 manager 关闭前报告 `closed` transport 状态；
+manager 的 `Close` 本身不发布可查询的 `closed` 快照，成功后立即删除记录，后续查询返回
+`not_found`。
 
 当前票据校验也是 `Open` 前的单次授权检查。接入正式会话生命周期时，必须在 `Open` 准入点
 重新校验可撤销的生命周期授权，或由 manager 强制校验 session generation/终止标记，使已通过

@@ -75,6 +75,10 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 		connections.mu.Unlock()
 		return connection, nil
 	}
+	if connections.currentID != "" {
+		connections.mu.Unlock()
+		return Connection{}, ErrConnectionAlreadyExists
+	}
 
 	connectionID := m.nextConnectionID()
 	transport, err := m.factory.Create(ctx, request.SessionID, connectionID)
@@ -171,7 +175,11 @@ func (m *MemoryConnectionManager) ApplyState(
 	if record == nil {
 		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
 	}
+	if !updatedAt.After(record.snapshot.UpdatedAt) {
+		return realtimev1.ConnectionSnapshot{}, ErrConnectionStateStale
+	}
 	if record.snapshot.State == state {
+		record.snapshot.UpdatedAt = updatedAt
 		return record.snapshot, nil
 	}
 	if !validConnectionStateTransition(record.snapshot.State, state) {

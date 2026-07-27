@@ -36,10 +36,16 @@ func TestMemoryConnectionManagerTracksCurrentState(t *testing.T) {
 	if snapshot.State != realtimev1.ConnectionConnected || snapshot.Version != 2 || !snapshot.UpdatedAt.Equal(connectedAt) {
 		t.Fatalf("connected snapshot = %#v", snapshot)
 	}
-	duplicate, err := manager.ApplyState(context.Background(), connection.SessionID, connection.ID, realtimev1.ConnectionConnected, connectedAt.Add(time.Second))
-	if err != nil || duplicate != snapshot {
+	_, err = manager.ApplyState(context.Background(), connection.SessionID, connection.ID, realtimev1.ConnectionDisconnected, connectedAt.Add(-time.Millisecond))
+	if !errors.Is(err, ErrConnectionStateStale) {
+		t.Fatalf("out-of-order ApplyState() error = %v, want ErrConnectionStateStale", err)
+	}
+	duplicateAt := connectedAt.Add(time.Second)
+	duplicate, err := manager.ApplyState(context.Background(), connection.SessionID, connection.ID, realtimev1.ConnectionConnected, duplicateAt)
+	if err != nil || duplicate.State != snapshot.State || duplicate.Version != snapshot.Version || !duplicate.UpdatedAt.Equal(duplicateAt) {
 		t.Fatalf("duplicate ApplyState() = %#v, %v", duplicate, err)
 	}
+	snapshot = duplicate
 
 	for index, state := range []realtimev1.ConnectionState{
 		realtimev1.ConnectionDisconnected,
@@ -103,6 +109,9 @@ func TestMemoryConnectionManagerRejectsStaleConnectionCallback(t *testing.T) {
 	first, err := manager.Open(context.Background(), validOpenConnectionRequest())
 	if err != nil {
 		t.Fatalf("first Open() error = %v", err)
+	}
+	if err := manager.Close(context.Background(), first.SessionID); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 	secondRequest := validOpenConnectionRequest()
 	secondRequest.IdempotencyKey = "offer-device-2"

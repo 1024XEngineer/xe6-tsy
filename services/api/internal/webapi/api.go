@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
@@ -272,7 +273,7 @@ func (a *API) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input delivery.CreateInput
-	if decodeJSON(r, &input) != nil || input.Channel != delivery.ChannelEmail || input.DestinationRef == "" || len(input.TurnIDs) == 0 || r.Header.Get("Idempotency-Key") == "" || hasDuplicates(input.TurnIDs) {
+	if decodeJSON(r, &input) != nil || input.Channel != delivery.ChannelEmail || input.DestinationRef == "" || len(input.TurnIDs) == 0 || len(input.TurnIDs) > recordsv1.MaxFinalTurnBatchSize || r.Header.Get("Idempotency-Key") == "" || hasDuplicates(input.TurnIDs) {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}

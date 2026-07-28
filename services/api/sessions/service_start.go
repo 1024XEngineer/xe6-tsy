@@ -80,12 +80,21 @@ func (s *Service) Start(ctx context.Context, input StartInput) (VoiceSession, er
 		return VoiceSession{}, mapDependencyError(ctx, err, ErrRealtimeStartFailed)
 	}
 
-	startedAt := s.deps.Clock.Now().UTC()
-	if err := validateStartedRuntime(runtime, input.SessionID); err != nil {
-		compensationErr := s.compensateStart(ctx, input, startedAt, err)
+	if err := validateRuntimeSnapshot(runtime, input.SessionID); err != nil {
+		startErr := fmt.Errorf("%w: invalid start snapshot", ErrRealtimeStartFailed)
+		compensationErr := s.compensateStart(ctx, input, startErr)
+		return VoiceSession{}, errors.Join(startErr, compensationErr)
+	}
+	switch runtime.RuntimeState {
+	case RuntimeStarting, RuntimeStopping:
+		return VoiceSession{}, ErrRealtimeAlreadyRunning
+	}
+	if err := validateCompletedStartRuntime(runtime); err != nil {
+		compensationErr := s.compensateStart(ctx, input, err)
 		return VoiceSession{}, errors.Join(err, compensationErr)
 	}
 
+	startedAt := s.deps.Clock.Now().UTC()
 	active, _, transitionErr := s.deps.Repository.TransitionToActive(ctx, StartTransitionParams{
 		SessionID:      input.SessionID,
 		AccountID:      input.AccountID,
@@ -99,7 +108,7 @@ func (s *Service) Start(ctx context.Context, input StartInput) (VoiceSession, er
 	}
 
 	originalErr := fmt.Errorf("transition voice session to active: %w", transitionErr)
-	compensationErr := s.compensateStart(ctx, input, startedAt, originalErr)
+	compensationErr := s.compensateStart(ctx, input, originalErr)
 	return VoiceSession{}, errors.Join(originalErr, compensationErr)
 }
 
@@ -131,13 +140,9 @@ func (s *Service) replayStart(
 	return session, nil
 }
 
-func validateStartedRuntime(runtime RuntimeSnapshot, sessionID string) error {
-	if err := validateRuntimeSnapshot(runtime, sessionID); err != nil {
-		return fmt.Errorf("%w: invalid start snapshot", ErrRealtimeStartFailed)
-	}
+func validateCompletedStartRuntime(runtime RuntimeSnapshot) error {
 	switch runtime.RuntimeState {
-	case RuntimeStarting,
-		RuntimeListening,
+	case RuntimeListening,
 		RuntimeASRProcessing,
 		RuntimeTranslating,
 		RuntimeTTSProcessing,
@@ -161,7 +166,6 @@ func validateCompensatedRuntime(runtime RuntimeSnapshot, sessionID string) error
 func (s *Service) compensateStart(
 	parent context.Context,
 	input StartInput,
-	startedAt time.Time,
 	cause error,
 ) error {
 	ctx, cancel := s.compensationContext(parent)
@@ -171,7 +175,7 @@ func (s *Service) compensateStart(
 		SessionID: input.SessionID,
 		TraceID:   input.TraceID,
 		Reason:    EndReasonOperatorCancelled,
-		EndedAt:   startedAt,
+		EndedAt:   s.deps.Clock.Now().UTC(),
 	})
 	if stopErr != nil {
 		stopErr = mapDependencyError(ctx, stopErr, ErrRealtimeStopFailed)

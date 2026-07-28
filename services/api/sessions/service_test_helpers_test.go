@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -25,12 +26,23 @@ func (f *fakeIDGenerator) NewStartOperationID() string {
 }
 
 type fakeClock struct {
+	mu    sync.Mutex
 	now   time.Time
+	times []time.Time
 	calls int
 }
 
 func (f *fakeClock) Now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	index := f.calls
 	f.calls++
+	if len(f.times) > 0 {
+		if index >= len(f.times) {
+			index = len(f.times) - 1
+		}
+		return f.times[index]
+	}
 	return f.now
 }
 

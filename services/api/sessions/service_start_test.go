@@ -242,7 +242,6 @@ func TestServiceStartCompensatesInvalidRuntimeSnapshots(t *testing.T) {
 		{name: "session mismatch", snapshot: RuntimeSnapshot{SessionID: "other", RuntimeState: RuntimeListening, UpdatedAt: now}},
 		{name: "zero timestamp", snapshot: RuntimeSnapshot{SessionID: "vs_1", RuntimeState: RuntimeListening}},
 		{name: "stopped", snapshot: RuntimeSnapshot{SessionID: "vs_1", RuntimeState: RuntimeStopped, UpdatedAt: now}},
-		{name: "stopping", snapshot: RuntimeSnapshot{SessionID: "vs_1", RuntimeState: RuntimeStopping, UpdatedAt: now}},
 		{name: "failed", snapshot: RuntimeSnapshot{SessionID: "vs_1", RuntimeState: RuntimeFailed, UpdatedAt: now}},
 	}
 
@@ -263,8 +262,53 @@ func TestServiceStartCompensatesInvalidRuntimeSnapshots(t *testing.T) {
 	}
 }
 
+func TestServiceStartDoesNotActivateInProgressRuntime(t *testing.T) {
+	for _, state := range []RuntimeState{RuntimeStarting, RuntimeStopping} {
+		t.Run(string(state), func(t *testing.T) {
+			fixture := newStartFixture(t, StatusCreated)
+			fixture.realtime.startResult.RuntimeState = state
+
+			_, err := fixture.service.Start(context.Background(), validStartInput())
+			if !errors.Is(err, ErrRealtimeAlreadyRunning) {
+				t.Fatalf("Start() error = %v, want ErrRealtimeAlreadyRunning", err)
+			}
+			if len(fixture.repository.transitions) != 0 || fixture.realtime.stopCalls != 0 {
+				t.Fatalf("transitions = %d, stop calls = %d; want 0, 0",
+					len(fixture.repository.transitions), fixture.realtime.stopCalls)
+			}
+			if fixture.repository.session.Status != StatusCreated {
+				t.Fatalf("status = %q, want created", fixture.repository.session.Status)
+			}
+		})
+	}
+}
+
+func TestServiceStartRecoversExistingRunningRuntime(t *testing.T) {
+	for _, state := range []RuntimeState{RuntimeListening, RuntimeTranslating, RuntimePlaying} {
+		t.Run(string(state), func(t *testing.T) {
+			fixture := newStartFixture(t, StatusCreated)
+			fixture.realtime.startResult.RuntimeState = state
+
+			got, err := fixture.service.Start(context.Background(), validStartInput())
+			if err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			if got.Status != StatusActive || got.StartedAt == nil {
+				t.Fatalf("Start() = %#v, want active session", got)
+			}
+			if len(fixture.repository.transitions) != 1 || fixture.realtime.stopCalls != 0 {
+				t.Fatalf("transitions = %d, stop calls = %d; want 1, 0",
+					len(fixture.repository.transitions), fixture.realtime.stopCalls)
+			}
+		})
+	}
+}
+
 func TestServiceStartCompensatesTransitionFailureAfterCancellation(t *testing.T) {
 	fixture := newStartFixture(t, StatusCreated)
+	startedAt := fixture.clock.now
+	endedAt := startedAt.Add(5 * time.Second)
+	fixture.clock.times = []time.Time{startedAt, endedAt}
 	fixture.repository.transitionErr = errDependency
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), startTraceKey{}, "trace-value"))
 	fixture.repository.transitionHook = func(context.Context) { cancel() }
@@ -292,8 +336,13 @@ func TestServiceStartCompensatesTransitionFailureAfterCancellation(t *testing.T)
 	if command.SessionID != "vs_1" ||
 		command.TraceID != "req_1" ||
 		command.Reason != EndReasonOperatorCancelled ||
-		!command.EndedAt.Equal(fixture.clock.now) {
+		!command.EndedAt.Equal(endedAt) {
 		t.Fatalf("StopRealtimeCommand = %#v", command)
+	}
+	if !fixture.repository.transitions[0].StartedAt.Equal(startedAt) ||
+		!command.EndedAt.After(fixture.repository.transitions[0].StartedAt) {
+		t.Fatalf("transition StartedAt = %v, compensation EndedAt = %v",
+			fixture.repository.transitions[0].StartedAt, command.EndedAt)
 	}
 }
 
@@ -374,6 +423,7 @@ func TestServiceStartSerializesConcurrentRequests(t *testing.T) {
 		results <- err
 	}()
 	<-secondStarted
+	waitForLockReferences(t, &fixture.service.locks, "vs_1", 2)
 	close(releaseStart)
 
 	for range 2 {
@@ -386,5 +436,11 @@ func TestServiceStartSerializesConcurrentRequests(t *testing.T) {
 	fixture.realtime.mu.Unlock()
 	if startCalls != 1 {
 		t.Fatalf("realtime start calls = %d, want 1", startCalls)
+	}
+	fixture.service.locks.mu.Lock()
+	lockEntries := len(fixture.service.locks.locks)
+	fixture.service.locks.mu.Unlock()
+	if lockEntries != 0 {
+		t.Fatalf("lock entries after requests = %d, want 0", lockEntries)
 	}
 }

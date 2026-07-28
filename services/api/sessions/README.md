@@ -97,8 +97,15 @@ Repository.GetOwned
 -> require LanguageConfigSnapshot.Ready()
 -> require ConnectionState.Ready()
 -> RealtimeLifecycle.Start
+-> require a completed running state (listening or processing)
 -> Repository.TransitionToActive(created -> active + start idempotency result)
 ```
+
+An in-progress `starting` or `stopping` snapshot returns a retryable
+`ErrRealtimeAlreadyRunning` without transitioning the business session or
+stopping a pipeline that may belong to another request. Existing `listening`,
+`asr_processing`, `translating`, `tts_processing`, and `playing` snapshots can
+complete a previously failed business transition.
 
 The realtime implementation reads a still-`created` session. If the final
 transition fails after realtime startup, the service calls

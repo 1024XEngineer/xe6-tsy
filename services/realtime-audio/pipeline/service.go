@@ -104,9 +104,6 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err != nil {
 		return fmt.Errorf("translate Turn %s: %w", turn.ID, err)
 	}
-	if err := s.publishUsage(ctx, turn, "translation", translationResult.Provider, translationResult.Model, 0, translationResult.InputTokens, translationResult.OutputTokens, translationResult.CostAmount, translationResult.Currency); err != nil {
-		return fmt.Errorf("publish translation usage: %w", err)
-	}
 	startedAt, endedAt := turnBounds(turn, result, s.now())
 	attribution := s.resolveSpeaker(ctx, turn, result, startedAt, endedAt)
 	finalEvent := FinalTurnEvent{
@@ -119,8 +116,14 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		StartedAt: startedAt, EndedAt: endedAt, OccurredAt: s.now(),
 	}
 	finalEvent.ParticipantID = attribution.ParticipantID
+	if err := finalEvent.Validate(); err != nil {
+		return fmt.Errorf("validate FinalTurn: %w", err)
+	}
 	if err := s.finalTurns.Publish(ctx, finalEvent); err != nil {
 		return fmt.Errorf("publish FinalTurn: %w", err)
+	}
+	if err := s.publishUsage(ctx, turn, "translation", translationResult.Provider, translationResult.Model, 0, translationResult.InputTokens, translationResult.OutputTokens, translationResult.CostAmount, translationResult.Currency); err != nil {
+		return fmt.Errorf("publish translation usage: %w", err)
 	}
 	playbackID := "playback_" + turn.ID
 	stream, err := s.tts.StartStream(ctx, tts.Request{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, Text: translationResult.Text, TargetLanguage: target, VoiceID: s.voiceID})

@@ -152,6 +152,128 @@ func TestPipelineRejectsInvalidUsageBeforePublication(t *testing.T) {
 	}
 }
 
+func TestPipelineFinalTurnFailureStopsLaterStages(t *testing.T) {
+	wantErr := errors.New("outbox unavailable")
+	finalSink := &recordingFinalSink{err: wantErr}
+	usageSink := &recordingUsageSink{}
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        ttsProvider,
+		FinalTurns: finalSink,
+		Usage:      usageSink,
+		Audio:      &recordingAudioSink{},
+	})
+
+	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("HandleASRFinal() error = %v, want %v", err, wantErr)
+	}
+	if len(finalSink.events) != 1 {
+		t.Fatalf("FinalTurn attempts = %d, want 1", len(finalSink.events))
+	}
+	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
+		t.Fatalf("UsageFacts = %#v, want only ASR", usageSink.facts)
+	}
+	if requests := ttsProvider.Requests(); len(requests) != 0 {
+		t.Fatalf("TTS requests = %#v, want none", requests)
+	}
+}
+
+func TestPipelineTranslationUsageFailureKeepsAcceptedFinalTurn(t *testing.T) {
+	wantErr := errors.New("usage outbox unavailable")
+	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{failService: "translation", err: wantErr}
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        ttsProvider,
+		FinalTurns: finalSink,
+		Usage:      usageSink,
+		Audio:      &recordingAudioSink{},
+	})
+
+	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("HandleASRFinal() error = %v, want %v", err, wantErr)
+	}
+	if len(finalSink.events) != 1 {
+		t.Fatalf("accepted FinalTurns = %d, want 1", len(finalSink.events))
+	}
+	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
+		t.Fatalf("accepted UsageFacts = %#v, want only ASR", usageSink.facts)
+	}
+	if requests := ttsProvider.Requests(); len(requests) != 0 {
+		t.Fatalf("TTS requests = %#v, want none", requests)
+	}
+}
+
+func TestPipelineTTSFailureDoesNotRepublishFinalTurn(t *testing.T) {
+	tests := []struct {
+		name   string
+		config tts.FakeProviderConfig
+	}{
+		{name: "start", config: tts.FakeProviderConfig{StartErr: errors.New("start failed")}},
+		{name: "finish", config: tts.FakeProviderConfig{FinishErr: errors.New("finish failed")}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			finalSink := &recordingFinalSink{}
+			service := NewPipelineService(PipelineDependencies{
+				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+				TTS:        tts.NewFakeProvider(test.config),
+				FinalTurns: finalSink,
+				Usage:      &recordingUsageSink{},
+				Audio:      &recordingAudioSink{},
+			})
+
+			err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
+				Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+			})
+			if err == nil {
+				t.Fatal("HandleASRFinal() error = nil, want TTS failure")
+			}
+			if len(finalSink.events) != 1 {
+				t.Fatalf("accepted FinalTurns = %d, want 1", len(finalSink.events))
+			}
+		})
+	}
+}
+
+func TestPipelineRejectsInvalidFinalTurnBeforePublication(t *testing.T) {
+	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{}
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Provider: "mock-translate", Model: "v1"}},
+		TTS:        ttsProvider,
+		FinalTurns: finalSink,
+		Usage:      usageSink,
+		Audio:      &recordingAudioSink{},
+	})
+
+	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+	})
+	if !errors.Is(err, recordsv1.ErrInvalidFinalTurnEvent) {
+		t.Fatalf("HandleASRFinal() error = %v, want ErrInvalidFinalTurnEvent", err)
+	}
+	if len(finalSink.events) != 0 {
+		t.Fatalf("FinalTurn attempts = %d, want 0", len(finalSink.events))
+	}
+	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
+		t.Fatalf("UsageFacts = %#v, want only ASR", usageSink.facts)
+	}
+	if requests := ttsProvider.Requests(); len(requests) != 0 {
+		t.Fatalf("TTS requests = %#v, want none", requests)
+	}
+}
+
 func TestPipelineCancellationClosesBlockedTTSStream(t *testing.T) {
 	stream := &blockingTTSStream{chunks: make(chan tts.AudioChunk), closed: make(chan struct{})}
 	provider := &blockingTTSProvider{stream: stream, started: make(chan struct{})}
@@ -203,16 +325,26 @@ func testTurn() TurnContext {
 	return TurnContext{ID: "turn-1", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", SequenceNo: 1, LanguageConfig: session.LanguageConfigSnapshot{SessionID: "session-1", Version: 3, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}, StartedAt: time.Unix(1700000000, 0).UTC()}
 }
 
-type recordingFinalSink struct{ events []FinalTurnEvent }
+type recordingFinalSink struct {
+	events []FinalTurnEvent
+	err    error
+}
 
 func (s *recordingFinalSink) Publish(_ context.Context, event FinalTurnEvent) error {
 	s.events = append(s.events, event)
-	return nil
+	return s.err
 }
 
-type recordingUsageSink struct{ facts []UsageFact }
+type recordingUsageSink struct {
+	facts       []UsageFact
+	failService string
+	err         error
+}
 
 func (s *recordingUsageSink) Publish(_ context.Context, fact UsageFact) error {
+	if fact.ServiceType == s.failService {
+		return s.err
+	}
 	s.facts = append(s.facts, fact)
 	return nil
 }

@@ -62,12 +62,13 @@ func TestPionTransportAnswerHonorsContextWhileGathering(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	localSet := fake.localSet
 	answerDone := make(chan error, 1)
 	go func() {
 		_, err := transport.Answer(ctx, SessionDescription{SDP: "offer-sdp", Type: "offer"})
 		answerDone <- err
 	}()
-	<-fake.localSet
+	<-localSet
 	cancel()
 	if err := <-answerDone; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Answer() error = %v, want context.Canceled", err)

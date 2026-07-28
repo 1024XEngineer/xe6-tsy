@@ -55,6 +55,66 @@ func TestMemoryConnectionManagerAppliesTransportStateDuringAnswer(t *testing.T) 
 	}
 }
 
+func TestTransportStateGateDrainsPendingBeforeNewCallbacks(t *testing.T) {
+	var (
+		states       []realtimev1.ConnectionState
+		statesMu     sync.Mutex
+		pendingStart = make(chan struct{})
+		release      = make(chan struct{})
+	)
+	gate := newTransportStateGate(func(state realtimev1.ConnectionState, _ time.Time) {
+		statesMu.Lock()
+		states = append(states, state)
+		statesMu.Unlock()
+		if state == realtimev1.ConnectionConnecting {
+			close(pendingStart)
+			<-release
+		}
+	})
+	gate.Notify(realtimev1.ConnectionConnecting, time.Unix(1700000001, 0).UTC())
+
+	activated := make(chan struct{})
+	go func() {
+		gate.Activate()
+		close(activated)
+	}()
+	select {
+	case <-pendingStart:
+	case <-time.After(time.Second):
+		t.Fatal("Activate() did not deliver pending state")
+	}
+
+	newCallbackDone := make(chan struct{})
+	go func() {
+		gate.Notify(realtimev1.ConnectionConnected, time.Unix(1700000002, 0).UTC())
+		close(newCallbackDone)
+	}()
+	select {
+	case <-newCallbackDone:
+		t.Fatal("new callback overtook pending state delivery")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-activated:
+	case <-time.After(time.Second):
+		t.Fatal("Activate() did not finish")
+	}
+	select {
+	case <-newCallbackDone:
+	case <-time.After(time.Second):
+		t.Fatal("new callback did not finish after pending delivery")
+	}
+
+	statesMu.Lock()
+	defer statesMu.Unlock()
+	want := []realtimev1.ConnectionState{realtimev1.ConnectionConnecting, realtimev1.ConnectionConnected}
+	if len(states) != len(want) || states[0] != want[0] || states[1] != want[1] {
+		t.Fatalf("delivered states = %#v, want %#v", states, want)
+	}
+}
+
 func TestMemoryConnectionManagerDiscardsStateAfterAnswerFailureAndAllowsRetry(t *testing.T) {
 	answerErr := errors.New("answer failed")
 	first := &stateCallbackTransport{

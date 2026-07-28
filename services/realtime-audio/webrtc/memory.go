@@ -38,6 +38,7 @@ type connectionRecord struct {
 
 type transportStateGate struct {
 	mu       sync.Mutex
+	delivery sync.Mutex
 	ready    bool
 	rejected bool
 	pending  []transportStateUpdate
@@ -70,6 +71,8 @@ func (g *transportStateGate) Notify(state realtimev1.ConnectionState, updatedAt 
 	apply := g.apply
 	g.mu.Unlock()
 	if apply != nil {
+		g.delivery.Lock()
+		defer g.delivery.Unlock()
 		apply(state, updatedAt)
 	}
 }
@@ -78,6 +81,8 @@ func (g *transportStateGate) Activate() {
 	if g == nil {
 		return
 	}
+	g.delivery.Lock()
+	defer g.delivery.Unlock()
 	g.mu.Lock()
 	if g.rejected {
 		g.mu.Unlock()

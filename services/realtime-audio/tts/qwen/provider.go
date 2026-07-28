@@ -95,10 +95,9 @@ type stream struct {
 	chunks  chan tts.AudioChunk
 	done    chan struct{}
 
-	stateMu   sync.Mutex
-	result    tts.Result
-	err       error
-	closeOnce sync.Once
+	stateMu sync.Mutex
+	result  tts.Result
+	err     error
 }
 
 func (s *stream) Chunks() <-chan tts.AudioChunk { return s.chunks }
@@ -110,13 +109,14 @@ func (s *stream) Finish(ctx context.Context) (tts.Result, error) {
 		defer s.stateMu.Unlock()
 		return s.result, s.err
 	case <-ctx.Done():
-		s.shutdown()
+		s.cancel()
 		return tts.Result{}, ctx.Err()
 	}
 }
 
 func (s *stream) Close() error {
-	s.shutdown()
+	s.cancel()
+	<-s.done
 	return nil
 }
 
@@ -125,7 +125,9 @@ func (s *stream) run() {
 		if err := s.ctx.Err(); err != nil {
 			s.setError(err)
 		}
-		s.shutdown()
+		s.cancel()
+		close(s.chunks)
+		close(s.done)
 	}()
 	requestBody := generationRequest{
 		Model: s.config.Model,
@@ -252,14 +254,6 @@ func (s *stream) setError(err error) {
 		s.err = err
 	}
 	s.stateMu.Unlock()
-}
-
-func (s *stream) shutdown() {
-	s.closeOnce.Do(func() {
-		s.cancel()
-		close(s.chunks)
-		close(s.done)
-	})
 }
 
 func ttsEndpoint(base string) string {

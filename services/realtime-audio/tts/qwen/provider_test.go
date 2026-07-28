@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
+	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 )
@@ -63,6 +66,47 @@ func TestProviderStreamsQwenTTSAudio(t *testing.T) {
 	}
 	if result.Provider != "aliyun" || result.Model != "qwen3-tts-flash" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestFinishCancellationDoesNotCloseChunksWhileWorkerSends(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for index := 0; index < 32; index++ {
+			_, _ = w.Write([]byte("data: " + ttsEvent([]byte{byte(index)}) + "\n\n"))
+		}
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	providerStream, err := provider.StartStream(context.Background(), tts.Request{Text: "hello", TargetLanguage: "en-US"})
+	if err != nil {
+		t.Fatalf("StartStream() error = %v", err)
+	}
+	qwenStream := providerStream.(*stream)
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for len(qwenStream.chunks) < cap(qwenStream.chunks) {
+		select {
+		case <-deadline.C:
+			t.Fatal("TTS worker did not fill the chunk buffer")
+		default:
+			runtime.Gosched()
+		}
+	}
+
+	finishCtx, cancelFinish := context.WithCancel(context.Background())
+	cancelFinish()
+	if _, err := providerStream.Finish(finishCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Finish() error = %v, want context.Canceled", err)
+	}
+	if err := providerStream.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	for range providerStream.Chunks() {
 	}
 }
 

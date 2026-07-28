@@ -31,7 +31,7 @@ func (notImplementedAdapters) AccountIDForSession(context.Context, string) (stri
 	return "", errNotImplemented
 }
 
-func (notImplementedAdapters) List(context.Context, string, recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+func (notImplementedAdapters) List(context.Context, string, string, recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
 	return recordsv1.ParticipantListResponse{}, errNotImplemented
 }
 
@@ -47,11 +47,11 @@ func (notImplementedAdapters) StoreFinalTurn(context.Context, recordsv1.FinalTur
 	return errNotImplemented
 }
 
-func (notImplementedAdapters) ListSession(context.Context, string, recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+func (notImplementedAdapters) ListSession(context.Context, string, string, recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
 	return recordsv1.VoiceTurnListResponse{}, errNotImplemented
 }
 
-func (notImplementedAdapters) Find(context.Context, string) (recordsv1.VoiceTurn, error) {
+func (notImplementedAdapters) Find(context.Context, string, string) (recordsv1.VoiceTurn, error) {
 	return recordsv1.VoiceTurn{}, errNotImplemented
 }
 

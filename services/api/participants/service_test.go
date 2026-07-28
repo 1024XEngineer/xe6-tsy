@@ -113,9 +113,11 @@ type fakeRepository struct {
 	update        Update
 	turnMutations int
 	participants  map[string]recordsv1.Participant
+	listAccountID string
 }
 
-func (r *fakeRepository) List(context.Context, string, recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+func (r *fakeRepository) List(_ context.Context, accountID, _ string, _ recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+	r.listAccountID = accountID
 	return r.listResponse, nil
 }
 

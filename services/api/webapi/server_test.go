@@ -267,7 +267,7 @@ type participantRepository struct {
 	update       participants.Update
 }
 
-func (r *participantRepository) List(_ context.Context, _ string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+func (r *participantRepository) List(_ context.Context, _, _ string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
 	r.listQuery = query
 	return r.listResponse, nil
 }
@@ -297,12 +297,12 @@ func (*turnRepository) StoreFinalTurn(context.Context, recordsv1.FinalTurnEvent)
 	return nil
 }
 
-func (r *turnRepository) ListSession(_ context.Context, _ string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+func (r *turnRepository) ListSession(_ context.Context, _, _ string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
 	r.listQuery = query
 	return r.listResponse, nil
 }
 
-func (r *turnRepository) Find(context.Context, string) (recordsv1.VoiceTurn, error) {
+func (r *turnRepository) Find(context.Context, string, string) (recordsv1.VoiceTurn, error) {
 	if r.findErr != nil {
 		return recordsv1.VoiceTurn{}, r.findErr
 	}

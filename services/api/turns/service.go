@@ -19,14 +19,15 @@ var (
 	ErrInvalidAttribution  = errors.New("invalid voice turn attribution")
 )
 
-// Repository persists final turns. StoreFinalTurn must atomically deduplicate a FinalTurnEvent by
-// event ID, turn ID, or session and sequence number. It accepts a duplicate only when
-// recordsv1.FinalTurnEventPayloadHash matches the stored value; otherwise it returns a conflict.
-// CorrectAttribution must change only attribution fields.
+// Repository persists final turns. Account-scoped reads must apply ownership before returning
+// rows. StoreFinalTurn must atomically deduplicate a FinalTurnEvent by event ID, turn ID, or
+// session and sequence number. It accepts a duplicate only when recordsv1.FinalTurnEventPayloadHash
+// matches the stored value; otherwise it returns a conflict. CorrectAttribution must change only
+// attribution fields.
 type Repository interface {
 	StoreFinalTurn(ctx context.Context, event recordsv1.FinalTurnEvent) error
-	ListSession(ctx context.Context, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
-	Find(ctx context.Context, turnID string) (recordsv1.VoiceTurn, error)
+	ListSession(ctx context.Context, accountID, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
+	Find(ctx context.Context, accountID, turnID string) (recordsv1.VoiceTurn, error)
 	ListHistory(ctx context.Context, accountID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
 	ParticipantBelongsToSession(ctx context.Context, participantID, sessionID string) (bool, error)
 	CorrectAttribution(ctx context.Context, update AttributionUpdate) (recordsv1.VoiceTurn, error)
@@ -79,18 +80,15 @@ func (s *Service) ListSession(ctx context.Context, accountID, sessionID string, 
 		return recordsv1.VoiceTurnListResponse{}, err
 	}
 	query.SessionID = sessionID
-	return s.repository.ListSession(ctx, sessionID, query)
+	return s.repository.ListSession(ctx, accountID, sessionID, query)
 }
 
 func (s *Service) Get(ctx context.Context, accountID, turnID string) (recordsv1.VoiceTurn, error) {
 	if accountID == "" || turnID == "" {
 		return recordsv1.VoiceTurn{}, ErrInvalidRequest
 	}
-	turn, err := s.repository.Find(ctx, turnID)
+	turn, err := s.repository.Find(ctx, accountID, turnID)
 	if err != nil {
-		return recordsv1.VoiceTurn{}, err
-	}
-	if err := s.requireOwner(ctx, accountID, turn.SessionID); err != nil {
 		return recordsv1.VoiceTurn{}, err
 	}
 	return turn, nil

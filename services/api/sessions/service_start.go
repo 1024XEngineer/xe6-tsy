@@ -15,11 +15,11 @@ func (s *Service) Start(ctx context.Context, input StartInput) (VoiceSession, er
 		return VoiceSession{}, err
 	}
 
-	unlock := s.locks.lock(input.SessionID)
-	defer unlock()
-	if err := ctx.Err(); err != nil {
+	unlock, err := s.locks.lock(ctx, input.SessionID)
+	if err != nil {
 		return VoiceSession{}, err
 	}
+	defer unlock()
 
 	session, err := s.deps.Repository.GetOwned(ctx, input.AccountID, input.SessionID)
 	if err != nil {
@@ -167,12 +167,9 @@ func (s *Service) beginStartOperation(
 			ErrInvalidDependency,
 		)
 	}
-	now := s.deps.Clock.Now()
-	if now.IsZero() {
-		return StartOperation{}, fmt.Errorf(
-			"%w: clock returned a zero timestamp",
-			ErrInvalidDependency,
-		)
+	now, err := s.nowUTC("begin start operation")
+	if err != nil {
+		return StartOperation{}, err
 	}
 	begin, err := s.deps.Repository.BeginStartOperation(ctx, BeginStartOperationParams{
 		OperationID:    operationID,
@@ -180,7 +177,7 @@ func (s *Service) beginStartOperation(
 		AccountID:      input.AccountID,
 		IdempotencyKey: input.IdempotencyKey,
 		RequestHash:    input.RequestHash,
-		CreatedAt:      now.UTC(),
+		CreatedAt:      now,
 	})
 	if err != nil {
 		return StartOperation{}, fmt.Errorf("begin voice session start operation: %w", err)
@@ -288,7 +285,10 @@ func (s *Service) startPendingOperation(
 		return s.compensateStartedOperation(ctx, input, operation, input.TraceID, err)
 	}
 
-	startedAt := s.deps.Clock.Now().UTC()
+	startedAt, err := s.nowUTC("activate voice session")
+	if err != nil {
+		return s.compensateStartedOperation(ctx, input, operation, input.TraceID, err)
+	}
 	active, _, transitionErr := s.deps.Repository.TransitionToActive(ctx, StartTransitionParams{
 		SessionID:      input.SessionID,
 		AccountID:      input.AccountID,
@@ -371,7 +371,10 @@ func (s *Service) compensateStartedOperation(
 	stopCtx, stopCancel := s.compensationContext(parent)
 	defer stopCancel()
 
-	claimedAt := s.deps.Clock.Now().UTC()
+	compensationAt, timeErr := s.nowUTC("claim start compensation")
+	if timeErr != nil {
+		return VoiceSession{}, errors.Join(originalErr, timeErr)
+	}
 	claim, claimErr := s.deps.Repository.ClaimStartCompensation(
 		stopCtx,
 		ClaimStartCompensationParams{
@@ -379,7 +382,7 @@ func (s *Service) compensateStartedOperation(
 			AccountID:   input.AccountID,
 			OperationID: operation.ID,
 			ClaimID:     claimID,
-			ClaimedAt:   claimedAt,
+			ClaimedAt:   compensationAt,
 		},
 	)
 	if claimErr != nil {
@@ -396,7 +399,7 @@ func (s *Service) compensateStartedOperation(
 		SessionID: input.SessionID,
 		TraceID:   input.TraceID,
 		Reason:    EndReasonOperatorCancelled,
-		EndedAt:   s.deps.Clock.Now().UTC(),
+		EndedAt:   compensationAt,
 	})
 	if stopErr != nil {
 		stopErr = mapRealtimeStopError(stopCtx, stopErr)
@@ -432,6 +435,10 @@ func (s *Service) completeStartCompensation(
 	claimID string,
 	originalErr error,
 ) (VoiceSession, error) {
+	completedAt, timeErr := s.nowUTC("complete start compensation")
+	if timeErr != nil {
+		return VoiceSession{}, errors.Join(originalErr, timeErr)
+	}
 	err := s.deps.Repository.CompleteStartCompensation(
 		ctx,
 		CompleteStartCompensationParams{
@@ -439,7 +446,7 @@ func (s *Service) completeStartCompensation(
 			AccountID:   input.AccountID,
 			OperationID: operation.ID,
 			ClaimID:     claimID,
-			CompletedAt: s.deps.Clock.Now().UTC(),
+			CompletedAt: completedAt,
 		},
 	)
 	if err != nil {
@@ -465,6 +472,14 @@ func (s *Service) failStartCompensation(
 	originalErr error,
 	stopErr error,
 ) (VoiceSession, error) {
+	failedAt, timeErr := s.nowUTC("fail start compensation")
+	if timeErr != nil {
+		return VoiceSession{}, errors.Join(
+			originalErr,
+			fmt.Errorf("compensate realtime start: %w", stopErr),
+			timeErr,
+		)
+	}
 	persistErr := s.deps.Repository.FailStartCompensation(
 		ctx,
 		FailStartCompensationParams{
@@ -472,7 +487,7 @@ func (s *Service) failStartCompensation(
 			AccountID:   input.AccountID,
 			OperationID: operation.ID,
 			ClaimID:     claimID,
-			FailedAt:    s.deps.Clock.Now().UTC(),
+			FailedAt:    failedAt,
 		},
 	)
 	s.deps.Logger.ErrorContext(ctx, "failed to compensate realtime start",

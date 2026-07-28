@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -75,6 +76,56 @@ func TestServiceStartAllowsDifferentSessionsInParallel(t *testing.T) {
 	if lockEntries != 0 {
 		t.Fatalf("lock entries after requests = %d, want 0", lockEntries)
 	}
+}
+
+func TestServiceStartCancelledWhileWaitingForSameSession(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	fixture.realtime.startHook = func(ctx context.Context) {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	}
+
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := fixture.service.Start(context.Background(), validStartInput())
+		firstResult <- err
+	}()
+	waitForSignal(t, "first Realtime.Start", entered)
+
+	waitCtx, cancel := context.WithCancel(context.Background())
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := fixture.service.Start(waitCtx, validStartInput())
+		secondResult <- err
+	}()
+	waitForLockReferences(t, &fixture.service.locks, "vs_1", 2)
+	cancel()
+
+	select {
+	case err := <-secondResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiting Start() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled Start did not return before the first request released the lock")
+	}
+	fixture.realtime.mu.Lock()
+	startCalls := fixture.realtime.startCalls
+	fixture.realtime.mu.Unlock()
+	if startCalls != 1 {
+		t.Fatalf("Realtime.Start calls = %d, want 1", startCalls)
+	}
+
+	close(release)
+	if err := waitForStartResult(t, firstResult); err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	assertKeyedLockerEmpty(t, &fixture.service.locks)
 }
 
 func waitForSignal(t *testing.T, name string, ch <-chan struct{}) {

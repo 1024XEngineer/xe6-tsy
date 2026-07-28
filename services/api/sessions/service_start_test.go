@@ -351,13 +351,11 @@ func TestServiceStartCompensatesTransitionFailureAfterCancellation(t *testing.T)
 	beginAt := fixture.clock.now
 	startedAt := beginAt.Add(time.Second)
 	claimedAt := startedAt.Add(time.Second)
-	endedAt := claimedAt.Add(time.Second)
-	completedAt := endedAt.Add(time.Second)
+	completedAt := claimedAt.Add(time.Second)
 	fixture.clock.times = []time.Time{
 		beginAt,
 		startedAt,
 		claimedAt,
-		endedAt,
 		completedAt,
 	}
 	fixture.repository.transitionErr = errDependency
@@ -387,7 +385,7 @@ func TestServiceStartCompensatesTransitionFailureAfterCancellation(t *testing.T)
 	if command.SessionID != "vs_1" ||
 		command.TraceID != "req_1" ||
 		command.Reason != EndReasonOperatorCancelled ||
-		!command.EndedAt.Equal(endedAt) {
+		!command.EndedAt.Equal(claimedAt) {
 		t.Fatalf("StopRealtimeCommand = %#v", command)
 	}
 	if !fixture.repository.transitions[0].StartedAt.Equal(startedAt) ||

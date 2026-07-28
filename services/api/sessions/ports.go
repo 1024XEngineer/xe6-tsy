@@ -110,6 +110,12 @@ type Repository interface {
 type RealtimeLifecycle interface {
 	Start(ctx context.Context, command StartRealtimeCommand) (RuntimeSnapshot, error)
 	Stop(ctx context.Context, command StopRealtimeCommand) (RuntimeSnapshot, error)
+
+	// GetRuntimeState returns ErrRuntimeSnapshotNotFound when the realtime
+	// dependency is reachable but no runtime record exists. Adapters must map
+	// provider-specific missing-runtime errors to that sentinel. Cancellation,
+	// deadline, not-implemented, and other dependency failures must remain
+	// distinguishable for the session service's boundary mapping.
 	GetRuntimeState(ctx context.Context, sessionID string) (RuntimeSnapshot, error)
 }
 

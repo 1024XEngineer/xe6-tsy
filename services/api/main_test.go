@@ -10,6 +10,7 @@ import (
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
+	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
@@ -29,7 +30,7 @@ func TestBuildMuxRegistersVoiceRecordRoutes(t *testing.T) {
 		{name: "list history", method: http.MethodGet, path: "/api/v1/translation-history"},
 	}
 
-	handler := buildMux()
+	handler := buildMux(languages.NewHandler(nil, nil))
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var body io.Reader
@@ -57,5 +58,20 @@ func TestBuildMuxRegistersVoiceRecordRoutes(t *testing.T) {
 				t.Fatalf("error code = %q, want %q", errorResponse.Error.Code, recordsv1.ErrorNotImplemented)
 			}
 		})
+	}
+}
+
+func TestBuildMuxRegistersLanguageRoutes(t *testing.T) {
+	handler := buildMux(languages.NewHandler(nil, func(*http.Request) (string, bool) {
+		return "acct_01", true
+	}))
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/languages", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	// Nil service keeps language routes registered but explicitly unimplemented.
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusNotImplemented, response.Body.String())
 	}
 }

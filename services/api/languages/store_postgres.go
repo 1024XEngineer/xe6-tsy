@@ -13,13 +13,6 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// Extra store-level sentinel errors used by CreateActiveConfig and lookups.
-var (
-	ErrInvalidRequest      = errors.New(CodeInvalidRequest)
-	ErrVersionConflict     = errors.New(CodeVersionConflict)
-	ErrIdempotencyConflict = errors.New(CodeIdempotencyConflict)
-)
-
 // PostgresStore persists language configuration in PostgreSQL.
 type PostgresStore struct {
 	pool  *pgxpool.Pool
@@ -70,7 +63,8 @@ FROM supported_languages`
 func (s *PostgresStore) GetActiveConfig(ctx context.Context, sessionID string) (LanguageConfig, error) {
 	return s.scanConfig(ctx, s.pool,
 		`SELECT id, session_id, version, language_pairs, status,
-		        effective_from, effective_until, created_by, created_at
+		        effective_from, effective_until, created_by, created_at,
+		        COALESCE(request_fingerprint, '')
 		 FROM voice_session_language_configs
 		 WHERE session_id = $1 AND status = 'active'`,
 		sessionID,
@@ -83,7 +77,8 @@ func (s *PostgresStore) GetConfigByIdempotencyKey(ctx context.Context, idempoten
 	}
 	return s.scanConfig(ctx, s.pool,
 		`SELECT id, session_id, version, language_pairs, status,
-		        effective_from, effective_until, created_by, created_at
+		        effective_from, effective_until, created_by, created_at,
+		        COALESCE(request_fingerprint, '')
 		 FROM voice_session_language_configs
 		 WHERE idempotency_key = $1`,
 		idempotencyKey,
@@ -161,13 +156,18 @@ WHERE id = $1`, currentID, now); err != nil {
 	if input.IdempotencyKey != "" {
 		idempotency = input.IdempotencyKey
 	}
+	var fingerprint any
+	if input.RequestFingerprint != "" {
+		fingerprint = input.RequestFingerprint
+	}
 
 	_, err = tx.Exec(ctx, `
 INSERT INTO voice_session_language_configs (
     id, session_id, version, language_pairs, status,
-    effective_from, effective_until, created_by, idempotency_key, created_at, updated_at
-) VALUES ($1,$2,$3,$4,'active',$5,NULL,$6,$7,$5,$5)`,
-		id, input.SessionID, nextVersion, pairsJSON, now, input.CreatedBy, idempotency,
+    effective_from, effective_until, created_by, idempotency_key, created_at, updated_at,
+    request_fingerprint
+) VALUES ($1,$2,$3,$4,'active',$5,NULL,$6,$7,$5,$5,$8)`,
+		id, input.SessionID, nextVersion, pairsJSON, now, input.CreatedBy, idempotency, fingerprint,
 	)
 	if err != nil {
 		if mapped := mapInsertUniqueViolation(err); mapped != nil {
@@ -181,15 +181,16 @@ INSERT INTO voice_session_language_configs (
 	}
 
 	return LanguageConfig{
-		ID:             id,
-		SessionID:      input.SessionID,
-		Version:        nextVersion,
-		LanguagePairs:  append([]LanguagePair(nil), input.LanguagePairs...),
-		Status:         StatusActive,
-		EffectiveFrom:  now,
-		EffectiveUntil: nil,
-		CreatedBy:      input.CreatedBy,
-		CreatedAt:      now,
+		ID:                 id,
+		SessionID:          input.SessionID,
+		Version:            nextVersion,
+		LanguagePairs:      append([]LanguagePair(nil), input.LanguagePairs...),
+		Status:             StatusActive,
+		EffectiveFrom:      now,
+		EffectiveUntil:     nil,
+		CreatedBy:          input.CreatedBy,
+		CreatedAt:          now,
+		RequestFingerprint: input.RequestFingerprint,
 	}, nil
 }
 
@@ -205,7 +206,8 @@ func (s *PostgresStore) ListConfigs(ctx context.Context, query ListConfigsQuery)
 	args := []any{query.SessionID}
 	sql := `
 SELECT id, session_id, version, language_pairs, status,
-       effective_from, effective_until, created_by, created_at
+       effective_from, effective_until, created_by, created_at,
+       COALESCE(request_fingerprint, '')
 FROM voice_session_language_configs
 WHERE session_id = $1`
 	if query.Cursor != "" {
@@ -275,6 +277,7 @@ func scanConfigRow(row rowScanner) (LanguageConfig, error) {
 		&cfg.EffectiveUntil,
 		&cfg.CreatedBy,
 		&cfg.CreatedAt,
+		&cfg.RequestFingerprint,
 	); err != nil {
 		return LanguageConfig{}, err
 	}

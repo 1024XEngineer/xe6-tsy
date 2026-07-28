@@ -18,9 +18,17 @@ const (
 	CodeNotImplemented        = "not_implemented"
 )
 
-// Sentinel errors for internal ports. HTTP maps these to the codes above.
+// Sentinel errors for service/store/HTTP mapping.
 var (
-	ErrNotImplemented            = errors.New(CodeNotImplemented)
+	ErrInvalidRequest            = errors.New(CodeInvalidRequest)
+	ErrUnauthenticated           = errors.New(CodeUnauthenticated)
+	ErrForbidden                 = errors.New(CodeForbidden)
+	ErrSessionNotFound           = errors.New(CodeSessionNotFound)
 	ErrNoActiveConfig            = errors.New(CodeNoActiveConfig)
+	ErrVersionConflict           = errors.New(CodeVersionConflict)
+	ErrIdempotencyConflict       = errors.New(CodeIdempotencyConflict)
+	ErrUnsupportedLanguage       = errors.New(CodeUnsupportedLanguage)
+	ErrInvalidLanguagePair       = errors.New(CodeInvalidLanguagePair)
 	ErrUnsupportedSourceLanguage = errors.New(CodeUnsupportedSourceLang)
+	ErrNotImplemented            = errors.New(CodeNotImplemented)
 )

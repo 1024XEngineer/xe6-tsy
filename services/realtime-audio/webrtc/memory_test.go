@@ -566,6 +566,58 @@ func TestMemoryConnectionManagerCloseDoesNotWaitForAnswer(t *testing.T) {
 	}
 }
 
+func TestMemoryConnectionManagerHidesOpeningConnection(t *testing.T) {
+	answerStarted := make(chan struct{})
+	answerRelease := make(chan struct{})
+	transport := &blockingAnswerTransport{
+		answer:        SessionDescription{SDP: "answer-sdp", Type: "answer"},
+		answerStarted: answerStarted,
+		answerRelease: answerRelease,
+	}
+	manager := NewMemoryConnectionManager(&singleTransportFactory{transport: transport})
+	request := validOpenConnectionRequest()
+	connectionID := "rtc_000001"
+
+	openResult := make(chan error, 1)
+	go func() {
+		_, err := manager.Open(context.Background(), request)
+		openResult <- err
+	}()
+	<-answerStarted
+
+	if _, err := manager.GetCurrent(context.Background(), request.SessionID); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("GetCurrent() during opening error = %v, want %v", err, ErrConnectionNotFound)
+	}
+	if _, err := manager.ApplyState(
+		context.Background(), request.SessionID, connectionID,
+		realtimev1.ConnectionConnected, request.CreatedAt.Add(time.Second),
+	); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("ApplyState() during opening error = %v, want %v", err, ErrConnectionNotFound)
+	}
+	if _, err := manager.AddCandidates(context.Background(), request.SessionID, CandidateRequest{
+		ConnectionID: connectionID,
+		Candidates:   []ICECandidate{{ID: "candidate-1", Candidate: "candidate:1"}},
+	}); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("AddCandidates() during opening error = %v, want %v", err, ErrConnectionNotFound)
+	}
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- manager.Close(context.Background(), request.SessionID) }()
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		close(answerRelease)
+		t.Fatal("Close() waited for Answer() to return")
+	}
+	close(answerRelease)
+	if err := <-openResult; !errors.Is(err, ErrConnectionClosing) {
+		t.Fatalf("Open() error = %v, want %v", err, ErrConnectionClosing)
+	}
+}
+
 func validOpenConnectionRequest() OpenConnectionRequest {
 	return OpenConnectionRequest{
 		SessionID: "session-1", IdempotencyKey: "offer-device-1",

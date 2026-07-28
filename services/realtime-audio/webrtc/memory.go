@@ -326,7 +326,7 @@ func (m *MemoryConnectionManager) GetCurrent(ctx context.Context, sessionID stri
 	connections.mu.Lock()
 	defer connections.mu.Unlock()
 	record := connections.byID[connections.currentID]
-	if connections.closed || record == nil {
+	if connections.closed || record == nil || record.opening {
 		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
 	}
 	return record.snapshot, nil
@@ -363,7 +363,7 @@ func (m *MemoryConnectionManager) ApplyState(
 		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
 	}
 	record := connections.byID[connectionID]
-	if record == nil {
+	if record == nil || record.opening {
 		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
 	}
 	if !updatedAt.After(record.snapshot.UpdatedAt) {
@@ -418,6 +418,9 @@ func (m *MemoryConnectionManager) AddCandidates(ctx context.Context, sessionID s
 	}
 	if record.connection.SessionID != sessionID {
 		return CandidateResponse{}, ErrConnectionSessionMismatch
+	}
+	if record.opening || record.transport == nil {
+		return CandidateResponse{}, ErrConnectionNotFound
 	}
 
 	response := CandidateResponse{ConnectionID: request.ConnectionID}

@@ -141,32 +141,38 @@ func assertNoStartPrerequisites(t *testing.T, fixture *startFixture) {
 type startRepository struct {
 	mu sync.Mutex
 
-	session          VoiceSession
-	getErr           error
-	getCalls         int
-	getHook          func(context.Context)
-	operation        *StartOperation
-	beginErr         error
-	beginCalls       int
-	beginParams      []BeginStartOperationParams
-	claimErr         error
-	claimResult      *ClaimStartCompensationResult
-	claimCalls       int
-	claimParams      []ClaimStartCompensationParams
-	claimHook        func(context.Context)
-	completeErr      error
-	completeCalls    int
-	completeParams   []CompleteStartCompensationParams
-	failErr          error
-	failCalls        int
-	failParams       []FailStartCompensationParams
-	transitionErr    error
-	transitionErrFor func(StartTransitionParams) error
-	transitionHook   func(context.Context)
-	transitionAfter  func(StartTransitionParams)
-	transitionResult VoiceSession
-	transitions      []StartTransitionParams
-	lastReplayed     bool
+	session                    VoiceSession
+	getErr                     error
+	getCalls                   int
+	getHook                    func(context.Context)
+	operation                  *StartOperation
+	beginErr                   error
+	beginCalls                 int
+	beginParams                []BeginStartOperationParams
+	claimErr                   error
+	claimResult                *ClaimStartCompensationResult
+	claimCalls                 int
+	claimParams                []ClaimStartCompensationParams
+	claimHook                  func(context.Context)
+	completeErr                error
+	completeCalls              int
+	completeParams             []CompleteStartCompensationParams
+	completeHook               func(context.Context)
+	completeContextErr         error
+	requireLiveCompleteContext bool
+	failErr                    error
+	failCalls                  int
+	failParams                 []FailStartCompensationParams
+	failHook                   func(context.Context)
+	failContextErr             error
+	requireLiveFailContext     bool
+	transitionErr              error
+	transitionErrFor           func(StartTransitionParams) error
+	transitionHook             func(context.Context)
+	transitionAfter            func(StartTransitionParams)
+	transitionResult           VoiceSession
+	transitions                []StartTransitionParams
+	lastReplayed               bool
 }
 
 func (*startRepository) Create(context.Context, CreateParams) (VoiceSession, bool, error) {
@@ -307,13 +313,26 @@ func (r *startRepository) ClaimStartCompensation(
 }
 
 func (r *startRepository) CompleteStartCompensation(
-	_ context.Context,
+	ctx context.Context,
 	params CompleteStartCompensationParams,
 ) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.completeCalls++
 	r.completeParams = append(r.completeParams, params)
+	hook := r.completeHook
+	r.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.requireLiveCompleteContext {
+		r.completeContextErr = ctx.Err()
+		if r.completeContextErr != nil {
+			return r.completeContextErr
+		}
+	}
 	if r.completeErr != nil {
 		return r.completeErr
 	}
@@ -331,13 +350,26 @@ func (r *startRepository) CompleteStartCompensation(
 }
 
 func (r *startRepository) FailStartCompensation(
-	_ context.Context,
+	ctx context.Context,
 	params FailStartCompensationParams,
 ) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.failCalls++
 	r.failParams = append(r.failParams, params)
+	hook := r.failHook
+	r.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.requireLiveFailContext {
+		r.failContextErr = ctx.Err()
+		if r.failContextErr != nil {
+			return r.failContextErr
+		}
+	}
 	if r.failErr != nil {
 		return r.failErr
 	}

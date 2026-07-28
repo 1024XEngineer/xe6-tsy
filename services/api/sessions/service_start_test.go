@@ -411,10 +411,11 @@ func TestServiceStartRejectsInvalidCompensationSnapshots(t *testing.T) {
 	}
 }
 
-func TestServiceStartCompensationTimeoutPreservesStopFailure(t *testing.T) {
+func TestServiceStartPersistsFailureWithFreshContextAfterStopTimeout(t *testing.T) {
 	fixture := newStartFixture(t, StatusCreated)
 	fixture.repository.transitionErr = errDependency
 	fixture.service.deps.CompensationTimeout = 10 * time.Millisecond
+	fixture.repository.requireLiveFailContext = true
 	fixture.realtime.stopHook = func(ctx context.Context) {
 		<-ctx.Done()
 		fixture.realtime.mu.Lock()
@@ -440,6 +441,12 @@ func TestServiceStartCompensationTimeoutPreservesStopFailure(t *testing.T) {
 	if fixture.repository.operation.Status != StartOperationCompensationFailed {
 		t.Fatalf("operation status = %q, want compensation_failed",
 			fixture.repository.operation.Status)
+	}
+	fixture.repository.mu.Lock()
+	failContextErr := fixture.repository.failContextErr
+	fixture.repository.mu.Unlock()
+	if failContextErr != nil {
+		t.Fatalf("FailStartCompensation context error = %v, want nil", failContextErr)
 	}
 }
 

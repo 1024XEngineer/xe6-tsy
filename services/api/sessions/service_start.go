@@ -274,6 +274,18 @@ func mapRealtimeStopError(ctx context.Context, err error) error {
 	return mapped
 }
 
+// compensationPersistenceContext gives the terminal repository write a fresh
+// bounded lifetime after realtime Stop returns. It preserves request values
+// but neither inherits client cancellation nor a deadline exhausted by Stop.
+func (s *Service) compensationPersistenceContext(
+	parent context.Context,
+) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(
+		context.WithoutCancel(parent),
+		s.deps.CompensationTimeout,
+	)
+}
+
 // compensateStartedOperation stops realtime only after the repository grants
 // this operation and ClaimID exclusive cleanup authority. A denied or
 // uncertain claim is a hard prohibition on Stop.
@@ -284,12 +296,12 @@ func (s *Service) compensateStartedOperation(
 	claimID string,
 	originalErr error,
 ) (VoiceSession, error) {
-	ctx, cancel := s.compensationContext(parent)
-	defer cancel()
+	stopCtx, stopCancel := s.compensationContext(parent)
+	defer stopCancel()
 
 	claimedAt := s.deps.Clock.Now().UTC()
 	claim, claimErr := s.deps.Repository.ClaimStartCompensation(
-		ctx,
+		stopCtx,
 		ClaimStartCompensationParams{
 			SessionID:   input.SessionID,
 			AccountID:   input.AccountID,
@@ -305,47 +317,83 @@ func (s *Service) compensateStartedOperation(
 		)
 	}
 	if !claim.Claimed {
-		return s.resolveDeniedStartCompensation(ctx, input, originalErr)
+		return s.resolveDeniedStartCompensation(stopCtx, input, originalErr)
 	}
 
-	runtime, stopErr := s.deps.Realtime.Stop(ctx, StopRealtimeCommand{
+	runtime, stopErr := s.deps.Realtime.Stop(stopCtx, StopRealtimeCommand{
 		SessionID: input.SessionID,
 		TraceID:   input.TraceID,
 		Reason:    EndReasonOperatorCancelled,
 		EndedAt:   s.deps.Clock.Now().UTC(),
 	})
 	if stopErr != nil {
-		stopErr = mapRealtimeStopError(ctx, stopErr)
+		stopErr = mapRealtimeStopError(stopCtx, stopErr)
 	} else {
 		stopErr = validateCompensatedRuntime(runtime, input.SessionID)
 	}
-	if stopErr == nil {
-		completeErr := s.deps.Repository.CompleteStartCompensation(
-			ctx,
-			CompleteStartCompensationParams{
-				SessionID:   input.SessionID,
-				AccountID:   input.AccountID,
-				OperationID: operation.ID,
-				ClaimID:     claimID,
-				CompletedAt: s.deps.Clock.Now().UTC(),
-			},
-		)
-		if completeErr != nil {
-			return VoiceSession{}, errors.Join(
-				originalErr,
-				fmt.Errorf("complete realtime start compensation: %w", completeErr),
-			)
-		}
-		s.deps.Logger.WarnContext(ctx, "compensated realtime start after activation failure",
-			slog.String("request_id", input.TraceID),
-			slog.String("session_id", input.SessionID),
-			slog.String("operation_id", operation.ID),
-			slog.Any("original_error", originalErr),
-		)
-		return VoiceSession{}, originalErr
-	}
 
-	failErr := s.deps.Repository.FailStartCompensation(
+	persistCtx, persistCancel := s.compensationPersistenceContext(parent)
+	defer persistCancel()
+	if stopErr == nil {
+		return s.completeStartCompensation(
+			persistCtx,
+			input,
+			operation,
+			claimID,
+			originalErr,
+		)
+	}
+	return s.failStartCompensation(
+		persistCtx,
+		input,
+		operation,
+		claimID,
+		originalErr,
+		stopErr,
+	)
+}
+
+func (s *Service) completeStartCompensation(
+	ctx context.Context,
+	input StartInput,
+	operation StartOperation,
+	claimID string,
+	originalErr error,
+) (VoiceSession, error) {
+	err := s.deps.Repository.CompleteStartCompensation(
+		ctx,
+		CompleteStartCompensationParams{
+			SessionID:   input.SessionID,
+			AccountID:   input.AccountID,
+			OperationID: operation.ID,
+			ClaimID:     claimID,
+			CompletedAt: s.deps.Clock.Now().UTC(),
+		},
+	)
+	if err != nil {
+		return VoiceSession{}, errors.Join(
+			originalErr,
+			fmt.Errorf("complete realtime start compensation: %w", err),
+		)
+	}
+	s.deps.Logger.WarnContext(ctx, "compensated realtime start after activation failure",
+		slog.String("request_id", input.TraceID),
+		slog.String("session_id", input.SessionID),
+		slog.String("operation_id", operation.ID),
+		slog.Any("original_error", originalErr),
+	)
+	return VoiceSession{}, originalErr
+}
+
+func (s *Service) failStartCompensation(
+	ctx context.Context,
+	input StartInput,
+	operation StartOperation,
+	claimID string,
+	originalErr error,
+	stopErr error,
+) (VoiceSession, error) {
+	persistErr := s.deps.Repository.FailStartCompensation(
 		ctx,
 		FailStartCompensationParams{
 			SessionID:   input.SessionID,
@@ -361,13 +409,13 @@ func (s *Service) compensateStartedOperation(
 		slog.String("operation_id", operation.ID),
 		slog.Any("original_error", originalErr),
 		slog.Any("compensation_error", stopErr),
-		slog.Any("persistence_error", failErr),
+		slog.Any("persistence_error", persistErr),
 	)
-	if failErr != nil {
+	if persistErr != nil {
 		return VoiceSession{}, errors.Join(
 			originalErr,
 			fmt.Errorf("compensate realtime start: %w", stopErr),
-			fmt.Errorf("persist failed realtime start compensation: %w", failErr),
+			fmt.Errorf("persist failed realtime start compensation: %w", persistErr),
 		)
 	}
 	return VoiceSession{}, errors.Join(

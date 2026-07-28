@@ -261,6 +261,88 @@ func TestServiceStartReturnsCompleteCompensationPersistenceFailure(t *testing.T)
 	}
 }
 
+func TestServiceStartCompletesCompensationWithFreshContextAfterStopDeadline(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.repository.transitionErr = errDependency
+	fixture.repository.requireLiveCompleteContext = true
+	fixture.service.deps.CompensationTimeout = 20 * time.Millisecond
+
+	var stopContextErr error
+	fixture.realtime.stopHook = func(ctx context.Context) {
+		<-ctx.Done()
+		stopContextErr = ctx.Err()
+	}
+	var completeTrace any
+	var completeHasDeadline bool
+	fixture.repository.completeHook = func(ctx context.Context) {
+		completeTrace = ctx.Value(startTraceKey{})
+		_, completeHasDeadline = ctx.Deadline()
+	}
+	ctx := context.WithValue(context.Background(), startTraceKey{}, "trace-value")
+
+	_, err := fixture.service.Start(ctx, validStartInput())
+	if !errors.Is(err, errDependency) {
+		t.Fatalf("Start() error = %v, want transition error", err)
+	}
+	if errors.Is(err, ErrRealtimeStopFailed) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Start() error = %v, want only the transition failure", err)
+	}
+	if !errors.Is(stopContextErr, context.DeadlineExceeded) {
+		t.Fatalf("Stop context error = %v, want deadline exceeded", stopContextErr)
+	}
+	if fixture.repository.completeCalls != 1 || fixture.repository.failCalls != 0 {
+		t.Fatalf("complete calls = %d, fail calls = %d; want 1, 0",
+			fixture.repository.completeCalls, fixture.repository.failCalls)
+	}
+	fixture.repository.mu.Lock()
+	completeContextErr := fixture.repository.completeContextErr
+	fixture.repository.mu.Unlock()
+	if completeContextErr != nil ||
+		!completeHasDeadline ||
+		completeTrace != "trace-value" {
+		t.Fatalf("complete context error = %v, deadline = %t, trace = %#v",
+			completeContextErr, completeHasDeadline, completeTrace)
+	}
+	if fixture.repository.operation.Status != StartOperationCompensated {
+		t.Fatalf("operation status = %q, want compensated",
+			fixture.repository.operation.Status)
+	}
+}
+
+func TestServiceStartLeavesCompensatingWhenTerminalPersistenceTimesOut(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.repository.transitionErr = errDependency
+	fixture.realtime.stopErr = errors.New("stop failed")
+	fixture.repository.requireLiveFailContext = true
+	fixture.service.deps.CompensationTimeout = 20 * time.Millisecond
+	fixture.repository.failHook = func(ctx context.Context) {
+		<-ctx.Done()
+	}
+
+	_, err := fixture.service.Start(context.Background(), validStartInput())
+	if !errors.Is(err, errDependency) ||
+		!errors.Is(err, ErrRealtimeStopFailed) ||
+		!errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Start() error = %v, want transition, stop, and deadline errors", err)
+	}
+	if fixture.repository.failCalls != 1 || fixture.repository.completeCalls != 0 {
+		t.Fatalf("fail calls = %d, complete calls = %d; want 1, 0",
+			fixture.repository.failCalls, fixture.repository.completeCalls)
+	}
+	fixture.repository.mu.Lock()
+	failContextErr := fixture.repository.failContextErr
+	fixture.repository.mu.Unlock()
+	if !errors.Is(failContextErr, context.DeadlineExceeded) {
+		t.Fatalf("FailStartCompensation context error = %v, want deadline exceeded",
+			failContextErr)
+	}
+	if fixture.repository.operation.Status != StartOperationCompensating {
+		t.Fatalf("operation status = %q, want compensating",
+			fixture.repository.operation.Status)
+	}
+}
+
 func TestServiceStartResumesCompensationWithPersistedClaimID(t *testing.T) {
 	fixture := newStartFixture(t, StatusCreated)
 	persistedClaimID := "claim_1"

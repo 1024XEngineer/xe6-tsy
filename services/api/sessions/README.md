@@ -127,7 +127,12 @@ locker, while different Session IDs proceed independently. Lock entries are
 reclaimed after the last waiter releases them. Repository operations and
 compensation claims remain the cross-process consistency boundary.
 Compensation retains request trace values, ignores client cancellation, and
-uses an independent bounded timeout.
+uses an independent bounded timeout. Realtime Stop and terminal compensation
+persistence use separate bounded contexts: Stop may exhaust its deadline
+without preventing `CompleteStartCompensation` or `FailStartCompensation` from
+attempting the terminal write. If that fresh persistence attempt also fails,
+the operation remains `compensating` so the same persisted ClaimID can resume
+cleanup later.
 
 ## End and recovery flow
 

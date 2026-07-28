@@ -23,25 +23,27 @@ func TestServiceStartAllowsDifferentSessionsInParallel(t *testing.T) {
 		t.Fatalf("NewService() error = %v", err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	results := make(chan error, 2)
 	go func() {
-		_, startErr := service.Start(context.Background(), parallelStartInput("vs_1"))
+		_, startErr := service.Start(ctx, parallelStartInput("vs_1"))
 		results <- startErr
 	}()
-	<-realtime.entered["vs_1"]
+	waitForSignal(t, "vs_1 Realtime.Start", realtime.entered["vs_1"])
 
 	go func() {
-		_, startErr := service.Start(context.Background(), parallelStartInput("vs_2"))
+		_, startErr := service.Start(ctx, parallelStartInput("vs_2"))
 		results <- startErr
 	}()
 	// Reaching this channel while vs_1 remains blocked proves that Start uses
 	// the SessionID as its lock key instead of serializing the whole Service.
-	<-realtime.entered["vs_2"]
+	waitForSignal(t, "vs_2 Realtime.Start", realtime.entered["vs_2"])
 
 	close(realtime.release["vs_1"])
 	close(realtime.release["vs_2"])
 	for range 2 {
-		if startErr := <-results; startErr != nil {
+		if startErr := waitForStartResult(t, results); startErr != nil {
 			t.Fatalf("Start() error = %v", startErr)
 		}
 	}
@@ -72,6 +74,26 @@ func TestServiceStartAllowsDifferentSessionsInParallel(t *testing.T) {
 	service.locks.mu.Unlock()
 	if lockEntries != 0 {
 		t.Fatalf("lock entries after requests = %d, want 0", lockEntries)
+	}
+}
+
+func waitForSignal(t *testing.T, name string, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func waitForStartResult(t *testing.T, results <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-results:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Start result")
+		return nil
 	}
 }
 
@@ -281,11 +303,15 @@ func newParallelStartRealtime(now time.Time, sessionIDs ...string) *parallelStar
 }
 
 func (r *parallelStartRealtime) Start(
-	_ context.Context,
+	ctx context.Context,
 	command StartRealtimeCommand,
 ) (RuntimeSnapshot, error) {
 	close(r.entered[command.SessionID])
-	<-r.release[command.SessionID]
+	select {
+	case <-r.release[command.SessionID]:
+	case <-ctx.Done():
+		return RuntimeSnapshot{}, ctx.Err()
+	}
 	return RuntimeSnapshot{
 		SessionID:    command.SessionID,
 		RuntimeState: RuntimeListening,

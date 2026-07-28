@@ -23,7 +23,8 @@ func NewRecordsTurnReader(reader recordsv1.TurnReader) *RecordsTurnReader {
 
 // ReadFinalTurns preserves the provider's validated order while crossing the module type boundary.
 func (r *RecordsTurnReader) ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]FinalTurnSnapshot, error) {
-	snapshots, err := r.reader.ReadFinalTurns(ctx, accountID, turnIDs)
+	providerTurnIDs := append([]string(nil), turnIDs...)
+	snapshots, err := r.reader.ReadFinalTurns(ctx, accountID, providerTurnIDs)
 	if err != nil {
 		return nil, err
 	}

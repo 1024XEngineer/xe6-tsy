@@ -116,6 +116,25 @@ func TestRecordsTurnReaderPropagatesContextCancellation(t *testing.T) {
 	}
 }
 
+func TestRecordsTurnReaderDoesNotExposeInputSliceToProvider(t *testing.T) {
+	turnIDs := []string{"turn_01", "turn_02"}
+	provider := &recordsTurnReaderFake{
+		snapshots:     []recordsv1.FinalTurnSnapshot{{TurnID: "turn_01"}},
+		mutateTurnIDs: true,
+	}
+	reader := NewRecordsTurnReader(provider)
+
+	if _, err := reader.ReadFinalTurns(context.Background(), "account_01", turnIDs); err != nil {
+		t.Fatalf("ReadFinalTurns() error = %v", err)
+	}
+	if turnIDs[0] != "turn_01" || turnIDs[1] != "turn_02" {
+		t.Fatalf("caller turn IDs changed to %#v", turnIDs)
+	}
+	if len(provider.turnIDs) != 2 || provider.turnIDs[0] != "turn_01" || provider.turnIDs[1] != "turn_02" {
+		t.Fatalf("provider turn IDs = %#v", provider.turnIDs)
+	}
+}
+
 func TestNewRecordsTurnReaderRejectsMissingProvider(t *testing.T) {
 	defer func() {
 		if recover() == nil {
@@ -130,6 +149,7 @@ type recordsTurnReaderFake struct {
 	snapshots       []recordsv1.FinalTurnSnapshot
 	err             error
 	useContextError bool
+	mutateTurnIDs   bool
 	accountID       string
 	turnIDs         []string
 }
@@ -137,6 +157,9 @@ type recordsTurnReaderFake struct {
 func (reader *recordsTurnReaderFake) ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error) {
 	reader.accountID = accountID
 	reader.turnIDs = append([]string(nil), turnIDs...)
+	if reader.mutateTurnIDs && len(turnIDs) > 1 {
+		turnIDs[0], turnIDs[1] = turnIDs[1], turnIDs[0]
+	}
 	if reader.useContextError {
 		return nil, ctx.Err()
 	}

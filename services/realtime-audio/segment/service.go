@@ -59,20 +59,20 @@ func NewService(deps Dependencies) (*Service, error) {
 
 // Run owns the source until EOF, context cancellation, or a processing error closes the loop.
 func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
 	if s == nil || s.source == nil || s.segmenter == nil || s.processor == nil {
 		return ErrDependencyRequired
-	}
-	if request.SessionID == "" {
-		return ErrSessionIDRequired
 	}
 	defer func() {
 		if err := s.source.Close(); err != nil {
 			returnErr = errors.Join(returnErr, fmt.Errorf("close audio frame source: %w", err))
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if request.SessionID == "" {
+		return ErrSessionIDRequired
+	}
 
 	var lastSeen time.Time
 	for {

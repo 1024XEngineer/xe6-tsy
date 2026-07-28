@@ -104,10 +104,12 @@ func TestServiceReturnsSourceCloseError(t *testing.T) {
 }
 
 func TestServicePropagatesCancellation(t *testing.T) {
-	source := &fakeSource{readErr: context.Canceled}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	source := &fakeSource{}
 	service := newTestService(t, source, &fakeProcessor{})
 
-	err := service.Run(context.Background(), Request{SessionID: "session-1"})
+	err := service.Run(ctx, Request{SessionID: "session-1"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() error = %v, want context canceled", err)
 	}

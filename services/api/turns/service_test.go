@@ -13,26 +13,16 @@ import (
 func TestConsumeFinalTurnIsIdempotentAndPreservesEvent(t *testing.T) {
 	repository := &fakeRepository{}
 	service := NewService(repository, fakeSessionOwners{}, nil)
-	participantID := "p_01"
 	confidence := 0.91
-	event := recordsv1.FinalTurnEvent{
-		EventID:               "evt_01",
-		TurnID:                "vt_01",
-		SessionID:             "vs_01",
-		ParticipantID:         &participantID,
-		SequenceNo:            4,
-		SourceLanguage:        "en-US",
-		TargetLanguage:        "zh-CN",
-		LanguageConfigVersion: 8,
-		SourceText:            "Hello",
-		TranslatedText:        "Ni hao",
-		SpeakerCode:           "speaker_01",
-		SpeakerConfidence:     &confidence,
-		AttributionStatus:     recordsv1.AttributionProvisional,
-		StartedAt:             time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC),
-		EndedAt:               time.Date(2026, 7, 24, 8, 0, 2, 0, time.UTC),
-		OccurredAt:            time.Date(2026, 7, 24, 8, 0, 3, 0, time.UTC),
-	}
+	event := validEvent()
+	event.SequenceNo = 4
+	event.LanguageConfigVersion = 8
+	event.SourceText = "Hello"
+	event.TranslatedText = "Ni hao"
+	event.SpeakerConfidence = &confidence
+	event.StartedAt = time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC)
+	event.EndedAt = time.Date(2026, 7, 24, 8, 0, 2, 0, time.UTC)
+	event.OccurredAt = time.Date(2026, 7, 24, 8, 0, 3, 0, time.UTC)
 
 	if err := service.ConsumeFinalTurn(context.Background(), event); err != nil {
 		t.Fatalf("first ConsumeFinalTurn() error = %v", err)

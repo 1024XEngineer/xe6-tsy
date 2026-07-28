@@ -68,8 +68,8 @@ func NewService(repository Repository, sessions recordsv1.SessionOwnerReader, no
 // ConsumeFinalTurn stores one final realtime event. The repository owns the atomic event/turn
 // deduplication transaction because at-least-once delivery can race across consumer instances.
 func (s *Service) ConsumeFinalTurn(ctx context.Context, event recordsv1.FinalTurnEvent) error {
-	if !validFinalTurnEvent(event) {
-		return ErrInvalidRequest
+	if err := event.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
 	return s.repository.StoreFinalTurn(ctx, event)
 }
@@ -153,18 +153,6 @@ func (s *Service) requireOwner(ctx context.Context, accountID, sessionID string)
 		return ErrForbidden
 	}
 	return nil
-}
-
-func validFinalTurnEvent(event recordsv1.FinalTurnEvent) bool {
-	if event.EventID == "" || event.TurnID == "" || event.SessionID == "" || event.SourceLanguage == "" || event.TargetLanguage == "" || event.SpeakerCode == "" {
-		return false
-	}
-	switch event.AttributionStatus {
-	case recordsv1.AttributionPending, recordsv1.AttributionProvisional, recordsv1.AttributionConfirmed, recordsv1.AttributionCorrected:
-	default:
-		return false
-	}
-	return event.ParticipantID != nil || event.AttributionStatus == recordsv1.AttributionPending
 }
 
 func validAttributionRequest(turnID string, request recordsv1.UpdateAttributionRequest) bool {

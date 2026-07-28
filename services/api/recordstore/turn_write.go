@@ -34,19 +34,7 @@ func (w *TurnWriter) StoreFinalTurn(ctx context.Context, event recordsv1.FinalTu
 	}
 	defer tx.Rollback(ctx)
 
-	result, err := tx.Exec(ctx, `
-INSERT INTO voice_turns (
-    id, event_id, event_payload_hash, session_id, participant_id,
-    speaker_code, display_name, sequence_no, source_language, target_language,
-    language_config_version, source_text, translated_text, speaker_confidence,
-    attribution_status, started_at, ended_at, created_at
-) VALUES (
-    $1, $2, $3, $4, $5,
-    $6, $7, $8, $9, $10,
-    $11, $12, $13, $14,
-    $15, $16, $17, $18
-)
-ON CONFLICT DO NOTHING`,
+	result, err := tx.Exec(ctx, insertFinalTurnQuery,
 		event.TurnID,
 		event.EventID,
 		payloadHash[:],
@@ -87,13 +75,12 @@ func verifyFinalTurnReplay(
 	event recordsv1.FinalTurnEvent,
 	payloadHash recordsv1.FinalTurnPayloadHash,
 ) error {
-	rows, err := tx.Query(ctx, `
-SELECT event_payload_hash
-FROM voice_turns
-WHERE event_id = $1
-   OR id = $2
-   OR (session_id = $3 AND sequence_no = $4)
-FOR UPDATE`, event.EventID, event.TurnID, event.SessionID, event.SequenceNo)
+	rows, err := tx.Query(ctx, finalTurnReplayQuery,
+		event.EventID,
+		event.TurnID,
+		event.SessionID,
+		event.SequenceNo,
+	)
 	if err != nil {
 		return fmt.Errorf("read final turn replay: %w", err)
 	}
@@ -118,3 +105,25 @@ FOR UPDATE`, event.EventID, event.TurnID, event.SessionID, event.SequenceNo)
 	}
 	return nil
 }
+
+const insertFinalTurnQuery = `
+INSERT INTO voice_turns (
+    id, event_id, event_payload_hash, session_id, participant_id,
+    speaker_code, display_name, sequence_no, source_language, target_language,
+    language_config_version, source_text, translated_text, speaker_confidence,
+    attribution_status, started_at, ended_at, created_at
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9, $10,
+    $11, $12, $13, $14,
+    $15, $16, $17, $18
+)
+ON CONFLICT DO NOTHING`
+
+const finalTurnReplayQuery = `
+SELECT event_payload_hash
+FROM voice_turns
+WHERE event_id = $1
+   OR id = $2
+   OR (session_id = $3 AND sequence_no = $4)
+FOR UPDATE`

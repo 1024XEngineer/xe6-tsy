@@ -16,12 +16,7 @@ func (w *TurnWriter) ParticipantBelongsToSession(
 	sessionID string,
 ) (bool, error) {
 	var belongs bool
-	if err := w.pool.QueryRow(ctx, `
-SELECT EXISTS (
-    SELECT 1
-    FROM voice_session_participants
-    WHERE id = $1 AND session_id = $2
-)`, participantID, sessionID).Scan(&belongs); err != nil {
+	if err := w.pool.QueryRow(ctx, participantBelongsQuery, participantID, sessionID).Scan(&belongs); err != nil {
 		return false, fmt.Errorf("check participant session: %w", err)
 	}
 	return belongs, nil
@@ -40,42 +35,21 @@ func (w *TurnWriter) CorrectAttribution(
 	defer tx.Rollback(ctx)
 
 	var sessionID string
-	if err := tx.QueryRow(ctx, `
-SELECT session_id
-FROM voice_turns
-WHERE id = $1
-FOR UPDATE`, update.TurnID).Scan(&sessionID); errors.Is(err, pgx.ErrNoRows) {
+	if err := tx.QueryRow(ctx, lockTurnForAttributionQuery, update.TurnID).Scan(&sessionID); errors.Is(err, pgx.ErrNoRows) {
 		return recordsv1.VoiceTurn{}, turns.ErrTurnNotFound
 	} else if err != nil {
 		return recordsv1.VoiceTurn{}, fmt.Errorf("lock turn for attribution correction: %w", err)
 	}
 
 	var participantExists bool
-	if err := tx.QueryRow(ctx, `
-SELECT EXISTS (
-    SELECT 1
-    FROM voice_session_participants
-    WHERE id = $1 AND session_id = $2
-)`, update.ParticipantID, sessionID).Scan(&participantExists); err != nil {
+	if err := tx.QueryRow(ctx, participantBelongsQuery, update.ParticipantID, sessionID).Scan(&participantExists); err != nil {
 		return recordsv1.VoiceTurn{}, fmt.Errorf("check attribution participant: %w", err)
 	}
 	if !participantExists {
 		return recordsv1.VoiceTurn{}, turns.ErrInvalidAttribution
 	}
 
-	turn, err := scanVoiceTurn(tx.QueryRow(ctx, `
-UPDATE voice_turns
-SET participant_id = $2,
-    attribution_status = $3,
-    speaker_confidence = $4,
-    corrected_by = $5,
-    corrected_at = $6
-WHERE id = $1
-RETURNING id, session_id, participant_id, speaker_code, display_name,
-          provider_speaker_id, voice_profile_id, sequence_no, source_language,
-          target_language, language_config_version, source_text, translated_text,
-          speaker_confidence, attribution_status, corrected_by, started_at, ended_at,
-          corrected_at, created_at`,
+	turn, err := scanVoiceTurn(tx.QueryRow(ctx, correctAttributionQuery,
 		update.TurnID,
 		update.ParticipantID,
 		update.AttributionStatus,
@@ -91,6 +65,33 @@ RETURNING id, session_id, participant_id, speaker_code, display_name,
 	}
 	return turn, nil
 }
+
+const participantBelongsQuery = `
+SELECT EXISTS (
+    SELECT 1
+    FROM voice_session_participants
+    WHERE id = $1 AND session_id = $2
+)`
+
+const lockTurnForAttributionQuery = `
+SELECT session_id
+FROM voice_turns
+WHERE id = $1
+FOR UPDATE`
+
+const correctAttributionQuery = `
+UPDATE voice_turns
+SET participant_id = $2,
+    attribution_status = $3,
+    speaker_confidence = $4,
+    corrected_by = $5,
+    corrected_at = $6
+WHERE id = $1
+RETURNING id, session_id, participant_id, speaker_code, display_name,
+          provider_speaker_id, voice_profile_id, sequence_no, source_language,
+          target_language, language_config_version, source_text, translated_text,
+          speaker_confidence, attribution_status, corrected_by, started_at, ended_at,
+          corrected_at, created_at`
 
 func scanVoiceTurn(row rowScanner) (recordsv1.VoiceTurn, error) {
 	var turn recordsv1.VoiceTurn

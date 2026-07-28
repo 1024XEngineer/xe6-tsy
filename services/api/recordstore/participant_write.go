@@ -34,10 +34,7 @@ func (w *ParticipantWriter) FindOrCreate(
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
-		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		observation.SessionID,
-	); err != nil {
+	if _, err := tx.Exec(ctx, lockParticipantSessionQuery, observation.SessionID); err != nil {
 		return recordsv1.Participant{}, fmt.Errorf("lock participant session: %w", err)
 	}
 
@@ -63,12 +60,7 @@ func (w *ParticipantWriter) FindOrCreate(
 		return recordsv1.Participant{}, fmt.Errorf("allocate participant speaker code: %w", err)
 	}
 
-	participant, err = scanParticipant(tx.QueryRow(ctx, `
-INSERT INTO voice_session_participants (
-    id, session_id, speaker_code, provider_speaker_id
-) VALUES ($1, $2, $3, $4)
-RETURNING id, session_id, speaker_code, display_name, provider_speaker_id,
-          voice_profile_id, confidence, created_at, updated_at`,
+	participant, err = scanParticipant(tx.QueryRow(ctx, insertParticipantQuery,
 		ulid.Make().String(),
 		observation.SessionID,
 		fmt.Sprintf("speaker_%02d", ordinal),
@@ -89,15 +81,7 @@ func (w *ParticipantWriter) Update(
 	participantID string,
 	update participants.Update,
 ) (recordsv1.Participant, error) {
-	participant, err := scanParticipant(w.pool.QueryRow(ctx, `
-UPDATE voice_session_participants
-SET display_name = CASE WHEN $3 THEN $4 ELSE display_name END,
-    provider_speaker_id = CASE WHEN $5 THEN $6 ELSE provider_speaker_id END,
-    voice_profile_id = CASE WHEN $7 THEN $8 ELSE voice_profile_id END,
-    updated_at = $9
-WHERE session_id = $1 AND id = $2
-RETURNING id, session_id, speaker_code, display_name, provider_speaker_id,
-          voice_profile_id, confidence, created_at, updated_at`,
+	participant, err := scanParticipant(w.pool.QueryRow(ctx, updateParticipantQuery,
 		sessionID,
 		participantID,
 		update.DisplayNameSet,
@@ -120,11 +104,30 @@ RETURNING id, session_id, speaker_code, display_name, provider_speaker_id,
 	return participant, nil
 }
 
+const lockParticipantSessionQuery = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
+
 const participantByProviderQuery = `
 SELECT id, session_id, speaker_code, display_name, provider_speaker_id,
        voice_profile_id, confidence, created_at, updated_at
 FROM voice_session_participants
 WHERE session_id = $1 AND provider_speaker_id = $2`
+
+const insertParticipantQuery = `
+INSERT INTO voice_session_participants (
+    id, session_id, speaker_code, provider_speaker_id
+) VALUES ($1, $2, $3, $4)
+RETURNING id, session_id, speaker_code, display_name, provider_speaker_id,
+          voice_profile_id, confidence, created_at, updated_at`
+
+const updateParticipantQuery = `
+UPDATE voice_session_participants
+SET display_name = CASE WHEN $3 THEN $4 ELSE display_name END,
+    provider_speaker_id = CASE WHEN $5 THEN $6 ELSE provider_speaker_id END,
+    voice_profile_id = CASE WHEN $7 THEN $8 ELSE voice_profile_id END,
+    updated_at = $9
+WHERE session_id = $1 AND id = $2
+RETURNING id, session_id, speaker_code, display_name, provider_speaker_id,
+          voice_profile_id, confidence, created_at, updated_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error

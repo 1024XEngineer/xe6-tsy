@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	asrqwen "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr/qwen"
@@ -73,8 +74,15 @@ func buildTranslation(config TranslationConfig, offline translate.Provider) (tra
 		}
 		return offline, nil
 	case ProviderAliyun:
+		model := strings.TrimSpace(config.Model)
+		if model == "" {
+			model = defaultTranslationModel
+		}
+		if !strings.EqualFold(model, defaultTranslationModel) {
+			return nil, fmt.Errorf("%w: LLM_MODEL=%q (want %s)", ErrUnsupportedModel, model, defaultTranslationModel)
+		}
 		return translateqwen.NewProvider(translateqwen.Config{
-			APIKey: config.APIKey, BaseURL: config.BaseURL, Model: config.Model,
+			APIKey: config.APIKey, BaseURL: config.BaseURL, Model: defaultTranslationModel,
 			Provider: string(ProviderAliyun), EnableThinking: config.EnableThinking, Timeout: config.Timeout,
 		})
 	default:
@@ -101,6 +109,7 @@ func buildTTS(config TTSConfig, offline tts.Provider) (tts.Provider, error) {
 }
 
 func normalizedProvider(provider ProviderName) ProviderName {
+	provider = ProviderName(strings.ToLower(strings.TrimSpace(string(provider))))
 	if provider == "" {
 		return ProviderMock
 	}

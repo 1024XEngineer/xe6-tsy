@@ -58,6 +58,16 @@ func TestBuildProvidersValidatesSelections(t *testing.T) {
 		{name: "missing mock", config: ProviderConfig{}, want: ErrMockProviderRequired},
 		{name: "unsupported", config: ProviderConfig{ASR: ASRConfig{Provider: "other"}}, want: ErrUnsupportedProvider},
 		{name: "Qwen key", config: ProviderConfig{ASR: ASRConfig{Provider: ProviderAliyun, BaseURL: "https://example.com"}}, want: asrqwen.ErrAPIKeyRequired},
+		{
+			name: "Qwen translation model",
+			config: ProviderConfig{
+				ASR:         ASRConfig{Provider: ProviderMock},
+				Translation: TranslationConfig{Provider: ProviderAliyun, APIKey: "llm-key", BaseURL: "https://example.com", Model: "deepseek-chat"},
+				TTS:         TTSConfig{Provider: ProviderMock},
+			},
+			offline: Providers{ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}), TTS: tts.NewFakeProvider(tts.FakeProviderConfig{})},
+			want:    ErrUnsupportedModel,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -4,11 +4,14 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
+
+const defaultTranslationModel = "qwen3.6-flash"
 
 type ProviderName string
 
@@ -20,6 +23,7 @@ const (
 var (
 	ErrEnvironmentLookupRequired = errors.New("environment lookup is required")
 	ErrUnsupportedProvider       = errors.New("unsupported realtime provider")
+	ErrUnsupportedModel          = errors.New("unsupported realtime model")
 	ErrInvalidEnvironmentValue   = errors.New("invalid realtime environment value")
 )
 
@@ -93,6 +97,19 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 	if err != nil {
 		return ProviderConfig{}, err
 	}
+	if vadThreshold < -1 || vadThreshold > 1 {
+		return ProviderConfig{}, invalidValue("ASR_VAD_THRESHOLD", value(lookup, "ASR_VAD_THRESHOLD"))
+	}
+	if silenceDuration != 0 && (silenceDuration < 200*time.Millisecond || silenceDuration > 6000*time.Millisecond) {
+		return ProviderConfig{}, invalidValue("ASR_SILENCE_DURATION_MS", value(lookup, "ASR_SILENCE_DURATION_MS"))
+	}
+	if sampleRate != 0 && sampleRate != 8000 && sampleRate != 16000 {
+		return ProviderConfig{}, invalidValue("ASR_SAMPLE_RATE", value(lookup, "ASR_SAMPLE_RATE"))
+	}
+	translationModel, err := readTranslationModel(lookup)
+	if err != nil {
+		return ProviderConfig{}, err
+	}
 	enableThinking, err := readBool(lookup, "LLM_ENABLE_THINKING")
 	if err != nil {
 		return ProviderConfig{}, err
@@ -119,7 +136,7 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 		},
 		Translation: TranslationConfig{
 			Provider: translationProvider, APIKey: value(lookup, "LLM_API_KEY"),
-			BaseURL: value(lookup, "LLM_BASE_URL"), Model: value(lookup, "LLM_MODEL"),
+			BaseURL: value(lookup, "LLM_BASE_URL"), Model: translationModel,
 			EnableThinking: enableThinking, Timeout: translationTimeout,
 		},
 		TTS: TTSConfig{
@@ -165,10 +182,21 @@ func readFloat(lookup LookupEnv, key string) (float64, error) {
 		return 0, nil
 	}
 	parsed, err := strconv.ParseFloat(raw, 64)
-	if err != nil || parsed < 0 {
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
 		return 0, invalidValue(key, raw)
 	}
 	return parsed, nil
+}
+
+func readTranslationModel(lookup LookupEnv) (string, error) {
+	raw := value(lookup, "LLM_MODEL")
+	if raw == "" {
+		return defaultTranslationModel, nil
+	}
+	if !strings.EqualFold(raw, defaultTranslationModel) {
+		return "", fmt.Errorf("%w: LLM_MODEL=%q (want %s)", ErrUnsupportedModel, raw, defaultTranslationModel)
+	}
+	return defaultTranslationModel, nil
 }
 
 func readBool(lookup LookupEnv, key string) (bool, error) {

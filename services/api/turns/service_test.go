@@ -3,6 +3,7 @@ package turns
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -256,6 +257,43 @@ func TestReadFinalTurnsPassesAccountScope(t *testing.T) {
 	}
 }
 
+func TestReadFinalTurnsRejectsOversizedBatch(t *testing.T) {
+	turnIDs := make([]string, recordsv1.MaxFinalTurnBatchSize+1)
+	for index := range turnIDs {
+		turnIDs[index] = fmt.Sprintf("turn_%d", index)
+	}
+	repository := &fakeRepository{}
+	service := NewService(repository, fakeSessionOwners{}, nil)
+
+	_, err := service.ReadFinalTurns(context.Background(), "acct_01", turnIDs)
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("ReadFinalTurns() error = %v, want invalid request", err)
+	}
+	if repository.readAccountID != "" {
+		t.Fatalf("ReadFinalTurns() reached repository with account %q", repository.readAccountID)
+	}
+}
+
+func TestReadFinalTurnsAllowsMaximumBatch(t *testing.T) {
+	turnIDs := make([]string, recordsv1.MaxFinalTurnBatchSize)
+	for index := range turnIDs {
+		turnIDs[index] = fmt.Sprintf("turn_%d", index)
+	}
+	repository := &fakeRepository{snapshots: []recordsv1.FinalTurnSnapshot{{TurnID: "turn_0"}}}
+	service := NewService(repository, fakeSessionOwners{}, nil)
+
+	snapshots, err := service.ReadFinalTurns(context.Background(), "acct_01", turnIDs)
+	if err != nil {
+		t.Fatalf("ReadFinalTurns() error = %v", err)
+	}
+	if repository.readAccountID != "acct_01" || len(repository.readTurnIDs) != recordsv1.MaxFinalTurnBatchSize {
+		t.Fatalf("ReadFinalTurns() account = %q, turn IDs = %d", repository.readAccountID, len(repository.readTurnIDs))
+	}
+	if len(snapshots) != 1 || snapshots[0].TurnID != "turn_0" {
+		t.Fatalf("ReadFinalTurns() snapshots = %#v", snapshots)
+	}
+}
+
 func TestListHistoryRejectsReverseTimeRange(t *testing.T) {
 	repository := &fakeRepository{}
 	service := NewService(repository, fakeSessionOwners{}, nil)
@@ -304,6 +342,7 @@ type fakeRepository struct {
 	lastUpdate           AttributionUpdate
 	snapshots            []recordsv1.FinalTurnSnapshot
 	readAccountID        string
+	readTurnIDs          []string
 	findAccountID        string
 	listAccountID        string
 	ownedAccountID       string
@@ -366,8 +405,9 @@ func (r *fakeRepository) CorrectAttribution(_ context.Context, update Attributio
 	return updated, nil
 }
 
-func (r *fakeRepository) ReadFinalTurns(_ context.Context, accountID string, _ []string) ([]recordsv1.FinalTurnSnapshot, error) {
+func (r *fakeRepository) ReadFinalTurns(_ context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error) {
 	r.readAccountID = accountID
+	r.readTurnIDs = append([]string(nil), turnIDs...)
 	return r.snapshots, nil
 }
 

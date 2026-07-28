@@ -178,7 +178,10 @@ type Repository interface {
 }
 
 // RealtimeLifecycle is the only media-plane lifecycle dependency used by
-// session management. Start accepts a still-created business session.
+// session management. Start accepts a still-created business session. Calls
+// with the same SessionID and OperationID are idempotent and return the latest
+// snapshot for that runtime; a different OperationID must not claim an existing
+// runtime and returns ErrRealtimeAlreadyRunning or ErrConcurrentTransition.
 type RealtimeLifecycle interface {
 	Start(ctx context.Context, command StartRealtimeCommand) (RuntimeSnapshot, error)
 	Stop(ctx context.Context, command StopRealtimeCommand) (RuntimeSnapshot, error)
@@ -191,11 +194,12 @@ type RealtimeLifecycle interface {
 	GetRuntimeState(ctx context.Context, sessionID string) (RuntimeSnapshot, error)
 }
 
-// StartRealtimeCommand carries trace and actor information across the service boundary.
+// StartRealtimeCommand binds one durable operation to the runtime it creates.
 type StartRealtimeCommand struct {
-	SessionID string
-	TraceID   string
-	StartedBy string
+	SessionID   string
+	OperationID string
+	TraceID     string
+	StartedBy   string
 }
 
 // StopRealtimeCommand carries the requested shutdown reason and timestamp.

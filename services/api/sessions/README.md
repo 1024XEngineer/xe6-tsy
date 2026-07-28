@@ -36,6 +36,21 @@ provider commands and snapshots explicitly. Adapters must exhaustively map
 `RuntimeState`, `ConnectionState`, `EndReason`, language-config status, and time
 fields; unchecked string conversion is not an integration contract.
 
+Realtime runtime ownership is frozen at this boundary:
+
+- the same `SessionID` and durable Start `OperationID` is an idempotent
+  `RealtimeLifecycle.Start` call and returns the latest snapshot for that
+  runtime;
+- the same `SessionID` with a different `OperationID` cannot claim an existing
+  runtime and returns `ErrRealtimeAlreadyRunning` or
+  `ErrConcurrentTransition`;
+- `RuntimeSnapshot.StartOperationID` identifies the durable Start operation
+  that owns the runtime instance.
+
+The shared realtime contract does not yet expose this ownership field. A
+follow-up production adapter must map it explicitly when the provider contract
+is extended; this slice changes only the sessions consumer-owned port.
+
 ## Create flow
 
 ```text
@@ -105,33 +120,42 @@ Repository.GetOwned
 -> if pending, require readiness and continue RealtimeLifecycle.Start
 -> if absent, require readiness and begin a durable StartOperation
 -> RealtimeLifecycle.Start
--> require a completed running state (listening or processing)
+-> if AlreadyRunning, read the latest RuntimeSnapshot once
+-> require matching RuntimeSnapshot.StartOperationID
+-> classify running, in-progress, stopped, or failed
 -> Repository.TransitionToActive(created -> active + operation completed)
 ```
 
-An in-progress `starting` or `stopping` snapshot returns a retryable
-`ErrRealtimeAlreadyRunning` without transitioning the business session or
-claiming compensation for a pipeline that may belong to another request.
-Realtime Start errors also leave the operation `pending` because the caller
-cannot know whether the media boundary accepted the request. Existing
-`listening`, `asr_processing`, `translating`, `tts_processing`, and `playing`
-snapshots can complete a previously failed business transition.
+After `ErrRealtimeAlreadyRunning`, one runtime-state read reconciles the
+pending operation. A matching `listening`, `asr_processing`, `translating`,
+`tts_processing`, or `playing` runtime completes activation. Matching
+`starting` or `stopping` remains pending and returns the in-progress error.
+Matching `stopped` or `failed` remains pending and returns
+`ErrRealtimeStartFailed`, allowing the same key to retry. Missing or mismatched
+runtime ownership returns a concurrent transition without activation or Stop.
 
-The realtime implementation reads a still-`created` session. If runtime
-validation or the final business transition fails after realtime startup, the
-service first claims repository-owned compensation authority. Only
-`Claimed=true` permits `RealtimeLifecycle.Stop`. Successful cleanup persists
-`compensated`; Stop failure or an invalid stopped snapshot persists
-`compensation_failed`. Every Stop failure remains classifiable as
-`ErrRealtimeStopFailed` while preserving cancellation, timeout,
-not-implemented, or provider causes. An interrupted `compensating` operation
-resumes only with its persisted ClaimID. If a competing instance has already
-activated the session, the denied claimant replays the completed operation and
-never stops the valid pipeline.
+Other realtime Start errors leave the operation `pending` because the caller
+cannot know whether the media boundary accepted the request. Active-only
+runtime states are acceptable recovery evidence only when
+`RuntimeSnapshot.StartOperationID` matches the current durable operation.
+
+The realtime implementation reads a still-`created` session. Compensation is
+allowed only after the runtime is confirmed to belong to the current durable
+Start operation and runtime validation or the final business transition then
+fails. The service first claims repository-owned compensation authority. Only
+`Claimed=true` permits `RealtimeLifecycle.Stop`; SessionID equality alone is
+never cleanup authority. Successful cleanup persists `compensated`; Stop
+failure or an invalid stopped snapshot persists `compensation_failed`. Every
+Stop failure remains classifiable as `ErrRealtimeStopFailed` while preserving
+cancellation, timeout, not-implemented, or provider causes. An interrupted
+`compensating` operation resumes only with its persisted ClaimID. If a
+competing instance has already activated the session, the denied claimant
+replays the completed operation and never stops the valid pipeline.
 
 Start operations for the same session are serialized by an in-process keyed
-locker, while different Session IDs proceed independently. Lock entries are
-reclaimed after the last waiter releases them. Repository operations and
+locker, while different Session IDs proceed independently. Lock waits honor
+request cancellation and deadlines, and entries are reclaimed after the last
+holder or waiter releases its reference. Repository operations and
 compensation claims remain the cross-process consistency boundary.
 Compensation retains request trace values, ignores client cancellation, and
 uses an independent bounded timeout. Realtime Stop and terminal compensation
@@ -140,6 +164,12 @@ without preventing `CompleteStartCompensation` or `FailStartCompensation` from
 attempting the terminal write. If that fresh persistence attempt also fails,
 the operation remains `compensating` so the same persisted ClaimID can resume
 cleanup later.
+
+Every persisted Start lifecycle timestamp is obtained through one checked UTC
+clock boundary. A zero timestamp before operation creation prevents the
+operation write. A zero activation timestamp after realtime startup enters
+owned compensation. A zero compensation-claim timestamp forbids Stop, and a
+zero terminal timestamp leaves the operation `compensating` for recovery.
 
 ## End and recovery flow
 

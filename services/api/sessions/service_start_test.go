@@ -43,7 +43,10 @@ func TestServiceStartRunsPrerequisitesBeforeTransition(t *testing.T) {
 		t.Fatalf("BeginStartOperationParams = %#v", begin)
 	}
 	command := fixture.realtime.startCommand
-	if command.SessionID != "vs_1" || command.TraceID != "req_1" || command.StartedBy != "acct_1" {
+	if command.SessionID != "vs_1" ||
+		command.OperationID != "op_1" ||
+		command.TraceID != "req_1" ||
+		command.StartedBy != "acct_1" {
 		t.Fatalf("StartRealtimeCommand = %#v", command)
 	}
 	params := fixture.repository.transitions[0]
@@ -248,7 +251,6 @@ func TestServiceStartRejectsUnmetExternalPrerequisites(t *testing.T) {
 		{name: "WebRTC invalid state", edit: func(f *startFixture) { f.connections.result.ConnectionState = "unknown" }, want: ErrWebRTCUnavailable},
 		{name: "WebRTC dependency error", edit: func(f *startFixture) { f.connections.err = errDependency }, want: ErrWebRTCUnavailable},
 		{name: "realtime start error", edit: func(f *startFixture) { f.realtime.startErr = errDependency }, want: ErrRealtimeStartFailed},
-		{name: "realtime already running", edit: func(f *startFixture) { f.realtime.startErr = ErrRealtimeAlreadyRunning }, want: ErrRealtimeAlreadyRunning},
 		{name: "realtime cancellation", edit: func(f *startFixture) { f.realtime.startErr = context.Canceled }, want: context.Canceled},
 	}
 
@@ -275,10 +277,9 @@ func TestServiceStartCompensatesInvalidRuntimeSnapshots(t *testing.T) {
 		name     string
 		snapshot RuntimeSnapshot
 	}{
-		{name: "session mismatch", snapshot: RuntimeSnapshot{SessionID: "other", RuntimeState: RuntimeListening, UpdatedAt: now}},
-		{name: "zero timestamp", snapshot: RuntimeSnapshot{SessionID: "vs_1", RuntimeState: RuntimeListening}},
-		{name: "stopped", snapshot: RuntimeSnapshot{SessionID: "vs_1", RuntimeState: RuntimeStopped, UpdatedAt: now}},
-		{name: "failed", snapshot: RuntimeSnapshot{SessionID: "vs_1", RuntimeState: RuntimeFailed, UpdatedAt: now}},
+		{name: "zero timestamp", snapshot: RuntimeSnapshot{SessionID: "vs_1", StartOperationID: "op_1", RuntimeState: RuntimeListening}},
+		{name: "stopped", snapshot: RuntimeSnapshot{SessionID: "vs_1", StartOperationID: "op_1", RuntimeState: RuntimeStopped, UpdatedAt: now}},
+		{name: "failed", snapshot: RuntimeSnapshot{SessionID: "vs_1", StartOperationID: "op_1", RuntimeState: RuntimeFailed, UpdatedAt: now}},
 	}
 
 	for _, test := range tests {

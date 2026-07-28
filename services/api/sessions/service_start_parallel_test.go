@@ -377,9 +377,10 @@ func (r *parallelStartRealtime) Start(
 		return RuntimeSnapshot{}, ctx.Err()
 	}
 	return RuntimeSnapshot{
-		SessionID:    command.SessionID,
-		RuntimeState: RuntimeListening,
-		UpdatedAt:    r.now,
+		SessionID:        command.SessionID,
+		StartOperationID: command.OperationID,
+		RuntimeState:     RuntimeListening,
+		UpdatedAt:        r.now,
 	}, nil
 }
 

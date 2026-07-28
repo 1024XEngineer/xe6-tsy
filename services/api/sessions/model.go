@@ -164,8 +164,18 @@ type VoiceSessionListItem struct {
 	CreatedAt time.Time  `json:"created_at"`
 }
 
-// RuntimeSnapshot is the read-only shared media-plane state consumed by this module.
-type RuntimeSnapshot = realtimev1.RuntimeSnapshot
+// RuntimeSnapshot is the consumer-owned media-plane projection used by session
+// management. StartOperationID binds a running instance to the durable Start
+// operation that created it; adapters must map it explicitly.
+type RuntimeSnapshot struct {
+	SessionID         string       `json:"session_id"`
+	StartOperationID  string       `json:"start_operation_id"`
+	RuntimeState      RuntimeState `json:"runtime_state"`
+	CurrentTurnID     *string      `json:"current_turn_id"`
+	CurrentPlaybackID *string      `json:"current_playback_id"`
+	LastErrorCode     *string      `json:"last_error_code"`
+	UpdatedAt         time.Time    `json:"updated_at"`
+}
 
 // WebRTCConnectionSnapshot is independent from RuntimeSnapshot and is used
 // only to enforce the startup readiness precondition.

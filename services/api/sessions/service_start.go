@@ -256,68 +256,6 @@ func (s *Service) resumeStartCompensation(
 	)
 }
 
-func (s *Service) startPendingOperation(
-	ctx context.Context,
-	input StartInput,
-	operation StartOperation,
-) (VoiceSession, error) {
-	runtime, err := s.deps.Realtime.Start(ctx, StartRealtimeCommand{
-		SessionID: input.SessionID,
-		TraceID:   input.TraceID,
-		StartedBy: input.StartedBy,
-	})
-	if err != nil {
-		if errors.Is(err, ErrRealtimeAlreadyRunning) {
-			return VoiceSession{}, ErrRealtimeAlreadyRunning
-		}
-		return VoiceSession{}, mapDependencyError(ctx, err, ErrRealtimeStartFailed)
-	}
-
-	if err := validateRuntimeSnapshot(runtime, input.SessionID); err != nil {
-		startErr := fmt.Errorf("%w: invalid start snapshot", ErrRealtimeStartFailed)
-		return s.compensateStartedOperation(ctx, input, operation, input.TraceID, startErr)
-	}
-	switch runtime.RuntimeState {
-	case RuntimeStarting, RuntimeStopping:
-		return VoiceSession{}, ErrRealtimeAlreadyRunning
-	}
-	if err := validateCompletedStartRuntime(runtime); err != nil {
-		return s.compensateStartedOperation(ctx, input, operation, input.TraceID, err)
-	}
-
-	startedAt, err := s.nowUTC("activate voice session")
-	if err != nil {
-		return s.compensateStartedOperation(ctx, input, operation, input.TraceID, err)
-	}
-	active, _, transitionErr := s.deps.Repository.TransitionToActive(ctx, StartTransitionParams{
-		SessionID:      input.SessionID,
-		AccountID:      input.AccountID,
-		OperationID:    operation.ID,
-		Expected:       StatusCreated,
-		StartedAt:      startedAt,
-		IdempotencyKey: input.IdempotencyKey,
-		RequestHash:    input.RequestHash,
-	})
-	if transitionErr == nil {
-		return active, nil
-	}
-	originalErr := fmt.Errorf("transition voice session to active: %w", transitionErr)
-	return s.compensateStartedOperation(ctx, input, operation, input.TraceID, originalErr)
-}
-
-func validateCompletedStartRuntime(runtime RuntimeSnapshot) error {
-	switch runtime.RuntimeState {
-	case RuntimeListening,
-		RuntimeASRProcessing,
-		RuntimeTranslating,
-		RuntimeTTSProcessing,
-		RuntimePlaying:
-		return nil
-	default:
-		return ErrRealtimeStartFailed
-	}
-}
-
 func validateCompensatedRuntime(runtime RuntimeSnapshot, sessionID string) error {
 	if err := validateRuntimeSnapshot(runtime, sessionID); err != nil {
 		return fmt.Errorf("%w: invalid compensation snapshot", ErrRealtimeStopFailed)

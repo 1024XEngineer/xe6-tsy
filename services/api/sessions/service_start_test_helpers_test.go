@@ -40,10 +40,15 @@ func newStartFixture(t *testing.T, status Status) *startFixture {
 	}}
 	realtime := &startRealtime{
 		startResult: RuntimeSnapshot{
-			SessionID: "vs_1", RuntimeState: RuntimeListening, UpdatedAt: now,
+			SessionID: "vs_1", StartOperationID: "op_1",
+			RuntimeState: RuntimeListening, UpdatedAt: now,
 		},
 		stopResult: RuntimeSnapshot{
 			SessionID: "vs_1", RuntimeState: RuntimeStopped, UpdatedAt: now,
+		},
+		getResult: RuntimeSnapshot{
+			SessionID: "vs_1", StartOperationID: "op_1",
+			RuntimeState: RuntimeListening, UpdatedAt: now,
 		},
 	}
 	clock := &fakeClock{now: now}
@@ -537,6 +542,11 @@ type startRealtime struct {
 	stopCalls   int
 	stopCommand StopRealtimeCommand
 	stopHook    func(context.Context)
+
+	getResult RuntimeSnapshot
+	getErr    error
+	getCalls  int
+	getHook   func(context.Context)
 }
 
 func (r *startRealtime) Start(
@@ -575,6 +585,18 @@ func (r *startRealtime) Stop(
 	return result, err
 }
 
-func (*startRealtime) GetRuntimeState(context.Context, string) (RuntimeSnapshot, error) {
-	return RuntimeSnapshot{}, ErrNotImplemented
+func (r *startRealtime) GetRuntimeState(
+	ctx context.Context,
+	_ string,
+) (RuntimeSnapshot, error) {
+	r.mu.Lock()
+	r.getCalls++
+	result := r.getResult
+	err := r.getErr
+	hook := r.getHook
+	r.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+	}
+	return result, err
 }

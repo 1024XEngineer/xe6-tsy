@@ -28,7 +28,6 @@ type Repository interface {
 	ListSession(ctx context.Context, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
 	Find(ctx context.Context, turnID string) (recordsv1.VoiceTurn, error)
 	ListHistory(ctx context.Context, accountID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
-	ParticipantBelongsToSession(ctx context.Context, participantID, sessionID string) (bool, error)
 	CorrectAttribution(ctx context.Context, update AttributionUpdate) (recordsv1.VoiceTurn, error)
 	ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error)
 }
@@ -103,16 +102,8 @@ func (s *Service) CorrectAttribution(ctx context.Context, accountID, turnID stri
 	if !validAttributionRequest(turnID, request) {
 		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
 	}
-	turn, err := s.Get(ctx, accountID, turnID)
-	if err != nil {
+	if _, err := s.Get(ctx, accountID, turnID); err != nil {
 		return recordsv1.VoiceTurn{}, err
-	}
-	belongs, err := s.repository.ParticipantBelongsToSession(ctx, request.ParticipantID, turn.SessionID)
-	if err != nil {
-		return recordsv1.VoiceTurn{}, err
-	}
-	if !belongs {
-		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
 	}
 	return s.repository.CorrectAttribution(ctx, AttributionUpdate{
 		TurnID:            turnID,

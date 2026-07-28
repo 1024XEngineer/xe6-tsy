@@ -10,18 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (w *TurnWriter) ParticipantBelongsToSession(
-	ctx context.Context,
-	participantID string,
-	sessionID string,
-) (bool, error) {
-	var belongs bool
-	if err := w.pool.QueryRow(ctx, participantBelongsQuery, participantID, sessionID).Scan(&belongs); err != nil {
-		return false, fmt.Errorf("check participant session: %w", err)
-	}
-	return belongs, nil
-}
-
 // CorrectAttribution locks the turn and verifies the target participant in the same transaction.
 // The database trigger independently rejects any update to the immutable translation snapshot.
 func (w *TurnWriter) CorrectAttribution(

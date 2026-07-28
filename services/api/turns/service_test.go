@@ -303,11 +303,10 @@ func (r *fakeRepository) ListHistory(context.Context, string, recordsv1.ListTurn
 	return r.historyResponse, nil
 }
 
-func (r *fakeRepository) ParticipantBelongsToSession(context.Context, string, string) (bool, error) {
-	return r.participantInSession, nil
-}
-
 func (r *fakeRepository) CorrectAttribution(_ context.Context, update AttributionUpdate) (recordsv1.VoiceTurn, error) {
+	if !r.participantInSession {
+		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
+	}
 	r.lastUpdate = update
 	updated := r.turn
 	updated.ParticipantID = &update.ParticipantID

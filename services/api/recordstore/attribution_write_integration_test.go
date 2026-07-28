@@ -112,34 +112,3 @@ WHERE id = $1`, event.TurnID).Scan(&participantID, &attributionStatus); err != n
 		t.Fatalf("failed correction changed participant=%v status=%q", participantID, attributionStatus)
 	}
 }
-
-func TestTurnWriterParticipantBelongsToSession(t *testing.T) {
-	pool := testDatabase(t)
-	if err := Migrate(t.Context(), pool); err != nil {
-		t.Fatalf("Migrate() error = %v", err)
-	}
-	participant, err := NewParticipantWriter(pool).FindOrCreate(t.Context(), recordsv1.SpeakerObservation{
-		SessionID:         "session_01",
-		TurnID:            "turn_01",
-		ProviderSpeakerID: "cluster_01",
-	})
-	if err != nil {
-		t.Fatalf("FindOrCreate() error = %v", err)
-	}
-	writer := NewTurnWriter(pool)
-
-	belongs, err := writer.ParticipantBelongsToSession(t.Context(), participant.ID, "session_01")
-	if err != nil {
-		t.Fatalf("ParticipantBelongsToSession() error = %v", err)
-	}
-	if !belongs {
-		t.Fatal("ParticipantBelongsToSession() = false, want true")
-	}
-	belongs, err = writer.ParticipantBelongsToSession(t.Context(), participant.ID, "session_02")
-	if err != nil {
-		t.Fatalf("cross-session ParticipantBelongsToSession() error = %v", err)
-	}
-	if belongs {
-		t.Fatal("cross-session ParticipantBelongsToSession() = true, want false")
-	}
-}

@@ -11,10 +11,12 @@ import (
 
 func TestNewServiceDependencies(t *testing.T) {
 	valid := Dependencies{
-		Repository: &fakeRepository{},
-		Realtime:   &fakeRealtimeLifecycle{},
-		IDs:        &fakeIDGenerator{id: "vs_1"},
-		Clock:      &fakeClock{now: time.Now()},
+		Repository:        &fakeRepository{},
+		LanguageConfigs:   &fakeLanguageConfigReader{},
+		WebRTCConnections: &fakeWebRTCConnectionReader{},
+		Realtime:          &fakeRealtimeLifecycle{},
+		IDs:               &fakeIDGenerator{id: "vs_1"},
+		Clock:             &fakeClock{now: time.Now()},
 	}
 	tests := []struct {
 		name        string
@@ -24,6 +26,8 @@ func TestNewServiceDependencies(t *testing.T) {
 	}{
 		{name: "valid dependencies"},
 		{name: "missing repository", edit: func(deps *Dependencies) { deps.Repository = nil }, wantErr: true, wantContext: "repository"},
+		{name: "missing language configs", edit: func(deps *Dependencies) { deps.LanguageConfigs = nil }, wantErr: true, wantContext: "language config"},
+		{name: "missing WebRTC connections", edit: func(deps *Dependencies) { deps.WebRTCConnections = nil }, wantErr: true, wantContext: "WebRTC"},
 		{name: "missing realtime", edit: func(deps *Dependencies) { deps.Realtime = nil }, wantErr: true, wantContext: "realtime"},
 		{name: "missing ID generator", edit: func(deps *Dependencies) { deps.IDs = nil }, wantErr: true, wantContext: "ID generator"},
 		{name: "missing clock", edit: func(deps *Dependencies) { deps.Clock = nil }, wantErr: true, wantContext: "clock"},
@@ -46,6 +50,35 @@ func TestNewServiceDependencies(t *testing.T) {
 				t.Fatalf("NewService() error = %v, want context %q", err, test.wantContext)
 			}
 		})
+	}
+}
+
+func TestNewServiceDefaultsStartInfrastructure(t *testing.T) {
+	service, err := NewService(Dependencies{
+		Repository:        &fakeRepository{},
+		LanguageConfigs:   &fakeLanguageConfigReader{},
+		WebRTCConnections: &fakeWebRTCConnectionReader{},
+		Realtime:          &fakeRealtimeLifecycle{},
+		IDs:               &fakeIDGenerator{id: "vs_1"},
+		Clock:             &fakeClock{now: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	if service.deps.Logger == nil {
+		t.Fatal("Logger is nil")
+	}
+	if service.deps.CompensationTimeout != defaultCompensationTimeout {
+		t.Fatalf("CompensationTimeout = %v, want %v",
+			service.deps.CompensationTimeout, defaultCompensationTimeout)
+	}
+	if service.deps.StartReconciliationTimeout != defaultStartReconciliationTimeout {
+		t.Fatalf("StartReconciliationTimeout = %v, want %v",
+			service.deps.StartReconciliationTimeout,
+			defaultStartReconciliationTimeout)
+	}
+	if service.locks.locks == nil {
+		t.Fatal("keyed locker is not initialized")
 	}
 }
 

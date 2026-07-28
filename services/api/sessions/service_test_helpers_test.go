@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -25,12 +26,23 @@ func (f *fakeIDGenerator) NewStartOperationID() string {
 }
 
 type fakeClock struct {
+	mu    sync.Mutex
 	now   time.Time
+	times []time.Time
 	calls int
 }
 
 func (f *fakeClock) Now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	index := f.calls
 	f.calls++
+	if len(f.times) > 0 {
+		if index >= len(f.times) {
+			index = len(f.times) - 1
+		}
+		return f.times[index]
+	}
 	return f.now
 }
 
@@ -51,11 +63,45 @@ type fakeRepository struct {
 }
 
 var (
-	_ Repository        = (*fakeRepository)(nil)
-	_ RealtimeLifecycle = (*fakeRealtimeLifecycle)(nil)
-	_ IDGenerator       = (*fakeIDGenerator)(nil)
-	_ Clock             = (*fakeClock)(nil)
+	_ Repository             = (*fakeRepository)(nil)
+	_ LanguageConfigReader   = (*fakeLanguageConfigReader)(nil)
+	_ WebRTCConnectionReader = (*fakeWebRTCConnectionReader)(nil)
+	_ RealtimeLifecycle      = (*fakeRealtimeLifecycle)(nil)
+	_ IDGenerator            = (*fakeIDGenerator)(nil)
+	_ Clock                  = (*fakeClock)(nil)
 )
+
+type fakeLanguageConfigReader struct {
+	result    LanguageConfigSnapshot
+	err       error
+	calls     int
+	sessionID string
+}
+
+func (f *fakeLanguageConfigReader) GetCurrentConfig(
+	_ context.Context,
+	sessionID string,
+) (LanguageConfigSnapshot, error) {
+	f.calls++
+	f.sessionID = sessionID
+	return f.result, f.err
+}
+
+type fakeWebRTCConnectionReader struct {
+	result    WebRTCConnectionSnapshot
+	err       error
+	calls     int
+	sessionID string
+}
+
+func (f *fakeWebRTCConnectionReader) GetConnectionState(
+	_ context.Context,
+	sessionID string,
+) (WebRTCConnectionSnapshot, error) {
+	f.calls++
+	f.sessionID = sessionID
+	return f.result, f.err
+}
 
 type fakeRealtimeLifecycle struct {
 	getResult    RuntimeSnapshot
@@ -112,6 +158,15 @@ func (f *fakeRepository) GetOwned(_ context.Context, accountID string, sessionID
 func (f *fakeRepository) List(_ context.Context, filter ListFilter) (ListPage, error) {
 	f.listFilters = append(f.listFilters, filter)
 	return f.listResult, f.listErr
+}
+
+func (*fakeRepository) GetStartOperation(
+	context.Context,
+	string,
+	string,
+	string,
+) (StartOperation, error) {
+	return StartOperation{}, ErrNotImplemented
 }
 
 func (*fakeRepository) BeginStartOperation(
@@ -183,10 +238,12 @@ func newCreateTestService(
 	ids := &fakeIDGenerator{id: "vs_generated"}
 	clock := &fakeClock{now: time.Date(2026, 7, 27, 17, 0, 0, 0, time.FixedZone("CST", 8*60*60))}
 	service, err := NewService(Dependencies{
-		Repository: repository,
-		Realtime:   &fakeRealtimeLifecycle{},
-		IDs:        ids,
-		Clock:      clock,
+		Repository:        repository,
+		LanguageConfigs:   &fakeLanguageConfigReader{},
+		WebRTCConnections: &fakeWebRTCConnectionReader{},
+		Realtime:          &fakeRealtimeLifecycle{},
+		IDs:               ids,
+		Clock:             clock,
 	})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)

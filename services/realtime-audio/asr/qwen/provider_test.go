@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -143,6 +144,117 @@ func TestWriteClosesConnectionWhenContextIsCanceled(t *testing.T) {
 		t.Fatal("write() did not close the WebSocket")
 	}
 }
+
+func TestWriteDoesNotCloseConnectionAfterSuccessfulWrite(t *testing.T) {
+	conn := &trackingWriteConn{closed: make(chan struct{})}
+	stream := &stream{conn: conn}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := stream.write(ctx, map[string]any{"type": "session.finish"}); err != nil {
+		t.Fatalf("write() error = %v", err)
+	}
+	cancel()
+	select {
+	case <-conn.closed:
+		t.Fatal("write() cancellation closed the connection after returning")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestFinishDoesNotBlockOnUnconsumedPartialEvents(t *testing.T) {
+	const partialCount = eventBufferSize * 2
+	messages := make([][]byte, 0, partialCount+2)
+	for i := 0; i < partialCount; i++ {
+		messages = append(messages, mustJSON(t, map[string]any{
+			"type": "conversation.item.input_audio_transcription.text",
+			"text": fmt.Sprintf("partial-%d", i),
+		}))
+	}
+	messages = append(messages,
+		mustJSON(t, map[string]any{
+			"type":       "conversation.item.input_audio_transcription.completed",
+			"transcript": "final",
+		}),
+		mustJSON(t, map[string]any{"type": "session.finished"}),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &stream{
+		conn:     &scriptedReadConn{messages: messages},
+		cancel:   cancel,
+		events:   make(chan asr.Event, eventBufferSize+1),
+		done:     make(chan struct{}),
+		readDone: make(chan struct{}),
+	}
+	go stream.readLoop(ctx)
+
+	result, err := stream.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if result.Text != "final" {
+		t.Fatalf("result.Text = %q, want final", result.Text)
+	}
+
+	var finalCount, partials int
+	for event := range stream.Events() {
+		switch event.Type {
+		case asr.EventPartial:
+			partials++
+		case asr.EventFinal:
+			finalCount++
+		}
+	}
+	if finalCount != 1 {
+		t.Fatalf("final event count = %d, want 1", finalCount)
+	}
+	if partials > eventBufferSize {
+		t.Fatalf("partial event count = %d, want at most %d", partials, eventBufferSize)
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return data
+}
+
+type trackingWriteConn struct {
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func (*trackingWriteConn) WriteMessage(int, []byte) error { return nil }
+func (*trackingWriteConn) ReadMessage() (int, []byte, error) {
+	return 0, nil, errors.New("not implemented")
+}
+func (c *trackingWriteConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return nil
+}
+func (*trackingWriteConn) SetWriteDeadline(time.Time) error { return nil }
+
+type scriptedReadConn struct {
+	mu       sync.Mutex
+	messages [][]byte
+}
+
+func (*scriptedReadConn) WriteMessage(int, []byte) error { return nil }
+func (c *scriptedReadConn) ReadMessage() (int, []byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.messages) == 0 {
+		return 0, nil, errors.New("no more scripted messages")
+	}
+	message := c.messages[0]
+	c.messages = c.messages[1:]
+	return websocket.TextMessage, message, nil
+}
+func (*scriptedReadConn) Close() error                     { return nil }
+func (*scriptedReadConn) SetWriteDeadline(time.Time) error { return nil }
 
 type blockingWriteConn struct {
 	closed    chan struct{}

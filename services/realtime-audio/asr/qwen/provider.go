@@ -21,6 +21,8 @@ import (
 
 const defaultModel = "qwen3-asr-flash-realtime"
 
+const eventBufferSize = 64
+
 var (
 	ErrAPIKeyRequired   = errors.New("Qwen ASR API key is required")
 	ErrEndpointRequired = errors.New("Qwen ASR WebSocket endpoint is required")
@@ -90,7 +92,7 @@ func (p *Provider) StartStream(ctx context.Context, request asr.StreamRequest) (
 	streamCtx, cancel := context.WithCancel(ctx)
 	s := &stream{
 		conn: conn, cancel: cancel, model: p.config.Model, provider: p.config.Provider,
-		sampleRate: p.config.SampleRate, events: make(chan asr.Event, 64), done: make(chan struct{}), readDone: make(chan struct{}),
+		sampleRate: p.config.SampleRate, events: make(chan asr.Event, eventBufferSize+1), done: make(chan struct{}), readDone: make(chan struct{}),
 	}
 	if err := s.write(streamCtx, sessionUpdateEvent(request.SourceLanguage, p.config)); err != nil {
 		cancel()
@@ -231,21 +233,6 @@ func (s *stream) write(ctx context.Context, value any) error {
 		_ = s.conn.Close()
 		return err
 	}
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = s.conn.SetWriteDeadline(deadline)
-	} else {
-		_ = s.conn.SetWriteDeadline(time.Time{})
-	}
-	defer s.conn.SetWriteDeadline(time.Time{})
-	writeDone := make(chan struct{})
-	defer close(writeDone)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = s.conn.Close()
-		case <-writeDone:
-		}
-	}()
 	if event, ok := value.(map[string]any); ok {
 		if _, exists := event["event_id"]; !exists {
 			eventID, err := newEventID()
@@ -259,6 +246,26 @@ func (s *stream) write(ctx context.Context, value any) error {
 	if err != nil {
 		return err
 	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = s.conn.SetWriteDeadline(deadline)
+	} else {
+		_ = s.conn.SetWriteDeadline(time.Time{})
+	}
+	defer s.conn.SetWriteDeadline(time.Time{})
+	writeDone := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-ctx.Done():
+			_ = s.conn.Close()
+		case <-writeDone:
+		}
+	}()
+	defer func() {
+		close(writeDone)
+		<-watchDone
+	}()
 	if err := s.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -315,7 +322,7 @@ func (s *stream) handleEvent(data []byte) error {
 			text = event.Stash
 		}
 		if text != "" {
-			s.events <- asr.Event{Type: asr.EventPartial, Text: text}
+			s.emitEvent(asr.Event{Type: asr.EventPartial, Text: text})
 		}
 	case "conversation.item.input_audio_transcription.completed":
 		result := asr.FinalResult{
@@ -330,11 +337,31 @@ func (s *stream) handleEvent(data []byte) error {
 		s.stateMu.Lock()
 		s.result = result
 		s.stateMu.Unlock()
-		s.events <- asr.Event{Type: asr.EventFinal, Text: result.Text, Final: &result}
+		if err := s.emitEvent(asr.Event{Type: asr.EventFinal, Text: result.Text, Final: &result}); err != nil {
+			return err
+		}
 	case "conversation.item.input_audio_transcription.failed", "error":
 		return fmt.Errorf("Qwen ASR event failed: %s", event.Error.Message)
 	}
 	return nil
+}
+
+// emitEvent keeps protocol reads independent from a slow Events consumer. Partial
+// updates are ephemeral, so they may be dropped under backpressure; one buffer
+// slot is reserved for the final result.
+func (s *stream) emitEvent(event asr.Event) error {
+	if event.Type == asr.EventPartial && len(s.events) >= cap(s.events)-1 {
+		return nil
+	}
+	select {
+	case s.events <- event:
+		return nil
+	default:
+		if event.Type == asr.EventPartial {
+			return nil
+		}
+		return errors.New("Qwen ASR event buffer is full")
+	}
 }
 
 func (s *stream) isFinished(data []byte) bool {

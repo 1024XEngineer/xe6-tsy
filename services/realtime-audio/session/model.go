@@ -51,8 +51,8 @@ type LanguageConfigSnapshot struct {
 // RuntimeSnapshot is the authoritative shared media-plane state for one session.
 type RuntimeSnapshot = realtimev1.RuntimeSnapshot
 
-// RuntimeStateUpdate carries one pipeline-owned progress transition into lifecycle state.
-type RuntimeStateUpdate struct {
+// ProcessingStateUpdate carries one pipeline-owned progress transition into lifecycle state.
+type ProcessingStateUpdate struct {
 	SessionID         string
 	RuntimeState      RuntimeState
 	CurrentTurnID     *string

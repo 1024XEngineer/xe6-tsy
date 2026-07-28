@@ -5,8 +5,8 @@ import (
 	"fmt"
 )
 
-// ReportRuntimeState serializes pipeline progress with lifecycle Start and Stop.
-func (s *LifecycleService) ReportRuntimeState(ctx context.Context, update RuntimeStateUpdate) error {
+// SetProcessingState serializes pipeline progress with lifecycle Start and Stop.
+func (s *LifecycleService) SetProcessingState(ctx context.Context, update ProcessingStateUpdate) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -46,7 +46,7 @@ func (s *LifecycleService) ReportRuntimeState(ctx context.Context, update Runtim
 	return nil
 }
 
-func validateRuntimeUpdate(update RuntimeStateUpdate) error {
+func validateRuntimeUpdate(update ProcessingStateUpdate) error {
 	if update.SessionID == "" {
 		return ErrSessionIDRequired
 	}
@@ -94,7 +94,7 @@ func conflictingIdentity(current, next *string) bool {
 	return current != nil && next != nil && *current != *next
 }
 
-func sameRuntimeState(current RuntimeSnapshot, update RuntimeStateUpdate) bool {
+func sameRuntimeState(current RuntimeSnapshot, update ProcessingStateUpdate) bool {
 	return current.RuntimeState == update.RuntimeState &&
 		equalString(current.CurrentTurnID, update.CurrentTurnID) &&
 		equalString(current.CurrentPlaybackID, update.CurrentPlaybackID) &&

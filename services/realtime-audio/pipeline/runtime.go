@@ -10,17 +10,17 @@ import (
 
 func (s *PipelineService) reportRuntime(ctx context.Context, turn TurnContext, state session.RuntimeState, playbackID string) error {
 	turnID := turn.ID
-	update := session.RuntimeStateUpdate{
+	update := session.ProcessingStateUpdate{
 		SessionID: turn.SessionID, RuntimeState: state, CurrentTurnID: &turnID,
 	}
 	if playbackID != "" {
 		update.CurrentPlaybackID = &playbackID
 	}
-	return s.runtime.ReportRuntimeState(ctx, update)
+	return s.runtime.SetProcessingState(ctx, update)
 }
 
 func (s *PipelineService) reportListening(ctx context.Context, turn TurnContext) error {
-	return s.runtime.ReportRuntimeState(ctx, session.RuntimeStateUpdate{
+	return s.runtime.SetProcessingState(ctx, session.ProcessingStateUpdate{
 		SessionID: turn.SessionID, RuntimeState: session.RuntimeListening,
 	})
 }

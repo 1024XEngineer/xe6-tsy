@@ -22,7 +22,7 @@ type RuntimeRepository interface {
 // RuntimeStateReporter is the narrow processing-state boundary exposed to the pipeline.
 // LifecycleService implements it so reporting and Start/Stop share one per-session lock.
 type RuntimeStateReporter interface {
-	ReportRuntimeState(ctx context.Context, update RuntimeStateUpdate) error
+	SetProcessingState(ctx context.Context, update ProcessingStateUpdate) error
 }
 
 // PipelineManager owns processing contexts created for a realtime session.

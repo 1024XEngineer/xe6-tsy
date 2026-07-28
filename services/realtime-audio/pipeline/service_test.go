@@ -227,10 +227,10 @@ func (s *recordingAudioSink) Publish(_ context.Context, chunk AudioChunk) error 
 }
 
 type recordingRuntimeReporter struct {
-	updates []session.RuntimeStateUpdate
+	updates []session.ProcessingStateUpdate
 }
 
-func (r *recordingRuntimeReporter) ReportRuntimeState(_ context.Context, update session.RuntimeStateUpdate) error {
+func (r *recordingRuntimeReporter) SetProcessingState(_ context.Context, update session.ProcessingStateUpdate) error {
 	r.updates = append(r.updates, update)
 	return nil
 }

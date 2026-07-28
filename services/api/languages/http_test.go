@@ -62,6 +62,38 @@ func TestHTTPUnauthorized(t *testing.T) {
 	}
 }
 
+func TestHTTPIdempotencyKeyTooLong(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	svc := NewService(store, MapSessionOwner{"vs_http": "acct_http"})
+	mux := http.NewServeMux()
+	NewHandler(svc, func(r *http.Request) (string, bool) {
+		return webapi.AccountIDFromContext(r.Context())
+	}).Register(mux)
+
+	body, _ := json.Marshal(CreateLanguageConfigRequest{Languages: bilingualPairs()})
+	longKey := make([]byte, MaxIdempotencyKeyLen+1)
+	for i := range longKey {
+		longKey[i] = 'a'
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_http/language-configs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", string(longKey))
+	req.Header.Set("X-Request-ID", "req_key_len")
+	req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+	var errBody ErrorBody
+	if err := json.NewDecoder(rec.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if errBody.Error.Code != CodeInvalidRequest {
+		t.Fatalf("code=%q, want %q", errBody.Error.Code, CodeInvalidRequest)
+	}
+}
+
 func TestHTTPListLanguages(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	svc := NewService(store, MapSessionOwner{})

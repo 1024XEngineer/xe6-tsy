@@ -98,6 +98,19 @@ func TestServiceValidationAndAuthErrors(t *testing.T) {
 			t.Fatalf("error = %v, want unsupported_language", err)
 		}
 	})
+
+	t.Run("idempotency_key_too_long", func(t *testing.T) {
+		longKey := make([]byte, MaxIdempotencyKeyLen+1)
+		for i := range longKey {
+			longKey[i] = 'a'
+		}
+		_, err := svc.CreateConfig(ctx, "acct_1", "vs_1", string(longKey), CreateLanguageConfigRequest{
+			Languages: bilingualPairs(),
+		})
+		if !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("error = %v, want invalid_request", err)
+		}
+	})
 }
 
 func TestServiceIdempotency(t *testing.T) {

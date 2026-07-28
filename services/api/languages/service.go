@@ -62,6 +62,9 @@ func (s *Service) CreateConfig(
 	if accountID == "" {
 		return LanguageConfig{}, ErrUnauthenticated
 	}
+	if err := validateIdempotencyKey(idempotencyKey); err != nil {
+		return LanguageConfig{}, err
+	}
 	if err := s.authorizeSession(ctx, accountID, sessionID); err != nil {
 		return LanguageConfig{}, err
 	}

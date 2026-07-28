@@ -7,6 +7,19 @@ import (
 	"fmt"
 )
 
+// MaxIdempotencyKeyLen matches voice_session_language_configs.idempotency_key VARCHAR(128).
+const MaxIdempotencyKeyLen = 128
+
+func validateIdempotencyKey(key string) error {
+	if key == "" {
+		return nil
+	}
+	if len(key) > MaxIdempotencyKeyLen {
+		return fmt.Errorf("%w: Idempotency-Key must be at most %d characters", ErrInvalidRequest, MaxIdempotencyKeyLen)
+	}
+	return nil
+}
+
 // validateP0LanguagePairs enforces issue #88 P0 bilingual rules:
 // exactly two opposite directions covering two supported active languages.
 func validateP0LanguagePairs(pairs []LanguagePair, catalog map[string]SupportedLanguage) error {

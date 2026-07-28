@@ -58,9 +58,9 @@ session from `created` to `active`.
 An in-process keyed locker may reduce duplicate work, but it is not a
 cross-instance ownership boundary. A request may call `RealtimeLifecycle.Stop`
 for Start compensation only after `ClaimStartCompensation` atomically confirms
-that the session is still `created`, the matching operation is still `pending`,
-and that request owns the compensation claim. Any denied or uncertain claim
-strictly forbids Stop.
+that the session is still `created` and grants or idempotently restores the
+matching operation's persisted compensation owner. Any denied or uncertain
+claim strictly forbids Stop.
 
 Successful cleanup changes the operation to `compensated`; failed cleanup is
 persisted as `compensation_failed` so recovery does not depend on logs.
@@ -92,33 +92,39 @@ Compensation claim recovery follows one ownership rule:
 
 ```text
 Repository.GetOwned
--> if active, use TransitionToActive to validate and replay the stored result
+-> if active, replay the matching completed StartOperation and return
 -> otherwise require business status = created
 -> require LanguageConfigSnapshot.Ready()
 -> require ConnectionState.Ready()
+-> begin or replay a durable StartOperation
 -> RealtimeLifecycle.Start
 -> require a completed running state (listening or processing)
--> Repository.TransitionToActive(created -> active + start idempotency result)
+-> Repository.TransitionToActive(created -> active + operation completed)
 ```
 
 An in-progress `starting` or `stopping` snapshot returns a retryable
 `ErrRealtimeAlreadyRunning` without transitioning the business session or
-stopping a pipeline that may belong to another request. Existing `listening`,
-`asr_processing`, `translating`, `tts_processing`, and `playing` snapshots can
-complete a previously failed business transition.
+claiming compensation for a pipeline that may belong to another request.
+Realtime Start errors also leave the operation `pending` because the caller
+cannot know whether the media boundary accepted the request. Existing
+`listening`, `asr_processing`, `translating`, `tts_processing`, and `playing`
+snapshots can complete a previously failed business transition.
 
-The realtime implementation reads a still-`created` session. If the final
-transition fails after realtime startup, the service calls
-`RealtimeLifecycle.Stop` as compensation and leaves the business session
-`created`. `TransitionToActive` checks an existing idempotency record before
-the expected-state condition, so a repeated matching start can return the
-stored active session while the same key with a different hash conflicts.
+The realtime implementation reads a still-`created` session. If runtime
+validation or the final business transition fails after realtime startup, the
+service first claims repository-owned compensation authority. Only
+`Claimed=true` permits `RealtimeLifecycle.Stop`. Successful cleanup persists
+`compensated`; Stop failure or an invalid stopped snapshot persists
+`compensation_failed`. An interrupted `compensating` operation resumes only
+with its persisted ClaimID. If a competing instance has already activated the
+session, the denied claimant replays the completed operation and never stops
+the valid pipeline.
 
 Start operations for the same session are serialized by an in-process keyed
 locker whose entries are reclaimed after the last waiter releases them.
-Repository conditional transitions remain the cross-process consistency
-boundary. Compensation retains request trace values, ignores client
-cancellation, and uses an independent bounded timeout.
+Repository operations and compensation claims remain the cross-process
+consistency boundary. Compensation retains request trace values, ignores
+client cancellation, and uses an independent bounded timeout.
 
 ## End and recovery flow
 
@@ -180,13 +186,14 @@ clients.
 | Operation | Owner | Atomic result |
 | --- | --- | --- |
 | Create | `Repository.Create` | session + create request result |
-| Start | `Repository.TransitionToActive` | `created -> active` + start request result |
+| Start | `Repository.BeginStartOperation` and `TransitionToActive` | durable request identity + atomic `created -> active` and `completed` |
 | End | `Repository.SaveEndIntent` | end request identity and resumable completion state |
 
 ## Current slice
 
 The service currently implements Create, account-scoped Detail, State, and
-List queries, plus idempotent Start orchestration with bounded compensation.
+List queries, plus durable idempotent Start orchestration with repository-owned
+bounded compensation and interrupted-owner recovery.
 Detail and State combine an owned persistent session with one validated runtime
 snapshot; List remains persistent-only.
 

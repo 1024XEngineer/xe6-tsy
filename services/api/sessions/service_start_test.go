@@ -31,12 +31,24 @@ func TestServiceStartRunsPrerequisitesBeforeTransition(t *testing.T) {
 	if len(fixture.repository.transitions) != 1 {
 		t.Fatalf("transitions = %d, want 1", len(fixture.repository.transitions))
 	}
+	if fixture.repository.beginCalls != 1 {
+		t.Fatalf("BeginStartOperation calls = %d, want 1", fixture.repository.beginCalls)
+	}
+	begin := fixture.repository.beginParams[0]
+	if begin.OperationID != "op_1" ||
+		begin.SessionID != "vs_1" ||
+		begin.AccountID != "acct_1" ||
+		begin.IdempotencyKey != "start_1" ||
+		begin.RequestHash != "hash_1" {
+		t.Fatalf("BeginStartOperationParams = %#v", begin)
+	}
 	command := fixture.realtime.startCommand
 	if command.SessionID != "vs_1" || command.TraceID != "req_1" || command.StartedBy != "acct_1" {
 		t.Fatalf("StartRealtimeCommand = %#v", command)
 	}
 	params := fixture.repository.transitions[0]
 	if params.AccountID != "acct_1" ||
+		params.OperationID != "op_1" ||
 		params.Expected != StatusCreated ||
 		params.IdempotencyKey != "start_1" ||
 		params.RequestHash != "hash_1" ||
@@ -130,8 +142,10 @@ func TestServiceStartReplaysActiveSessionWithoutExternalDependencies(t *testing.
 	fixture := newStartFixture(t, StatusActive)
 	startedAt := fixture.repository.session.CreatedAt.Add(time.Minute)
 	fixture.repository.session.StartedAt = &startedAt
-	fixture.repository.startKey = "start_1"
-	fixture.repository.startHash = "hash_1"
+	fixture.repository.operation = completedStartOperation(
+		fixture.repository.session,
+		startedAt,
+	)
 
 	got, err := fixture.service.Start(context.Background(), validStartInput())
 	if err != nil {
@@ -141,20 +155,19 @@ func TestServiceStartReplaysActiveSessionWithoutExternalDependencies(t *testing.
 		t.Fatalf("Start() = %#v", got)
 	}
 	assertNoStartPrerequisites(t, fixture)
-	if len(fixture.repository.transitions) != 1 || !fixture.repository.lastReplayed {
-		t.Fatalf("transitions = %d, replayed = %t; want 1, true",
-			len(fixture.repository.transitions), fixture.repository.lastReplayed)
-	}
-	if !fixture.repository.transitions[0].StartedAt.Equal(startedAt) {
-		t.Fatalf("replay StartedAt = %v, want %v",
-			fixture.repository.transitions[0].StartedAt, startedAt)
+	if fixture.repository.beginCalls != 1 || len(fixture.repository.transitions) != 0 {
+		t.Fatalf("begin calls = %d, transitions = %d; want 1, 0",
+			fixture.repository.beginCalls, len(fixture.repository.transitions))
 	}
 }
 
 func TestServiceStartActiveReplayRejectsDifferentRequest(t *testing.T) {
 	fixture := newStartFixture(t, StatusActive)
-	fixture.repository.startKey = "other"
-	fixture.repository.startHash = "other"
+	fixture.repository.operation = completedStartOperation(
+		fixture.repository.session,
+		fixture.clock.now,
+	)
+	fixture.repository.operation.RequestHash = "other"
 
 	_, err := fixture.service.Start(context.Background(), validStartInput())
 	if !errors.Is(err, ErrIdempotencyKeyConflict) {
@@ -284,7 +297,13 @@ func TestServiceStartDoesNotActivateInProgressRuntime(t *testing.T) {
 }
 
 func TestServiceStartRecoversExistingRunningRuntime(t *testing.T) {
-	for _, state := range []RuntimeState{RuntimeListening, RuntimeTranslating, RuntimePlaying} {
+	for _, state := range []RuntimeState{
+		RuntimeListening,
+		RuntimeASRProcessing,
+		RuntimeTranslating,
+		RuntimeTTSProcessing,
+		RuntimePlaying,
+	} {
 		t.Run(string(state), func(t *testing.T) {
 			fixture := newStartFixture(t, StatusCreated)
 			fixture.realtime.startResult.RuntimeState = state
@@ -306,9 +325,18 @@ func TestServiceStartRecoversExistingRunningRuntime(t *testing.T) {
 
 func TestServiceStartCompensatesTransitionFailureAfterCancellation(t *testing.T) {
 	fixture := newStartFixture(t, StatusCreated)
-	startedAt := fixture.clock.now
-	endedAt := startedAt.Add(5 * time.Second)
-	fixture.clock.times = []time.Time{startedAt, endedAt}
+	beginAt := fixture.clock.now
+	startedAt := beginAt.Add(time.Second)
+	claimedAt := startedAt.Add(time.Second)
+	endedAt := claimedAt.Add(time.Second)
+	completedAt := endedAt.Add(time.Second)
+	fixture.clock.times = []time.Time{
+		beginAt,
+		startedAt,
+		claimedAt,
+		endedAt,
+		completedAt,
+	}
 	fixture.repository.transitionErr = errDependency
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), startTraceKey{}, "trace-value"))
 	fixture.repository.transitionHook = func(context.Context) { cancel() }

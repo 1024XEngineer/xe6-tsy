@@ -8,6 +8,29 @@ import (
 	"time"
 )
 
+func TestMapRealtimeStopErrorPreservesBoundaryAndCause(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want error
+	}{
+		{name: "provider", ctx: context.Background(), err: errDependency, want: errDependency},
+		{name: "deadline", ctx: context.Background(), err: context.DeadlineExceeded, want: context.DeadlineExceeded},
+		{name: "cancelled", ctx: context.Background(), err: context.Canceled, want: context.Canceled},
+		{name: "not implemented", ctx: context.Background(), err: ErrNotImplemented, want: ErrNotImplemented},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := mapRealtimeStopError(test.ctx, test.err)
+			if !errors.Is(err, ErrRealtimeStopFailed) ||
+				!errors.Is(err, test.want) {
+				t.Fatalf("mapRealtimeStopError() = %v, want stop boundary and %v", err, test.want)
+			}
+		})
+	}
+}
+
 func TestServiceStartLeavesPendingOperationWhenRealtimeStartIsUncertain(t *testing.T) {
 	fixture := newStartFixture(t, StatusCreated)
 	fixture.realtime.startErr = errDependency
@@ -94,6 +117,94 @@ func TestServiceStartDeniedClaimReplaysConcurrentActivation(t *testing.T) {
 		t.Fatalf("claim calls = %d, begin calls = %d; want 1, 2",
 			fixture.repository.claimCalls, fixture.repository.beginCalls)
 	}
+}
+
+func TestServiceStartDeniedClaimWhileCreatedNeverStops(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.repository.transitionErr = errDependency
+	fixture.repository.claimResult = &ClaimStartCompensationResult{
+		Claimed: false,
+		Reason:  StartCompensationOperationNotPending,
+	}
+
+	_, err := fixture.service.Start(context.Background(), validStartInput())
+	if !errors.Is(err, errDependency) ||
+		!errors.Is(err, ErrSessionStartInProgress) {
+		t.Fatalf("Start() error = %v, want transition and in-progress errors", err)
+	}
+	if fixture.realtime.stopCalls != 0 {
+		t.Fatalf("Realtime.Stop calls = %d, want 0", fixture.realtime.stopCalls)
+	}
+	if fixture.repository.session.Status != StatusCreated {
+		t.Fatalf("session status = %q, want created", fixture.repository.session.Status)
+	}
+}
+
+func TestServiceStartRejectsZeroTimestampStoppedSnapshot(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.repository.transitionErr = errDependency
+	fixture.realtime.stopResult.UpdatedAt = time.Time{}
+
+	_, err := fixture.service.Start(context.Background(), validStartInput())
+	if !errors.Is(err, errDependency) ||
+		!errors.Is(err, ErrRealtimeStopFailed) {
+		t.Fatalf("Start() error = %v, want transition and stop errors", err)
+	}
+	if fixture.repository.failCalls != 1 || fixture.repository.completeCalls != 0 {
+		t.Fatalf("fail calls = %d, complete calls = %d; want 1, 0",
+			fixture.repository.failCalls, fixture.repository.completeCalls)
+	}
+	if fixture.repository.operation.Status != StartOperationCompensationFailed {
+		t.Fatalf("operation status = %q, want compensation_failed",
+			fixture.repository.operation.Status)
+	}
+}
+
+func TestServiceStartRejectsCompensatingOperationWithoutClaimID(t *testing.T) {
+	tests := []struct {
+		name    string
+		claimID *string
+	}{
+		{name: "nil"},
+		{name: "empty", claimID: stringPointer("")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newStartFixture(t, StatusCreated)
+			fixture.repository.operation = &StartOperation{
+				ID:                  "op_1",
+				SessionID:           "vs_1",
+				AccountID:           "acct_1",
+				IdempotencyKey:      "start_1",
+				RequestHash:         "hash_1",
+				Status:              StartOperationCompensating,
+				CompensationClaimID: test.claimID,
+				CreatedAt:           fixture.clock.now,
+				UpdatedAt:           fixture.clock.now,
+			}
+
+			_, err := fixture.service.Start(context.Background(), validStartInput())
+			if !errors.Is(err, ErrConcurrentTransition) {
+				t.Fatalf("Start() error = %v, want ErrConcurrentTransition", err)
+			}
+			if fixture.repository.claimCalls != 0 ||
+				fixture.realtime.stopCalls != 0 ||
+				fixture.repository.completeCalls != 0 ||
+				fixture.repository.failCalls != 0 {
+				t.Fatalf(
+					"calls = claim %d, stop %d, complete %d, fail %d; want all 0",
+					fixture.repository.claimCalls,
+					fixture.realtime.stopCalls,
+					fixture.repository.completeCalls,
+					fixture.repository.failCalls,
+				)
+			}
+		})
+	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
 
 func TestServiceStartPersistsCompensationFailure(t *testing.T) {

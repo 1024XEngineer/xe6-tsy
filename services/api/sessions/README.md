@@ -115,16 +115,19 @@ validation or the final business transition fails after realtime startup, the
 service first claims repository-owned compensation authority. Only
 `Claimed=true` permits `RealtimeLifecycle.Stop`. Successful cleanup persists
 `compensated`; Stop failure or an invalid stopped snapshot persists
-`compensation_failed`. An interrupted `compensating` operation resumes only
-with its persisted ClaimID. If a competing instance has already activated the
-session, the denied claimant replays the completed operation and never stops
-the valid pipeline.
+`compensation_failed`. Every Stop failure remains classifiable as
+`ErrRealtimeStopFailed` while preserving cancellation, timeout,
+not-implemented, or provider causes. An interrupted `compensating` operation
+resumes only with its persisted ClaimID. If a competing instance has already
+activated the session, the denied claimant replays the completed operation and
+never stops the valid pipeline.
 
 Start operations for the same session are serialized by an in-process keyed
-locker whose entries are reclaimed after the last waiter releases them.
-Repository operations and compensation claims remain the cross-process
-consistency boundary. Compensation retains request trace values, ignores
-client cancellation, and uses an independent bounded timeout.
+locker, while different Session IDs proceed independently. Lock entries are
+reclaimed after the last waiter releases them. Repository operations and
+compensation claims remain the cross-process consistency boundary.
+Compensation retains request trace values, ignores client cancellation, and
+uses an independent bounded timeout.
 
 ## End and recovery flow
 

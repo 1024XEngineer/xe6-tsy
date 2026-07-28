@@ -411,7 +411,7 @@ func TestServiceStartRejectsInvalidCompensationSnapshots(t *testing.T) {
 	}
 }
 
-func TestServiceStartBoundsCompensationWithIndependentTimeout(t *testing.T) {
+func TestServiceStartCompensationTimeoutPreservesStopFailure(t *testing.T) {
 	fixture := newStartFixture(t, StatusCreated)
 	fixture.repository.transitionErr = errDependency
 	fixture.service.deps.CompensationTimeout = 10 * time.Millisecond
@@ -423,8 +423,23 @@ func TestServiceStartBoundsCompensationWithIndependentTimeout(t *testing.T) {
 	}
 
 	_, err := fixture.service.Start(context.Background(), validStartInput())
-	if !errors.Is(err, errDependency) || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Start() error = %v, want transition error and compensation deadline", err)
+	if !errors.Is(err, errDependency) ||
+		!errors.Is(err, ErrRealtimeStopFailed) ||
+		!errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Start() error = %v, want transition, stop, and deadline errors", err)
+	}
+	if fixture.realtime.stopCalls != 1 ||
+		fixture.repository.failCalls != 1 ||
+		fixture.repository.completeCalls != 0 {
+		t.Fatalf("calls = stop %d, fail %d, complete %d; want 1, 1, 0",
+			fixture.realtime.stopCalls,
+			fixture.repository.failCalls,
+			fixture.repository.completeCalls,
+		)
+	}
+	if fixture.repository.operation.Status != StartOperationCompensationFailed {
+		t.Fatalf("operation status = %q, want compensation_failed",
+			fixture.repository.operation.Status)
 	}
 }
 

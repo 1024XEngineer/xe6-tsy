@@ -256,6 +256,24 @@ func validateCompensatedRuntime(runtime RuntimeSnapshot, sessionID string) error
 	return nil
 }
 
+// mapRealtimeStopError preserves both the stable session-domain boundary and
+// the underlying cancellation, timeout, unsupported-operation, or provider
+// cause. Callers can therefore classify every failed Stop consistently
+// without losing the detail needed for retry and recovery decisions.
+func mapRealtimeStopError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	mapped := mapDependencyError(ctx, err, ErrRealtimeStopFailed)
+	if !errors.Is(mapped, ErrRealtimeStopFailed) {
+		mapped = errors.Join(ErrRealtimeStopFailed, mapped)
+	}
+	if !errors.Is(mapped, err) {
+		mapped = errors.Join(mapped, err)
+	}
+	return mapped
+}
+
 // compensateStartedOperation stops realtime only after the repository grants
 // this operation and ClaimID exclusive cleanup authority. A denied or
 // uncertain claim is a hard prohibition on Stop.
@@ -297,7 +315,7 @@ func (s *Service) compensateStartedOperation(
 		EndedAt:   s.deps.Clock.Now().UTC(),
 	})
 	if stopErr != nil {
-		stopErr = mapDependencyError(ctx, stopErr, ErrRealtimeStopFailed)
+		stopErr = mapRealtimeStopError(ctx, stopErr)
 	} else {
 		stopErr = validateCompensatedRuntime(runtime, input.SessionID)
 	}

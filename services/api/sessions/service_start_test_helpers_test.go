@@ -150,6 +150,7 @@ type startRepository struct {
 	beginCalls       int
 	beginParams      []BeginStartOperationParams
 	claimErr         error
+	claimResult      *ClaimStartCompensationResult
 	claimCalls       int
 	claimParams      []ClaimStartCompensationParams
 	claimHook        func(context.Context)
@@ -266,6 +267,9 @@ func (r *startRepository) ClaimStartCompensation(
 	defer r.mu.Unlock()
 	if err != nil {
 		return ClaimStartCompensationResult{}, err
+	}
+	if r.claimResult != nil {
+		return *r.claimResult, nil
 	}
 	if r.session.ID != params.SessionID || r.session.AccountID != params.AccountID {
 		return ClaimStartCompensationResult{}, ErrVoiceSessionNotFound

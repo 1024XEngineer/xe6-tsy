@@ -13,6 +13,7 @@ const (
 	CodeEndIntentNotFound      ErrorCode = "end_intent_not_found"
 	CodeSessionStateConflict   ErrorCode = "session_state_conflict"
 	CodeIdempotencyKeyConflict ErrorCode = "idempotency_key_conflict"
+	CodeSessionStartInProgress ErrorCode = "session_start_in_progress"
 	CodeLanguageConfigNotReady ErrorCode = "language_config_not_ready"
 	CodeWebRTCNotReady         ErrorCode = "webrtc_not_ready"
 	CodeRealtimeAlreadyRunning ErrorCode = "realtime_already_running"
@@ -32,6 +33,7 @@ var (
 	ErrEndIntentNotFound      = errors.New(string(CodeEndIntentNotFound))
 	ErrConcurrentTransition   = errors.New(string(CodeSessionStateConflict))
 	ErrIdempotencyKeyConflict = errors.New(string(CodeIdempotencyKeyConflict))
+	ErrSessionStartInProgress = errors.New(string(CodeSessionStartInProgress))
 	ErrUnsupportedAudio       = errors.New(string(CodeUnsupportedAudio))
 	ErrRuntimeUnavailable     = errors.New(string(CodeRuntimeUnavailable))
 	// ErrRuntimeSnapshotNotFound is an adapter-only signal whose query meaning

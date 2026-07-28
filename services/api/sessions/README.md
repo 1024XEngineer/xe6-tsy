@@ -47,6 +47,47 @@ validate authenticated request
 
 Create does not start realtime, query runtime state, or create runtime records.
 
+## Start consistency
+
+Every realtime Start attempt is coordinated by a repository-owned
+`StartOperation`. The repository must create or replay the operation
+idempotently before realtime is called, and must update the matching pending
+operation to `completed` in the same transaction that changes the business
+session from `created` to `active`.
+
+An in-process keyed locker may reduce duplicate work, but it is not a
+cross-instance ownership boundary. A request may call `RealtimeLifecycle.Stop`
+for Start compensation only after `ClaimStartCompensation` atomically confirms
+that the session is still `created`, the matching operation is still `pending`,
+and that request owns the compensation claim. Any denied or uncertain claim
+strictly forbids Stop.
+
+Successful cleanup changes the operation to `compensated`; failed cleanup is
+persisted as `compensation_failed` so recovery does not depend on logs.
+
+Operation status semantics are fixed as follows:
+
+- `pending`: the same request may resume; a different request returns
+  `ErrSessionStartInProgress`;
+- `compensating`: one request owns cleanup and every other request is forbidden
+  from stopping realtime;
+- `completed`: the business session is `active`, and the same key and hash
+  replay the completed operation;
+- `compensated`: realtime cleanup completed; a new Start must use a new
+  idempotency key;
+- `compensation_failed`: cleanup is uncertain and new pipelines are forbidden
+  until a follow-up recovery flow resolves it.
+
+Compensation claim recovery follows one ownership rule:
+
+- `pending` may transition to `compensating` with one ClaimID;
+- `compensating` may be reclaimed only by that persisted ClaimID;
+- reclaiming with the same ClaimID is idempotent and returns `Claimed=true`;
+- a different ClaimID receives `Claimed=false` and must not call
+  `RealtimeLifecycle.Stop`;
+- successful cleanup records `compensated`;
+- failed cleanup records `compensation_failed`.
+
 ## Start flow
 
 ```text

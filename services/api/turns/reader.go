@@ -7,17 +7,34 @@ import (
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 )
 
+// FinalTurnRepository reads account-scoped final-turn snapshots for outbound delivery content.
+type FinalTurnRepository interface {
+	ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error)
+}
+
+// FinalTurnReader validates delivery snapshot reads before crossing the records provider boundary.
+type FinalTurnReader struct {
+	repository FinalTurnRepository
+}
+
+// NewFinalTurnReader binds the repository that enforces account ownership during snapshot reads.
+func NewFinalTurnReader(repository FinalTurnRepository) *FinalTurnReader {
+	if repository == nil {
+		panic("final turn repository is required")
+	}
+	return &FinalTurnReader{repository: repository}
+}
+
 // ReadFinalTurns returns an all-or-nothing, account-scoped snapshot batch in caller order.
 // The repository applies ownership filtering during its query; this method rejects incomplete or
 // inconsistent result sets before they can become immutable outbound-message content.
-func (s *Service) ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error) {
+func (r *FinalTurnReader) ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error) {
 	if accountID == "" || len(turnIDs) == 0 || len(turnIDs) > recordsv1.MaxFinalTurnBatchSize {
 		return nil, ErrInvalidRequest
 	}
 
-	requestedOrder := append([]string(nil), turnIDs...)
-	requested := make(map[string]struct{}, len(requestedOrder))
-	for _, turnID := range requestedOrder {
+	requested := make(map[string]struct{}, len(turnIDs))
+	for _, turnID := range turnIDs {
 		if turnID == "" {
 			return nil, ErrInvalidRequest
 		}
@@ -27,8 +44,8 @@ func (s *Service) ReadFinalTurns(ctx context.Context, accountID string, turnIDs 
 		requested[turnID] = struct{}{}
 	}
 
-	repositoryTurnIDs := append([]string(nil), requestedOrder...)
-	snapshots, err := s.repository.ReadFinalTurns(ctx, accountID, repositoryTurnIDs)
+	repositoryTurnIDs := append([]string(nil), turnIDs...)
+	snapshots, err := r.repository.ReadFinalTurns(ctx, accountID, repositoryTurnIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -47,8 +64,8 @@ func (s *Service) ReadFinalTurns(ctx context.Context, accountID string, turnIDs 
 		byTurnID[snapshot.TurnID] = cloneFinalTurnSnapshot(snapshot)
 	}
 
-	ordered := make([]recordsv1.FinalTurnSnapshot, 0, len(requestedOrder))
-	for _, turnID := range requestedOrder {
+	ordered := make([]recordsv1.FinalTurnSnapshot, 0, len(turnIDs))
+	for _, turnID := range turnIDs {
 		snapshot, exists := byTurnID[turnID]
 		if !exists {
 			return nil, ErrTurnNotFound
@@ -57,6 +74,8 @@ func (s *Service) ReadFinalTurns(ctx context.Context, accountID string, turnIDs 
 	}
 	return ordered, nil
 }
+
+var _ recordsv1.TurnReader = (*FinalTurnReader)(nil)
 
 func cloneFinalTurnSnapshot(snapshot recordsv1.FinalTurnSnapshot) recordsv1.FinalTurnSnapshot {
 	cloned := snapshot

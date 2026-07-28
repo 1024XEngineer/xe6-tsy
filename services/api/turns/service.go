@@ -19,18 +19,16 @@ var (
 	ErrInvalidAttribution  = errors.New("invalid voice turn attribution")
 )
 
-// Repository persists final turns. Account-scoped reads must apply ownership before returning
-// rows. StoreFinalTurn must atomically deduplicate a FinalTurnEvent by event ID, turn ID, or
-// session and sequence number. It accepts a duplicate only when recordsv1.FinalTurnEventPayloadHash
-// matches the stored value; otherwise it returns a conflict. CorrectAttribution must change only
-// attribution fields.
+// Repository persists final turns. StoreFinalTurn must atomically deduplicate a FinalTurnEvent by
+// event ID, turn ID, or session and sequence number. It accepts a duplicate only when
+// recordsv1.FinalTurnEventPayloadHash matches the stored value; otherwise it returns a conflict.
+// CorrectAttribution must change only attribution fields.
 type Repository interface {
 	StoreFinalTurn(ctx context.Context, event recordsv1.FinalTurnEvent) error
 	ListSession(ctx context.Context, accountID, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
 	Find(ctx context.Context, accountID, turnID string) (recordsv1.VoiceTurn, error)
 	ListHistory(ctx context.Context, accountID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
 	CorrectAttribution(ctx context.Context, update AttributionUpdate) (recordsv1.VoiceTurn, error)
-	ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error)
 }
 
 // AttributionUpdate contains only the mutable part of a final turn. CorrectedBy and CorrectedAt
@@ -150,4 +148,3 @@ func validAttributionRequest(turnID string, request recordsv1.UpdateAttributionR
 }
 
 var _ recordsv1.FinalTurnConsumer = (*Service)(nil)
-var _ recordsv1.TurnReader = (*Service)(nil)

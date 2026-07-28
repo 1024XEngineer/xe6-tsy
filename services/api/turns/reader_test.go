@@ -24,9 +24,9 @@ func TestReadFinalTurnsRejectsInvalidInput(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			repository := &fakeRepository{}
-			service := NewService(repository, fakeSessionOwners{}, nil)
+			reader := NewFinalTurnReader(repository)
 
-			_, err := service.ReadFinalTurns(context.Background(), test.accountID, test.turnIDs)
+			_, err := reader.ReadFinalTurns(context.Background(), test.accountID, test.turnIDs)
 			if !errors.Is(err, ErrInvalidRequest) {
 				t.Fatalf("ReadFinalTurns() error = %v, want invalid request", err)
 			}
@@ -42,10 +42,10 @@ func TestReadFinalTurnsPreservesAccountScopeAndRequestOrder(t *testing.T) {
 		{TurnID: "vt_02", SessionID: "vs_02"},
 		{TurnID: "vt_01", SessionID: "vs_01"},
 	}, mutateReadTurnIDs: true}
-	service := NewService(repository, fakeSessionOwners{}, nil)
+	reader := NewFinalTurnReader(repository)
 	turnIDs := []string{"vt_01", "vt_02"}
 
-	snapshots, err := service.ReadFinalTurns(context.Background(), "acct_01", turnIDs)
+	snapshots, err := reader.ReadFinalTurns(context.Background(), "acct_01", turnIDs)
 	if err != nil {
 		t.Fatalf("ReadFinalTurns() error = %v", err)
 	}
@@ -65,9 +65,9 @@ func TestReadFinalTurnsPreservesAccountScopeAndRequestOrder(t *testing.T) {
 
 func TestReadFinalTurnsRejectsIncompleteBatch(t *testing.T) {
 	repository := &fakeRepository{snapshots: []recordsv1.FinalTurnSnapshot{{TurnID: "vt_01"}}}
-	service := NewService(repository, fakeSessionOwners{}, nil)
+	reader := NewFinalTurnReader(repository)
 
-	snapshots, err := service.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01", "vt_missing"})
+	snapshots, err := reader.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01", "vt_missing"})
 	if !errors.Is(err, ErrTurnNotFound) {
 		t.Fatalf("ReadFinalTurns() error = %v, want turn not found", err)
 	}
@@ -88,9 +88,9 @@ func TestReadFinalTurnsRejectsRepositoryInvariantViolations(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			service := NewService(&fakeRepository{snapshots: test.snapshots}, fakeSessionOwners{}, nil)
+			reader := NewFinalTurnReader(&fakeRepository{snapshots: test.snapshots})
 
-			snapshots, err := service.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01"})
+			snapshots, err := reader.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01"})
 			if err == nil {
 				t.Fatal("ReadFinalTurns() error = nil, want repository invariant error")
 			}
@@ -103,9 +103,9 @@ func TestReadFinalTurnsRejectsRepositoryInvariantViolations(t *testing.T) {
 
 func TestReadFinalTurnsPropagatesRepositoryError(t *testing.T) {
 	wantErr := errors.New("read failed")
-	service := NewService(&fakeRepository{readErr: wantErr}, fakeSessionOwners{}, nil)
+	reader := NewFinalTurnReader(&fakeRepository{readErr: wantErr})
 
-	_, err := service.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01"})
+	_, err := reader.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("ReadFinalTurns() error = %v, want %v", err, wantErr)
 	}
@@ -119,9 +119,9 @@ func TestReadFinalTurnsCopiesNullableSnapshotFields(t *testing.T) {
 		ParticipantID:        &participantID,
 		SpeakerLabelSnapshot: &speakerLabel,
 	}}}
-	service := NewService(repository, fakeSessionOwners{}, nil)
+	reader := NewFinalTurnReader(repository)
 
-	snapshots, err := service.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01"})
+	snapshots, err := reader.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01"})
 	if err != nil {
 		t.Fatalf("ReadFinalTurns() error = %v", err)
 	}
@@ -139,4 +139,14 @@ func TestReadFinalTurnsCopiesNullableSnapshotFields(t *testing.T) {
 	if participantID != "p_changed" || speakerLabel != "Changed" {
 		t.Fatalf("repository pointers changed to participant=%q label=%q", participantID, speakerLabel)
 	}
+}
+
+func TestNewFinalTurnReaderRejectsMissingRepository(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewFinalTurnReader(nil) did not panic")
+		}
+	}()
+
+	NewFinalTurnReader(nil)
 }

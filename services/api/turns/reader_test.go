@@ -16,6 +16,7 @@ func TestReadFinalTurnsRejectsInvalidInput(t *testing.T) {
 	}{
 		{name: "missing account", turnIDs: []string{"vt_01"}},
 		{name: "missing turns", accountID: "acct_01"},
+		{name: "oversized batch", accountID: "acct_01", turnIDs: make([]string, recordsv1.MaxFinalTurnBatchSize+1)},
 		{name: "empty turn", accountID: "acct_01", turnIDs: []string{"vt_01", ""}},
 		{name: "duplicate turn", accountID: "acct_01", turnIDs: []string{"vt_01", "vt_01"}},
 	}

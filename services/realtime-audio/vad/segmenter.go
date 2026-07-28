@@ -80,7 +80,7 @@ func (s *Segmenter) Push(ctx context.Context, frame audio.Frame) ([]Event, error
 	s.lastSeen = frame.CapturedAt
 
 	if s.active && frame.CapturedAt.Sub(s.startedAt) >= s.maxDuration {
-		events := s.finalize(frame.CapturedAt)
+		events := s.finalize(s.startedAt.Add(s.maxDuration))
 		if s.classifier.Speech(frame) {
 			s.start(frame)
 			events = append(events, Event{Type: EventOpened, StartedAt: s.startedAt}, s.audioEvent(frame))

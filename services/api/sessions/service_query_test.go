@@ -431,10 +431,12 @@ func newQueryTestService(
 ) *Service {
 	t.Helper()
 	service, err := NewService(Dependencies{
-		Repository: repository,
-		Realtime:   realtime,
-		IDs:        &fakeIDGenerator{id: "vs_generated"},
-		Clock:      &fakeClock{now: time.Now()},
+		Repository:        repository,
+		LanguageConfigs:   &fakeLanguageConfigReader{},
+		WebRTCConnections: &fakeWebRTCConnectionReader{},
+		Realtime:          realtime,
+		IDs:               &fakeIDGenerator{id: "vs_generated"},
+		Clock:             &fakeClock{now: time.Now()},
 	})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)

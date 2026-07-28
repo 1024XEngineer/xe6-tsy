@@ -52,6 +52,13 @@ The provider packages keep vendor protocol details outside `pipeline`:
 
 The adapters are constructed explicitly from typed configuration values. This PR does not load process environment variables or select providers at runtime; `.env.example` is a configuration reference only, and uncommenting it does not switch providers. Keep API keys in an ignored `.env`. The current default remains the offline fake providers, so ordinary unit tests never call a third-party service.
 
+`config.LoadProviderConfigFromEnvironment` reads typed settings and
+`config.BuildProviders` selects each adapter independently. The canonical selector keys are
+`ASR_PROVIDER`, `LLM_PROVIDER`, and `TTS_PROVIDER`; each defaults to `mock` and currently accepts
+`mock` or `aliyun`. Mock selection requires explicit offline provider instances, which prevents a
+production startup from silently constructing fake behavior. Building Aliyun providers validates
+credentials and endpoints but does not make a network request.
+
 Official protocol references:
 
 - [Qwen ASR realtime interaction](https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process)

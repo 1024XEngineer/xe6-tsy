@@ -20,7 +20,7 @@ var (
 // Repository persists session participants. Implementations must reject a participant ID that
 // does not belong to the supplied session and must not mutate voice turns when mapping changes.
 type Repository interface {
-	List(ctx context.Context, sessionID string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error)
+	List(ctx context.Context, accountID, sessionID string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error)
 	Update(ctx context.Context, sessionID, participantID string, update Update) (recordsv1.Participant, error)
 	FindOrCreate(ctx context.Context, observation recordsv1.SpeakerObservation) (recordsv1.Participant, error)
 }
@@ -66,7 +66,7 @@ func (s *Service) List(ctx context.Context, accountID, sessionID string, query r
 	if err := s.requireOwner(ctx, accountID, sessionID); err != nil {
 		return recordsv1.ParticipantListResponse{}, err
 	}
-	return s.repository.List(ctx, sessionID, query)
+	return s.repository.List(ctx, accountID, sessionID, query)
 }
 
 func (s *Service) Update(ctx context.Context, accountID, sessionID, participantID string, update Update) (recordsv1.Participant, error) {

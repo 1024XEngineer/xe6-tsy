@@ -19,14 +19,15 @@ var (
 	ErrInvalidAttribution  = errors.New("invalid voice turn attribution")
 )
 
-// Repository persists final turns. StoreFinalTurn must atomically deduplicate a FinalTurnEvent by
-// event ID, turn ID, or session and sequence number. It accepts a duplicate only when
-// recordsv1.FinalTurnEventPayloadHash matches the stored value; otherwise it returns a conflict.
-// CorrectAttribution must change only attribution fields.
+// Repository persists final turns. Account-scoped reads must apply ownership before returning
+// rows. StoreFinalTurn must atomically deduplicate a FinalTurnEvent by event ID, turn ID, or
+// session and sequence number. It accepts a duplicate only when recordsv1.FinalTurnEventPayloadHash
+// matches the stored value; otherwise it returns a conflict. CorrectAttribution must change only
+// attribution fields.
 type Repository interface {
 	StoreFinalTurn(ctx context.Context, event recordsv1.FinalTurnEvent) error
-	ListSession(ctx context.Context, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
-	Find(ctx context.Context, turnID string) (recordsv1.VoiceTurn, error)
+	ListSession(ctx context.Context, accountID, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
+	Find(ctx context.Context, accountID, turnID string) (recordsv1.VoiceTurn, error)
 	ListHistory(ctx context.Context, accountID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
 	CorrectAttribution(ctx context.Context, update AttributionUpdate) (recordsv1.VoiceTurn, error)
 	ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error)
@@ -84,18 +85,15 @@ func (s *Service) ListSession(ctx context.Context, accountID, sessionID string, 
 		return recordsv1.VoiceTurnListResponse{}, err
 	}
 	query.SessionID = sessionID
-	return s.repository.ListSession(ctx, sessionID, query)
+	return s.repository.ListSession(ctx, accountID, sessionID, query)
 }
 
 func (s *Service) Get(ctx context.Context, accountID, turnID string) (recordsv1.VoiceTurn, error) {
 	if accountID == "" || turnID == "" {
 		return recordsv1.VoiceTurn{}, ErrInvalidRequest
 	}
-	turn, err := s.repository.Find(ctx, turnID)
+	turn, err := s.repository.Find(ctx, accountID, turnID)
 	if err != nil {
-		return recordsv1.VoiceTurn{}, err
-	}
-	if err := s.requireOwner(ctx, accountID, turn.SessionID); err != nil {
 		return recordsv1.VoiceTurn{}, err
 	}
 	return turn, nil
@@ -119,7 +117,7 @@ func (s *Service) CorrectAttribution(ctx context.Context, accountID, turnID stri
 }
 
 func (s *Service) ListHistory(ctx context.Context, accountID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
-	if accountID == "" {
+	if accountID == "" || (query.CreatedFrom != nil && query.CreatedTo != nil && query.CreatedFrom.After(*query.CreatedTo)) {
 		return recordsv1.VoiceTurnListResponse{}, ErrInvalidRequest
 	}
 	if query.SessionID != "" {
@@ -132,7 +130,7 @@ func (s *Service) ListHistory(ctx context.Context, accountID string, query recor
 
 // ReadFinalTurns implements the account-scoped contract used by outbound message creation.
 func (s *Service) ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error) {
-	if accountID == "" {
+	if accountID == "" || len(turnIDs) == 0 || len(turnIDs) > recordsv1.MaxFinalTurnBatchSize {
 		return nil, ErrInvalidRequest
 	}
 	return s.repository.ReadFinalTurns(ctx, accountID, turnIDs)

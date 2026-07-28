@@ -28,6 +28,8 @@ const (
 	FinalTurnTopic = "translation.final"
 	// FinalTurnEventVersion is the only FinalTurnEvent schema version accepted by v1 consumers.
 	FinalTurnEventVersion = 1
+	// MaxFinalTurnBatchSize bounds one immutable outbound-message snapshot request.
+	MaxFinalTurnBatchSize = 100
 )
 
 var ErrInvalidFinalTurnEvent = errors.New("invalid final turn event")

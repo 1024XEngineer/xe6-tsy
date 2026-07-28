@@ -2,12 +2,15 @@ package webapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
@@ -166,6 +169,66 @@ func TestCreateMessageRequiresUniqueTurnsAndEmail(t *testing.T) {
 				t.Fatalf("body %s reached service", test.body)
 			}
 		})
+	}
+}
+
+func TestCreateMessageRejectsOversizedTurnBatch(t *testing.T) {
+	turnIDs := make([]string, recordsv1.MaxFinalTurnBatchSize+1)
+	for index := range turnIDs {
+		turnIDs[index] = "turn-" + strconv.Itoa(index)
+	}
+	body, err := json.Marshal(delivery.CreateInput{
+		Channel:        delivery.ChannelEmail,
+		DestinationRef: "verified",
+		TurnIDs:        turnIDs,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(string(body)))
+	request = authenticate(request)
+	request.Header.Set("Idempotency-Key", "oversized-message")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.created.AccountID != "" {
+		t.Fatal("oversized request reached service")
+	}
+}
+
+func TestCreateMessageAllowsMaximumTurnBatch(t *testing.T) {
+	turnIDs := make([]string, recordsv1.MaxFinalTurnBatchSize)
+	for index := range turnIDs {
+		turnIDs[index] = "turn-" + strconv.Itoa(index)
+	}
+	body, err := json.Marshal(delivery.CreateInput{
+		Channel:        delivery.ChannelEmail,
+		DestinationRef: "verified",
+		TurnIDs:        turnIDs,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(string(body)))
+	request = authenticate(request)
+	request.Header.Set("Idempotency-Key", "maximum-message")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	if fake.created.AccountID != "account-1" || len(fake.created.TurnIDs) != recordsv1.MaxFinalTurnBatchSize {
+		t.Fatalf("unexpected input: %#v", fake.created)
 	}
 }
 

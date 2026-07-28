@@ -40,6 +40,9 @@ func TestListChecksSessionOwnership(t *testing.T) {
 			if len(response.Items) != 1 || response.Items[0].ID != "p_01" {
 				t.Fatalf("List() response = %#v", response)
 			}
+			if repository.listAccountID != test.accountID {
+				t.Fatalf("List() repository account = %q, want %q", repository.listAccountID, test.accountID)
+			}
 		})
 	}
 }
@@ -113,9 +116,11 @@ type fakeRepository struct {
 	update        Update
 	turnMutations int
 	participants  map[string]recordsv1.Participant
+	listAccountID string
 }
 
-func (r *fakeRepository) List(context.Context, string, recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+func (r *fakeRepository) List(_ context.Context, accountID, _ string, _ recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+	r.listAccountID = accountID
 	return r.listResponse, nil
 }
 

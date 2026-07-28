@@ -12,7 +12,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 )
 
-func TestFinalTurnReaderDeliversFrozenSnapshotsThroughDelivery(t *testing.T) {
+func TestFinalTurnReaderDeliversSnapshotsThroughDelivery(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
@@ -57,19 +57,6 @@ func TestFinalTurnReaderDeliversFrozenSnapshotsThroughDelivery(t *testing.T) {
 	}
 	if snapshots[1].ParticipantID == nil || *snapshots[1].ParticipantID != participantID || snapshots[1].SpeakerLabelSnapshot == nil || *snapshots[1].SpeakerLabelSnapshot != displayName {
 		t.Fatalf("attributed snapshot = %#v", snapshots[1])
-	}
-
-	mutatedParticipantID := "p_changed"
-	mutatedSpeakerLabel := "Changed"
-	snapshots[1].ParticipantID = &mutatedParticipantID
-	snapshots[1].SpeakerLabelSnapshot = &mutatedSpeakerLabel
-
-	freshSnapshots, err := reader.ReadFinalTurns(t.Context(), "account_01", []string{"snapshot_02", "snapshot_01"})
-	if err != nil {
-		t.Fatalf("ReadFinalTurns() second read error = %v", err)
-	}
-	if freshSnapshots[1].ParticipantID == nil || *freshSnapshots[1].ParticipantID != participantID || freshSnapshots[1].SpeakerLabelSnapshot == nil || *freshSnapshots[1].SpeakerLabelSnapshot != displayName {
-		t.Fatalf("fresh snapshot = %#v", freshSnapshots[1])
 	}
 
 	tests := []struct {

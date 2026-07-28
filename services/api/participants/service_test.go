@@ -40,6 +40,9 @@ func TestListChecksSessionOwnership(t *testing.T) {
 			if len(response.Items) != 1 || response.Items[0].ID != "p_01" {
 				t.Fatalf("List() response = %#v", response)
 			}
+			if repository.listAccountID != test.accountID {
+				t.Fatalf("List() repository account = %q, want %q", repository.listAccountID, test.accountID)
+			}
 		})
 	}
 }

@@ -42,6 +42,7 @@ type PipelineDependencies struct {
 	FinalTurns     recordsv1.FinalTurnSink
 	Usage          UsageFactSink
 	Audio          AudioChunkSink
+	Runtime        session.RuntimeStateReporter
 	SpeakerTimeout time.Duration
 	VoiceID        string
 	Now            func() time.Time
@@ -55,6 +56,7 @@ type PipelineService struct {
 	finalTurns     recordsv1.FinalTurnSink
 	usage          UsageFactSink
 	audio          AudioChunkSink
+	runtime        session.RuntimeStateReporter
 	speakerTimeout time.Duration
 	voiceID        string
 	now            func() time.Time
@@ -72,7 +74,7 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 	}
 	return &PipelineService{
 		translator: deps.Translator, tts: deps.TTS, speakers: deps.Speakers,
-		finalTurns: deps.FinalTurns, usage: deps.Usage, audio: deps.Audio,
+		finalTurns: deps.FinalTurns, usage: deps.Usage, audio: deps.Audio, runtime: deps.Runtime,
 		speakerTimeout: timeout, voiceID: deps.VoiceID, now: now,
 	}
 }
@@ -86,10 +88,18 @@ func (s *PipelineService) HandleASREvent(ctx context.Context, turn TurnContext, 
 }
 
 // HandleASRFinal carries one allocated Turn through all final-result stages.
-func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) error {
+func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) (returnErr error) {
 	if err := s.validate(); err != nil {
 		return err
 	}
+	if err := s.reportRuntime(ctx, turn, session.RuntimeTranslating, ""); err != nil {
+		return fmt.Errorf("report translating runtime: %w", err)
+	}
+	defer func() {
+		if err := s.reportListening(ctx, turn); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("restore listening runtime: %w", err))
+		}
+	}()
 	if err := s.publishUsage(ctx, turn, "asr", result.Provider, result.Model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
 		return fmt.Errorf("publish ASR usage: %w", err)
 	}
@@ -123,6 +133,9 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("publish FinalTurn: %w", err)
 	}
 	playbackID := "playback_" + turn.ID
+	if err := s.reportRuntime(ctx, turn, session.RuntimeTTSProcessing, playbackID); err != nil {
+		return fmt.Errorf("report TTS runtime: %w", err)
+	}
 	stream, err := s.tts.StartStream(ctx, tts.Request{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, Text: translationResult.Text, TargetLanguage: target, VoiceID: s.voiceID})
 	if err != nil {
 		return fmt.Errorf("start TTS: %w", err)
@@ -158,7 +171,7 @@ func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext
 }
 
 func (s *PipelineService) validate() error {
-	if s == nil || s.translator == nil || s.tts == nil || s.finalTurns == nil || s.usage == nil || s.audio == nil {
+	if s == nil || s.translator == nil || s.tts == nil || s.finalTurns == nil || s.usage == nil || s.audio == nil || s.runtime == nil {
 		return ErrPipelineDependencyRequired
 	}
 	return nil

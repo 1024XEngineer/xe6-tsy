@@ -7,9 +7,14 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
-func TestRegisteredAccountInsertTargetsPartialPhoneIndex(t *testing.T) {
-	if !strings.Contains(insertRegisteredAccountSQL, "ON CONFLICT (phone_hash) WHERE phone_hash IS NOT NULL DO NOTHING") {
-		t.Fatalf("registered-account insert does not match the partial phone index: %s", insertRegisteredAccountSQL)
+func TestRegisteredAccountInsertStoresOnlyPepperedDigest(t *testing.T) {
+	for _, field := range []string{"phone_hash_v2", "ON CONFLICT DO NOTHING"} {
+		if !strings.Contains(insertRegisteredAccountSQL, field) {
+			t.Fatalf("registered-account insert does not store %q: %s", field, insertRegisteredAccountSQL)
+		}
+	}
+	if strings.Contains(insertRegisteredAccountSQL, "phone_hash, phone_hash_v2") {
+		t.Fatalf("registered-account insert persists a legacy digest: %s", insertRegisteredAccountSQL)
 	}
 }
 
@@ -22,5 +27,13 @@ func TestRevokeSessionIsConditionalOnActiveState(t *testing.T) {
 	}
 	if err := revokeSessionResult(1); err != nil {
 		t.Fatalf("revokeSessionResult(1) = %v, want nil", err)
+	}
+}
+
+func TestRotateSessionOnlyClaimsCurrentActiveOwner(t *testing.T) {
+	for _, predicate := range []string{"account_id=$2", "revoked_at IS NULL", "expires_at > CURRENT_TIMESTAMP"} {
+		if !strings.Contains(rotateActiveSessionSQL, predicate) {
+			t.Fatalf("rotation SQL is missing %q: %s", predicate, rotateActiveSessionSQL)
+		}
 	}
 }

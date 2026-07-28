@@ -8,20 +8,32 @@ type Repository interface {
 	CreateAnonymous(context.Context) (Account, error)
 	// GetAccount reads an account by its public identifier.
 	GetAccount(context.Context, string) (Account, error)
-	// CreateChallenge persists a time-limited phone verification challenge.
+	// CreateChallenge persists a time-limited challenge after atomically enforcing
+	// the per-phone cooldown and rolling send limit.
 	CreateChallenge(context.Context, PhoneChallenge) error
-	// ConsumeChallenge atomically validates and marks a challenge as used.
-	ConsumeChallenge(context.Context, string, string) error
-	// GetChallenge reads the non-secret phone hash before a challenge is consumed.
-	GetChallenge(context.Context, string) (PhoneChallenge, error)
-	// FindOrCreateByPhoneHash resolves the registered account for a normalized phone hash.
-	FindOrCreateByPhoneHash(context.Context, string) (Account, error)
+	// AbandonChallenge removes a challenge only when it has not been consumed.
+	// It is used if the verification provider rejects the outbound code, so a
+	// failed send does not consume the caller's cooldown or send quota.
+	AbandonChallenge(context.Context, string) error
+	// ConsumeChallenge atomically validates a pre-derived challenge-code digest and returns its private
+	// phone binding only after a successful one-time use. Failed code attempts
+	// must be durably counted before returning unauthorized.
+	ConsumeChallenge(context.Context, string, string) (PhoneChallenge, error)
+	// RestoreChallenge makes a consumed challenge retryable after a downstream
+	// account or session persistence failure.
+	RestoreChallenge(context.Context, string) error
+	// FindOrCreateByPhoneHashes resolves the registered account with its current
+	// HMAC digest and a legacy SHA-256 lookup digest for lazy migration.
+	FindOrCreateByPhoneHashes(context.Context, string, string) (Account, error)
 	// BindAnonymous transfers an anonymous account into the registered account boundary.
 	BindAnonymous(context.Context, string, string) (Account, error)
 	// CreateSession persists a refreshable login session.
 	CreateSession(context.Context, Session) error
 	// GetSessionByRefreshHash resolves an active session without storing plaintext credentials.
 	GetSessionByRefreshHash(context.Context, string) (Session, error)
+	// RotateSession atomically revokes the current session and persists its successor.
+	// Implementations must leave the current session active if the successor cannot be stored.
+	RotateSession(context.Context, string, Session) error
 	// RevokeSession invalidates a login session and its refresh-token chain.
 	RevokeSession(context.Context, string) error
 }
@@ -44,6 +56,13 @@ type TokenIssuer interface {
 // Implementations must reject invalid, expired, or otherwise unacceptable tokens.
 type AccessTokenVerifier interface {
 	VerifyAccessToken(context.Context, string) (AccessTokenClaims, error)
+}
+
+// CanonicalAccountResolver resolves an account to the active account at the
+// top of its merge chain. Read-side modules use it before comparing ownership
+// so a registered account can access its anonymous-period history.
+type CanonicalAccountResolver interface {
+	CanonicalAccountID(context.Context, string) (string, error)
 }
 
 // Service defines the account use cases consumed by the HTTP adapter.

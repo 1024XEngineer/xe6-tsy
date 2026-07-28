@@ -27,14 +27,25 @@ func TestMigrateRecordsSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppliedMigrations() error = %v", err)
 	}
-	if len(statuses) != 2 {
-		t.Fatalf("len(AppliedMigrations()) = %d, want 2", len(statuses))
+	want := []struct {
+		version int64
+		name    string
+	}{
+		{1, "voice_records"},
+		{2, "member5_control_plane"},
+		{3, "phone_challenge_hardening"},
+		{4, "account_lineage"},
+		{5, "phone_digest_v2"},
+		{6, "phone_digest_cleanup"},
 	}
-	if status := statuses[0]; status.Version != 1 || status.Name != "voice_records" || status.AppliedAt.IsZero() {
-		t.Fatalf("AppliedMigrations()[0] = %#v, want applied voice_records version 1", status)
+	if len(statuses) != len(want) {
+		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))
 	}
-	if status := statuses[1]; status.Version != 2 || status.Name != "member5_control_plane" || status.AppliedAt.IsZero() {
-		t.Fatalf("AppliedMigrations()[1] = %#v, want applied member5_control_plane version 2", status)
+	for index, expected := range want {
+		status := statuses[index]
+		if status.Version != expected.version || status.Name != expected.name || status.AppliedAt.IsZero() {
+			t.Fatalf("AppliedMigrations()[%d] = %#v, want applied %s version %d", index, status, expected.name, expected.version)
+		}
 	}
 }
 

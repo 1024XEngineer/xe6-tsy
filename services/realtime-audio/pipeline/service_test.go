@@ -218,6 +218,38 @@ func TestPipelineTranslationUsageFailureKeepsAcceptedFinalTurn(t *testing.T) {
 	}
 }
 
+func TestPipelineRejectsInvalidTranslationUsageBeforeFinalTurn(t *testing.T) {
+	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{}
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Model: "v1"}},
+		TTS:        ttsProvider,
+		FinalTurns: finalSink,
+		Usage:      usageSink,
+		Audio:      &recordingAudioSink{},
+	})
+
+	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+	})
+	if !errors.Is(err, ErrInvalidUsageFact) {
+		t.Fatalf("HandleASRFinal() error = %v, want ErrInvalidUsageFact", err)
+	}
+	if errors.Is(err, ErrFinalTurnAccepted) {
+		t.Fatalf("HandleASRFinal() error = %v, FinalTurn was not accepted", err)
+	}
+	if len(finalSink.events) != 0 {
+		t.Fatalf("FinalTurn attempts = %d, want 0", len(finalSink.events))
+	}
+	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
+		t.Fatalf("UsageFacts = %#v, want only ASR", usageSink.facts)
+	}
+	if requests := ttsProvider.Requests(); len(requests) != 0 {
+		t.Fatalf("TTS requests = %#v, want none", requests)
+	}
+}
+
 func TestPipelineTTSFailureReportsAcceptedFinalTurn(t *testing.T) {
 	startErr := errors.New("start failed")
 	audioErr := errors.New("audio failed")

@@ -109,6 +109,20 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err != nil {
 		return fmt.Errorf("translate Turn %s: %w", turn.ID, err)
 	}
+	translationUsage, err := s.buildUsageFact(
+		turn,
+		"translation",
+		translationResult.Provider,
+		translationResult.Model,
+		0,
+		translationResult.InputTokens,
+		translationResult.OutputTokens,
+		translationResult.CostAmount,
+		translationResult.Currency,
+	)
+	if err != nil {
+		return fmt.Errorf("prepare translation usage: %w", err)
+	}
 	startedAt, endedAt := turnBounds(turn, result, s.now())
 	attribution := s.resolveSpeaker(ctx, turn, result, startedAt, endedAt)
 	finalEvent := FinalTurnEvent{
@@ -127,7 +141,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err := s.finalTurns.Publish(ctx, finalEvent); err != nil {
 		return fmt.Errorf("publish FinalTurn: %w", err)
 	}
-	if err := s.publishUsage(ctx, turn, "translation", translationResult.Provider, translationResult.Model, 0, translationResult.InputTokens, translationResult.OutputTokens, translationResult.CostAmount, translationResult.Currency); err != nil {
+	if err := s.usage.Publish(ctx, translationUsage); err != nil {
 		return finalTurnAcceptedError("publish translation usage", err)
 	}
 	playbackID := "playback_" + turn.ID
@@ -177,6 +191,14 @@ func (s *PipelineService) validate() error {
 }
 
 func (s *PipelineService) publishUsage(ctx context.Context, turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string) error {
+	fact, err := s.buildUsageFact(turn, serviceType, provider, model, durationMS, inputTokens, outputTokens, cost, currency)
+	if err != nil {
+		return err
+	}
+	return s.usage.Publish(ctx, fact)
+}
+
+func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string) (UsageFact, error) {
 	fact := UsageFact{
 		EventVersion: UsageEventVersion, ID: fmt.Sprintf("usage_%s_%s", turn.ID, serviceType),
 		TraceID: turn.TraceID, IdempotencyKey: fmt.Sprintf("usage:%s:%s", turn.ID, serviceType),
@@ -185,9 +207,9 @@ func (s *PipelineService) publishUsage(ctx context.Context, turn TurnContext, se
 		AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: s.now(),
 	}
 	if err := fact.Validate(); err != nil {
-		return fmt.Errorf("validate UsageFact: %w", err)
+		return UsageFact{}, fmt.Errorf("validate UsageFact: %w", err)
 	}
-	return s.usage.Publish(ctx, fact)
+	return fact, nil
 }
 
 func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, result asr.FinalResult, startedAt, endedAt time.Time) recordsv1.SpeakerAttribution {

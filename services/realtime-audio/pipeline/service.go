@@ -155,6 +155,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 }
 
 func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, chunks <-chan tts.AudioChunk) error {
+	playing := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -162,6 +163,12 @@ func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext
 		case chunk, ok := <-chunks:
 			if !ok {
 				return nil
+			}
+			if !playing {
+				if err := s.reportRuntime(ctx, turn, session.RuntimePlaying, playbackID); err != nil {
+					return fmt.Errorf("report playing runtime: %w", err)
+				}
+				playing = true
 			}
 			if err := s.audio.Publish(ctx, AudioChunk{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, SequenceNo: chunk.SequenceNo, Data: append([]byte(nil), chunk.Data...)}); err != nil {
 				return fmt.Errorf("publish audio chunk: %w", err)

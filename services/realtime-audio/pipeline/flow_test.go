@@ -79,7 +79,7 @@ func TestTurnProcessorRunsMockASRTranslationTTSFlow(t *testing.T) {
 			t.Fatalf("UsageFact turn ID = %q, want %q", fact.TurnID, turn.ID)
 		}
 	}
-	wantStates := []session.RuntimeState{session.RuntimeASRProcessing, session.RuntimeTranslating, session.RuntimeTTSProcessing, session.RuntimeListening}
+	wantStates := []session.RuntimeState{session.RuntimeASRProcessing, session.RuntimeTranslating, session.RuntimeTTSProcessing, session.RuntimePlaying, session.RuntimeListening}
 	if len(runtimeReporter.updates) != len(wantStates) {
 		t.Fatalf("runtime updates = %#v", runtimeReporter.updates)
 	}
@@ -88,7 +88,7 @@ func TestTurnProcessorRunsMockASRTranslationTTSFlow(t *testing.T) {
 			t.Fatalf("runtime update %d = %#v, want %q", index, runtimeReporter.updates[index], want)
 		}
 	}
-	for index := 0; index < 3; index++ {
+	for index := 0; index < 4; index++ {
 		if runtimeReporter.updates[index].CurrentTurnID == nil || *runtimeReporter.updates[index].CurrentTurnID != turn.ID {
 			t.Fatalf("runtime update %d Turn = %#v, want %q", index, runtimeReporter.updates[index], turn.ID)
 		}
@@ -97,7 +97,10 @@ func TestTurnProcessorRunsMockASRTranslationTTSFlow(t *testing.T) {
 	if runtimeReporter.updates[2].CurrentPlaybackID == nil || *runtimeReporter.updates[2].CurrentPlaybackID != wantPlaybackID {
 		t.Fatalf("TTS runtime update = %#v, want playback %q", runtimeReporter.updates[2], wantPlaybackID)
 	}
-	listening := runtimeReporter.updates[3]
+	if runtimeReporter.updates[3].CurrentPlaybackID == nil || *runtimeReporter.updates[3].CurrentPlaybackID != wantPlaybackID {
+		t.Fatalf("playing runtime update = %#v, want playback %q", runtimeReporter.updates[3], wantPlaybackID)
+	}
+	listening := runtimeReporter.updates[4]
 	if listening.CurrentTurnID != nil || listening.CurrentPlaybackID != nil {
 		t.Fatalf("listening runtime update retained active IDs: %#v", listening)
 	}

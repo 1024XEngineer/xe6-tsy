@@ -104,6 +104,7 @@ type readTurnFixture struct {
 	sequenceNo     int64
 	participantID  *string
 	speakerCode    string
+	displayName    *string
 	sourceLanguage string
 	targetLanguage string
 	status         recordsv1.AttributionStatus
@@ -114,16 +115,17 @@ func insertReadTurn(t *testing.T, pool *pgxpool.Pool, fixture readTurnFixture) {
 	t.Helper()
 	_, err := pool.Exec(t.Context(), `
 		INSERT INTO voice_turns (
-			id, event_id, event_payload_hash, session_id, participant_id, speaker_code,
+			id, event_id, event_payload_hash, session_id, participant_id, speaker_code, display_name,
 			sequence_no, source_language, target_language, language_config_version,
 			source_text, translated_text, attribution_status, started_at, ended_at, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 'source', 'translation', $10, $11, $11, $11)`,
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1, 'source', 'translation', $11, $12, $12, $12)`,
 		fixture.id,
 		fixture.eventID,
 		make([]byte, 32),
 		fixture.sessionID,
 		fixture.participantID,
 		fixture.speakerCode,
+		fixture.displayName,
 		fixture.sequenceNo,
 		fixture.sourceLanguage,
 		fixture.targetLanguage,

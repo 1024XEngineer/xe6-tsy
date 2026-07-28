@@ -1,6 +1,10 @@
 package session
 
-import "errors"
+import (
+	"errors"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+)
 
 var (
 	// ErrRuntimeNotFound reports that no runtime snapshot exists for a session.
@@ -13,9 +17,15 @@ var (
 	ErrSessionIDRequired = errors.New("session id is required")
 	// ErrRuntimeCleanupRequired prevents startup while a previous stop remains incomplete.
 	ErrRuntimeCleanupRequired = errors.New("runtime cleanup must complete before restart")
+	// ErrInvalidRuntimeUpdate rejects incomplete processing-state fields.
+	ErrInvalidRuntimeUpdate = errors.New("invalid runtime state update")
+	// ErrInvalidRuntimeTransition rejects progress that conflicts with the lifecycle state machine.
+	ErrInvalidRuntimeTransition = errors.New("invalid runtime state transition")
+	// ErrRuntimeIdentityConflict rejects stale Turn or playback updates.
+	ErrRuntimeIdentityConflict = errors.New("runtime identity conflict")
 )
 
 const (
-	ErrorCodeStartFailed = "realtime_start_failed"
-	ErrorCodeStopFailed  = "realtime_stop_failed"
+	ErrorCodeStartFailed = string(realtimev1.RuntimeErrorStartFailed)
+	ErrorCodeStopFailed  = string(realtimev1.RuntimeErrorStopFailed)
 )

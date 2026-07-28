@@ -3,6 +3,8 @@ package sessions
 import (
 	"encoding/json"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 // Status is the persisted business lifecycle state owned by services/api.
@@ -38,19 +40,19 @@ const (
 	StartCompensationOperationNotPending StartCompensationClaimReason = "operation_not_pending"
 )
 
-// RuntimeState is the media-plane lifecycle state returned by realtime-audio.
-type RuntimeState string
+// RuntimeState is the shared media-plane lifecycle state returned by realtime-audio.
+type RuntimeState = realtimev1.RuntimeState
 
 const (
-	RuntimeStopped       RuntimeState = "stopped"
-	RuntimeStarting      RuntimeState = "starting"
-	RuntimeListening     RuntimeState = "listening"
-	RuntimeASRProcessing RuntimeState = "asr_processing"
-	RuntimeTranslating   RuntimeState = "translating"
-	RuntimeTTSProcessing RuntimeState = "tts_processing"
-	RuntimePlaying       RuntimeState = "playing"
-	RuntimeStopping      RuntimeState = "stopping"
-	RuntimeFailed        RuntimeState = "failed"
+	RuntimeStopped       = realtimev1.RuntimeStopped
+	RuntimeStarting      = realtimev1.RuntimeStarting
+	RuntimeListening     = realtimev1.RuntimeListening
+	RuntimeASRProcessing = realtimev1.RuntimeASRProcessing
+	RuntimeTranslating   = realtimev1.RuntimeTranslating
+	RuntimeTTSProcessing = realtimev1.RuntimeTTSProcessing
+	RuntimePlaying       = realtimev1.RuntimePlaying
+	RuntimeStopping      = realtimev1.RuntimeStopping
+	RuntimeFailed        = realtimev1.RuntimeFailed
 )
 
 // ConnectionState is the WebRTC connection lifecycle owned by the connection
@@ -162,15 +164,8 @@ type VoiceSessionListItem struct {
 	CreatedAt time.Time  `json:"created_at"`
 }
 
-// RuntimeSnapshot is the read-only media-plane state consumed by this module.
-type RuntimeSnapshot struct {
-	SessionID         string
-	RuntimeState      RuntimeState
-	CurrentTurnID     *string
-	CurrentPlaybackID *string
-	LastErrorCode     *string
-	UpdatedAt         time.Time
-}
+// RuntimeSnapshot is the read-only shared media-plane state consumed by this module.
+type RuntimeSnapshot = realtimev1.RuntimeSnapshot
 
 // WebRTCConnectionSnapshot is independent from RuntimeSnapshot and is used
 // only to enforce the startup readiness precondition.
@@ -239,24 +234,6 @@ func (s StartOperationStatus) Valid() bool {
 		StartOperationCompleted,
 		StartOperationCompensated,
 		StartOperationCompensationFailed:
-		return true
-	default:
-		return false
-	}
-}
-
-// Valid reports whether the state belongs to the media-plane lifecycle.
-func (s RuntimeState) Valid() bool {
-	switch s {
-	case RuntimeStopped,
-		RuntimeStarting,
-		RuntimeListening,
-		RuntimeASRProcessing,
-		RuntimeTranslating,
-		RuntimeTTSProcessing,
-		RuntimePlaying,
-		RuntimeStopping,
-		RuntimeFailed:
 		return true
 	default:
 		return false

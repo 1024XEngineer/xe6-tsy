@@ -142,6 +142,23 @@ components:
     Unauthorized: { description: Missing or invalid account context, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotImplemented: { description: Business implementation is intentionally pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
+    RealtimeRuntimeState:
+      type: string
+      enum: [stopped, starting, listening, asr_processing, translating, tts_processing, playing, stopping, failed]
+    RealtimeRuntimeErrorCode:
+      type: string
+      enum: [realtime_start_failed, realtime_stop_failed]
+    RealtimeRuntimeSnapshot:
+      type: object
+      additionalProperties: false
+      required: [session_id, runtime_state, current_turn_id, current_playback_id, last_error_code, updated_at]
+      properties:
+        session_id: { type: string }
+        runtime_state: { $ref: '#/components/schemas/RealtimeRuntimeState' }
+        current_turn_id: { type: [string, 'null'] }
+        current_playback_id: { type: [string, 'null'] }
+        last_error_code: { type: [string, 'null'] }
+        updated_at: { type: string, format: date-time }
     WebRTCConnectionState:
       type: string
       enum: [new, connecting, connected, disconnected, failed, closed]

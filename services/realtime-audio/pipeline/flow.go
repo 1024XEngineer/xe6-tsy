@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
 var (
@@ -57,6 +58,9 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if p == nil || p.recognizer == nil || p.opener == nil || p.pipeline == nil {
 		return TurnContext{}, ErrTurnProcessorDependencyRequired
 	}
+	if err := p.pipeline.validate(); err != nil {
+		return TurnContext{}, err
+	}
 	turn, err := p.opener.OpenTurn(ctx, TurnOpenRequest{
 		SessionID: request.SessionID, AccountID: request.AccountID,
 		TraceID: request.TraceID, StartedAt: request.StartedAt,
@@ -64,14 +68,17 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if err != nil {
 		return TurnContext{}, fmt.Errorf("open Turn: %w", err)
 	}
+	if err := p.pipeline.reportRuntime(ctx, turn, session.RuntimeASRProcessing, ""); err != nil {
+		return turn, fmt.Errorf("report ASR runtime: %w", err)
+	}
 	stream, err := p.recognizer.StartStream(ctx, asr.StreamRequest{
 		SessionID: turn.SessionID, TurnID: turn.ID, SourceLanguage: request.SourceLanguage,
 	})
 	if err != nil {
-		return turn, fmt.Errorf("start ASR stream: %w", err)
+		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("start ASR stream: %w", err))
 	}
 	if stream == nil {
-		return turn, ErrASRStreamRequired
+		return turn, p.pipeline.finishASRWithError(ctx, turn, ErrASRStreamRequired)
 	}
 	defer stream.Close()
 	streamCtx, stopEvents := context.WithCancel(ctx)
@@ -81,16 +88,16 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	go collectFinalASREvent(streamCtx, stream.Events(), finalEvents, eventErrors)
 	for _, chunk := range request.AudioChunks {
 		if err := stream.PushAudio(ctx, append([]byte(nil), chunk...)); err != nil {
-			return turn, fmt.Errorf("push audio for Turn %s: %w", turn.ID, err)
+			return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("push audio for Turn %s: %w", turn.ID, err))
 		}
 	}
 
 	result, err := stream.Finish(ctx)
 	if err != nil {
-		return turn, fmt.Errorf("finish ASR stream: %w", err)
+		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("finish ASR stream: %w", err))
 	}
 	if err := <-eventErrors; err != nil {
-		return turn, err
+		return turn, p.pipeline.finishASRWithError(ctx, turn, err)
 	}
 	select {
 	case eventResult := <-finalEvents:
@@ -98,7 +105,7 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	default:
 	}
 	if result.Text == "" || result.SourceLanguage == "" {
-		return turn, ErrASRFinalRequired
+		return turn, p.pipeline.finishASRWithError(ctx, turn, ErrASRFinalRequired)
 	}
 	if err := p.pipeline.HandleASRFinal(ctx, turn, result); err != nil {
 		return turn, err

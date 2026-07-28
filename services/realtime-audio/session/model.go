@@ -3,21 +3,23 @@ package session
 import (
 	"encoding/json"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 // RuntimeState describes media-plane progress independently of business state.
-type RuntimeState string
+type RuntimeState = realtimev1.RuntimeState
 
 const (
-	RuntimeStopped       RuntimeState = "stopped"
-	RuntimeStarting      RuntimeState = "starting"
-	RuntimeListening     RuntimeState = "listening"
-	RuntimeASRProcessing RuntimeState = "asr_processing"
-	RuntimeTranslating   RuntimeState = "translating"
-	RuntimeTTSProcessing RuntimeState = "tts_processing"
-	RuntimePlaying       RuntimeState = "playing"
-	RuntimeStopping      RuntimeState = "stopping"
-	RuntimeFailed        RuntimeState = "failed"
+	RuntimeStopped       = realtimev1.RuntimeStopped
+	RuntimeStarting      = realtimev1.RuntimeStarting
+	RuntimeListening     = realtimev1.RuntimeListening
+	RuntimeASRProcessing = realtimev1.RuntimeASRProcessing
+	RuntimeTranslating   = realtimev1.RuntimeTranslating
+	RuntimeTTSProcessing = realtimev1.RuntimeTTSProcessing
+	RuntimePlaying       = realtimev1.RuntimePlaying
+	RuntimeStopping      = realtimev1.RuntimeStopping
+	RuntimeFailed        = realtimev1.RuntimeFailed
 )
 
 // SessionSnapshot is the read-only business session view supplied by member 1.
@@ -46,14 +48,15 @@ type LanguageConfigSnapshot struct {
 	UpdatedAt     time.Time
 }
 
-// RuntimeSnapshot is the authoritative media-plane state for one session.
-type RuntimeSnapshot struct {
+// RuntimeSnapshot is the authoritative shared media-plane state for one session.
+type RuntimeSnapshot = realtimev1.RuntimeSnapshot
+
+// ProcessingStateUpdate carries one pipeline-owned progress transition into lifecycle state.
+type ProcessingStateUpdate struct {
 	SessionID         string
 	RuntimeState      RuntimeState
 	CurrentTurnID     *string
 	CurrentPlaybackID *string
-	LastErrorCode     *string
-	UpdatedAt         time.Time
 }
 
 // StartRealtimeCommand carries control-plane tracing data into startup.

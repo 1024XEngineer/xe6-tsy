@@ -277,8 +277,18 @@ func (r *startRepository) GetStartOperation(
 	if r.session.ID != sessionID || r.session.AccountID != accountID {
 		return StartOperation{}, ErrVoiceSessionNotFound
 	}
-	if r.operation == nil || r.operation.IdempotencyKey != idempotencyKey {
+	if r.operation == nil {
 		return StartOperation{}, ErrStartOperationNotFound
+	}
+	if r.operation.IdempotencyKey != idempotencyKey {
+		switch r.operation.Status {
+		case StartOperationPending,
+			StartOperationCompensating,
+			StartOperationCompensationFailed:
+			return StartOperation{}, ErrSessionStartInProgress
+		default:
+			return StartOperation{}, ErrStartOperationNotFound
+		}
 	}
 	return *r.operation, nil
 }
@@ -295,6 +305,9 @@ func (r *startRepository) ClaimStartCompensation(
 	r.mu.Unlock()
 	if hook != nil {
 		hook(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return ClaimStartCompensationResult{}, err
 	}
 
 	r.mu.Lock()
@@ -563,6 +576,9 @@ func (r *startRealtime) Start(
 	if hook != nil {
 		hook(ctx)
 	}
+	if err := ctx.Err(); err != nil {
+		return RuntimeSnapshot{}, err
+	}
 	return result, err
 }
 
@@ -597,6 +613,9 @@ func (r *startRealtime) GetRuntimeState(
 	r.mu.Unlock()
 	if hook != nil {
 		hook(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		return RuntimeSnapshot{}, err
 	}
 	return result, err
 }

@@ -34,6 +34,7 @@ func TestMapRealtimeStopErrorPreservesBoundaryAndCause(t *testing.T) {
 func TestServiceStartLeavesPendingOperationWhenRealtimeStartIsUncertain(t *testing.T) {
 	fixture := newStartFixture(t, StatusCreated)
 	fixture.realtime.startErr = errDependency
+	fixture.realtime.getErr = ErrRuntimeSnapshotNotFound
 
 	_, err := fixture.service.Start(context.Background(), validStartInput())
 	if !errors.Is(err, ErrRealtimeStartFailed) {
@@ -87,6 +88,136 @@ func TestServiceStartDoesNotStopWhenCompensationClaimFails(t *testing.T) {
 	if fixture.repository.operation == nil ||
 		fixture.repository.operation.Status != StartOperationPending {
 		t.Fatalf("operation = %#v, want pending", fixture.repository.operation)
+	}
+}
+
+func TestServiceStartClaimTimeoutNeverCallsStop(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.repository.transitionErr = errDependency
+	fixture.service.deps.CompensationTimeout = 20 * time.Millisecond
+	fixture.repository.claimHook = func(ctx context.Context) {
+		<-ctx.Done()
+	}
+
+	_, err := fixture.service.Start(context.Background(), validStartInput())
+	if !errors.Is(err, errDependency) ||
+		!errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Start() error = %v, want transition and claim deadline errors", err)
+	}
+	if fixture.repository.claimCalls != 1 || fixture.realtime.stopCalls != 0 {
+		t.Fatalf("calls = claim %d, stop %d; want 1, 0",
+			fixture.repository.claimCalls, fixture.realtime.stopCalls)
+	}
+	if fixture.repository.operation.Status != StartOperationPending {
+		t.Fatalf("operation status = %q, want pending",
+			fixture.repository.operation.Status)
+	}
+}
+
+func TestServiceStartStopGetsFreshContextAfterSlowClaim(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.repository.transitionErr = errDependency
+	claimEntered := make(chan struct{})
+	releaseClaim := make(chan struct{})
+	var claimCtx context.Context
+	var claimDeadline time.Time
+	fixture.repository.claimHook = func(ctx context.Context) {
+		claimCtx = ctx
+		claimDeadline, _ = ctx.Deadline()
+		close(claimEntered)
+		select {
+		case <-releaseClaim:
+		case <-ctx.Done():
+		}
+	}
+	var stopContextErr error
+	var stopDeadline time.Time
+	var claimContextErrAtStop error
+	fixture.realtime.stopHook = func(ctx context.Context) {
+		stopContextErr = ctx.Err()
+		stopDeadline, _ = ctx.Deadline()
+		claimContextErrAtStop = claimCtx.Err()
+	}
+
+	results := make(chan error, 1)
+	go func() {
+		_, err := fixture.service.Start(context.Background(), validStartInput())
+		results <- err
+	}()
+	waitForSignal(t, "compensation claim", claimEntered)
+	close(releaseClaim)
+
+	if err := waitForStartResult(t, results); !errors.Is(err, errDependency) {
+		t.Fatalf("Start() error = %v, want transition error", err)
+	}
+	if stopContextErr != nil ||
+		!errors.Is(claimContextErrAtStop, context.Canceled) ||
+		!stopDeadline.After(claimDeadline) {
+		t.Fatalf(
+			"stop context error = %v, claim context at stop = %v, deadlines = claim %v stop %v",
+			stopContextErr,
+			claimContextErrAtStop,
+			claimDeadline,
+			stopDeadline,
+		)
+	}
+	if fixture.realtime.stopCalls != 1 ||
+		fixture.repository.completeCalls != 1 ||
+		fixture.repository.operation.Status != StartOperationCompensated {
+		t.Fatalf("stop = %d, complete = %d, operation = %#v",
+			fixture.realtime.stopCalls,
+			fixture.repository.completeCalls,
+			fixture.repository.operation)
+	}
+}
+
+func TestServiceStartClaimStopAndPersistenceRetainTraceValues(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.repository.transitionErr = errDependency
+	var claimCtx context.Context
+	var stopCtx context.Context
+	var persistCtx context.Context
+	fixture.repository.claimHook = func(ctx context.Context) {
+		claimCtx = ctx
+	}
+	fixture.realtime.stopHook = func(ctx context.Context) {
+		stopCtx = ctx
+	}
+	fixture.repository.completeHook = func(ctx context.Context) {
+		persistCtx = ctx
+	}
+	parent := context.WithValue(
+		context.Background(),
+		startTraceKey{},
+		"trace-value",
+	)
+
+	_, err := fixture.service.Start(parent, validStartInput())
+	if !errors.Is(err, errDependency) {
+		t.Fatalf("Start() error = %v, want transition error", err)
+	}
+	contexts := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{name: "claim", ctx: claimCtx},
+		{name: "stop", ctx: stopCtx},
+		{name: "persist", ctx: persistCtx},
+	}
+	for _, phase := range contexts {
+		if phase.ctx == nil {
+			t.Fatalf("%s context is nil", phase.name)
+		}
+		if phase.ctx.Value(startTraceKey{}) != "trace-value" {
+			t.Fatalf("%s trace = %#v, want trace-value",
+				phase.name, phase.ctx.Value(startTraceKey{}))
+		}
+		if _, ok := phase.ctx.Deadline(); !ok {
+			t.Fatalf("%s context has no deadline", phase.name)
+		}
+	}
+	if claimCtx == stopCtx || claimCtx == persistCtx || stopCtx == persistCtx {
+		t.Fatal("claim, stop, and persistence contexts must be independent")
 	}
 }
 
@@ -556,7 +687,7 @@ func TestServiceStartCrossInstanceLoserNeverStopsActivatedRuntime(t *testing.T) 
 	readCount := 0
 	bothRead := make(chan struct{})
 	releaseReads := make(chan struct{})
-	repository.getHook = func(context.Context) {
+	repository.getHook = func(ctx context.Context) {
 		readMu.Lock()
 		readCount++
 		current := readCount
@@ -565,7 +696,10 @@ func TestServiceStartCrossInstanceLoserNeverStopsActivatedRuntime(t *testing.T) 
 		}
 		readMu.Unlock()
 		if current <= 2 {
-			<-releaseReads
+			select {
+			case <-releaseReads:
+			case <-ctx.Done():
+			}
 		}
 	}
 
@@ -573,7 +707,7 @@ func TestServiceStartCrossInstanceLoserNeverStopsActivatedRuntime(t *testing.T) 
 	startCount := 0
 	bothStarted := make(chan struct{})
 	releaseStarts := make(chan struct{})
-	realtime.startHook = func(context.Context) {
+	realtime.startHook = func(ctx context.Context) {
 		startMu.Lock()
 		startCount++
 		current := startCount
@@ -581,7 +715,10 @@ func TestServiceStartCrossInstanceLoserNeverStopsActivatedRuntime(t *testing.T) 
 			close(bothStarted)
 		}
 		startMu.Unlock()
-		<-releaseStarts
+		select {
+		case <-releaseStarts:
+		case <-ctx.Done():
+		}
 	}
 
 	aTime := fixture.clock.now
@@ -593,7 +730,11 @@ func TestServiceStartCrossInstanceLoserNeverStopsActivatedRuntime(t *testing.T) 
 	aActivated := make(chan struct{})
 	repository.transitionErrFor = func(params StartTransitionParams) error {
 		if params.StartedAt.Equal(bTime) {
-			<-aActivated
+			select {
+			case <-aActivated:
+			case <-time.After(time.Second):
+				return errors.New("timed out waiting for competing activation")
+			}
 			return ErrConcurrentTransition
 		}
 		return nil
@@ -621,22 +762,24 @@ func TestServiceStartCrossInstanceLoserNeverStopsActivatedRuntime(t *testing.T) 
 		&fakeClock{now: bTime},
 	)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	results := make(chan error, 2)
 	go func() {
-		_, err := serviceA.Start(context.Background(), validStartInput())
+		_, err := serviceA.Start(ctx, validStartInput())
 		results <- err
 	}()
 	go func() {
-		_, err := serviceB.Start(context.Background(), validStartInput())
+		_, err := serviceB.Start(ctx, validStartInput())
 		results <- err
 	}()
-	<-bothRead
+	waitForSignal(t, "both cross-instance reads", bothRead)
 	close(releaseReads)
-	<-bothStarted
+	waitForSignal(t, "both cross-instance realtime starts", bothStarted)
 	close(releaseStarts)
 
 	for range 2 {
-		if err := <-results; err != nil {
+		if err := waitForStartResult(t, results); err != nil {
 			t.Fatalf("cross-instance Start() error = %v", err)
 		}
 	}

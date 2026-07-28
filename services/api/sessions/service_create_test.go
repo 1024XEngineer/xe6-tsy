@@ -72,6 +72,11 @@ func TestNewServiceDefaultsStartInfrastructure(t *testing.T) {
 		t.Fatalf("CompensationTimeout = %v, want %v",
 			service.deps.CompensationTimeout, defaultCompensationTimeout)
 	}
+	if service.deps.StartReconciliationTimeout != defaultStartReconciliationTimeout {
+		t.Fatalf("StartReconciliationTimeout = %v, want %v",
+			service.deps.StartReconciliationTimeout,
+			defaultStartReconciliationTimeout)
+	}
 	if service.locks.locks == nil {
 		t.Fatal("keyed locker is not initialized")
 	}

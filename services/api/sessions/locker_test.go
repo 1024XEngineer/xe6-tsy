@@ -93,6 +93,74 @@ func TestKeyedLockerWaitHonorsDeadline(t *testing.T) {
 	assertKeyedLockerEmpty(t, &locker)
 }
 
+func TestKeyedLockerLiveWaiterProceedsAfterCancelledWaiter(t *testing.T) {
+	locker := newKeyedLocker()
+	unlockHolder, err := locker.lock(context.Background(), "vs_1")
+	if err != nil {
+		t.Fatalf("holder lock error = %v", err)
+	}
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancelledResult := make(chan error, 1)
+	go func() {
+		_, lockErr := locker.lock(cancelledCtx, "vs_1")
+		cancelledResult <- lockErr
+	}()
+	liveResult := make(chan struct {
+		unlock func()
+		err    error
+	}, 1)
+	go func() {
+		unlock, lockErr := locker.lock(context.Background(), "vs_1")
+		liveResult <- struct {
+			unlock func()
+			err    error
+		}{unlock: unlock, err: lockErr}
+	}()
+	waitForLockReferences(t, &locker, "vs_1", 3)
+	cancel()
+
+	select {
+	case lockErr := <-cancelledResult:
+		if !errors.Is(lockErr, context.Canceled) {
+			t.Fatalf("cancelled waiter error = %v, want context.Canceled", lockErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled waiter did not return")
+	}
+	unlockHolder()
+
+	select {
+	case result := <-liveResult:
+		if result.err != nil {
+			t.Fatalf("live waiter error = %v", result.err)
+		}
+		result.unlock()
+	case <-time.After(time.Second):
+		t.Fatal("live waiter did not acquire the released token")
+	}
+	assertKeyedLockerEmpty(t, &locker)
+}
+
+func TestKeyedLockerUnlockIsIdempotent(t *testing.T) {
+	locker := newKeyedLocker()
+	unlock, err := locker.lock(context.Background(), "vs_1")
+	if err != nil {
+		t.Fatalf("lock error = %v", err)
+	}
+
+	unlock()
+	unlock()
+
+	assertKeyedLockerEmpty(t, &locker)
+	nextUnlock, err := locker.lock(context.Background(), "vs_1")
+	if err != nil {
+		t.Fatalf("next lock error = %v", err)
+	}
+	nextUnlock()
+	assertKeyedLockerEmpty(t, &locker)
+}
+
 func assertKeyedLockerEmpty(t *testing.T, locker *keyedLocker) {
 	t.Helper()
 	locker.mu.Lock()

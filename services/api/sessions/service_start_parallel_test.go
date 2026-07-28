@@ -96,6 +96,13 @@ func TestServiceStartCancelledWhileWaitingForSameSession(t *testing.T) {
 		firstResult <- err
 	}()
 	waitForSignal(t, "first Realtime.Start", entered)
+	fixture.repository.mu.Lock()
+	getCallsBeforeWait := fixture.repository.getCalls
+	getOperationCallsBeforeWait := fixture.repository.getOperationCalls
+	beginCallsBeforeWait := fixture.repository.beginCalls
+	fixture.repository.mu.Unlock()
+	languageCallsBeforeWait := fixture.languages.calls
+	connectionCallsBeforeWait := fixture.connections.calls
 
 	waitCtx, cancel := context.WithCancel(context.Background())
 	secondResult := make(chan error, 1)
@@ -119,6 +126,30 @@ func TestServiceStartCancelledWhileWaitingForSameSession(t *testing.T) {
 	fixture.realtime.mu.Unlock()
 	if startCalls != 1 {
 		t.Fatalf("Realtime.Start calls = %d, want 1", startCalls)
+	}
+	fixture.repository.mu.Lock()
+	getCallsAfterWait := fixture.repository.getCalls
+	getOperationCallsAfterWait := fixture.repository.getOperationCalls
+	beginCallsAfterWait := fixture.repository.beginCalls
+	fixture.repository.mu.Unlock()
+	if getCallsAfterWait != getCallsBeforeWait ||
+		getOperationCallsAfterWait != getOperationCallsBeforeWait ||
+		beginCallsAfterWait != beginCallsBeforeWait ||
+		fixture.languages.calls != languageCallsBeforeWait ||
+		fixture.connections.calls != connectionCallsBeforeWait {
+		t.Fatalf(
+			"cancelled waiter changed dependencies: get %d->%d, get operation %d->%d, begin %d->%d, language %d->%d, WebRTC %d->%d",
+			getCallsBeforeWait,
+			getCallsAfterWait,
+			getOperationCallsBeforeWait,
+			getOperationCallsAfterWait,
+			beginCallsBeforeWait,
+			beginCallsAfterWait,
+			languageCallsBeforeWait,
+			fixture.languages.calls,
+			connectionCallsBeforeWait,
+			fixture.connections.calls,
+		)
 	}
 
 	close(release)

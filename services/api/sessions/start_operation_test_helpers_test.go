@@ -55,8 +55,18 @@ func (r *startOperationRepository) GetStartOperation(
 	if r.session.ID != sessionID || r.session.AccountID != accountID {
 		return StartOperation{}, ErrVoiceSessionNotFound
 	}
-	if r.operation == nil || r.operation.IdempotencyKey != idempotencyKey {
+	if r.operation == nil {
 		return StartOperation{}, ErrStartOperationNotFound
+	}
+	if r.operation.IdempotencyKey != idempotencyKey {
+		switch r.operation.Status {
+		case StartOperationPending,
+			StartOperationCompensating,
+			StartOperationCompensationFailed:
+			return StartOperation{}, ErrSessionStartInProgress
+		default:
+			return StartOperation{}, ErrStartOperationNotFound
+		}
 	}
 	return *r.operation, nil
 }

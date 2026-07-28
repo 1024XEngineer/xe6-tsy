@@ -99,6 +99,11 @@ Operation status semantics are fixed as follows:
 - `compensation_failed`: cleanup is uncertain and new pipelines are forbidden
   until a follow-up recovery flow resolves it.
 
+`Repository.GetStartOperation` enforces that conflict before readiness. When a
+different key owns a `pending`, `compensating`, or `compensation_failed`
+operation, the repository returns `ErrSessionStartInProgress`. A
+`compensated` operation no longer blocks a new key.
+
 Compensation claim recovery follows one ownership rule:
 
 - `pending` may transition to `compensating` with one ClaimID;
@@ -120,24 +125,25 @@ Repository.GetOwned
 -> if pending, require readiness and continue RealtimeLifecycle.Start
 -> if absent, require readiness and begin a durable StartOperation
 -> RealtimeLifecycle.Start
--> if AlreadyRunning, read the latest RuntimeSnapshot once
+-> after any uncertain error, read the latest RuntimeSnapshot once
 -> require matching RuntimeSnapshot.StartOperationID
 -> classify running, in-progress, stopped, or failed
 -> Repository.TransitionToActive(created -> active + operation completed)
 ```
 
-After `ErrRealtimeAlreadyRunning`, one runtime-state read reconciles the
-pending operation. A matching `listening`, `asr_processing`, `translating`,
-`tts_processing`, or `playing` runtime completes activation. Matching
-`starting` or `stopping` remains pending and returns the in-progress error.
-Matching `stopped` or `failed` remains pending and returns
-`ErrRealtimeStartFailed`, allowing the same key to retry. Missing or mismatched
-runtime ownership returns a concurrent transition without activation or Stop.
+Every uncertain Start result, including `ErrRealtimeAlreadyRunning`, provider
+errors, RPC timeouts, and connection loss, receives one runtime-state
+reconciliation. The read and any confirmed activation use a fresh bounded
+context that retains request values but does not inherit request cancellation.
 
-Other realtime Start errors leave the operation `pending` because the caller
-cannot know whether the media boundary accepted the request. Active-only
-runtime states are acceptable recovery evidence only when
-`RuntimeSnapshot.StartOperationID` matches the current durable operation.
+A matching `listening`, `asr_processing`, `translating`, `tts_processing`, or
+`playing` runtime completes activation. Matching `starting` or `stopping`
+remains pending and returns the in-progress error. A missing, `stopped`, or
+`failed` runtime remains pending and returns the original Start error, allowing
+the same key to retry. Missing or mismatched runtime ownership returns a
+concurrent transition without activation or Stop. Active-only runtime states
+are acceptable recovery evidence only when `RuntimeSnapshot.StartOperationID`
+matches the current durable operation.
 
 The realtime implementation reads a still-`created` session. Compensation is
 allowed only after the runtime is confirmed to belong to the current durable
@@ -157,13 +163,13 @@ locker, while different Session IDs proceed independently. Lock waits honor
 request cancellation and deadlines, and entries are reclaimed after the last
 holder or waiter releases its reference. Repository operations and
 compensation claims remain the cross-process consistency boundary.
-Compensation retains request trace values, ignores client cancellation, and
-uses an independent bounded timeout. Realtime Stop and terminal compensation
-persistence use separate bounded contexts: Stop may exhaust its deadline
-without preventing `CompleteStartCompensation` or `FailStartCompensation` from
-attempting the terminal write. If that fresh persistence attempt also fails,
-the operation remains `compensating` so the same persisted ClaimID can resume
-cleanup later.
+Compensation retains request trace values and ignores client cancellation only
+inside bounded steps. Claim, Realtime Stop, and terminal persistence each
+receive a fresh independent timeout. A slow Claim therefore cannot consume the
+Stop budget, and Stop may exhaust its deadline without preventing
+`CompleteStartCompensation` or `FailStartCompensation` from attempting the
+terminal write. If that fresh persistence attempt also fails, the operation
+remains `compensating` so the same persisted ClaimID can resume cleanup later.
 
 Every persisted Start lifecycle timestamp is obtained through one checked UTC
 clock boundary. A zero timestamp before operation creation prevents the

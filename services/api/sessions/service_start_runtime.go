@@ -11,36 +11,50 @@ func (s *Service) startPendingOperation(
 	input StartInput,
 	operation StartOperation,
 ) (VoiceSession, error) {
-	runtime, err := s.deps.Realtime.Start(ctx, StartRealtimeCommand{
+	runtime, startErr := s.deps.Realtime.Start(ctx, StartRealtimeCommand{
 		SessionID:   input.SessionID,
 		OperationID: operation.ID,
 		TraceID:     input.TraceID,
 		StartedBy:   input.StartedBy,
 	})
-	if errors.Is(err, ErrRealtimeAlreadyRunning) {
-		return s.reconcilePendingStartRuntime(ctx, input, operation)
+	if startErr == nil {
+		return s.continueOwnedStartRuntime(ctx, input, operation, runtime, nil)
 	}
-	if err != nil {
-		return VoiceSession{}, mapDependencyError(ctx, err, ErrRealtimeStartFailed)
+	if !errors.Is(startErr, ErrRealtimeAlreadyRunning) {
+		startErr = mapRealtimeStartError(ctx, startErr)
 	}
-	return s.continueOwnedStartRuntime(ctx, input, operation, runtime, true)
+	return s.reconcileUncertainStart(ctx, input, operation, startErr)
 }
 
-// reconcilePendingStartRuntime turns an uncertain AlreadyRunning response into
-// a decision based on the persisted operation identity, never SessionID alone.
-func (s *Service) reconcilePendingStartRuntime(
-	ctx context.Context,
+// reconcileUncertainStart gives an uncertain Start result one bounded,
+// cancellation-independent read to determine whether this operation owns a
+// runtime. The fresh context also carries a confirmed activation to storage.
+func (s *Service) reconcileUncertainStart(
+	parent context.Context,
 	input StartInput,
 	operation StartOperation,
+	startErr error,
 ) (VoiceSession, error) {
-	runtime, err := s.deps.Realtime.GetRuntimeState(ctx, input.SessionID)
+	reconcileCtx, reconcileCancel := s.startReconciliationContext(parent)
+	defer reconcileCancel()
+
+	runtime, err := s.deps.Realtime.GetRuntimeState(reconcileCtx, input.SessionID)
+	if errors.Is(err, ErrRuntimeSnapshotNotFound) {
+		return VoiceSession{}, startErr
+	}
 	if err != nil {
 		return VoiceSession{}, errors.Join(
-			ErrRealtimeAlreadyRunning,
-			mapDependencyError(ctx, err, ErrRealtimeStartFailed),
+			startErr,
+			mapRuntimeReconciliationError(reconcileCtx, err),
 		)
 	}
-	return s.continueOwnedStartRuntime(ctx, input, operation, runtime, false)
+	return s.continueOwnedStartRuntime(
+		reconcileCtx,
+		input,
+		operation,
+		runtime,
+		startErr,
+	)
 }
 
 func (s *Service) continueOwnedStartRuntime(
@@ -48,7 +62,7 @@ func (s *Service) continueOwnedStartRuntime(
 	input StartInput,
 	operation StartOperation,
 	runtime RuntimeSnapshot,
-	startAccepted bool,
+	uncertainErr error,
 ) (VoiceSession, error) {
 	if err := validateStartRuntimeOwnership(runtime, input.SessionID, operation.ID); err != nil {
 		return VoiceSession{}, err
@@ -67,8 +81,8 @@ func (s *Service) continueOwnedStartRuntime(
 	case RuntimeStarting, RuntimeStopping:
 		return VoiceSession{}, ErrRealtimeAlreadyRunning
 	case RuntimeStopped, RuntimeFailed:
-		if !startAccepted {
-			return VoiceSession{}, ErrRealtimeStartFailed
+		if uncertainErr != nil {
+			return VoiceSession{}, uncertainErr
 		}
 		return s.compensateStartedOperation(
 			ctx,
@@ -80,6 +94,28 @@ func (s *Service) continueOwnedStartRuntime(
 	default:
 		panic("validated runtime state was not classified")
 	}
+}
+
+func mapRealtimeStartError(ctx context.Context, err error) error {
+	mapped := mapDependencyError(ctx, err, ErrRealtimeStartFailed)
+	if !errors.Is(mapped, ErrRealtimeStartFailed) {
+		mapped = errors.Join(ErrRealtimeStartFailed, mapped)
+	}
+	if !errors.Is(mapped, err) {
+		mapped = errors.Join(mapped, err)
+	}
+	return mapped
+}
+
+func mapRuntimeReconciliationError(ctx context.Context, err error) error {
+	mapped := mapDependencyError(ctx, err, ErrRuntimeUnavailable)
+	if !errors.Is(mapped, ErrRuntimeUnavailable) {
+		mapped = errors.Join(ErrRuntimeUnavailable, mapped)
+	}
+	if !errors.Is(mapped, err) {
+		mapped = errors.Join(mapped, err)
+	}
+	return fmt.Errorf("reconcile realtime start runtime: %w", mapped)
 }
 
 func (s *Service) activateOwnedStartRuntime(

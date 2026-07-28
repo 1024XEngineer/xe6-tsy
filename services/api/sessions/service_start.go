@@ -306,15 +306,14 @@ func (s *Service) compensateStartedOperation(
 	claimID string,
 	originalErr error,
 ) (VoiceSession, error) {
-	stopCtx, stopCancel := s.compensationContext(parent)
-	defer stopCancel()
-
 	compensationAt, timeErr := s.nowUTC("claim start compensation")
 	if timeErr != nil {
 		return VoiceSession{}, errors.Join(originalErr, timeErr)
 	}
+
+	claimCtx, claimCancel := s.compensationContext(parent)
 	claim, claimErr := s.deps.Repository.ClaimStartCompensation(
-		stopCtx,
+		claimCtx,
 		ClaimStartCompensationParams{
 			SessionID:   input.SessionID,
 			AccountID:   input.AccountID,
@@ -323,6 +322,7 @@ func (s *Service) compensateStartedOperation(
 			ClaimedAt:   compensationAt,
 		},
 	)
+	claimCancel()
 	if claimErr != nil {
 		return VoiceSession{}, errors.Join(
 			originalErr,
@@ -330,9 +330,12 @@ func (s *Service) compensateStartedOperation(
 		)
 	}
 	if !claim.Claimed {
-		return s.resolveDeniedStartCompensation(stopCtx, input, originalErr)
+		resolveCtx, resolveCancel := s.compensationContext(parent)
+		defer resolveCancel()
+		return s.resolveDeniedStartCompensation(resolveCtx, input, originalErr)
 	}
 
+	stopCtx, stopCancel := s.compensationContext(parent)
 	runtime, stopErr := s.deps.Realtime.Stop(stopCtx, StopRealtimeCommand{
 		SessionID: input.SessionID,
 		TraceID:   input.TraceID,
@@ -344,6 +347,7 @@ func (s *Service) compensateStartedOperation(
 	} else {
 		stopErr = validateCompensatedRuntime(runtime, input.SessionID)
 	}
+	stopCancel()
 
 	persistCtx, persistCancel := s.compensationPersistenceContext(parent)
 	defer persistCancel()

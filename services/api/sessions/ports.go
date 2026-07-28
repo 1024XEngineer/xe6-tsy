@@ -155,8 +155,11 @@ type Repository interface {
 	Create(ctx context.Context, params CreateParams) (session VoiceSession, replayed bool, err error)
 	GetOwned(ctx context.Context, accountID string, sessionID string) (VoiceSession, error)
 	List(ctx context.Context, filter ListFilter) (ListPage, error)
-	// GetStartOperation returns ErrStartOperationNotFound when no operation is
-	// bound to the supplied owner, session, and idempotency key.
+	// GetStartOperation returns the matching request when present. If another
+	// key owns a pending, compensating, or compensation_failed operation for the
+	// Session, it returns ErrSessionStartInProgress before readiness is checked.
+	// A compensated operation does not block a new key and is reported as
+	// ErrStartOperationNotFound.
 	GetStartOperation(
 		ctx context.Context,
 		accountID string,

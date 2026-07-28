@@ -250,8 +250,14 @@ func TestServiceStartRejectsUnmetExternalPrerequisites(t *testing.T) {
 		{name: "WebRTC session mismatch", edit: func(f *startFixture) { f.connections.result.SessionID = "other" }, want: ErrWebRTCUnavailable},
 		{name: "WebRTC invalid state", edit: func(f *startFixture) { f.connections.result.ConnectionState = "unknown" }, want: ErrWebRTCUnavailable},
 		{name: "WebRTC dependency error", edit: func(f *startFixture) { f.connections.err = errDependency }, want: ErrWebRTCUnavailable},
-		{name: "realtime start error", edit: func(f *startFixture) { f.realtime.startErr = errDependency }, want: ErrRealtimeStartFailed},
-		{name: "realtime cancellation", edit: func(f *startFixture) { f.realtime.startErr = context.Canceled }, want: context.Canceled},
+		{name: "realtime start error", edit: func(f *startFixture) {
+			f.realtime.startErr = errDependency
+			f.realtime.getErr = ErrRuntimeSnapshotNotFound
+		}, want: ErrRealtimeStartFailed},
+		{name: "realtime cancellation", edit: func(f *startFixture) {
+			f.realtime.startErr = context.Canceled
+			f.realtime.getErr = ErrRuntimeSnapshotNotFound
+		}, want: context.Canceled},
 	}
 
 	for _, test := range tests {
@@ -476,30 +482,35 @@ func TestServiceStartSerializesConcurrentRequests(t *testing.T) {
 	fixture := newStartFixture(t, StatusCreated)
 	startEntered := make(chan struct{})
 	releaseStart := make(chan struct{})
-	fixture.realtime.startHook = func(context.Context) {
+	fixture.realtime.startHook = func(ctx context.Context) {
 		close(startEntered)
-		<-releaseStart
+		select {
+		case <-releaseStart:
+		case <-ctx.Done():
+		}
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	results := make(chan error, 2)
 	go func() {
-		_, err := fixture.service.Start(context.Background(), validStartInput())
+		_, err := fixture.service.Start(ctx, validStartInput())
 		results <- err
 	}()
-	<-startEntered
+	waitForSignal(t, "first serialized Realtime.Start", startEntered)
 
 	secondStarted := make(chan struct{})
 	go func() {
 		close(secondStarted)
-		_, err := fixture.service.Start(context.Background(), validStartInput())
+		_, err := fixture.service.Start(ctx, validStartInput())
 		results <- err
 	}()
-	<-secondStarted
+	waitForSignal(t, "second serialized Start goroutine", secondStarted)
 	waitForLockReferences(t, &fixture.service.locks, "vs_1", 2)
 	close(releaseStart)
 
 	for range 2 {
-		if err := <-results; err != nil {
+		if err := waitForStartResult(t, results); err != nil {
 			t.Fatalf("concurrent Start() error = %v", err)
 		}
 	}

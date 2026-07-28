@@ -10,19 +10,23 @@ import (
 	"time"
 )
 
-const defaultCompensationTimeout = 5 * time.Second
+const (
+	defaultCompensationTimeout        = 5 * time.Second
+	defaultStartReconciliationTimeout = 5 * time.Second
+)
 
 // Dependencies contains the boundaries required by Create, Query, and Start.
 // Logger is optional and defaults to a discard sink.
 type Dependencies struct {
-	Repository          Repository
-	LanguageConfigs     LanguageConfigReader
-	WebRTCConnections   WebRTCConnectionReader
-	Realtime            RealtimeLifecycle
-	IDs                 IDGenerator
-	Clock               Clock
-	Logger              *slog.Logger
-	CompensationTimeout time.Duration
+	Repository                 Repository
+	LanguageConfigs            LanguageConfigReader
+	WebRTCConnections          WebRTCConnectionReader
+	Realtime                   RealtimeLifecycle
+	IDs                        IDGenerator
+	Clock                      Clock
+	Logger                     *slog.Logger
+	CompensationTimeout        time.Duration
+	StartReconciliationTimeout time.Duration
 }
 
 // Service owns voice-session use cases without depending on HTTP or
@@ -57,6 +61,9 @@ func NewService(deps Dependencies) (*Service, error) {
 	}
 	if deps.CompensationTimeout <= 0 {
 		deps.CompensationTimeout = defaultCompensationTimeout
+	}
+	if deps.StartReconciliationTimeout <= 0 {
+		deps.StartReconciliationTimeout = defaultStartReconciliationTimeout
 	}
 	return &Service{deps: deps, locks: newKeyedLocker()}, nil
 }
@@ -172,4 +179,15 @@ func (s *Service) compensationContext(parent context.Context) (context.Context, 
 	// Compensation retains trace values but ignores client cancellation. Its
 	// independent timeout prevents a disconnected request from leaking cleanup.
 	return context.WithTimeout(context.WithoutCancel(parent), s.deps.CompensationTimeout)
+}
+
+func (s *Service) startReconciliationContext(
+	parent context.Context,
+) (context.Context, context.CancelFunc) {
+	// Reconciliation must outlive an uncertain Start request long enough to
+	// determine whether that operation owns a running media pipeline.
+	return context.WithTimeout(
+		context.WithoutCancel(parent),
+		s.deps.StartReconciliationTimeout,
+	)
 }

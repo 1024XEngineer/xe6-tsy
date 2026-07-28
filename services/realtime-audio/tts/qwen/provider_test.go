@@ -110,6 +110,32 @@ func TestFinishCancellationDoesNotCloseChunksWhileWorkerSends(t *testing.T) {
 	}
 }
 
+func TestProviderRejectsEmptyAudioResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	stream, err := provider.StartStream(context.Background(), tts.Request{Text: "hello", TargetLanguage: "en-US"})
+	if err != nil {
+		t.Fatalf("StartStream() error = %v", err)
+	}
+	if _, err := stream.Finish(context.Background()); !errors.Is(err, ErrNoAudio) {
+		t.Fatalf("Finish() error = %v, want ErrNoAudio", err)
+	}
+}
+
+func TestDownloadAudioRequiresAllowlistedHost(t *testing.T) {
+	stream := &stream{ctx: context.Background(), config: Config{HTTPClient: http.DefaultClient}}
+	if _, err := stream.downloadAudio("http://127.0.0.1:12345/audio"); !errors.Is(err, ErrAudioURLNotAllowed) {
+		t.Fatalf("downloadAudio() error = %v, want ErrAudioURLNotAllowed", err)
+	}
+}
+
 func ttsEvent(audio []byte) string {
 	data, _ := json.Marshal(generationResponse{Output: struct {
 		Audio struct {

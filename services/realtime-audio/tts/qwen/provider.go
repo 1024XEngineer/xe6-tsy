@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -20,9 +21,11 @@ import (
 const defaultModel = "qwen3-tts-flash"
 
 var (
-	ErrAPIKeyRequired   = errors.New("Qwen TTS API key is required")
-	ErrEndpointRequired = errors.New("Qwen TTS endpoint is required")
-	ErrModelRequired    = errors.New("Qwen TTS model is required")
+	ErrAPIKeyRequired     = errors.New("Qwen TTS API key is required")
+	ErrEndpointRequired   = errors.New("Qwen TTS endpoint is required")
+	ErrModelRequired      = errors.New("Qwen TTS model is required")
+	ErrNoAudio            = errors.New("Qwen TTS returned no audio")
+	ErrAudioURLNotAllowed = errors.New("Qwen TTS audio URL is not allowed")
 )
 
 // Config contains Qwen TTS HTTP and audio settings.
@@ -35,6 +38,8 @@ type Config struct {
 	SampleRate int
 	HTTPClient *http.Client
 	Timeout    time.Duration
+	// AudioURLAllowlist contains exact hostnames accepted for URL-only audio responses.
+	AudioURLAllowlist []string
 }
 
 // Provider starts Qwen TTS streaming requests.
@@ -215,6 +220,10 @@ func (s *stream) run() {
 			s.setError(err)
 			return
 		}
+		if len(data) == 0 {
+			s.setError(ErrNoAudio)
+			return
+		}
 		sequence = 1
 		totalBytes = int64(len(data))
 		select {
@@ -223,17 +232,27 @@ func (s *stream) run() {
 			return
 		}
 	}
+	if sequence == 0 {
+		s.setError(ErrNoAudio)
+		return
+	}
 	s.stateMu.Lock()
 	s.result = tts.Result{Provider: s.config.Provider, Model: s.config.Model, AudioDuration: pcmDuration(totalBytes, s.config.SampleRate)}
 	s.stateMu.Unlock()
 }
 
 func (s *stream) downloadAudio(rawURL string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(s.ctx, http.MethodGet, rawURL, nil)
+	u, err := url.Parse(rawURL)
+	if err != nil || u.User != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || !allowedAudioHost(u.Hostname(), s.config.AudioURLAllowlist) {
+		return nil, fmt.Errorf("%w: %q", ErrAudioURLNotAllowed, rawURL)
+	}
+	client := *s.config.HTTPClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	req, err := http.NewRequestWithContext(s.ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("create Qwen TTS audio request: %w", err)
 	}
-	resp, err := s.config.HTTPClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download Qwen TTS audio: %w", err)
 	}
@@ -246,6 +265,15 @@ func (s *stream) downloadAudio(rawURL string) ([]byte, error) {
 		return nil, fmt.Errorf("read Qwen TTS audio: %w", err)
 	}
 	return data, nil
+}
+
+func allowedAudioHost(host string, allowlist []string) bool {
+	for _, allowed := range allowlist {
+		if strings.EqualFold(strings.TrimSpace(allowed), host) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *stream) setError(err error) {

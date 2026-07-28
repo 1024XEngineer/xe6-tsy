@@ -101,9 +101,25 @@ resources were cleaned up.
 
 - Detail reads an owned persistent session and one live runtime snapshot.
 - State reads only the owned business state and polling runtime fields.
+- When a runtime snapshot is explicitly absent:
+  - `created` sessions are represented as `stopped` using `created_at`;
+  - `ended` sessions are represented as `stopped` using `ended_at`;
+  - `active` sessions return `runtime_state_unavailable`.
+- Runtime dependency failures and invalid snapshots are never synthesized as
+  `stopped`.
 - List returns `VoiceSessionListItem` values from persistent storage only.
 - List never calls realtime per row or in batch and never filters by runtime or
   connection state.
+
+`ErrRuntimeSnapshotNotFound` is an internal consumer-owned adapter boundary
+signal. Realtime adapters must translate provider-specific missing-runtime
+errors into this sentinel. For example, the adapter between
+`services/realtime-audio/session` and this package must map the provider's
+`ErrRuntimeNotFound` to `sessions.ErrRuntimeSnapshotNotFound`.
+
+The session service must not import provider packages or compare error strings.
+This sentinel is not an HTTP error code and must not be exposed directly to
+clients.
 
 ## Idempotency ownership
 
@@ -115,9 +131,12 @@ resources were cleaned up.
 
 ## Current slice
 
-This foundation defines domain models, errors, and ports only. Service
-orchestration, HTTP handlers, route registration, OpenAPI, repositories, and
-production adapters belong to follow-up reviewable slices. No stub in this
-package returns fabricated success data. It does not change `main.go`,
-`go.work`, shared authentication, shared error responses, or request-ID
-middleware.
+The service currently implements Create plus account-scoped Detail, State, and
+List queries. Detail and State combine an owned persistent session with one
+validated runtime snapshot; List remains persistent-only.
+
+Start, End, runtime-failure handling, HTTP handlers, route registration,
+OpenAPI, repositories, and production adapters belong to follow-up reviewable
+slices. No stub in this package returns fabricated success data. It does not
+change `main.go`, `go.work`, shared authentication, shared error responses, or
+request-ID middleware.

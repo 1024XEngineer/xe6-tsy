@@ -12,6 +12,7 @@ import (
 func TestNewServiceDependencies(t *testing.T) {
 	valid := Dependencies{
 		Repository: &fakeRepository{},
+		Realtime:   &fakeRealtimeLifecycle{},
 		IDs:        &fakeIDGenerator{id: "vs_1"},
 		Clock:      &fakeClock{now: time.Now()},
 	}
@@ -23,6 +24,7 @@ func TestNewServiceDependencies(t *testing.T) {
 	}{
 		{name: "valid dependencies"},
 		{name: "missing repository", edit: func(deps *Dependencies) { deps.Repository = nil }, wantErr: true, wantContext: "repository"},
+		{name: "missing realtime", edit: func(deps *Dependencies) { deps.Realtime = nil }, wantErr: true, wantContext: "realtime"},
 		{name: "missing ID generator", edit: func(deps *Dependencies) { deps.IDs = nil }, wantErr: true, wantContext: "ID generator"},
 		{name: "missing clock", edit: func(deps *Dependencies) { deps.Clock = nil }, wantErr: true, wantContext: "clock"},
 	}

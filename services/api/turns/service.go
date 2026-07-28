@@ -128,14 +128,6 @@ func (s *Service) ListHistory(ctx context.Context, accountID string, query recor
 	return s.repository.ListHistory(ctx, accountID, query)
 }
 
-// ReadFinalTurns implements the account-scoped contract used by outbound message creation.
-func (s *Service) ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error) {
-	if accountID == "" || len(turnIDs) == 0 || len(turnIDs) > recordsv1.MaxFinalTurnBatchSize {
-		return nil, ErrInvalidRequest
-	}
-	return s.repository.ReadFinalTurns(ctx, accountID, turnIDs)
-}
-
 func (s *Service) requireOwner(ctx context.Context, accountID, sessionID string) error {
 	if accountID == "" || sessionID == "" {
 		return ErrInvalidRequest

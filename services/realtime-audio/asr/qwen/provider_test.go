@@ -160,6 +160,16 @@ func TestWriteDoesNotCloseConnectionAfterSuccessfulWrite(t *testing.T) {
 	}
 }
 
+func TestWriteReturnsCancellationAfterWriteCompletes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	conn := &cancelDuringWriteConn{cancel: cancel}
+	stream := &stream{conn: conn}
+
+	if err := stream.write(ctx, map[string]any{"type": "session.finish"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("write() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestFinishDoesNotBlockOnUnconsumedPartialEvents(t *testing.T) {
 	const partialCount = eventBufferSize * 2
 	messages := make([][]byte, 0, partialCount+2)
@@ -236,6 +246,20 @@ func (c *trackingWriteConn) Close() error {
 	return nil
 }
 func (*trackingWriteConn) SetWriteDeadline(time.Time) error { return nil }
+
+type cancelDuringWriteConn struct {
+	cancel context.CancelFunc
+}
+
+func (c *cancelDuringWriteConn) WriteMessage(int, []byte) error {
+	c.cancel()
+	return nil
+}
+func (*cancelDuringWriteConn) ReadMessage() (int, []byte, error) {
+	return 0, nil, errors.New("not implemented")
+}
+func (*cancelDuringWriteConn) Close() error                     { return nil }
+func (*cancelDuringWriteConn) SetWriteDeadline(time.Time) error { return nil }
 
 type scriptedReadConn struct {
 	mu       sync.Mutex

@@ -272,6 +272,9 @@ func (s *stream) write(ctx context.Context, value any) error {
 		}
 		return err
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
 	return nil
 }
 

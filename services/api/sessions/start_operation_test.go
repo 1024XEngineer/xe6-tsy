@@ -219,6 +219,87 @@ func TestBeginStartOperationRejectsDifferentRequestForActiveSession(t *testing.T
 	}
 }
 
+func TestBeginStartOperationRejectsCompensatedOperationReplay(t *testing.T) {
+	repository := compensatedStartOperationRepository(t)
+
+	result, err := repository.BeginStartOperation(
+		context.Background(),
+		validBeginStartOperationParams(),
+	)
+	if !errors.Is(err, ErrIdempotencyKeyConflict) {
+		t.Fatalf("BeginStartOperation() error = %v, want ErrIdempotencyKeyConflict", err)
+	}
+	if result.Replayed {
+		t.Fatalf("BeginStartOperation() replayed = true")
+	}
+}
+
+func TestBeginStartOperationAllowsNewRequestAfterCompensation(t *testing.T) {
+	repository := compensatedStartOperationRepository(t)
+	params := validBeginStartOperationParams()
+	params.OperationID = "op_2"
+	params.IdempotencyKey = "start_2"
+	params.RequestHash = "hash_2"
+
+	result, err := repository.BeginStartOperation(context.Background(), params)
+	if err != nil {
+		t.Fatalf("BeginStartOperation() error = %v", err)
+	}
+	if result.Replayed ||
+		result.Operation.ID != "op_2" ||
+		result.Operation.Status != StartOperationPending {
+		t.Fatalf("BeginStartOperation() = %#v", result)
+	}
+}
+
+func TestBeginStartOperationRejectsCompensationFailedReplay(t *testing.T) {
+	repository := compensationFailedStartOperationRepository(t)
+
+	result, err := repository.BeginStartOperation(
+		context.Background(),
+		validBeginStartOperationParams(),
+	)
+	if !errors.Is(err, ErrSessionStartInProgress) {
+		t.Fatalf("BeginStartOperation() error = %v, want ErrSessionStartInProgress", err)
+	}
+	if result.Replayed {
+		t.Fatalf("BeginStartOperation() replayed = true")
+	}
+}
+
+func TestBeginStartOperationRejectsNewRequestWhileCompensationFailed(t *testing.T) {
+	repository := compensationFailedStartOperationRepository(t)
+	params := validBeginStartOperationParams()
+	params.OperationID = "op_2"
+	params.IdempotencyKey = "start_2"
+	params.RequestHash = "hash_2"
+
+	_, err := repository.BeginStartOperation(context.Background(), params)
+	if !errors.Is(err, ErrSessionStartInProgress) {
+		t.Fatalf("BeginStartOperation() error = %v, want ErrSessionStartInProgress", err)
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if repository.operation.ID != "op_1" ||
+		repository.operation.Status != StartOperationCompensationFailed {
+		t.Fatalf("operation = %#v", repository.operation)
+	}
+}
+
+func TestTransitionToActiveRejectsReplayHashConflict(t *testing.T) {
+	repository := activatedStartOperationRepository(t)
+	params := validStartOperationTransition(time.Date(2026, 7, 28, 10, 2, 0, 0, time.UTC))
+	params.RequestHash = "other"
+
+	_, replayed, err := repository.TransitionToActive(context.Background(), params)
+	if !errors.Is(err, ErrIdempotencyKeyConflict) {
+		t.Fatalf("TransitionToActive() error = %v, want ErrIdempotencyKeyConflict", err)
+	}
+	if replayed {
+		t.Fatal("TransitionToActive() replayed = true")
+	}
+}
+
 func TestStartOperationRepositoryDeniesCompensationAfterActivation(t *testing.T) {
 	repository := activatedStartOperationRepository(t)
 
@@ -399,6 +480,50 @@ func activatedStartOperationRepository(t *testing.T) *startOperationRepository {
 	)
 	if err != nil {
 		t.Fatalf("TransitionToActive() error = %v", err)
+	}
+	return repository
+}
+
+func compensatedStartOperationRepository(t *testing.T) *startOperationRepository {
+	t.Helper()
+	repository := pendingStartOperationRepository(t)
+	if claim, err := repository.ClaimStartCompensation(
+		context.Background(),
+		validClaimStartCompensationParams(),
+	); err != nil || !claim.Claimed {
+		t.Fatalf("ClaimStartCompensation() = %#v, %v", claim, err)
+	}
+	if err := repository.CompleteStartCompensation(
+		context.Background(),
+		CompleteStartCompensationParams{
+			SessionID: "vs_1", AccountID: "acct_1",
+			OperationID: "op_1", ClaimID: "claim_1",
+			CompletedAt: time.Date(2026, 7, 28, 10, 2, 0, 0, time.UTC),
+		},
+	); err != nil {
+		t.Fatalf("CompleteStartCompensation() error = %v", err)
+	}
+	return repository
+}
+
+func compensationFailedStartOperationRepository(t *testing.T) *startOperationRepository {
+	t.Helper()
+	repository := pendingStartOperationRepository(t)
+	if claim, err := repository.ClaimStartCompensation(
+		context.Background(),
+		validClaimStartCompensationParams(),
+	); err != nil || !claim.Claimed {
+		t.Fatalf("ClaimStartCompensation() = %#v, %v", claim, err)
+	}
+	if err := repository.FailStartCompensation(
+		context.Background(),
+		FailStartCompensationParams{
+			SessionID: "vs_1", AccountID: "acct_1",
+			OperationID: "op_1", ClaimID: "claim_1",
+			FailedAt: time.Date(2026, 7, 28, 10, 2, 0, 0, time.UTC),
+		},
+	); err != nil {
+		t.Fatalf("FailStartCompensation() error = %v", err)
 	}
 	return repository
 }

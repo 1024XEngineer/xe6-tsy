@@ -57,7 +57,18 @@ func (r *startOperationRepository) BeginStartOperation(
 		if r.operation.RequestHash != params.RequestHash {
 			return BeginStartOperationResult{}, ErrIdempotencyKeyConflict
 		}
-		return BeginStartOperationResult{Operation: *r.operation, Replayed: true}, nil
+		switch r.operation.Status {
+		case StartOperationPending,
+			StartOperationCompensating,
+			StartOperationCompleted:
+			return BeginStartOperationResult{Operation: *r.operation, Replayed: true}, nil
+		case StartOperationCompensated:
+			return BeginStartOperationResult{}, ErrIdempotencyKeyConflict
+		case StartOperationCompensationFailed:
+			return BeginStartOperationResult{}, ErrSessionStartInProgress
+		default:
+			return BeginStartOperationResult{}, ErrConcurrentTransition
+		}
 	}
 	if r.session.Status != StatusCreated {
 		return BeginStartOperationResult{}, ErrConcurrentTransition
@@ -194,9 +205,14 @@ func (r *startOperationRepository) TransitionToActive(
 		return VoiceSession{}, false, ErrVoiceSessionNotFound
 	}
 	if r.session.Status == StatusActive {
-		if r.operation != nil &&
-			r.operation.Status == StartOperationCompleted &&
-			r.operation.ID == params.OperationID &&
+		if r.operation == nil || r.operation.Status != StartOperationCompleted {
+			return VoiceSession{}, false, ErrConcurrentTransition
+		}
+		if r.operation.IdempotencyKey == params.IdempotencyKey &&
+			r.operation.RequestHash != params.RequestHash {
+			return VoiceSession{}, false, ErrIdempotencyKeyConflict
+		}
+		if r.operation.ID == params.OperationID &&
 			r.operation.MatchesRequest(params.IdempotencyKey, params.RequestHash) {
 			return r.session, true, nil
 		}

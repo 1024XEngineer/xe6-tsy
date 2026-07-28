@@ -1,6 +1,10 @@
 package session
 
-import "errors"
+import (
+	"errors"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+)
 
 var (
 	// ErrRuntimeNotFound reports that no runtime snapshot exists for a session.
@@ -16,6 +20,6 @@ var (
 )
 
 const (
-	ErrorCodeStartFailed = "realtime_start_failed"
-	ErrorCodeStopFailed  = "realtime_stop_failed"
+	ErrorCodeStartFailed = string(realtimev1.RuntimeErrorStartFailed)
+	ErrorCodeStopFailed  = string(realtimev1.RuntimeErrorStopFailed)
 )

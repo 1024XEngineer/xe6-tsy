@@ -52,6 +52,10 @@ func TestLifecycleRejectsInvalidRuntimeProgress(t *testing.T) {
 			name: "stale turn", current: RuntimeSnapshot{SessionID: "session-1", RuntimeState: RuntimeASRProcessing, CurrentTurnID: stringPointer("turn-1")},
 			update: ProcessingStateUpdate{SessionID: "session-1", RuntimeState: RuntimeTranslating, CurrentTurnID: stringPointer("turn-2")}, want: ErrRuntimeIdentityConflict,
 		},
+		{
+			name: "listening with empty identity pointers", current: RuntimeSnapshot{SessionID: "session-1", RuntimeState: RuntimePlaying, CurrentTurnID: stringPointer("turn-1"), CurrentPlaybackID: stringPointer("playback-1")},
+			update: ProcessingStateUpdate{SessionID: "session-1", RuntimeState: RuntimeListening, CurrentTurnID: stringPointer(""), CurrentPlaybackID: stringPointer("")}, want: ErrInvalidRuntimeUpdate,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

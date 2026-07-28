@@ -13,26 +13,16 @@ import (
 func TestConsumeFinalTurnIsIdempotentAndPreservesEvent(t *testing.T) {
 	repository := &fakeRepository{}
 	service := NewService(repository, fakeSessionOwners{}, nil)
-	participantID := "p_01"
 	confidence := 0.91
-	event := recordsv1.FinalTurnEvent{
-		EventID:               "evt_01",
-		TurnID:                "vt_01",
-		SessionID:             "vs_01",
-		ParticipantID:         &participantID,
-		SequenceNo:            4,
-		SourceLanguage:        "en-US",
-		TargetLanguage:        "zh-CN",
-		LanguageConfigVersion: 8,
-		SourceText:            "Hello",
-		TranslatedText:        "Ni hao",
-		SpeakerCode:           "speaker_01",
-		SpeakerConfidence:     &confidence,
-		AttributionStatus:     recordsv1.AttributionProvisional,
-		StartedAt:             time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC),
-		EndedAt:               time.Date(2026, 7, 24, 8, 0, 2, 0, time.UTC),
-		OccurredAt:            time.Date(2026, 7, 24, 8, 0, 3, 0, time.UTC),
-	}
+	event := validEvent()
+	event.SequenceNo = 4
+	event.LanguageConfigVersion = 8
+	event.SourceText = "Hello"
+	event.TranslatedText = "Ni hao"
+	event.SpeakerConfidence = &confidence
+	event.StartedAt = time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC)
+	event.EndedAt = time.Date(2026, 7, 24, 8, 0, 2, 0, time.UTC)
+	event.OccurredAt = time.Date(2026, 7, 24, 8, 0, 3, 0, time.UTC)
 
 	if err := service.ConsumeFinalTurn(context.Background(), event); err != nil {
 		t.Fatalf("first ConsumeFinalTurn() error = %v", err)
@@ -103,6 +93,37 @@ func TestConsumeFinalTurnAllowsPendingWithoutParticipant(t *testing.T) {
 
 	if err := service.ConsumeFinalTurn(context.Background(), event); err != nil {
 		t.Fatalf("ConsumeFinalTurn() error = %v", err)
+	}
+}
+
+func TestConsumeFinalTurnRejectsResolvedAttributionWithoutParticipant(t *testing.T) {
+	statuses := []recordsv1.AttributionStatus{
+		recordsv1.AttributionProvisional,
+		recordsv1.AttributionConfirmed,
+		recordsv1.AttributionCorrected,
+	}
+	for _, status := range statuses {
+		t.Run(string(status), func(t *testing.T) {
+			service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
+			event := validEvent()
+			event.ParticipantID = nil
+			event.AttributionStatus = status
+
+			if err := service.ConsumeFinalTurn(t.Context(), event); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
+			}
+		})
+	}
+}
+
+func TestConsumeFinalTurnRejectsEmptyParticipantID(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
+	event := validEvent()
+	emptyParticipantID := ""
+	event.ParticipantID = &emptyParticipantID
+
+	if err := service.ConsumeFinalTurn(t.Context(), event); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
 	}
 }
 
@@ -293,11 +314,10 @@ func (r *fakeRepository) ListHistory(context.Context, string, recordsv1.ListTurn
 	return r.historyResponse, nil
 }
 
-func (r *fakeRepository) ParticipantBelongsToSession(context.Context, string, string) (bool, error) {
-	return r.participantInSession, nil
-}
-
 func (r *fakeRepository) CorrectAttribution(_ context.Context, update AttributionUpdate) (recordsv1.VoiceTurn, error) {
+	if !r.participantInSession {
+		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
+	}
 	r.lastUpdate = update
 	updated := r.turn
 	updated.ParticipantID = &update.ParticipantID

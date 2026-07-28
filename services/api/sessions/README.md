@@ -107,6 +107,12 @@ transition fails after realtime startup, the service calls
 the expected-state condition, so a repeated matching start can return the
 stored active session while the same key with a different hash conflicts.
 
+Start operations for the same session are serialized by an in-process keyed
+locker whose entries are reclaimed after the last waiter releases them.
+Repository conditional transitions remain the cross-process consistency
+boundary. Compensation retains request trace values, ignores client
+cancellation, and uses an independent bounded timeout.
+
 ## End and recovery flow
 
 End-request idempotency belongs only to `EndIntent`; it is not repeated in
@@ -172,12 +178,13 @@ clients.
 
 ## Current slice
 
-The service currently implements Create plus account-scoped Detail, State, and
-List queries. Detail and State combine an owned persistent session with one
-validated runtime snapshot; List remains persistent-only.
+The service currently implements Create, account-scoped Detail, State, and
+List queries, plus idempotent Start orchestration with bounded compensation.
+Detail and State combine an owned persistent session with one validated runtime
+snapshot; List remains persistent-only.
 
-Start, End, runtime-failure handling, HTTP handlers, route registration,
-OpenAPI, repositories, and production adapters belong to follow-up reviewable
-slices. No stub in this package returns fabricated success data. It does not
-change `main.go`, `go.work`, shared authentication, shared error responses, or
+End, runtime-failure handling, HTTP handlers, route registration, OpenAPI,
+repositories, and production adapters belong to follow-up reviewable slices.
+No stub in this package returns fabricated success data. It does not change
+`main.go`, `go.work`, shared authentication, shared error responses, or
 request-ID middleware.

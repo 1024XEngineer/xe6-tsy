@@ -290,6 +290,13 @@ func TestPipelineTTSFailureReportsAcceptedFinalTurn(t *testing.T) {
 			usageSink: &recordingUsageSink{failService: "tts", err: usageErr},
 			audioSink: &recordingAudioSink{},
 		},
+		{
+			name:      "invalid usage",
+			wantErr:   ErrInvalidUsageFact,
+			config:    tts.FakeProviderConfig{Result: tts.Result{Model: "v1"}},
+			usageSink: &recordingUsageSink{},
+			audioSink: &recordingAudioSink{},
+		},
 	}
 
 	for _, test := range tests {

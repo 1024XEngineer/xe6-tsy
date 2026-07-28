@@ -228,6 +228,19 @@ func TestGetAndListOperationsEnforceOwnership(t *testing.T) {
 	if _, err := service.ListHistory(context.Background(), "acct_02", recordsv1.ListTurnsQuery{SessionID: "vs_01"}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ListHistory() error = %v, want forbidden", err)
 	}
+
+	if _, err := service.Get(context.Background(), "acct_01", "vt_01"); err != nil {
+		t.Fatalf("owner Get() error = %v", err)
+	}
+	if repository.findAccountID != "acct_01" {
+		t.Fatalf("Get() repository account = %q, want acct_01", repository.findAccountID)
+	}
+	if _, err := service.ListSession(context.Background(), "acct_01", "vs_01", recordsv1.ListTurnsQuery{}); err != nil {
+		t.Fatalf("owner ListSession() error = %v", err)
+	}
+	if repository.listAccountID != "acct_01" {
+		t.Fatalf("ListSession() repository account = %q, want acct_01", repository.listAccountID)
+	}
 }
 
 func TestReadFinalTurnsPassesAccountScope(t *testing.T) {

@@ -74,15 +74,17 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		return turn, ErrASRStreamRequired
 	}
 	defer stream.Close()
+	streamCtx, stopEvents := context.WithCancel(ctx)
+	defer stopEvents()
+	finalEvents := make(chan *asr.FinalResult, 1)
+	eventErrors := make(chan error, 1)
+	go collectFinalASREvent(streamCtx, stream.Events(), finalEvents, eventErrors)
 	for _, chunk := range request.AudioChunks {
 		if err := stream.PushAudio(ctx, append([]byte(nil), chunk...)); err != nil {
 			return turn, fmt.Errorf("push audio for Turn %s: %w", turn.ID, err)
 		}
 	}
 
-	finalEvents := make(chan *asr.FinalResult, 1)
-	eventErrors := make(chan error, 1)
-	go collectFinalASREvent(stream.Events(), finalEvents, eventErrors)
 	result, err := stream.Finish(ctx)
 	if err != nil {
 		return turn, fmt.Errorf("finish ASR stream: %w", err)
@@ -104,23 +106,35 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	return turn, nil
 }
 
-func collectFinalASREvent(events <-chan asr.Event, finalEvents chan<- *asr.FinalResult, eventErrors chan<- error) {
+func collectFinalASREvent(ctx context.Context, events <-chan asr.Event, finalEvents chan<- *asr.FinalResult, eventErrors chan<- error) {
 	var final *asr.FinalResult
-	for event := range events {
-		if event.Type != asr.EventFinal || event.Final == nil {
-			continue
-		}
-		if final != nil {
-			eventErrors <- ErrDuplicateASRFinal
+	var eventErr error
+	for {
+		select {
+		case <-ctx.Done():
+			eventErrors <- ctx.Err()
 			return
+		case event, ok := <-events:
+			if !ok {
+				if final != nil {
+					finalEvents <- final
+				}
+				eventErrors <- eventErr
+				return
+			}
+			if event.Type != asr.EventFinal || event.Final == nil {
+				continue
+			}
+			if final != nil {
+				if eventErr == nil {
+					eventErr = ErrDuplicateASRFinal
+				}
+				continue
+			}
+			result := *event.Final
+			final = &result
 		}
-		result := *event.Final
-		final = &result
 	}
-	if final != nil {
-		finalEvents <- final
-	}
-	eventErrors <- nil
 }
 
 func mergeFinalResult(event, finished asr.FinalResult) asr.FinalResult {
@@ -138,6 +152,18 @@ func mergeFinalResult(event, finished asr.FinalResult) asr.FinalResult {
 	}
 	if event.AudioDuration == 0 {
 		event.AudioDuration = finished.AudioDuration
+	}
+	if event.Confidence == 0 {
+		event.Confidence = finished.Confidence
+	}
+	if event.ProviderSpeakerID == "" {
+		event.ProviderSpeakerID = finished.ProviderSpeakerID
+	}
+	if event.AudioStart == 0 {
+		event.AudioStart = finished.AudioStart
+	}
+	if event.AudioEnd == 0 {
+		event.AudioEnd = finished.AudioEnd
 	}
 	if event.CostAmount == "" {
 		event.CostAmount = finished.CostAmount

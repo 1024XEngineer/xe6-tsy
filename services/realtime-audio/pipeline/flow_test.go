@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,6 +101,98 @@ func TestTurnProcessorPropagatesUsageAcceptanceFailure(t *testing.T) {
 		t.Fatalf("ProcessAudio() error = %v, want %v", err, wantErr)
 	}
 }
+
+func TestTurnProcessorConsumesASREventsBeforePushReturns(t *testing.T) {
+	stream := &pushEventStream{
+		events:      make(chan asr.Event),
+		partialSent: make(chan struct{}),
+		result:      asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"},
+	}
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: &pushEventProvider{stream: stream},
+		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active",
+			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}),
+		Pipeline: NewPipelineService(PipelineDependencies{
+			Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+			TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+			FinalTurns: &recordingFinalSink{},
+			Usage:      &recordingUsageSink{}, Audio: &recordingAudioSink{},
+		}),
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", AudioChunks: [][]byte{{1}}})
+		done <- err
+	}()
+	select {
+	case <-stream.partialSent:
+	case <-time.After(time.Second):
+		t.Fatal("ASR PushAudio blocked before event collector started")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ProcessAudio() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ProcessAudio() did not complete")
+	}
+}
+
+func TestMergeFinalResultPreservesFinishMetadata(t *testing.T) {
+	got := mergeFinalResult(
+		asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN"},
+		asr.FinalResult{Confidence: .95, ProviderSpeakerID: "speaker-1", AudioStart: time.Second, AudioEnd: 3 * time.Second},
+	)
+	if got.Confidence != .95 || got.ProviderSpeakerID != "speaker-1" || got.AudioStart != time.Second || got.AudioEnd != 3*time.Second {
+		t.Fatalf("merged metadata = %#v", got)
+	}
+}
+
+type pushEventProvider struct{ stream *pushEventStream }
+
+func (p *pushEventProvider) StartStream(context.Context, asr.StreamRequest) (asr.Stream, error) {
+	return p.stream, nil
+}
+
+type pushEventStream struct {
+	events      chan asr.Event
+	partialSent chan struct{}
+	partialOnce sync.Once
+	closeOnce   sync.Once
+	result      asr.FinalResult
+}
+
+func (s *pushEventStream) PushAudio(ctx context.Context, _ []byte) error {
+	var err error
+	s.partialOnce.Do(func() {
+		select {
+		case s.events <- asr.Event{Type: asr.EventPartial, Text: "你"}:
+			close(s.partialSent)
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	})
+	return err
+}
+
+func (s *pushEventStream) Events() <-chan asr.Event { return s.events }
+
+func (s *pushEventStream) Finish(context.Context) (asr.FinalResult, error) {
+	s.closeOnce.Do(func() { close(s.events) })
+	return s.result, nil
+}
+
+func (s *pushEventStream) Close() error {
+	s.closeOnce.Do(func() { close(s.events) })
+	return nil
+}
+
+var _ asr.Provider = (*pushEventProvider)(nil)
+var _ asr.Stream = (*pushEventStream)(nil)
 
 type rejectingUsageSink struct{ err error }
 

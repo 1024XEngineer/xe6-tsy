@@ -33,6 +33,7 @@ type Session struct {
 type PhoneChallenge struct {
 	ID        string
 	PhoneHash string
+	CodeHash  string
 	ExpiresAt time.Time
 	UsedAt    *time.Time
 	CreatedAt time.Time

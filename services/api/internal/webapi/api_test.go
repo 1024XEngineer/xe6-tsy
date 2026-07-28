@@ -34,6 +34,32 @@ func (tokenVerifierFake) VerifyAccessToken(_ context.Context, token string) (acc
 	return accounts.AccessTokenClaims{AccountID: "account-1", SessionID: "session-1"}, nil
 }
 
+type accountFake struct {
+	verifyPhoneCalled bool
+	verifyPhoneCtx    context.Context
+	verifyPhoneAnon   string
+}
+
+func (f *accountFake) CreateAnonymous(context.Context) (accounts.AuthResult, error) {
+	return accounts.AuthResult{}, domain.ErrNotImplemented
+}
+func (f *accountFake) CreatePhoneChallenge(context.Context, string) (string, error) {
+	return "", domain.ErrNotImplemented
+}
+func (f *accountFake) VerifyPhone(ctx context.Context, _, _, anonymousAccountID string) (accounts.AuthResult, error) {
+	f.verifyPhoneCalled = true
+	f.verifyPhoneCtx = ctx
+	f.verifyPhoneAnon = anonymousAccountID
+	return accounts.AuthResult{Account: accounts.Account{ID: "registered-account"}}, nil
+}
+func (f *accountFake) Refresh(context.Context, string) (accounts.Tokens, error) {
+	return accounts.Tokens{}, domain.ErrNotImplemented
+}
+func (f *accountFake) Logout(context.Context, string) error { return domain.ErrNotImplemented }
+func (f *accountFake) Me(context.Context, string) (accounts.Account, error) {
+	return accounts.Account{}, domain.ErrNotImplemented
+}
+
 func authenticate(request *http.Request) *http.Request {
 	request.Header.Set("Authorization", "Bearer access-token")
 	return request
@@ -322,5 +348,87 @@ func TestInvalidBearerTokenCannotReuseInjectedAccountContext(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuthenticateMiddlewareInjectsVerifiedIdentity(t *testing.T) {
+	var gotAccountID string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAccountID, _ = webapi.AccountIDFromContext(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := webapi.Authenticate(tokenVerifierFake{}, next)
+	request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	request.Header.Set("Authorization", "Bearer access-token")
+	request.Header.Set("X-Account-ID", "forged-account")
+	request = request.WithContext(webapi.WithAccountID(request.Context(), "preexisting-account"))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if gotAccountID != "account-1" {
+		t.Fatalf("account context = %q, want verified account", gotAccountID)
+	}
+}
+
+func TestPhoneBindingRequiresBearerForMatchingAnonymousAccount(t *testing.T) {
+	tests := []struct {
+		name       string
+		authorize  string
+		anonymous  string
+		wantStatus int
+		wantCall   bool
+	}{
+		{name: "missing token", anonymous: "account-1", wantStatus: http.StatusUnauthorized},
+		{name: "mismatched account", authorize: "Bearer access-token", anonymous: "other-account", wantStatus: http.StatusForbidden},
+		{name: "matching account", authorize: "Bearer access-token", anonymous: "account-1", wantStatus: http.StatusOK, wantCall: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &accountFake{}
+			handler := webapi.New(fake, usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/phone/login", strings.NewReader(`{"challenge_id":"challenge-1","code":"123456","anonymous_account_id":"`+test.anonymous+`"}`))
+			if test.authorize != "" {
+				request.Header.Set("Authorization", test.authorize)
+			}
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if fake.verifyPhoneCalled != test.wantCall {
+				t.Fatalf("VerifyPhone called = %v, want %v", fake.verifyPhoneCalled, test.wantCall)
+			}
+			if test.wantCall {
+				accountID, ok := webapi.AccountIDFromContext(fake.verifyPhoneCtx)
+				if !ok || accountID != "account-1" {
+					t.Fatalf("service context account = %q (ok=%v), want account-1", accountID, ok)
+				}
+				if fake.verifyPhoneAnon != "account-1" {
+					t.Fatalf("anonymous account ID = %q, want account-1", fake.verifyPhoneAnon)
+				}
+			}
+		})
+	}
+}
+
+func TestPhoneLoginWithoutAnonymousBindingRemainsPublic(t *testing.T) {
+	fake := &accountFake{}
+	handler := webapi.New(fake, usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/phone/login", strings.NewReader(`{"challenge_id":"challenge-1","code":"123456"}`))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if !fake.verifyPhoneCalled {
+		t.Fatal("public phone login did not reach account service")
 	}
 }

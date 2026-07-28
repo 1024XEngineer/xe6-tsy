@@ -74,7 +74,10 @@ type ClaimStartCompensationParams struct {
 }
 
 // ClaimStartCompensationResult is the only authority for destructive Start
-// compensation. Claimed=false always forbids Realtime.Stop.
+// compensation. A pending operation may be claimed once. If it is already
+// compensating, the same persisted ClaimID reclaims it idempotently so
+// interrupted cleanup can resume; a different ClaimID never takes ownership.
+// Claimed=false always forbids Realtime.Stop.
 type ClaimStartCompensationResult struct {
 	Claimed bool
 	Reason  StartCompensationClaimReason
@@ -153,6 +156,8 @@ type Repository interface {
 	GetOwned(ctx context.Context, accountID string, sessionID string) (VoiceSession, error)
 	List(ctx context.Context, filter ListFilter) (ListPage, error)
 	BeginStartOperation(ctx context.Context, params BeginStartOperationParams) (BeginStartOperationResult, error)
+	// ClaimStartCompensation is idempotent for the matching OperationID and
+	// persisted ClaimID while the operation remains compensating.
 	ClaimStartCompensation(ctx context.Context, params ClaimStartCompensationParams) (ClaimStartCompensationResult, error)
 	CompleteStartCompensation(ctx context.Context, params CompleteStartCompensationParams) error
 	FailStartCompensation(ctx context.Context, params FailStartCompensationParams) error

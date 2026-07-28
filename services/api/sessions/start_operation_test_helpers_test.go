@@ -106,15 +106,26 @@ func (r *startOperationRepository) ClaimStartCompensation(
 			Reason: StartCompensationOperationMismatch,
 		}, nil
 	}
-	if r.operation.Status != StartOperationPending {
+	switch r.operation.Status {
+	case StartOperationPending:
+		claimID := params.ClaimID
+		r.operation.Status = StartOperationCompensating
+		r.operation.CompensationClaimID = &claimID
+		r.operation.UpdatedAt = params.ClaimedAt
+		return ClaimStartCompensationResult{Claimed: true}, nil
+	case StartOperationCompensating:
+		if r.operation.CompensationClaimID != nil &&
+			*r.operation.CompensationClaimID == params.ClaimID {
+			return ClaimStartCompensationResult{Claimed: true}, nil
+		}
+		return ClaimStartCompensationResult{
+			Reason: StartCompensationOperationNotPending,
+		}, nil
+	default:
 		return ClaimStartCompensationResult{
 			Reason: StartCompensationOperationNotPending,
 		}, nil
 	}
-	r.operation.Status = StartOperationCompensating
-	r.operation.CompensationClaimID = &params.ClaimID
-	r.operation.UpdatedAt = params.ClaimedAt
-	return ClaimStartCompensationResult{Claimed: true}, nil
 }
 
 func (r *startOperationRepository) CompleteStartCompensation(

@@ -78,6 +78,16 @@ Operation status semantics are fixed as follows:
 - `compensation_failed`: cleanup is uncertain and new pipelines are forbidden
   until a follow-up recovery flow resolves it.
 
+Compensation claim recovery follows one ownership rule:
+
+- `pending` may transition to `compensating` with one ClaimID;
+- `compensating` may be reclaimed only by that persisted ClaimID;
+- reclaiming with the same ClaimID is idempotent and returns `Claimed=true`;
+- a different ClaimID receives `Claimed=false` and must not call
+  `RealtimeLifecycle.Stop`;
+- successful cleanup records `compensated`;
+- failed cleanup records `compensation_failed`.
+
 ## Start flow
 
 ```text

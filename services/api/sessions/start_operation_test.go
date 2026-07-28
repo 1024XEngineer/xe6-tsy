@@ -315,20 +315,8 @@ func TestStartOperationRepositoryDeniesCompensationAfterActivation(t *testing.T)
 	}
 }
 
-func TestStartOperationRepositoryGrantsOnlyOneCompensationClaim(t *testing.T) {
-	repository := pendingStartOperationRepository(t)
-
-	first, err := repository.ClaimStartCompensation(
-		context.Background(),
-		validClaimStartCompensationParams(),
-	)
-	if err != nil {
-		t.Fatalf("ClaimStartCompensation() error = %v", err)
-	}
-	if !first.Claimed {
-		t.Fatalf("first claim = %#v", first)
-	}
-
+func TestStartOperationRepositoryRejectsDifferentClaimOwner(t *testing.T) {
+	repository := claimedStartOperationRepository(t)
 	secondParams := validClaimStartCompensationParams()
 	secondParams.ClaimID = "claim_2"
 	second, err := repository.ClaimStartCompensation(context.Background(), secondParams)
@@ -337,6 +325,120 @@ func TestStartOperationRepositoryGrantsOnlyOneCompensationClaim(t *testing.T) {
 	}
 	if second.Claimed || second.Reason != StartCompensationOperationNotPending {
 		t.Fatalf("second claim = %#v", second)
+	}
+	assertStartOperationState(
+		t,
+		repository,
+		StartOperationCompensating,
+		"claim_1",
+		StatusCreated,
+	)
+}
+
+func TestStartOperationRepositoryAllowsClaimOwnerReentry(t *testing.T) {
+	repository := claimedStartOperationRepository(t)
+	firstClaimedAt := validClaimStartCompensationParams().ClaimedAt
+	params := validClaimStartCompensationParams()
+	params.ClaimedAt = firstClaimedAt.Add(time.Minute)
+
+	claim, err := repository.ClaimStartCompensation(context.Background(), params)
+	if err != nil {
+		t.Fatalf("ClaimStartCompensation() error = %v", err)
+	}
+	if !claim.Claimed {
+		t.Fatalf("claim = %#v", claim)
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if repository.operation.Status != StartOperationCompensating ||
+		repository.operation.CompensationClaimID == nil ||
+		*repository.operation.CompensationClaimID != "claim_1" ||
+		!repository.operation.UpdatedAt.Equal(firstClaimedAt) {
+		t.Fatalf("operation = %#v", repository.operation)
+	}
+}
+
+func TestStartOperationRepositoryCompletesAfterClaimOwnerReentry(t *testing.T) {
+	repository := reenteredStartOperationRepository(t)
+	completedAt := time.Date(2026, 7, 28, 10, 3, 0, 0, time.UTC)
+
+	err := repository.CompleteStartCompensation(
+		context.Background(),
+		CompleteStartCompensationParams{
+			SessionID: "vs_1", AccountID: "acct_1",
+			OperationID: "op_1", ClaimID: "claim_1", CompletedAt: completedAt,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CompleteStartCompensation() error = %v", err)
+	}
+	assertStartOperationState(
+		t,
+		repository,
+		StartOperationCompensated,
+		"claim_1",
+		StatusCreated,
+	)
+}
+
+func TestStartOperationRepositoryFailsAfterClaimOwnerReentry(t *testing.T) {
+	repository := reenteredStartOperationRepository(t)
+	failedAt := time.Date(2026, 7, 28, 10, 3, 0, 0, time.UTC)
+
+	err := repository.FailStartCompensation(
+		context.Background(),
+		FailStartCompensationParams{
+			SessionID: "vs_1", AccountID: "acct_1",
+			OperationID: "op_1", ClaimID: "claim_1", FailedAt: failedAt,
+		},
+	)
+	if err != nil {
+		t.Fatalf("FailStartCompensation() error = %v", err)
+	}
+	assertStartOperationState(
+		t,
+		repository,
+		StartOperationCompensationFailed,
+		"claim_1",
+		StatusCreated,
+	)
+}
+
+func TestStartOperationRepositoryRejectsClaimForTerminalStates(t *testing.T) {
+	tests := []struct {
+		name       string
+		repository func(*testing.T) *startOperationRepository
+		status     StartOperationStatus
+		claimID    string
+		session    Status
+	}{
+		{name: "completed", repository: activatedStartOperationRepository, status: StartOperationCompleted, session: StatusActive},
+		{name: "compensated", repository: compensatedStartOperationRepository, status: StartOperationCompensated, claimID: "claim_1", session: StatusCreated},
+		{name: "compensation failed", repository: compensationFailedStartOperationRepository, status: StartOperationCompensationFailed, claimID: "claim_1", session: StatusCreated},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := test.repository(t)
+
+			claim, err := repository.ClaimStartCompensation(
+				context.Background(),
+				validClaimStartCompensationParams(),
+			)
+			if err != nil {
+				t.Fatalf("ClaimStartCompensation() error = %v", err)
+			}
+			if claim.Claimed {
+				t.Fatalf("claim = %#v", claim)
+			}
+			assertStartOperationState(
+				t,
+				repository,
+				test.status,
+				test.claimID,
+				test.session,
+			)
+		})
 	}
 }
 
@@ -471,6 +573,60 @@ func pendingStartOperationRepository(t *testing.T) *startOperationRepository {
 	return repository
 }
 
+func claimedStartOperationRepository(t *testing.T) *startOperationRepository {
+	t.Helper()
+	repository := pendingStartOperationRepository(t)
+	claim, err := repository.ClaimStartCompensation(
+		context.Background(),
+		validClaimStartCompensationParams(),
+	)
+	if err != nil || !claim.Claimed {
+		t.Fatalf("ClaimStartCompensation() = %#v, %v", claim, err)
+	}
+	return repository
+}
+
+func reenteredStartOperationRepository(t *testing.T) *startOperationRepository {
+	t.Helper()
+	repository := claimedStartOperationRepository(t)
+	claim, err := repository.ClaimStartCompensation(
+		context.Background(),
+		validClaimStartCompensationParams(),
+	)
+	if err != nil || !claim.Claimed {
+		t.Fatalf("reentered ClaimStartCompensation() = %#v, %v", claim, err)
+	}
+	return repository
+}
+
+func assertStartOperationState(
+	t *testing.T,
+	repository *startOperationRepository,
+	wantStatus StartOperationStatus,
+	wantClaimID string,
+	wantSessionStatus Status,
+) {
+	t.Helper()
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if repository.operation.Status != wantStatus ||
+		repository.session.Status != wantSessionStatus {
+		t.Fatalf("operation = %#v, session = %#v", repository.operation, repository.session)
+	}
+	if wantClaimID == "" {
+		if repository.operation.CompensationClaimID != nil {
+			t.Fatalf("CompensationClaimID = %q, want nil",
+				*repository.operation.CompensationClaimID)
+		}
+		return
+	}
+	if repository.operation.CompensationClaimID == nil ||
+		*repository.operation.CompensationClaimID != wantClaimID {
+		t.Fatalf("CompensationClaimID = %#v, want %q",
+			repository.operation.CompensationClaimID, wantClaimID)
+	}
+}
+
 func activatedStartOperationRepository(t *testing.T) *startOperationRepository {
 	t.Helper()
 	repository := pendingStartOperationRepository(t)
@@ -486,13 +642,7 @@ func activatedStartOperationRepository(t *testing.T) *startOperationRepository {
 
 func compensatedStartOperationRepository(t *testing.T) *startOperationRepository {
 	t.Helper()
-	repository := pendingStartOperationRepository(t)
-	if claim, err := repository.ClaimStartCompensation(
-		context.Background(),
-		validClaimStartCompensationParams(),
-	); err != nil || !claim.Claimed {
-		t.Fatalf("ClaimStartCompensation() = %#v, %v", claim, err)
-	}
+	repository := claimedStartOperationRepository(t)
 	if err := repository.CompleteStartCompensation(
 		context.Background(),
 		CompleteStartCompensationParams{
@@ -508,13 +658,7 @@ func compensatedStartOperationRepository(t *testing.T) *startOperationRepository
 
 func compensationFailedStartOperationRepository(t *testing.T) *startOperationRepository {
 	t.Helper()
-	repository := pendingStartOperationRepository(t)
-	if claim, err := repository.ClaimStartCompensation(
-		context.Background(),
-		validClaimStartCompensationParams(),
-	); err != nil || !claim.Claimed {
-		t.Fatalf("ClaimStartCompensation() = %#v, %v", claim, err)
-	}
+	repository := claimedStartOperationRepository(t)
 	if err := repository.FailStartCompensation(
 		context.Background(),
 		FailStartCompensationParams{

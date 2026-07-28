@@ -16,15 +16,20 @@ const maximumRecordPageSize = 100
 // ParticipantReadRepository applies stable participant ordering and binds cursors to the
 // authenticated account and session supplied by the service layer.
 type ParticipantReadRepository struct {
-	pool    *pgxpool.Pool
-	cursors *CursorCodec
+	pool     *pgxpool.Pool
+	cursors  *CursorCodec
+	sessions AccountSessionScopeReader
 }
 
-func NewParticipantReadRepository(pool *pgxpool.Pool, cursors *CursorCodec) (*ParticipantReadRepository, error) {
-	if pool == nil || cursors == nil {
-		return nil, fmt.Errorf("create participant reader: pool and cursor codec are required")
+func NewParticipantReadRepository(
+	pool *pgxpool.Pool,
+	cursors *CursorCodec,
+	sessions AccountSessionScopeReader,
+) (*ParticipantReadRepository, error) {
+	if pool == nil || cursors == nil || sessions == nil {
+		return nil, fmt.Errorf("create participant reader: pool, cursor codec, and session scope reader are required")
 	}
-	return &ParticipantReadRepository{pool: pool, cursors: cursors}, nil
+	return &ParticipantReadRepository{pool: pool, cursors: cursors, sessions: sessions}, nil
 }
 
 func (r *ParticipantReadRepository) List(
@@ -35,6 +40,10 @@ func (r *ParticipantReadRepository) List(
 ) (recordsv1.ParticipantListResponse, error) {
 	if accountID == "" || sessionID == "" || !validRecordPageSize(query.Limit) {
 		return recordsv1.ParticipantListResponse{}, participants.ErrInvalidRequest
+	}
+	ownedSessionIDs, err := r.sessions.SessionIDsForAccount(ctx, accountID)
+	if err != nil {
+		return recordsv1.ParticipantListResponse{}, fmt.Errorf("read account session scope: %w", err)
 	}
 
 	scope := participantCursorScope(accountID, sessionID, query.Limit)
@@ -49,6 +58,7 @@ func (r *ParticipantReadRepository) List(
 
 	rows, err := r.pool.Query(ctx, listParticipantsQuery,
 		sessionID,
+		ownedSessionIDs,
 		after.SpeakerCode,
 		after.ID,
 		query.Limit+1,
@@ -107,9 +117,10 @@ SELECT id, session_id, speaker_code, display_name, provider_speaker_id,
        voice_profile_id, confidence, created_at, updated_at
 FROM voice_session_participants
 WHERE session_id = $1
-  AND ($2 = '' OR (speaker_code, id) > ($2, $3))
+  AND session_id = ANY($2::text[])
+  AND ($3 = '' OR (speaker_code, id) > ($3, $4))
 ORDER BY speaker_code ASC, id ASC
-LIMIT $4`
+LIMIT $5`
 
 type participantReadScanner interface {
 	Scan(dest ...any) error

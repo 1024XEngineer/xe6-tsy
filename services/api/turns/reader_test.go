@@ -3,6 +3,7 @@ package turns
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -34,6 +35,29 @@ func TestReadFinalTurnsRejectsInvalidInput(t *testing.T) {
 				t.Fatalf("ReadFinalTurns() repository calls = %d, want 0", repository.readCalls)
 			}
 		})
+	}
+}
+
+func TestReadFinalTurnsAcceptsMaximumBatch(t *testing.T) {
+	turnIDs := make([]string, recordsv1.MaxFinalTurnBatchSize)
+	snapshots := make([]recordsv1.FinalTurnSnapshot, len(turnIDs))
+	for index := range turnIDs {
+		turnIDs[index] = fmt.Sprintf("vt_%03d", index)
+		snapshots[index] = recordsv1.FinalTurnSnapshot{TurnID: turnIDs[index]}
+	}
+
+	reader := NewFinalTurnReader(&fakeRepository{snapshots: snapshots})
+	got, err := reader.ReadFinalTurns(context.Background(), "acct_01", turnIDs)
+	if err != nil {
+		t.Fatalf("ReadFinalTurns() error = %v", err)
+	}
+	if len(got) != recordsv1.MaxFinalTurnBatchSize {
+		t.Fatalf("ReadFinalTurns() returned %d snapshots, want %d", len(got), recordsv1.MaxFinalTurnBatchSize)
+	}
+	for index, snapshot := range got {
+		if snapshot.TurnID != turnIDs[index] {
+			t.Fatalf("snapshot[%d].TurnID = %q, want %q", index, snapshot.TurnID, turnIDs[index])
+		}
 	}
 }
 

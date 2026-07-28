@@ -3,7 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	asrqwen "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr/qwen"
@@ -56,6 +58,9 @@ func buildASR(config ASRConfig, offline asr.Provider) (asr.Provider, error) {
 		}
 		return offline, nil
 	case ProviderAliyun:
+		if err := validateASRConfig(config); err != nil {
+			return nil, err
+		}
 		return asrqwen.NewProvider(asrqwen.Config{
 			APIKey: config.APIKey, BaseURL: config.BaseURL, WebSocketURL: config.WebSocketURL,
 			Model: config.Model, Provider: string(ProviderAliyun), SampleRate: config.SampleRate,
@@ -64,6 +69,19 @@ func buildASR(config ASRConfig, offline asr.Provider) (asr.Provider, error) {
 	default:
 		return nil, unsupportedProvider(config.Provider)
 	}
+}
+
+func validateASRConfig(config ASRConfig) error {
+	if config.SampleRate != 0 && config.SampleRate != 8000 && config.SampleRate != 16000 {
+		return fmt.Errorf("%w: ASR_SAMPLE_RATE=%d", ErrInvalidEnvironmentValue, config.SampleRate)
+	}
+	if math.IsNaN(config.VADThreshold) || math.IsInf(config.VADThreshold, 0) || config.VADThreshold < -1 || config.VADThreshold > 1 {
+		return fmt.Errorf("%w: ASR_VAD_THRESHOLD=%v", ErrInvalidEnvironmentValue, config.VADThreshold)
+	}
+	if config.SilenceDuration != 0 && (config.SilenceDuration < 200*time.Millisecond || config.SilenceDuration > 6000*time.Millisecond) {
+		return fmt.Errorf("%w: ASR_SILENCE_DURATION_MS=%d", ErrInvalidEnvironmentValue, config.SilenceDuration.Milliseconds())
+	}
+	return nil
 }
 
 func buildTranslation(config TranslationConfig, offline translate.Provider) (translate.Provider, error) {

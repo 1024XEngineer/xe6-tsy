@@ -235,6 +235,22 @@ func TestReadFinalTurnsPassesAccountScope(t *testing.T) {
 	}
 }
 
+func TestListHistoryRejectsReverseTimeRange(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakeSessionOwners{}, nil)
+	from := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
+	to := from.Add(-time.Second)
+
+	_, err := service.ListHistory(context.Background(), "acct_01", recordsv1.ListTurnsQuery{
+		Limit:       20,
+		CreatedFrom: &from,
+		CreatedTo:   &to,
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("ListHistory() error = %v, want invalid request", err)
+	}
+}
+
 func validEvent() recordsv1.FinalTurnEvent {
 	participantID := "p_01"
 	return recordsv1.FinalTurnEvent{

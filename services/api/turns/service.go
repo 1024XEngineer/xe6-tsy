@@ -120,7 +120,7 @@ func (s *Service) CorrectAttribution(ctx context.Context, accountID, turnID stri
 }
 
 func (s *Service) ListHistory(ctx context.Context, accountID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
-	if accountID == "" {
+	if accountID == "" || (query.CreatedFrom != nil && query.CreatedTo != nil && query.CreatedFrom.After(*query.CreatedTo)) {
 		return recordsv1.VoiceTurnListResponse{}, ErrInvalidRequest
 	}
 	if query.SessionID != "" {

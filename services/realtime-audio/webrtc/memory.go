@@ -36,6 +36,76 @@ type connectionRecord struct {
 	endOfCandidates bool
 }
 
+type transportStateGate struct {
+	mu       sync.Mutex
+	ready    bool
+	rejected bool
+	pending  []transportStateUpdate
+	apply    ConnectionStateHandler
+}
+
+type transportStateUpdate struct {
+	state     realtimev1.ConnectionState
+	updatedAt time.Time
+}
+
+func newTransportStateGate(apply ConnectionStateHandler) *transportStateGate {
+	return &transportStateGate{apply: apply}
+}
+
+func (g *transportStateGate) Notify(state realtimev1.ConnectionState, updatedAt time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	if g.rejected {
+		g.mu.Unlock()
+		return
+	}
+	if !g.ready {
+		g.pending = append(g.pending, transportStateUpdate{state: state, updatedAt: updatedAt})
+		g.mu.Unlock()
+		return
+	}
+	apply := g.apply
+	g.mu.Unlock()
+	if apply != nil {
+		apply(state, updatedAt)
+	}
+}
+
+func (g *transportStateGate) Activate() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	if g.rejected {
+		g.mu.Unlock()
+		return
+	}
+	g.ready = true
+	pending := append([]transportStateUpdate(nil), g.pending...)
+	g.pending = nil
+	apply := g.apply
+	g.mu.Unlock()
+	if apply == nil {
+		return
+	}
+	for _, update := range pending {
+		apply(update.state, update.updatedAt)
+	}
+}
+
+func (g *transportStateGate) Reject() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.rejected = true
+	g.pending = nil
+	g.mu.Unlock()
+}
+
 // NewMemoryConnectionManager creates an empty manager with session-isolated connection state.
 func NewMemoryConnectionManager(factory ConnectionTransportFactory) *MemoryConnectionManager {
 	return &MemoryConnectionManager{
@@ -81,32 +151,26 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 	}
 
 	connectionID := m.nextConnectionID()
-	transport, err := m.factory.Create(ctx, request.SessionID, connectionID)
+	stateGate := newTransportStateGate(func(state realtimev1.ConnectionState, updatedAt time.Time) {
+		_, _ = m.ApplyState(context.Background(), request.SessionID, connectionID, state, updatedAt)
+	})
+	transport, err := m.factory.Create(ctx, request.SessionID, connectionID, stateGate.Notify)
 	if err != nil {
+		stateGate.Reject()
 		connections.mu.Unlock()
 		return Connection{}, fmt.Errorf("create WebRTC transport: %w", err)
 	}
 	if transport == nil {
+		stateGate.Reject()
 		connections.mu.Unlock()
 		return Connection{}, fmt.Errorf("create WebRTC transport: %w", ErrTransportRequired)
-	}
-	answer, err := transport.Answer(ctx, request.Offer)
-	if err != nil {
-		connections.mu.Unlock()
-		closeErr := transport.Close(context.WithoutCancel(ctx))
-		return Connection{}, errors.Join(fmt.Errorf("create SDP answer: %w", err), closeErr)
-	}
-	if err := validateAnswer(answer); err != nil {
-		connections.mu.Unlock()
-		closeErr := transport.Close(context.WithoutCancel(ctx))
-		return Connection{}, errors.Join(fmt.Errorf("validate SDP answer: %w", err), closeErr)
 	}
 	connection := Connection{
 		ID:        connectionID,
 		SessionID: request.SessionID, IdempotencyKey: request.IdempotencyKey,
-		Offer: request.Offer, Answer: answer, State: realtimev1.ConnectionConnecting, CreatedAt: request.CreatedAt,
+		Offer: request.Offer, State: realtimev1.ConnectionConnecting, CreatedAt: request.CreatedAt,
 	}
-	connections.byID[connection.ID] = &connectionRecord{
+	record := &connectionRecord{
 		connection: connection,
 		snapshot: realtimev1.ConnectionSnapshot{
 			SessionID: connection.SessionID, ConnectionID: connection.ID,
@@ -114,10 +178,39 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 		},
 		transport: transport, candidateIDs: make(map[string]ICECandidate),
 	}
+	connections.byID[connection.ID] = record
 	connections.currentID = connection.ID
 	connections.byIdempotencyKey[connection.IdempotencyKey] = connection.ID
+	answer, err := transport.Answer(ctx, request.Offer)
+	if err != nil {
+		removeReservedConnection(connections, connectionID, request.IdempotencyKey)
+		stateGate.Reject()
+		connections.mu.Unlock()
+		closeErr := transport.Close(context.WithoutCancel(ctx))
+		return Connection{}, errors.Join(fmt.Errorf("create SDP answer: %w", err), closeErr)
+	}
+	if err := validateAnswer(answer); err != nil {
+		removeReservedConnection(connections, connectionID, request.IdempotencyKey)
+		stateGate.Reject()
+		connections.mu.Unlock()
+		closeErr := transport.Close(context.WithoutCancel(ctx))
+		return Connection{}, errors.Join(fmt.Errorf("validate SDP answer: %w", err), closeErr)
+	}
+	record.connection.Answer = answer
+	connections.mu.Unlock()
+	stateGate.Activate()
+	connections.mu.Lock()
+	connection = record.connection
 	connections.mu.Unlock()
 	return connection, nil
+}
+
+func removeReservedConnection(connections *sessionConnections, connectionID, idempotencyKey string) {
+	delete(connections.byID, connectionID)
+	delete(connections.byIdempotencyKey, idempotencyKey)
+	if connections.currentID == connectionID {
+		connections.currentID = ""
+	}
 }
 
 // GetCurrent returns the latest connection generation retained for a session.

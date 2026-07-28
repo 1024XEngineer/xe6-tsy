@@ -20,9 +20,13 @@ type ConnectionTransport interface {
 	Close(ctx context.Context) error
 }
 
+// ConnectionStateHandler reports transport state changes to the connection owner.
+// The manager remains the only writer of the session-scoped ConnectionSnapshot.
+type ConnectionStateHandler func(state realtimev1.ConnectionState, updatedAt time.Time)
+
 // ConnectionTransportFactory creates session-bound transport handles for a connection manager.
 type ConnectionTransportFactory interface {
-	Create(ctx context.Context, sessionID, connectionID string) (ConnectionTransport, error)
+	Create(ctx context.Context, sessionID, connectionID string, onState ConnectionStateHandler) (ConnectionTransport, error)
 }
 
 // ConnectionManager owns connection metadata, transport handles, and idempotent candidate acceptance.

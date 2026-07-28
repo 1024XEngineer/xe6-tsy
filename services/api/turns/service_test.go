@@ -194,12 +194,12 @@ func TestCorrectAttributionRejectsInvalidTarget(t *testing.T) {
 	}{
 		{name: "invalid status", accountID: "acct_01", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionPending}, wantErr: ErrInvalidAttribution},
 		{name: "participant belongs to another session", accountID: "acct_01", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionConfirmed}, wantErr: ErrInvalidAttribution},
-		{name: "cross account", accountID: "acct_02", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionConfirmed}, participant: true, wantErr: ErrForbidden},
+		{name: "cross account", accountID: "acct_02", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionConfirmed}, participant: true, wantErr: ErrTurnNotFound},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			repository := &fakeRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: test.participant}
+			repository := &fakeRepository{ownedAccountID: "acct_01", turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: test.participant}
 			service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
 
 			_, err := service.CorrectAttribution(context.Background(), test.accountID, "vt_01", test.request)
@@ -212,14 +212,15 @@ func TestCorrectAttributionRejectsInvalidTarget(t *testing.T) {
 
 func TestGetAndListOperationsEnforceOwnership(t *testing.T) {
 	repository := &fakeRepository{
+		ownedAccountID:  "acct_01",
 		turn:            recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
 		listResponse:    recordsv1.VoiceTurnListResponse{Items: []recordsv1.VoiceTurn{{ID: "vt_01"}}},
 		historyResponse: recordsv1.VoiceTurnListResponse{Items: []recordsv1.VoiceTurn{{ID: "vt_01"}}},
 	}
 	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
 
-	if _, err := service.Get(context.Background(), "acct_02", "vt_01"); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("Get() error = %v, want forbidden", err)
+	if _, err := service.Get(context.Background(), "acct_02", "vt_01"); !errors.Is(err, ErrTurnNotFound) {
+		t.Fatalf("Get() error = %v, want not found", err)
 	}
 	if _, err := service.ListSession(context.Background(), "acct_02", "vs_01", recordsv1.ListTurnsQuery{}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ListSession() error = %v, want forbidden", err)
@@ -274,6 +275,9 @@ type fakeRepository struct {
 	lastUpdate           AttributionUpdate
 	snapshots            []recordsv1.FinalTurnSnapshot
 	readAccountID        string
+	findAccountID        string
+	listAccountID        string
+	ownedAccountID       string
 }
 
 func (r *fakeRepository) StoreFinalTurn(_ context.Context, event recordsv1.FinalTurnEvent) error {
@@ -302,11 +306,16 @@ func (r *fakeRepository) StoreFinalTurn(_ context.Context, event recordsv1.Final
 	return nil
 }
 
-func (r *fakeRepository) ListSession(context.Context, string, recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+func (r *fakeRepository) ListSession(_ context.Context, accountID, _ string, _ recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+	r.listAccountID = accountID
 	return r.listResponse, nil
 }
 
-func (r *fakeRepository) Find(context.Context, string) (recordsv1.VoiceTurn, error) {
+func (r *fakeRepository) Find(_ context.Context, accountID, _ string) (recordsv1.VoiceTurn, error) {
+	r.findAccountID = accountID
+	if r.ownedAccountID != "" && accountID != r.ownedAccountID {
+		return recordsv1.VoiceTurn{}, ErrTurnNotFound
+	}
 	return r.turn, nil
 }
 

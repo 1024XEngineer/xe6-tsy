@@ -171,6 +171,9 @@ func TestPipelineFinalTurnFailureStopsLaterStages(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("HandleASRFinal() error = %v, want %v", err, wantErr)
 	}
+	if errors.Is(err, ErrFinalTurnAccepted) {
+		t.Fatalf("HandleASRFinal() error = %v, did not durably accept FinalTurn", err)
+	}
 	if len(finalSink.events) != 1 {
 		t.Fatalf("FinalTurn attempts = %d, want 1", len(finalSink.events))
 	}
@@ -201,6 +204,9 @@ func TestPipelineTranslationUsageFailureKeepsAcceptedFinalTurn(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("HandleASRFinal() error = %v, want %v", err, wantErr)
 	}
+	if !errors.Is(err, ErrFinalTurnAccepted) {
+		t.Fatalf("HandleASRFinal() error = %v, want ErrFinalTurnAccepted", err)
+	}
 	if len(finalSink.events) != 1 {
 		t.Fatalf("accepted FinalTurns = %d, want 1", len(finalSink.events))
 	}
@@ -212,13 +218,46 @@ func TestPipelineTranslationUsageFailureKeepsAcceptedFinalTurn(t *testing.T) {
 	}
 }
 
-func TestPipelineTTSFailureDoesNotRepublishFinalTurn(t *testing.T) {
+func TestPipelineTTSFailureReportsAcceptedFinalTurn(t *testing.T) {
+	startErr := errors.New("start failed")
+	audioErr := errors.New("audio failed")
+	finishErr := errors.New("finish failed")
+	usageErr := errors.New("usage failed")
 	tests := []struct {
-		name   string
-		config tts.FakeProviderConfig
+		name      string
+		config    tts.FakeProviderConfig
+		usageSink *recordingUsageSink
+		audioSink *recordingAudioSink
+		wantErr   error
 	}{
-		{name: "start", config: tts.FakeProviderConfig{StartErr: errors.New("start failed")}},
-		{name: "finish", config: tts.FakeProviderConfig{FinishErr: errors.New("finish failed")}},
+		{
+			name:      "start",
+			wantErr:   startErr,
+			config:    tts.FakeProviderConfig{StartErr: startErr},
+			usageSink: &recordingUsageSink{},
+			audioSink: &recordingAudioSink{},
+		},
+		{
+			name:      "audio",
+			wantErr:   audioErr,
+			config:    tts.FakeProviderConfig{Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1}}}},
+			usageSink: &recordingUsageSink{},
+			audioSink: &recordingAudioSink{err: audioErr},
+		},
+		{
+			name:      "finish",
+			wantErr:   finishErr,
+			config:    tts.FakeProviderConfig{FinishErr: finishErr},
+			usageSink: &recordingUsageSink{},
+			audioSink: &recordingAudioSink{},
+		},
+		{
+			name:      "usage",
+			wantErr:   usageErr,
+			config:    tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}},
+			usageSink: &recordingUsageSink{failService: "tts", err: usageErr},
+			audioSink: &recordingAudioSink{},
+		},
 	}
 
 	for _, test := range tests {
@@ -228,15 +267,18 @@ func TestPipelineTTSFailureDoesNotRepublishFinalTurn(t *testing.T) {
 				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 				TTS:        tts.NewFakeProvider(test.config),
 				FinalTurns: finalSink,
-				Usage:      &recordingUsageSink{},
-				Audio:      &recordingAudioSink{},
+				Usage:      test.usageSink,
+				Audio:      test.audioSink,
 			})
 
 			err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
 				Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
 			})
-			if err == nil {
-				t.Fatal("HandleASRFinal() error = nil, want TTS failure")
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("HandleASRFinal() error = %v, want %v", err, test.wantErr)
+			}
+			if !errors.Is(err, ErrFinalTurnAccepted) {
+				t.Fatalf("HandleASRFinal() error = %v, want ErrFinalTurnAccepted", err)
 			}
 			if len(finalSink.events) != 1 {
 				t.Fatalf("accepted FinalTurns = %d, want 1", len(finalSink.events))
@@ -349,9 +391,15 @@ func (s *recordingUsageSink) Publish(_ context.Context, fact UsageFact) error {
 	return nil
 }
 
-type recordingAudioSink struct{ chunks []AudioChunk }
+type recordingAudioSink struct {
+	chunks []AudioChunk
+	err    error
+}
 
 func (s *recordingAudioSink) Publish(_ context.Context, chunk AudioChunk) error {
+	if s.err != nil {
+		return s.err
+	}
 	s.chunks = append(s.chunks, chunk)
 	return nil
 }

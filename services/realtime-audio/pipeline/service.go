@@ -18,6 +18,9 @@ var (
 	ErrUnsupportedSourceLanguage = errors.New("unsupported source language")
 	// ErrPipelineDependencyRequired indicates that a required processing boundary is missing.
 	ErrPipelineDependencyRequired = errors.New("pipeline dependency is required")
+	// ErrFinalTurnAccepted marks a failure after the immutable FinalTurn entered durable delivery.
+	// Callers must not retry HandleASRFinal because doing so can rerun providers under the same ID.
+	ErrFinalTurnAccepted = errors.New("final turn accepted")
 )
 
 // AudioChunk is the media-plane chunk emitted to the playback boundary.
@@ -85,7 +88,9 @@ func (s *PipelineService) HandleASREvent(ctx context.Context, turn TurnContext, 
 	return s.HandleASRFinal(ctx, turn, *event.Final)
 }
 
-// HandleASRFinal carries one allocated Turn through all final-result stages.
+// HandleASRFinal carries one allocated Turn through all final-result stages. An error matching
+// ErrFinalTurnAccepted reports a downstream failure after durable publication and is not a signal
+// to rerun this method; Usage and TTS recovery belong to their respective processing boundaries.
 func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) error {
 	if err := s.validate(); err != nil {
 		return err
@@ -123,25 +128,29 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("publish FinalTurn: %w", err)
 	}
 	if err := s.publishUsage(ctx, turn, "translation", translationResult.Provider, translationResult.Model, 0, translationResult.InputTokens, translationResult.OutputTokens, translationResult.CostAmount, translationResult.Currency); err != nil {
-		return fmt.Errorf("publish translation usage: %w", err)
+		return finalTurnAcceptedError("publish translation usage", err)
 	}
 	playbackID := "playback_" + turn.ID
 	stream, err := s.tts.StartStream(ctx, tts.Request{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, Text: translationResult.Text, TargetLanguage: target, VoiceID: s.voiceID})
 	if err != nil {
-		return fmt.Errorf("start TTS: %w", err)
+		return finalTurnAcceptedError("start TTS", err)
 	}
 	defer stream.Close()
 	if err := s.publishTTSChunks(ctx, turn, playbackID, stream.Chunks()); err != nil {
-		return fmt.Errorf("stream TTS audio: %w", err)
+		return finalTurnAcceptedError("stream TTS audio", err)
 	}
 	ttsResult, err := stream.Finish(ctx)
 	if err != nil {
-		return fmt.Errorf("finish TTS: %w", err)
+		return finalTurnAcceptedError("finish TTS", err)
 	}
 	if err := s.publishUsage(ctx, turn, "tts", ttsResult.Provider, ttsResult.Model, ttsResult.AudioDuration.Milliseconds(), 0, 0, ttsResult.CostAmount, ttsResult.Currency); err != nil {
-		return fmt.Errorf("publish TTS usage: %w", err)
+		return finalTurnAcceptedError("publish TTS usage", err)
 	}
 	return nil
+}
+
+func finalTurnAcceptedError(operation string, err error) error {
+	return fmt.Errorf("%w: %s: %w", ErrFinalTurnAccepted, operation, err)
 }
 
 func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, chunks <-chan tts.AudioChunk) error {

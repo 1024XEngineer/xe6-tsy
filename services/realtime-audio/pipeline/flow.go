@@ -58,6 +58,9 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if p == nil || p.recognizer == nil || p.opener == nil || p.pipeline == nil {
 		return TurnContext{}, ErrTurnProcessorDependencyRequired
 	}
+	if err := p.pipeline.validate(); err != nil {
+		return TurnContext{}, err
+	}
 	turn, err := p.opener.OpenTurn(ctx, TurnOpenRequest{
 		SessionID: request.SessionID, AccountID: request.AccountID,
 		TraceID: request.TraceID, StartedAt: request.StartedAt,

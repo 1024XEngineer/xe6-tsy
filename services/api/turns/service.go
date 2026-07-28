@@ -28,7 +28,6 @@ type Repository interface {
 	ListSession(ctx context.Context, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
 	Find(ctx context.Context, turnID string) (recordsv1.VoiceTurn, error)
 	ListHistory(ctx context.Context, accountID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
-	ParticipantBelongsToSession(ctx context.Context, participantID, sessionID string) (bool, error)
 	CorrectAttribution(ctx context.Context, update AttributionUpdate) (recordsv1.VoiceTurn, error)
 	ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error)
 }
@@ -68,8 +67,14 @@ func NewService(repository Repository, sessions recordsv1.SessionOwnerReader, no
 // ConsumeFinalTurn stores one final realtime event. The repository owns the atomic event/turn
 // deduplication transaction because at-least-once delivery can race across consumer instances.
 func (s *Service) ConsumeFinalTurn(ctx context.Context, event recordsv1.FinalTurnEvent) error {
-	if !validFinalTurnEvent(event) {
-		return ErrInvalidRequest
+	if err := event.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	if event.ParticipantID != nil && *event.ParticipantID == "" {
+		return fmt.Errorf("%w: participant_id cannot be empty", ErrInvalidRequest)
+	}
+	if event.ParticipantID == nil && event.AttributionStatus != recordsv1.AttributionPending {
+		return fmt.Errorf("%w: participant_id is required for resolved attribution", ErrInvalidRequest)
 	}
 	return s.repository.StoreFinalTurn(ctx, event)
 }
@@ -100,16 +105,8 @@ func (s *Service) CorrectAttribution(ctx context.Context, accountID, turnID stri
 	if !validAttributionRequest(turnID, request) {
 		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
 	}
-	turn, err := s.Get(ctx, accountID, turnID)
-	if err != nil {
+	if _, err := s.Get(ctx, accountID, turnID); err != nil {
 		return recordsv1.VoiceTurn{}, err
-	}
-	belongs, err := s.repository.ParticipantBelongsToSession(ctx, request.ParticipantID, turn.SessionID)
-	if err != nil {
-		return recordsv1.VoiceTurn{}, err
-	}
-	if !belongs {
-		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
 	}
 	return s.repository.CorrectAttribution(ctx, AttributionUpdate{
 		TurnID:            turnID,
@@ -153,18 +150,6 @@ func (s *Service) requireOwner(ctx context.Context, accountID, sessionID string)
 		return ErrForbidden
 	}
 	return nil
-}
-
-func validFinalTurnEvent(event recordsv1.FinalTurnEvent) bool {
-	if event.EventID == "" || event.TurnID == "" || event.SessionID == "" || event.SourceLanguage == "" || event.TargetLanguage == "" || event.SpeakerCode == "" {
-		return false
-	}
-	switch event.AttributionStatus {
-	case recordsv1.AttributionPending, recordsv1.AttributionProvisional, recordsv1.AttributionConfirmed, recordsv1.AttributionCorrected:
-	default:
-		return false
-	}
-	return event.ParticipantID != nil || event.AttributionStatus == recordsv1.AttributionPending
 }
 
 func validAttributionRequest(turnID string, request recordsv1.UpdateAttributionRequest) bool {

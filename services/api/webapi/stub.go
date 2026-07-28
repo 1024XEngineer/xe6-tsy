@@ -59,10 +59,6 @@ func (notImplementedAdapters) ListHistory(context.Context, string, recordsv1.Lis
 	return recordsv1.VoiceTurnListResponse{}, errNotImplemented
 }
 
-func (notImplementedAdapters) ParticipantBelongsToSession(context.Context, string, string) (bool, error) {
-	return false, errNotImplemented
-}
-
 func (notImplementedAdapters) CorrectAttribution(context.Context, turns.AttributionUpdate) (recordsv1.VoiceTurn, error) {
 	return recordsv1.VoiceTurn{}, errNotImplemented
 }

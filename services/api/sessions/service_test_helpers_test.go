@@ -19,6 +19,11 @@ func (f *fakeIDGenerator) NewVoiceSessionID() string {
 	return f.id
 }
 
+func (f *fakeIDGenerator) NewStartOperationID() string {
+	f.calls++
+	return f.id
+}
+
 type fakeClock struct {
 	now   time.Time
 	calls int
@@ -107,6 +112,34 @@ func (f *fakeRepository) GetOwned(_ context.Context, accountID string, sessionID
 func (f *fakeRepository) List(_ context.Context, filter ListFilter) (ListPage, error) {
 	f.listFilters = append(f.listFilters, filter)
 	return f.listResult, f.listErr
+}
+
+func (*fakeRepository) BeginStartOperation(
+	context.Context,
+	BeginStartOperationParams,
+) (BeginStartOperationResult, error) {
+	return BeginStartOperationResult{}, ErrNotImplemented
+}
+
+func (*fakeRepository) ClaimStartCompensation(
+	context.Context,
+	ClaimStartCompensationParams,
+) (ClaimStartCompensationResult, error) {
+	return ClaimStartCompensationResult{}, ErrNotImplemented
+}
+
+func (*fakeRepository) CompleteStartCompensation(
+	context.Context,
+	CompleteStartCompensationParams,
+) error {
+	return ErrNotImplemented
+}
+
+func (*fakeRepository) FailStartCompensation(
+	context.Context,
+	FailStartCompensationParams,
+) error {
+	return ErrNotImplemented
 }
 
 func (f *fakeRepository) SaveEndIntent(context.Context, EndIntent) (EndIntent, bool, error) {

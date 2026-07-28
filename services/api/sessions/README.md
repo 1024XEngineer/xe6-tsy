@@ -47,6 +47,24 @@ validate authenticated request
 
 Create does not start realtime, query runtime state, or create runtime records.
 
+## Start consistency
+
+Every realtime Start attempt is coordinated by a repository-owned
+`StartOperation`. The repository must create or replay the operation
+idempotently before realtime is called, and must update the matching pending
+operation to `completed` in the same transaction that changes the business
+session from `created` to `active`.
+
+An in-process keyed locker may reduce duplicate work, but it is not a
+cross-instance ownership boundary. A request may call `RealtimeLifecycle.Stop`
+for Start compensation only after `ClaimStartCompensation` atomically confirms
+that the session is still `created`, the matching operation is still `pending`,
+and that request owns the compensation claim. Any denied or uncertain claim
+strictly forbids Stop.
+
+Successful cleanup changes the operation to `compensated`; failed cleanup is
+persisted as `compensation_failed` so recovery does not depend on logs.
+
 ## Start flow
 
 ```text

@@ -527,6 +527,45 @@ func TestMemoryConnectionManagerDoesNotBlockOtherSessionsDuringOffer(t *testing.
 	}
 }
 
+func TestMemoryConnectionManagerCloseDoesNotWaitForAnswer(t *testing.T) {
+	answerStarted := make(chan struct{})
+	answerRelease := make(chan struct{})
+	transport := &blockingAnswerTransport{
+		answer:        SessionDescription{SDP: "answer-sdp", Type: "answer"},
+		answerStarted: answerStarted,
+		answerRelease: answerRelease,
+	}
+	manager := NewMemoryConnectionManager(&singleTransportFactory{transport: transport})
+	request := validOpenConnectionRequest()
+
+	openResult := make(chan error, 1)
+	go func() {
+		_, err := manager.Open(context.Background(), request)
+		openResult <- err
+	}()
+	<-answerStarted
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- manager.Close(context.Background(), request.SessionID) }()
+	released := false
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		close(answerRelease)
+		released = true
+		t.Fatal("Close() waited for Answer() to return")
+	}
+	if !released {
+		close(answerRelease)
+	}
+	if err := <-openResult; !errors.Is(err, ErrConnectionClosing) {
+		t.Fatalf("Open() error = %v, want %v", err, ErrConnectionClosing)
+	}
+}
+
 func validOpenConnectionRequest() OpenConnectionRequest {
 	return OpenConnectionRequest{
 		SessionID: "session-1", IdempotencyKey: "offer-device-1",
@@ -662,6 +701,30 @@ type fakeTransport struct {
 	closeOnce          sync.Once
 }
 
+type blockingAnswerTransport struct {
+	answer        SessionDescription
+	answerStarted chan struct{}
+	answerRelease <-chan struct{}
+}
+
+func (t *blockingAnswerTransport) Answer(context.Context, SessionDescription) (SessionDescription, error) {
+	close(t.answerStarted)
+	<-t.answerRelease
+	return t.answer, nil
+}
+
+func (*blockingAnswerTransport) AddCandidate(context.Context, ICECandidate) error { return nil }
+
+func (*blockingAnswerTransport) EndCandidates(context.Context) error { return nil }
+
+func (*blockingAnswerTransport) Close(context.Context) error { return nil }
+
+type singleTransportFactory struct{ transport ConnectionTransport }
+
+func (f *singleTransportFactory) Create(context.Context, string, string, ConnectionStateHandler) (ConnectionTransport, error) {
+	return f.transport, nil
+}
+
 func (f *fakeTransport) Answer(_ context.Context, _ SessionDescription) (SessionDescription, error) {
 	f.answerCalls++
 	if f.answerErr != nil {
@@ -698,6 +761,8 @@ var _ ConnectionTransportFactory = (*fakeTransportFactory)(nil)
 var _ ConnectionTransportFactory = (*blockingTransportFactory)(nil)
 var _ ConnectionTransportFactory = (*sequenceTransportFactory)(nil)
 var _ ConnectionTransport = (*fakeTransport)(nil)
+var _ ConnectionTransportFactory = (*singleTransportFactory)(nil)
+var _ ConnectionTransport = (*blockingAnswerTransport)(nil)
 
 func sameStrings(got, want []string) bool {
 	if len(got) != len(want) {

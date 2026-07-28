@@ -160,6 +160,15 @@ func (f *fakeRepository) List(_ context.Context, filter ListFilter) (ListPage, e
 	return f.listResult, f.listErr
 }
 
+func (*fakeRepository) GetStartOperation(
+	context.Context,
+	string,
+	string,
+	string,
+) (StartOperation, error) {
+	return StartOperation{}, ErrNotImplemented
+}
+
 func (*fakeRepository) BeginStartOperation(
 	context.Context,
 	BeginStartOperationParams,

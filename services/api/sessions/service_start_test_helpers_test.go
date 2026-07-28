@@ -146,6 +146,8 @@ type startRepository struct {
 	getCalls                   int
 	getHook                    func(context.Context)
 	operation                  *StartOperation
+	getOperationErr            error
+	getOperationCalls          int
 	beginErr                   error
 	beginCalls                 int
 	beginParams                []BeginStartOperationParams
@@ -253,6 +255,27 @@ func (r *startRepository) BeginStartOperation(
 	}
 	r.operation = &operation
 	return BeginStartOperationResult{Operation: operation}, nil
+}
+
+func (r *startRepository) GetStartOperation(
+	_ context.Context,
+	accountID string,
+	sessionID string,
+	idempotencyKey string,
+) (StartOperation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.getOperationCalls++
+	if r.getOperationErr != nil {
+		return StartOperation{}, r.getOperationErr
+	}
+	if r.session.ID != sessionID || r.session.AccountID != accountID {
+		return StartOperation{}, ErrVoiceSessionNotFound
+	}
+	if r.operation == nil || r.operation.IdempotencyKey != idempotencyKey {
+		return StartOperation{}, ErrStartOperationNotFound
+	}
+	return *r.operation, nil
 }
 
 func (r *startRepository) ClaimStartCompensation(

@@ -369,13 +369,153 @@ func TestServiceStartResumesCompensationWithPersistedClaimID(t *testing.T) {
 		t.Fatalf("claim params = %#v, want persisted ClaimID %q",
 			fixture.repository.claimParams, persistedClaimID)
 	}
+	if fixture.repository.completeParams[0].ClaimID != persistedClaimID {
+		t.Fatalf("complete ClaimID = %q, want persisted ClaimID %q",
+			fixture.repository.completeParams[0].ClaimID, persistedClaimID)
+	}
 	if fixture.realtime.stopCalls != 1 || fixture.repository.completeCalls != 1 {
 		t.Fatalf("stop calls = %d, complete calls = %d; want 1, 1",
 			fixture.realtime.stopCalls, fixture.repository.completeCalls)
 	}
+	if fixture.languages.calls != 0 || fixture.connections.calls != 0 ||
+		fixture.realtime.startCalls != 0 || fixture.repository.beginCalls != 0 {
+		t.Fatalf(
+			"recovery prerequisites = language %d, WebRTC %d, start %d, begin %d; want all 0",
+			fixture.languages.calls,
+			fixture.connections.calls,
+			fixture.realtime.startCalls,
+			fixture.repository.beginCalls,
+		)
+	}
 	if fixture.repository.operation.Status != StartOperationCompensated {
 		t.Fatalf("operation status = %q, want compensated",
 			fixture.repository.operation.Status)
+	}
+}
+
+func TestServiceStartCompensationRecoveryIgnoresReadinessFailures(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	persistedClaimID := "claim_1"
+	fixture.repository.operation = &StartOperation{
+		ID:                  "op_1",
+		SessionID:           "vs_1",
+		AccountID:           "acct_1",
+		IdempotencyKey:      "start_1",
+		RequestHash:         "hash_1",
+		Status:              StartOperationCompensating,
+		CompensationClaimID: &persistedClaimID,
+		CreatedAt:           fixture.clock.now,
+		UpdatedAt:           fixture.clock.now,
+	}
+	fixture.languages.err = ErrLanguageConfigNotReady
+	fixture.connections.result.ConnectionState = ConnectionDisconnected
+
+	_, err := fixture.service.Start(context.Background(), validStartInput())
+	if !errors.Is(err, ErrRealtimeStartFailed) {
+		t.Fatalf("Start() error = %v, want ErrRealtimeStartFailed", err)
+	}
+	if fixture.languages.calls != 0 || fixture.connections.calls != 0 {
+		t.Fatalf("readiness calls = language %d, WebRTC %d; want 0, 0",
+			fixture.languages.calls, fixture.connections.calls)
+	}
+	if fixture.realtime.startCalls != 0 || fixture.realtime.stopCalls != 1 {
+		t.Fatalf("realtime calls = start %d, stop %d; want 0, 1",
+			fixture.realtime.startCalls, fixture.realtime.stopCalls)
+	}
+}
+
+func TestServiceStartExistingPendingOperationStillRequiresReadiness(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.repository.operation = &StartOperation{
+		ID:             "persisted_op",
+		SessionID:      "vs_1",
+		AccountID:      "acct_1",
+		IdempotencyKey: "start_1",
+		RequestHash:    "hash_1",
+		Status:         StartOperationPending,
+		CreatedAt:      fixture.clock.now,
+		UpdatedAt:      fixture.clock.now,
+	}
+	fixture.languages.err = ErrLanguageConfigNotReady
+
+	_, err := fixture.service.Start(context.Background(), validStartInput())
+	if !errors.Is(err, ErrLanguageConfigNotReady) {
+		t.Fatalf("Start() error = %v, want ErrLanguageConfigNotReady", err)
+	}
+	if fixture.languages.calls != 1 || fixture.connections.calls != 0 {
+		t.Fatalf("readiness calls = language %d, WebRTC %d; want 1, 0",
+			fixture.languages.calls, fixture.connections.calls)
+	}
+	if fixture.repository.beginCalls != 0 || fixture.realtime.startCalls != 0 {
+		t.Fatalf("begin calls = %d, realtime start calls = %d; want 0, 0",
+			fixture.repository.beginCalls, fixture.realtime.startCalls)
+	}
+}
+
+func TestServiceStartReadinessFailureDoesNotCreateOperation(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.connections.result.ConnectionState = ConnectionDisconnected
+
+	_, err := fixture.service.Start(context.Background(), validStartInput())
+	if !errors.Is(err, ErrWebRTCNotReady) {
+		t.Fatalf("Start() error = %v, want ErrWebRTCNotReady", err)
+	}
+	if fixture.repository.getOperationCalls != 1 || fixture.repository.beginCalls != 0 {
+		t.Fatalf("operation calls = get %d, begin %d; want 1, 0",
+			fixture.repository.getOperationCalls, fixture.repository.beginCalls)
+	}
+	if fixture.repository.operation != nil || fixture.realtime.startCalls != 0 {
+		t.Fatalf("operation = %#v, realtime start calls = %d; want nil, 0",
+			fixture.repository.operation, fixture.realtime.startCalls)
+	}
+}
+
+func TestServiceStartCrossInstanceCompensationRecoveryIgnoresReadiness(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	persistedClaimID := "owner_claim"
+	fixture.repository.operation = &StartOperation{
+		ID:                  "op_from_instance_a",
+		SessionID:           "vs_1",
+		AccountID:           "acct_1",
+		IdempotencyKey:      "start_1",
+		RequestHash:         "hash_1",
+		Status:              StartOperationCompensating,
+		CompensationClaimID: &persistedClaimID,
+		CreatedAt:           fixture.clock.now,
+		UpdatedAt:           fixture.clock.now,
+	}
+	languagesB := &fakeLanguageConfigReader{err: ErrLanguageConfigNotReady}
+	connectionsB := &fakeWebRTCConnectionReader{result: WebRTCConnectionSnapshot{
+		SessionID:       "vs_1",
+		ConnectionState: ConnectionDisconnected,
+		UpdatedAt:       fixture.clock.now,
+	}}
+	serviceB := newSharedStartService(
+		t,
+		fixture.repository,
+		languagesB,
+		connectionsB,
+		fixture.realtime,
+		fixture.clock,
+	)
+	input := validStartInput()
+	input.TraceID = "request_from_instance_b"
+
+	_, err := serviceB.Start(context.Background(), input)
+	if !errors.Is(err, ErrRealtimeStartFailed) {
+		t.Fatalf("Start() error = %v, want ErrRealtimeStartFailed", err)
+	}
+	if languagesB.calls != 0 || connectionsB.calls != 0 {
+		t.Fatalf("instance B readiness calls = language %d, WebRTC %d; want 0, 0",
+			languagesB.calls, connectionsB.calls)
+	}
+	if fixture.repository.claimParams[0].ClaimID != persistedClaimID {
+		t.Fatalf("instance B ClaimID = %q, want persisted %q",
+			fixture.repository.claimParams[0].ClaimID, persistedClaimID)
+	}
+	if fixture.realtime.stopCalls != 1 || fixture.realtime.startCalls != 0 {
+		t.Fatalf("instance B realtime calls = start %d, stop %d; want 0, 1",
+			fixture.realtime.startCalls, fixture.realtime.stopCalls)
 	}
 }
 

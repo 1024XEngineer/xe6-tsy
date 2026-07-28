@@ -46,5 +46,8 @@ var (
 	// ErrRuntimeSnapshotNotFound is an adapter-only signal whose query meaning
 	// depends on the persisted business state.
 	ErrRuntimeSnapshotNotFound = errors.New("sessions: runtime snapshot not found")
-	ErrNotImplemented          = errors.New(string(CodeNotImplemented))
+	// ErrStartOperationNotFound is an internal repository signal used to
+	// distinguish a new Start request from recovery of a durable operation.
+	ErrStartOperationNotFound = errors.New("sessions: start operation not found")
+	ErrNotImplemented         = errors.New(string(CodeNotImplemented))
 )

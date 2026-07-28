@@ -55,6 +55,12 @@ idempotently before realtime is called, and must update the matching pending
 operation to `completed` in the same transaction that changes the business
 session from `created` to `active`.
 
+Language and WebRTC readiness apply only before entering or continuing
+`RealtimeLifecycle.Start`. A retry first reads the durable operation for the
+same account, session, and idempotency key. An existing `compensating`
+operation resumes Claim and Stop immediately with its persisted ClaimID,
+regardless of the current language configuration or WebRTC connection state.
+
 An in-process keyed locker may reduce duplicate work, but it is not a
 cross-instance ownership boundary. A request may call `RealtimeLifecycle.Stop`
 for Start compensation only after `ClaimStartCompensation` atomically confirms
@@ -94,9 +100,10 @@ Compensation claim recovery follows one ownership rule:
 Repository.GetOwned
 -> if active, replay the matching completed StartOperation and return
 -> otherwise require business status = created
--> require LanguageConfigSnapshot.Ready()
--> require ConnectionState.Ready()
--> begin or replay a durable StartOperation
+-> read the matching durable StartOperation
+-> if compensating, resume Claim + Stop with the persisted ClaimID
+-> if pending, require readiness and continue RealtimeLifecycle.Start
+-> if absent, require readiness and begin a durable StartOperation
 -> RealtimeLifecycle.Start
 -> require a completed running state (listening or processing)
 -> Repository.TransitionToActive(created -> active + operation completed)

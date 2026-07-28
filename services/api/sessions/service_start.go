@@ -29,19 +29,83 @@ func (s *Service) Start(ctx context.Context, input StartInput) (VoiceSession, er
 	case StatusActive:
 		return s.replayCompletedStart(ctx, input, session)
 	case StatusCreated:
-		// Only a created session may cross the realtime Start boundary.
+		return s.startCreatedSession(ctx, input, session)
 	default:
 		return VoiceSession{}, ErrSessionStateConflict
+	}
+}
+
+func (s *Service) startCreatedSession(
+	ctx context.Context,
+	input StartInput,
+	session VoiceSession,
+) (VoiceSession, error) {
+	operation, found, err := s.findStartOperation(ctx, input)
+	if err != nil {
+		return VoiceSession{}, err
+	}
+	if found {
+		return s.continueExistingStartOperation(ctx, input, session, operation)
 	}
 	if err := s.validateStartReadiness(ctx, input, session); err != nil {
 		return VoiceSession{}, err
 	}
-
-	operation, err := s.beginStartOperation(ctx, input)
+	operation, err = s.beginStartOperation(ctx, input)
 	if err != nil {
 		return VoiceSession{}, err
 	}
 	return s.continueStartOperation(ctx, input, operation)
+}
+
+func (s *Service) findStartOperation(
+	ctx context.Context,
+	input StartInput,
+) (StartOperation, bool, error) {
+	operation, err := s.deps.Repository.GetStartOperation(
+		ctx,
+		input.AccountID,
+		input.SessionID,
+		input.IdempotencyKey,
+	)
+	if errors.Is(err, ErrStartOperationNotFound) {
+		return StartOperation{}, false, nil
+	}
+	if err != nil {
+		return StartOperation{}, false, fmt.Errorf("read voice session start operation: %w", err)
+	}
+	if operation.ID == "" ||
+		operation.SessionID != input.SessionID ||
+		operation.AccountID != input.AccountID ||
+		operation.IdempotencyKey != input.IdempotencyKey ||
+		!operation.Status.Valid() {
+		return StartOperation{}, false, fmt.Errorf(
+			"%w: invalid start operation returned by repository",
+			ErrConcurrentTransition,
+		)
+	}
+	if operation.RequestHash != input.RequestHash {
+		return StartOperation{}, false, ErrIdempotencyKeyConflict
+	}
+	return operation, true, nil
+}
+
+func (s *Service) continueExistingStartOperation(
+	ctx context.Context,
+	input StartInput,
+	session VoiceSession,
+	operation StartOperation,
+) (VoiceSession, error) {
+	switch operation.Status {
+	case StartOperationPending:
+		if err := s.validateStartReadiness(ctx, input, session); err != nil {
+			return VoiceSession{}, err
+		}
+		return s.startPendingOperation(ctx, input, operation)
+	case StartOperationCompensating:
+		return s.resumeStartCompensation(ctx, input, operation)
+	default:
+		return s.continueStartOperation(ctx, input, operation)
+	}
 }
 
 func validateStartInput(ctx context.Context, input *StartInput) error {
@@ -159,16 +223,7 @@ func (s *Service) continueStartOperation(
 	case StartOperationPending:
 		return s.startPendingOperation(ctx, input, operation)
 	case StartOperationCompensating:
-		if operation.CompensationClaimID == nil || *operation.CompensationClaimID == "" {
-			return VoiceSession{}, ErrConcurrentTransition
-		}
-		return s.compensateStartedOperation(
-			ctx,
-			input,
-			operation,
-			*operation.CompensationClaimID,
-			ErrRealtimeStartFailed,
-		)
+		return s.resumeStartCompensation(ctx, input, operation)
 	case StartOperationCompleted:
 		session, err := s.deps.Repository.GetOwned(ctx, input.AccountID, input.SessionID)
 		if err != nil {
@@ -185,6 +240,23 @@ func (s *Service) continueStartOperation(
 	default:
 		return VoiceSession{}, ErrConcurrentTransition
 	}
+}
+
+func (s *Service) resumeStartCompensation(
+	ctx context.Context,
+	input StartInput,
+	operation StartOperation,
+) (VoiceSession, error) {
+	if operation.CompensationClaimID == nil || *operation.CompensationClaimID == "" {
+		return VoiceSession{}, ErrConcurrentTransition
+	}
+	return s.compensateStartedOperation(
+		ctx,
+		input,
+		operation,
+		*operation.CompensationClaimID,
+		ErrRealtimeStartFailed,
+	)
 }
 
 func (s *Service) startPendingOperation(

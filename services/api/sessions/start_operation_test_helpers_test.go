@@ -44,6 +44,23 @@ func (*startOperationRepository) List(context.Context, ListFilter) (ListPage, er
 	return ListPage{}, ErrNotImplemented
 }
 
+func (r *startOperationRepository) GetStartOperation(
+	_ context.Context,
+	accountID string,
+	sessionID string,
+	idempotencyKey string,
+) (StartOperation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.session.ID != sessionID || r.session.AccountID != accountID {
+		return StartOperation{}, ErrVoiceSessionNotFound
+	}
+	if r.operation == nil || r.operation.IdempotencyKey != idempotencyKey {
+		return StartOperation{}, ErrStartOperationNotFound
+	}
+	return *r.operation, nil
+}
+
 func (r *startOperationRepository) BeginStartOperation(
 	_ context.Context,
 	params BeginStartOperationParams,

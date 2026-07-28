@@ -176,6 +176,29 @@ func TestServiceStartActiveReplayRejectsDifferentRequest(t *testing.T) {
 	assertNoStartPrerequisites(t, fixture)
 }
 
+func TestServiceStartCreatedReplayRejectsDifferentRequestBeforeReadiness(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.repository.operation = &StartOperation{
+		ID:             "op_1",
+		SessionID:      "vs_1",
+		AccountID:      "acct_1",
+		IdempotencyKey: "start_1",
+		RequestHash:    "other_hash",
+		Status:         StartOperationPending,
+		CreatedAt:      fixture.clock.now,
+		UpdatedAt:      fixture.clock.now,
+	}
+
+	_, err := fixture.service.Start(context.Background(), validStartInput())
+	if !errors.Is(err, ErrIdempotencyKeyConflict) {
+		t.Fatalf("Start() error = %v, want ErrIdempotencyKeyConflict", err)
+	}
+	assertNoStartPrerequisites(t, fixture)
+	if fixture.repository.beginCalls != 0 {
+		t.Fatalf("BeginStartOperation calls = %d, want 0", fixture.repository.beginCalls)
+	}
+}
+
 func TestServiceStartRejectsInvalidPersistedReadiness(t *testing.T) {
 	tests := []struct {
 		name string

@@ -155,6 +155,14 @@ type Repository interface {
 	Create(ctx context.Context, params CreateParams) (session VoiceSession, replayed bool, err error)
 	GetOwned(ctx context.Context, accountID string, sessionID string) (VoiceSession, error)
 	List(ctx context.Context, filter ListFilter) (ListPage, error)
+	// GetStartOperation returns ErrStartOperationNotFound when no operation is
+	// bound to the supplied owner, session, and idempotency key.
+	GetStartOperation(
+		ctx context.Context,
+		accountID string,
+		sessionID string,
+		idempotencyKey string,
+	) (StartOperation, error)
 	BeginStartOperation(ctx context.Context, params BeginStartOperationParams) (BeginStartOperationResult, error)
 	// ClaimStartCompensation is idempotent for the matching OperationID and
 	// persisted ClaimID while the operation remains compensating.

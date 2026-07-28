@@ -163,6 +163,19 @@ func (*multiSessionStartRepository) List(context.Context, ListFilter) (ListPage,
 	return ListPage{}, ErrNotImplemented
 }
 
+func (r *multiSessionStartRepository) GetStartOperation(
+	ctx context.Context,
+	accountID string,
+	sessionID string,
+	idempotencyKey string,
+) (StartOperation, error) {
+	state, err := r.state(sessionID)
+	if err != nil {
+		return StartOperation{}, err
+	}
+	return state.GetStartOperation(ctx, accountID, sessionID, idempotencyKey)
+}
+
 func (r *multiSessionStartRepository) BeginStartOperation(
 	ctx context.Context,
 	params BeginStartOperationParams,

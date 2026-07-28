@@ -334,6 +334,7 @@ type fakeRepository struct {
 	ownedAccountID       string
 	readErr              error
 	readCalls            int
+	mutateReadTurnIDs    bool
 }
 
 func (r *fakeRepository) StoreFinalTurn(_ context.Context, event recordsv1.FinalTurnEvent) error {
@@ -397,6 +398,9 @@ func (r *fakeRepository) ReadFinalTurns(_ context.Context, accountID string, tur
 	r.readCalls++
 	r.readAccountID = accountID
 	r.readTurnIDs = append([]string(nil), turnIDs...)
+	if r.mutateReadTurnIDs && len(turnIDs) > 1 {
+		turnIDs[0], turnIDs[len(turnIDs)-1] = turnIDs[len(turnIDs)-1], turnIDs[0]
+	}
 	return r.snapshots, r.readErr
 }
 

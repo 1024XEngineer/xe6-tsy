@@ -40,10 +40,11 @@ func TestReadFinalTurnsPreservesAccountScopeAndRequestOrder(t *testing.T) {
 	repository := &fakeRepository{snapshots: []recordsv1.FinalTurnSnapshot{
 		{TurnID: "vt_02", SessionID: "vs_02"},
 		{TurnID: "vt_01", SessionID: "vs_01"},
-	}}
+	}, mutateReadTurnIDs: true}
 	service := NewService(repository, fakeSessionOwners{}, nil)
+	turnIDs := []string{"vt_01", "vt_02"}
 
-	snapshots, err := service.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01", "vt_02"})
+	snapshots, err := service.ReadFinalTurns(context.Background(), "acct_01", turnIDs)
 	if err != nil {
 		t.Fatalf("ReadFinalTurns() error = %v", err)
 	}
@@ -52,6 +53,9 @@ func TestReadFinalTurnsPreservesAccountScopeAndRequestOrder(t *testing.T) {
 	}
 	if len(repository.readTurnIDs) != 2 || repository.readTurnIDs[0] != "vt_01" || repository.readTurnIDs[1] != "vt_02" {
 		t.Fatalf("repository turn IDs = %#v", repository.readTurnIDs)
+	}
+	if turnIDs[0] != "vt_01" || turnIDs[1] != "vt_02" {
+		t.Fatalf("caller turn IDs changed to %#v", turnIDs)
 	}
 	if len(snapshots) != 2 || snapshots[0].TurnID != "vt_01" || snapshots[1].TurnID != "vt_02" {
 		t.Fatalf("ReadFinalTurns() snapshots = %#v", snapshots)

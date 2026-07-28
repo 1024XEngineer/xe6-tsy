@@ -15,8 +15,9 @@ func (s *Service) ReadFinalTurns(ctx context.Context, accountID string, turnIDs 
 		return nil, ErrInvalidRequest
 	}
 
-	requested := make(map[string]struct{}, len(turnIDs))
-	for _, turnID := range turnIDs {
+	requestedOrder := append([]string(nil), turnIDs...)
+	requested := make(map[string]struct{}, len(requestedOrder))
+	for _, turnID := range requestedOrder {
 		if turnID == "" {
 			return nil, ErrInvalidRequest
 		}
@@ -26,7 +27,8 @@ func (s *Service) ReadFinalTurns(ctx context.Context, accountID string, turnIDs 
 		requested[turnID] = struct{}{}
 	}
 
-	snapshots, err := s.repository.ReadFinalTurns(ctx, accountID, turnIDs)
+	repositoryTurnIDs := append([]string(nil), requestedOrder...)
+	snapshots, err := s.repository.ReadFinalTurns(ctx, accountID, repositoryTurnIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -45,8 +47,8 @@ func (s *Service) ReadFinalTurns(ctx context.Context, accountID string, turnIDs 
 		byTurnID[snapshot.TurnID] = cloneFinalTurnSnapshot(snapshot)
 	}
 
-	ordered := make([]recordsv1.FinalTurnSnapshot, 0, len(turnIDs))
-	for _, turnID := range turnIDs {
+	ordered := make([]recordsv1.FinalTurnSnapshot, 0, len(requestedOrder))
+	for _, turnID := range requestedOrder {
 		snapshot, exists := byTurnID[turnID]
 		if !exists {
 			return nil, ErrTurnNotFound

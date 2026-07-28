@@ -116,6 +116,16 @@ func TestRecordsTurnReaderPropagatesContextCancellation(t *testing.T) {
 	}
 }
 
+func TestNewRecordsTurnReaderRejectsMissingProvider(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewRecordsTurnReader(nil) did not panic")
+		}
+	}()
+
+	NewRecordsTurnReader(nil)
+}
+
 type recordsTurnReaderFake struct {
 	snapshots       []recordsv1.FinalTurnSnapshot
 	err             error

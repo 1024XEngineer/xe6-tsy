@@ -15,12 +15,15 @@ type RecordsTurnReader struct {
 
 // NewRecordsTurnReader binds the account-scoped records provider used during message assembly.
 func NewRecordsTurnReader(reader recordsv1.TurnReader) *RecordsTurnReader {
+	if reader == nil {
+		panic("records turn reader is required")
+	}
 	return &RecordsTurnReader{reader: reader}
 }
 
 // ReadFinalTurns preserves the provider's validated order while crossing the module type boundary.
-func (reader *RecordsTurnReader) ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]FinalTurnSnapshot, error) {
-	snapshots, err := reader.reader.ReadFinalTurns(ctx, accountID, turnIDs)
+func (r *RecordsTurnReader) ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]FinalTurnSnapshot, error) {
+	snapshots, err := r.reader.ReadFinalTurns(ctx, accountID, turnIDs)
 	if err != nil {
 		return nil, err
 	}

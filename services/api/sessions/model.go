@@ -18,6 +18,28 @@ const (
 	StatusFailed  Status = "failed"
 )
 
+// StartOperationStatus is the repository-owned lifecycle for one durable Start
+// attempt. It is the cross-instance authority for activation and compensation.
+type StartOperationStatus string
+
+const (
+	StartOperationPending            StartOperationStatus = "pending"
+	StartOperationCompensating       StartOperationStatus = "compensating"
+	StartOperationCompleted          StartOperationStatus = "completed"
+	StartOperationCompensated        StartOperationStatus = "compensated"
+	StartOperationCompensationFailed StartOperationStatus = "compensation_failed"
+)
+
+// StartCompensationClaimReason explains why a repository denied compensation.
+// Service code must treat every denied reason as a strict prohibition on Stop.
+type StartCompensationClaimReason string
+
+const (
+	StartCompensationSessionNotCreated   StartCompensationClaimReason = "session_not_created"
+	StartCompensationOperationMismatch   StartCompensationClaimReason = "operation_mismatch"
+	StartCompensationOperationNotPending StartCompensationClaimReason = "operation_not_pending"
+)
+
 // RuntimeState is the shared media-plane lifecycle state returned by realtime-audio.
 type RuntimeState = realtimev1.RuntimeState
 
@@ -109,6 +131,27 @@ type VoiceSession struct {
 	CreatedAt    time.Time       `json:"created_at"`
 }
 
+// StartOperation binds one idempotent Start request to its activation and
+// compensation state. CompensationClaimID identifies the request that alone
+// may stop realtime while the operation is compensating.
+type StartOperation struct {
+	ID                  string
+	SessionID           string
+	AccountID           string
+	IdempotencyKey      string
+	RequestHash         string
+	Status              StartOperationStatus
+	CompensationClaimID *string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// MatchesRequest reports whether a repeated Start request has the same stable
+// idempotency identity.
+func (o StartOperation) MatchesRequest(idempotencyKey string, requestHash string) bool {
+	return o.IdempotencyKey == idempotencyKey && o.RequestHash == requestHash
+}
+
 // VoiceSessionListItem is the persistent-only list projection. Keeping this
 // separate prevents list queries from loading large configuration snapshots or
 // reaching into realtime and WebRTC providers.
@@ -176,6 +219,21 @@ func Retryable(status Status, runtime RuntimeState) bool {
 func (s Status) Valid() bool {
 	switch s {
 	case StatusCreated, StatusActive, StatusEnded, StatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Valid reports whether the status belongs to the durable Start operation
+// lifecycle.
+func (s StartOperationStatus) Valid() bool {
+	switch s {
+	case StartOperationPending,
+		StartOperationCompensating,
+		StartOperationCompleted,
+		StartOperationCompensated,
+		StartOperationCompensationFailed:
 		return true
 	default:
 		return false

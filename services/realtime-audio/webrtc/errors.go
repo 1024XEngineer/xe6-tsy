@@ -29,6 +29,10 @@ var (
 	ErrCandidateRequired = errors.New("candidate is required")
 	// ErrCandidatesCompleted rejects previously unseen candidates after the remote ICE generation is final.
 	ErrCandidatesCompleted = errors.New("ICE candidate collection is complete")
+	// ErrICEConfigurationInvalid rejects ICE server URLs outside the supported STUN/TURN schemes.
+	ErrICEConfigurationInvalid = errors.New("invalid ICE server configuration")
+	// ErrTransportClosed rejects signaling operations after transport shutdown starts.
+	ErrTransportClosed = errors.New("WebRTC transport is closed")
 	// ErrConnectionNotFound reports a missing or already closed session connection.
 	ErrConnectionNotFound = errors.New("WebRTC connection not found")
 	// ErrConnectionClosing rejects offers while the session's current transport generation is closing.

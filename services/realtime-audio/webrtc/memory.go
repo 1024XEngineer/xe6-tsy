@@ -34,6 +34,84 @@ type connectionRecord struct {
 	transport       ConnectionTransport
 	candidateIDs    map[string]ICECandidate
 	endOfCandidates bool
+	opening         bool
+	openDone        chan struct{}
+	openErr         error
+}
+
+type transportStateGate struct {
+	mu       sync.Mutex
+	delivery sync.Mutex
+	ready    bool
+	rejected bool
+	pending  []transportStateUpdate
+	apply    ConnectionStateHandler
+}
+
+type transportStateUpdate struct {
+	state     realtimev1.ConnectionState
+	updatedAt time.Time
+}
+
+func newTransportStateGate(apply ConnectionStateHandler) *transportStateGate {
+	return &transportStateGate{apply: apply}
+}
+
+func (g *transportStateGate) Notify(state realtimev1.ConnectionState, updatedAt time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	if g.rejected {
+		g.mu.Unlock()
+		return
+	}
+	if !g.ready {
+		g.pending = append(g.pending, transportStateUpdate{state: state, updatedAt: updatedAt})
+		g.mu.Unlock()
+		return
+	}
+	apply := g.apply
+	g.mu.Unlock()
+	if apply != nil {
+		g.delivery.Lock()
+		defer g.delivery.Unlock()
+		apply(state, updatedAt)
+	}
+}
+
+func (g *transportStateGate) Activate() {
+	if g == nil {
+		return
+	}
+	g.delivery.Lock()
+	defer g.delivery.Unlock()
+	g.mu.Lock()
+	if g.rejected {
+		g.mu.Unlock()
+		return
+	}
+	g.ready = true
+	pending := append([]transportStateUpdate(nil), g.pending...)
+	g.pending = nil
+	apply := g.apply
+	g.mu.Unlock()
+	if apply == nil {
+		return
+	}
+	for _, update := range pending {
+		apply(update.state, update.updatedAt)
+	}
+}
+
+func (g *transportStateGate) Reject() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.rejected = true
+	g.pending = nil
+	g.mu.Unlock()
 }
 
 // NewMemoryConnectionManager creates an empty manager with session-isolated connection state.
@@ -71,9 +149,19 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 			connections.mu.Unlock()
 			return Connection{}, ErrIdempotencyPayloadConflict
 		}
-		connection := existing.connection
+		if existing.opening {
+			done := existing.openDone
+			connections.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return Connection{}, ctx.Err()
+			case <-done:
+				return completedOpenResult(connections, existing)
+			}
+		}
+		connection, openErr := existing.connection, existing.openErr
 		connections.mu.Unlock()
-		return connection, nil
+		return connection, openErr
 	}
 	if connections.currentID != "" {
 		connections.mu.Unlock()
@@ -81,43 +169,146 @@ func (m *MemoryConnectionManager) Open(ctx context.Context, request OpenConnecti
 	}
 
 	connectionID := m.nextConnectionID()
-	transport, err := m.factory.Create(ctx, request.SessionID, connectionID)
-	if err != nil {
-		connections.mu.Unlock()
-		return Connection{}, fmt.Errorf("create WebRTC transport: %w", err)
-	}
-	if transport == nil {
-		connections.mu.Unlock()
-		return Connection{}, fmt.Errorf("create WebRTC transport: %w", ErrTransportRequired)
-	}
-	answer, err := transport.Answer(ctx, request.Offer)
-	if err != nil {
-		connections.mu.Unlock()
-		closeErr := transport.Close(context.WithoutCancel(ctx))
-		return Connection{}, errors.Join(fmt.Errorf("create SDP answer: %w", err), closeErr)
-	}
-	if err := validateAnswer(answer); err != nil {
-		connections.mu.Unlock()
-		closeErr := transport.Close(context.WithoutCancel(ctx))
-		return Connection{}, errors.Join(fmt.Errorf("validate SDP answer: %w", err), closeErr)
-	}
+	stateGate := newTransportStateGate(func(state realtimev1.ConnectionState, updatedAt time.Time) {
+		_, _ = m.ApplyState(context.Background(), request.SessionID, connectionID, state, updatedAt)
+	})
 	connection := Connection{
 		ID:        connectionID,
 		SessionID: request.SessionID, IdempotencyKey: request.IdempotencyKey,
-		Offer: request.Offer, Answer: answer, State: realtimev1.ConnectionConnecting, CreatedAt: request.CreatedAt,
+		Offer: request.Offer, State: realtimev1.ConnectionConnecting, CreatedAt: request.CreatedAt,
 	}
-	connections.byID[connection.ID] = &connectionRecord{
+	record := &connectionRecord{
 		connection: connection,
 		snapshot: realtimev1.ConnectionSnapshot{
 			SessionID: connection.SessionID, ConnectionID: connection.ID,
 			State: connection.State, Version: 1, UpdatedAt: request.CreatedAt,
 		},
-		transport: transport, candidateIDs: make(map[string]ICECandidate),
+		candidateIDs: make(map[string]ICECandidate), opening: true, openDone: make(chan struct{}),
 	}
+	connections.byID[connection.ID] = record
 	connections.currentID = connection.ID
 	connections.byIdempotencyKey[connection.IdempotencyKey] = connection.ID
 	connections.mu.Unlock()
+
+	transport, err := m.factory.Create(ctx, request.SessionID, connectionID, stateGate.Notify)
+	if err != nil {
+		stateGate.Reject()
+		openErr := fmt.Errorf("create WebRTC transport: %w", err)
+		return Connection{}, completeOpenFailure(connections, record, openErr)
+	}
+	if transport == nil {
+		stateGate.Reject()
+		openErr := fmt.Errorf("create WebRTC transport: %w", ErrTransportRequired)
+		return Connection{}, completeOpenFailure(connections, record, openErr)
+	}
+	if !attachOpenTransport(connections, record, transport) {
+		stateGate.Reject()
+		closeErr := transport.Close(context.WithoutCancel(ctx))
+		return Connection{}, errors.Join(completedOpenError(connections, record), closeErr)
+	}
+	answer, err := transport.Answer(ctx, request.Offer)
+	if err != nil {
+		stateGate.Reject()
+		openErr := fmt.Errorf("create SDP answer: %w", err)
+		openErr, closeTransport := completeOpenFailureWithOwnership(connections, record, openErr)
+		if closeTransport {
+			openErr = errors.Join(openErr, transport.Close(context.WithoutCancel(ctx)))
+		}
+		return Connection{}, openErr
+	}
+	if err := validateAnswer(answer); err != nil {
+		stateGate.Reject()
+		openErr := fmt.Errorf("validate SDP answer: %w", err)
+		openErr, closeTransport := completeOpenFailureWithOwnership(connections, record, openErr)
+		if closeTransport {
+			openErr = errors.Join(openErr, transport.Close(context.WithoutCancel(ctx)))
+		}
+		return Connection{}, openErr
+	}
+	if err := completeOpenSuccess(connections, record, answer); err != nil {
+		stateGate.Reject()
+		return Connection{}, err
+	}
+	stateGate.Activate()
+	connection, err = completedOpenResult(connections, record)
+	if err != nil {
+		return Connection{}, err
+	}
 	return connection, nil
+}
+
+func attachOpenTransport(connections *sessionConnections, record *connectionRecord, transport ConnectionTransport) bool {
+	connections.mu.Lock()
+	defer connections.mu.Unlock()
+	if connections.closed || connections.byID[record.connection.ID] != record {
+		return false
+	}
+	record.transport = transport
+	return true
+}
+
+func completeOpenFailure(connections *sessionConnections, record *connectionRecord, openErr error) error {
+	result, _ := completeOpenFailureWithOwnership(connections, record, openErr)
+	return result
+}
+
+func completeOpenFailureWithOwnership(connections *sessionConnections, record *connectionRecord, openErr error) (error, bool) {
+	connections.mu.Lock()
+	defer connections.mu.Unlock()
+	if !record.opening {
+		return record.openErr, false
+	}
+	removeReservedConnection(connections, record)
+	completeOpening(record, openErr)
+	return openErr, true
+}
+
+func completeOpenSuccess(connections *sessionConnections, record *connectionRecord, answer SessionDescription) error {
+	connections.mu.Lock()
+	defer connections.mu.Unlock()
+	if connections.closed || connections.byID[record.connection.ID] != record {
+		if record.opening {
+			completeOpening(record, ErrConnectionClosing)
+		}
+		return record.openErr
+	}
+	record.connection.Answer = answer
+	completeOpening(record, nil)
+	return nil
+}
+
+func completeOpening(record *connectionRecord, openErr error) {
+	if record == nil || !record.opening {
+		return
+	}
+	record.openErr = openErr
+	record.opening = false
+	close(record.openDone)
+}
+
+func completedOpenResult(connections *sessionConnections, record *connectionRecord) (Connection, error) {
+	connections.mu.Lock()
+	defer connections.mu.Unlock()
+	if record.openErr == nil && (connections.closed || connections.byID[record.connection.ID] != record) {
+		return record.connection, ErrConnectionClosing
+	}
+	return record.connection, record.openErr
+}
+
+func completedOpenError(connections *sessionConnections, record *connectionRecord) error {
+	_, err := completedOpenResult(connections, record)
+	if err == nil {
+		return ErrConnectionClosing
+	}
+	return err
+}
+
+func removeReservedConnection(connections *sessionConnections, record *connectionRecord) {
+	delete(connections.byID, record.connection.ID)
+	delete(connections.byIdempotencyKey, record.connection.IdempotencyKey)
+	if connections.currentID == record.connection.ID {
+		connections.currentID = ""
+	}
 }
 
 // GetCurrent returns the latest connection generation retained for a session.
@@ -135,7 +326,7 @@ func (m *MemoryConnectionManager) GetCurrent(ctx context.Context, sessionID stri
 	connections.mu.Lock()
 	defer connections.mu.Unlock()
 	record := connections.byID[connections.currentID]
-	if connections.closed || record == nil {
+	if connections.closed || record == nil || record.opening {
 		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
 	}
 	return record.snapshot, nil
@@ -172,7 +363,7 @@ func (m *MemoryConnectionManager) ApplyState(
 		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
 	}
 	record := connections.byID[connectionID]
-	if record == nil {
+	if record == nil || record.opening {
 		return realtimev1.ConnectionSnapshot{}, ErrConnectionNotFound
 	}
 	if !updatedAt.After(record.snapshot.UpdatedAt) {
@@ -227,6 +418,9 @@ func (m *MemoryConnectionManager) AddCandidates(ctx context.Context, sessionID s
 	}
 	if record.connection.SessionID != sessionID {
 		return CandidateResponse{}, ErrConnectionSessionMismatch
+	}
+	if record.opening || record.transport == nil {
+		return CandidateResponse{}, ErrConnectionNotFound
 	}
 
 	response := CandidateResponse{ConnectionID: request.ConnectionID}
@@ -303,10 +497,13 @@ func closeSession(ctx context.Context, connections *sessionConnections) error {
 	connections.closed = true
 	var closeErr error
 	for connectionID, record := range connections.byID {
-		if err := record.transport.Close(ctx); err != nil {
-			closeErr = errors.Join(closeErr, err)
-			continue
+		if record.transport != nil {
+			if err := record.transport.Close(ctx); err != nil {
+				closeErr = errors.Join(closeErr, err)
+				continue
+			}
 		}
+		completeOpening(record, ErrConnectionClosing)
 		delete(connections.byID, connectionID)
 		delete(connections.byIdempotencyKey, record.connection.IdempotencyKey)
 	}

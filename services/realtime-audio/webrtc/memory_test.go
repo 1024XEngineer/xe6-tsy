@@ -31,6 +31,129 @@ func TestMemoryConnectionManagerOpenIsIdempotentPerSession(t *testing.T) {
 	}
 }
 
+func TestMemoryConnectionManagerAppliesTransportStateDuringAnswer(t *testing.T) {
+	connectedAt := time.Unix(1700000001, 0).UTC()
+	factory := &stateCallbackTransportFactory{
+		transport: &stateCallbackTransport{
+			answer:    SessionDescription{SDP: "answer-sdp", Type: "answer"},
+			state:     realtimev1.ConnectionConnected,
+			updatedAt: connectedAt,
+		},
+	}
+	manager := NewMemoryConnectionManager(factory)
+	connection, err := manager.Open(context.Background(), validOpenConnectionRequest())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	snapshot, err := manager.GetCurrent(context.Background(), connection.SessionID)
+	if err != nil {
+		t.Fatalf("GetCurrent() error = %v", err)
+	}
+	if snapshot.State != realtimev1.ConnectionConnected || snapshot.Version != 2 || !snapshot.UpdatedAt.Equal(connectedAt) {
+		t.Fatalf("snapshot after transport callback = %#v", snapshot)
+	}
+}
+
+func TestTransportStateGateDrainsPendingBeforeNewCallbacks(t *testing.T) {
+	var (
+		states       []realtimev1.ConnectionState
+		statesMu     sync.Mutex
+		pendingStart = make(chan struct{})
+		release      = make(chan struct{})
+	)
+	gate := newTransportStateGate(func(state realtimev1.ConnectionState, _ time.Time) {
+		statesMu.Lock()
+		states = append(states, state)
+		statesMu.Unlock()
+		if state == realtimev1.ConnectionConnecting {
+			close(pendingStart)
+			<-release
+		}
+	})
+	gate.Notify(realtimev1.ConnectionConnecting, time.Unix(1700000001, 0).UTC())
+
+	activated := make(chan struct{})
+	go func() {
+		gate.Activate()
+		close(activated)
+	}()
+	select {
+	case <-pendingStart:
+	case <-time.After(time.Second):
+		t.Fatal("Activate() did not deliver pending state")
+	}
+
+	newCallbackDone := make(chan struct{})
+	go func() {
+		gate.Notify(realtimev1.ConnectionConnected, time.Unix(1700000002, 0).UTC())
+		close(newCallbackDone)
+	}()
+	select {
+	case <-newCallbackDone:
+		t.Fatal("new callback overtook pending state delivery")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-activated:
+	case <-time.After(time.Second):
+		t.Fatal("Activate() did not finish")
+	}
+	select {
+	case <-newCallbackDone:
+	case <-time.After(time.Second):
+		t.Fatal("new callback did not finish after pending delivery")
+	}
+
+	statesMu.Lock()
+	defer statesMu.Unlock()
+	want := []realtimev1.ConnectionState{realtimev1.ConnectionConnecting, realtimev1.ConnectionConnected}
+	if len(states) != len(want) || states[0] != want[0] || states[1] != want[1] {
+		t.Fatalf("delivered states = %#v, want %#v", states, want)
+	}
+}
+
+func TestMemoryConnectionManagerDiscardsStateAfterAnswerFailureAndAllowsRetry(t *testing.T) {
+	answerErr := errors.New("answer failed")
+	first := &stateCallbackTransport{
+		answerErr: answerErr,
+		state:     realtimev1.ConnectionConnected,
+		updatedAt: time.Unix(1700000001, 0).UTC(),
+	}
+	second := &stateCallbackTransport{
+		answer:    SessionDescription{SDP: "answer-sdp", Type: "answer"},
+		state:     realtimev1.ConnectionConnected,
+		updatedAt: time.Unix(1700000002, 0).UTC(),
+	}
+	factory := &sequenceStateCallbackTransportFactory{transports: []*stateCallbackTransport{first, second}}
+	manager := NewMemoryConnectionManager(factory)
+	request := validOpenConnectionRequest()
+
+	if _, err := manager.Open(context.Background(), request); !errors.Is(err, answerErr) {
+		t.Fatalf("failed Open() error = %v, want %v", err, answerErr)
+	}
+	if _, err := manager.GetCurrent(context.Background(), request.SessionID); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("GetCurrent() after failed Open() error = %v, want %v", err, ErrConnectionNotFound)
+	}
+
+	connection, err := manager.Open(context.Background(), request)
+	if err != nil {
+		t.Fatalf("retry Open() error = %v", err)
+	}
+	if connection.State != realtimev1.ConnectionConnected {
+		t.Fatalf("retry connection state = %q, want %q", connection.State, realtimev1.ConnectionConnected)
+	}
+	snapshot, err := manager.GetCurrent(context.Background(), request.SessionID)
+	if err != nil {
+		t.Fatalf("GetCurrent() after retry error = %v", err)
+	}
+	if snapshot.ConnectionID != connection.ID || snapshot.State != realtimev1.ConnectionConnected {
+		t.Fatalf("retry snapshot = %#v", snapshot)
+	}
+}
+
 func TestMemoryConnectionManagerRejectsChangedOfferForIdempotencyKey(t *testing.T) {
 	factory := &fakeTransportFactory{transport: &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}}
 	manager := NewMemoryConnectionManager(factory)
@@ -404,6 +527,97 @@ func TestMemoryConnectionManagerDoesNotBlockOtherSessionsDuringOffer(t *testing.
 	}
 }
 
+func TestMemoryConnectionManagerCloseDoesNotWaitForAnswer(t *testing.T) {
+	answerStarted := make(chan struct{})
+	answerRelease := make(chan struct{})
+	transport := &blockingAnswerTransport{
+		answer:        SessionDescription{SDP: "answer-sdp", Type: "answer"},
+		answerStarted: answerStarted,
+		answerRelease: answerRelease,
+	}
+	manager := NewMemoryConnectionManager(&singleTransportFactory{transport: transport})
+	request := validOpenConnectionRequest()
+
+	openResult := make(chan error, 1)
+	go func() {
+		_, err := manager.Open(context.Background(), request)
+		openResult <- err
+	}()
+	<-answerStarted
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- manager.Close(context.Background(), request.SessionID) }()
+	released := false
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		close(answerRelease)
+		released = true
+		t.Fatal("Close() waited for Answer() to return")
+	}
+	if !released {
+		close(answerRelease)
+	}
+	if err := <-openResult; !errors.Is(err, ErrConnectionClosing) {
+		t.Fatalf("Open() error = %v, want %v", err, ErrConnectionClosing)
+	}
+}
+
+func TestMemoryConnectionManagerHidesOpeningConnection(t *testing.T) {
+	answerStarted := make(chan struct{})
+	answerRelease := make(chan struct{})
+	transport := &blockingAnswerTransport{
+		answer:        SessionDescription{SDP: "answer-sdp", Type: "answer"},
+		answerStarted: answerStarted,
+		answerRelease: answerRelease,
+	}
+	manager := NewMemoryConnectionManager(&singleTransportFactory{transport: transport})
+	request := validOpenConnectionRequest()
+	connectionID := "rtc_000001"
+
+	openResult := make(chan error, 1)
+	go func() {
+		_, err := manager.Open(context.Background(), request)
+		openResult <- err
+	}()
+	<-answerStarted
+
+	if _, err := manager.GetCurrent(context.Background(), request.SessionID); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("GetCurrent() during opening error = %v, want %v", err, ErrConnectionNotFound)
+	}
+	if _, err := manager.ApplyState(
+		context.Background(), request.SessionID, connectionID,
+		realtimev1.ConnectionConnected, request.CreatedAt.Add(time.Second),
+	); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("ApplyState() during opening error = %v, want %v", err, ErrConnectionNotFound)
+	}
+	if _, err := manager.AddCandidates(context.Background(), request.SessionID, CandidateRequest{
+		ConnectionID: connectionID,
+		Candidates:   []ICECandidate{{ID: "candidate-1", Candidate: "candidate:1"}},
+	}); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("AddCandidates() during opening error = %v, want %v", err, ErrConnectionNotFound)
+	}
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- manager.Close(context.Background(), request.SessionID) }()
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		close(answerRelease)
+		t.Fatal("Close() waited for Answer() to return")
+	}
+	close(answerRelease)
+	if err := <-openResult; !errors.Is(err, ErrConnectionClosing) {
+		t.Fatalf("Open() error = %v, want %v", err, ErrConnectionClosing)
+	}
+}
+
 func validOpenConnectionRequest() OpenConnectionRequest {
 	return OpenConnectionRequest{
 		SessionID: "session-1", IdempotencyKey: "offer-device-1",
@@ -421,6 +635,59 @@ type fakeTransportFactory struct {
 	once        sync.Once
 }
 
+type stateCallbackTransportFactory struct {
+	transport *stateCallbackTransport
+}
+
+type sequenceStateCallbackTransportFactory struct {
+	transports []*stateCallbackTransport
+	calls      int
+}
+
+func (f *stateCallbackTransportFactory) Create(
+	_ context.Context,
+	_ string,
+	_ string,
+	onState ConnectionStateHandler,
+) (ConnectionTransport, error) {
+	f.transport.onState = onState
+	return f.transport, nil
+}
+
+func (f *sequenceStateCallbackTransportFactory) Create(
+	_ context.Context,
+	_ string,
+	_ string,
+	onState ConnectionStateHandler,
+) (ConnectionTransport, error) {
+	transport := f.transports[f.calls]
+	f.calls++
+	transport.onState = onState
+	return transport, nil
+}
+
+type stateCallbackTransport struct {
+	answer    SessionDescription
+	answerErr error
+	state     realtimev1.ConnectionState
+	updatedAt time.Time
+	onState   ConnectionStateHandler
+}
+
+func (t *stateCallbackTransport) Answer(context.Context, SessionDescription) (SessionDescription, error) {
+	t.onState(t.state, t.updatedAt)
+	if t.answerErr != nil {
+		return SessionDescription{}, t.answerErr
+	}
+	return t.answer, nil
+}
+
+func (*stateCallbackTransport) AddCandidate(context.Context, ICECandidate) error { return nil }
+
+func (*stateCallbackTransport) EndCandidates(context.Context) error { return nil }
+
+func (*stateCallbackTransport) Close(context.Context) error { return nil }
+
 type blockingTransportFactory struct {
 	mu           sync.Mutex
 	firstStarted chan struct{}
@@ -434,13 +701,13 @@ type sequenceTransportFactory struct {
 	calls      int
 }
 
-func (f *sequenceTransportFactory) Create(_ context.Context, _, _ string) (ConnectionTransport, error) {
+func (f *sequenceTransportFactory) Create(_ context.Context, _, _ string, _ ConnectionStateHandler) (ConnectionTransport, error) {
 	transport := f.transports[f.calls]
 	f.calls++
 	return transport, nil
 }
 
-func (f *blockingTransportFactory) Create(_ context.Context, _, _ string) (ConnectionTransport, error) {
+func (f *blockingTransportFactory) Create(_ context.Context, _, _ string, _ ConnectionStateHandler) (ConnectionTransport, error) {
 	f.mu.Lock()
 	f.calls++
 	call := f.calls
@@ -454,7 +721,7 @@ func (f *blockingTransportFactory) Create(_ context.Context, _, _ string) (Conne
 	return &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}, nil
 }
 
-func (f *fakeTransportFactory) Create(_ context.Context, _, _ string) (ConnectionTransport, error) {
+func (f *fakeTransportFactory) Create(_ context.Context, _, _ string, _ ConnectionStateHandler) (ConnectionTransport, error) {
 	f.createCalls++
 	if f.started != nil {
 		f.once.Do(func() { close(f.started) })
@@ -484,6 +751,30 @@ type fakeTransport struct {
 	closeStarted       chan struct{}
 	closeRelease       <-chan struct{}
 	closeOnce          sync.Once
+}
+
+type blockingAnswerTransport struct {
+	answer        SessionDescription
+	answerStarted chan struct{}
+	answerRelease <-chan struct{}
+}
+
+func (t *blockingAnswerTransport) Answer(context.Context, SessionDescription) (SessionDescription, error) {
+	close(t.answerStarted)
+	<-t.answerRelease
+	return t.answer, nil
+}
+
+func (*blockingAnswerTransport) AddCandidate(context.Context, ICECandidate) error { return nil }
+
+func (*blockingAnswerTransport) EndCandidates(context.Context) error { return nil }
+
+func (*blockingAnswerTransport) Close(context.Context) error { return nil }
+
+type singleTransportFactory struct{ transport ConnectionTransport }
+
+func (f *singleTransportFactory) Create(context.Context, string, string, ConnectionStateHandler) (ConnectionTransport, error) {
+	return f.transport, nil
 }
 
 func (f *fakeTransport) Answer(_ context.Context, _ SessionDescription) (SessionDescription, error) {
@@ -522,6 +813,8 @@ var _ ConnectionTransportFactory = (*fakeTransportFactory)(nil)
 var _ ConnectionTransportFactory = (*blockingTransportFactory)(nil)
 var _ ConnectionTransportFactory = (*sequenceTransportFactory)(nil)
 var _ ConnectionTransport = (*fakeTransport)(nil)
+var _ ConnectionTransportFactory = (*singleTransportFactory)(nil)
+var _ ConnectionTransport = (*blockingAnswerTransport)(nil)
 
 func sameStrings(got, want []string) bool {
 	if len(got) != len(want) {

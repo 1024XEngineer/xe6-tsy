@@ -3,7 +3,9 @@ package qwen
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -221,6 +223,15 @@ func (s *stream) write(ctx context.Context, value any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if event, ok := value.(map[string]any); ok {
+		if _, exists := event["event_id"]; !exists {
+			eventID, err := newEventID()
+			if err != nil {
+				return err
+			}
+			event["event_id"] = eventID
+		}
+	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -229,6 +240,14 @@ func (s *stream) write(ctx context.Context, value any) error {
 		return err
 	}
 	return nil
+}
+
+func newEventID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate Qwen ASR event ID: %w", err)
+	}
+	return "event_" + hex.EncodeToString(random[:]), nil
 }
 
 func (s *stream) readLoop(ctx context.Context) {

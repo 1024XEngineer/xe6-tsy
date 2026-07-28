@@ -26,6 +26,7 @@ func TestProviderMapsRealtimeEvents(t *testing.T) {
 			return
 		}
 		defer conn.Close()
+		seenEventIDs := make(map[string]struct{})
 		if _, data, err := conn.ReadMessage(); err != nil {
 			t.Errorf("read session update: %v", err)
 			return
@@ -34,6 +35,7 @@ func TestProviderMapsRealtimeEvents(t *testing.T) {
 			if json.Unmarshal(data, &event) != nil || event["type"] != "session.update" {
 				t.Errorf("session update = %s", data)
 			}
+			assertUniqueEventID(t, event, seenEventIDs)
 		}
 		_ = conn.WriteJSON(map[string]any{"type": "session.updated"})
 		_ = conn.WriteJSON(map[string]any{"type": "input_audio_buffer.speech_started", "audio_start_ms": 100})
@@ -41,14 +43,13 @@ func TestProviderMapsRealtimeEvents(t *testing.T) {
 			t.Errorf("read audio append: %v", err)
 			return
 		} else {
-			var event struct {
-				Type  string `json:"type"`
-				Audio string `json:"audio"`
-			}
-			if json.Unmarshal(data, &event) != nil || event.Type != "input_audio_buffer.append" {
+			var event map[string]any
+			if json.Unmarshal(data, &event) != nil || event["type"] != "input_audio_buffer.append" {
 				t.Errorf("audio append = %s", data)
 			}
-			decoded, decodeErr := base64.StdEncoding.DecodeString(event.Audio)
+			assertUniqueEventID(t, event, seenEventIDs)
+			encodedAudio, _ := event["audio"].(string)
+			decoded, decodeErr := base64.StdEncoding.DecodeString(encodedAudio)
 			if decodeErr != nil || string(decoded) != "pcm" {
 				t.Errorf("audio payload = %q, err=%v", decoded, decodeErr)
 			}
@@ -57,8 +58,12 @@ func TestProviderMapsRealtimeEvents(t *testing.T) {
 		if _, data, err := conn.ReadMessage(); err != nil {
 			t.Errorf("read finish: %v", err)
 			return
-		} else if !strings.Contains(string(data), `"session.finish"`) {
-			t.Errorf("finish event = %s", data)
+		} else {
+			var event map[string]any
+			if json.Unmarshal(data, &event) != nil || event["type"] != "session.finish" {
+				t.Errorf("finish event = %s", data)
+			}
+			assertUniqueEventID(t, event, seenEventIDs)
 		}
 		_ = conn.WriteJSON(map[string]any{"type": "input_audio_buffer.speech_stopped", "audio_end_ms": 1100})
 		_ = conn.WriteJSON(map[string]any{"type": "conversation.item.input_audio_transcription.completed", "language": "zh", "transcript": "你好"})
@@ -91,6 +96,20 @@ func TestProviderMapsRealtimeEvents(t *testing.T) {
 	if len(events) != 2 || events[0].Type != asr.EventPartial || events[1].Type != asr.EventFinal {
 		t.Fatalf("events = %#v", events)
 	}
+}
+
+func assertUniqueEventID(t *testing.T, event map[string]any, seen map[string]struct{}) {
+	t.Helper()
+	eventID, ok := event["event_id"].(string)
+	if !ok || eventID == "" {
+		t.Errorf("event_id = %#v", event["event_id"])
+		return
+	}
+	if _, exists := seen[eventID]; exists {
+		t.Errorf("duplicate event_id = %q", eventID)
+		return
+	}
+	seen[eventID] = struct{}{}
 }
 
 func TestDeriveWebSocketURL(t *testing.T) {

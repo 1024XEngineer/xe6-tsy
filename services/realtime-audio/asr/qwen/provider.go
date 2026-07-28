@@ -92,7 +92,8 @@ func (p *Provider) StartStream(ctx context.Context, request asr.StreamRequest) (
 	streamCtx, cancel := context.WithCancel(ctx)
 	s := &stream{
 		conn: conn, cancel: cancel, model: p.config.Model, provider: p.config.Provider,
-		sampleRate: p.config.SampleRate, events: make(chan asr.Event, eventBufferSize+1), done: make(chan struct{}), readDone: make(chan struct{}),
+		sampleRate: p.config.SampleRate, sourceLanguage: request.SourceLanguage,
+		events: make(chan asr.Event, eventBufferSize+1), done: make(chan struct{}), readDone: make(chan struct{}),
 	}
 	if err := s.write(streamCtx, sessionUpdateEvent(request.SourceLanguage, p.config)); err != nil {
 		cancel()
@@ -166,14 +167,15 @@ func realtimeEndpoint(raw, model string) (string, error) {
 }
 
 type stream struct {
-	conn       websocketConn
-	cancel     context.CancelFunc
-	model      string
-	provider   string
-	sampleRate int
-	events     chan asr.Event
-	done       chan struct{}
-	readDone   chan struct{}
+	conn           websocketConn
+	cancel         context.CancelFunc
+	model          string
+	provider       string
+	sampleRate     int
+	sourceLanguage string
+	events         chan asr.Event
+	done           chan struct{}
+	readDone       chan struct{}
 
 	writeMu sync.Mutex
 	stateMu sync.Mutex
@@ -206,18 +208,37 @@ func (s *stream) PushAudio(ctx context.Context, audio []byte) error {
 func (s *stream) Events() <-chan asr.Event { return s.events }
 
 func (s *stream) Finish(ctx context.Context) (asr.FinalResult, error) {
+	if result, err, completed := s.completedResult(); completed {
+		return result, err
+	}
 	s.finish.Do(func() {
 		if err := s.write(ctx, map[string]any{"type": "session.finish"}); err != nil {
 			s.setError(err)
 			s.shutdown()
 		}
 	})
+	if result, err, completed := s.completedResult(); completed {
+		return result, err
+	}
 	select {
 	case <-s.done:
 		return s.finalResult()
 	case <-ctx.Done():
+		if result, err, completed := s.completedResult(); completed {
+			return result, err
+		}
 		s.shutdown()
 		return asr.FinalResult{}, ctx.Err()
+	}
+}
+
+func (s *stream) completedResult() (asr.FinalResult, error, bool) {
+	select {
+	case <-s.done:
+		result, err := s.finalResult()
+		return result, err, true
+	default:
+		return asr.FinalResult{}, nil, false
 	}
 }
 
@@ -328,8 +349,12 @@ func (s *stream) handleEvent(data []byte) error {
 			s.emitEvent(asr.Event{Type: asr.EventPartial, Text: text})
 		}
 	case "conversation.item.input_audio_transcription.completed":
+		sourceLanguage := s.sourceLanguage
+		if sourceLanguage == "" {
+			sourceLanguage = event.Language
+		}
 		result := asr.FinalResult{
-			Text: event.Transcript, SourceLanguage: event.Language,
+			Text: event.Transcript, SourceLanguage: sourceLanguage,
 			Provider: s.provider, Model: s.model,
 			AudioStart: time.Duration(s.started) * time.Millisecond,
 			AudioEnd:   time.Duration(s.ended) * time.Millisecond,

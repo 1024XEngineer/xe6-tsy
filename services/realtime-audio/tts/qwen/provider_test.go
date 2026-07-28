@@ -69,6 +69,23 @@ func TestProviderStreamsQwenTTSAudio(t *testing.T) {
 	}
 }
 
+func TestFinishPrefersCompletedResultOverCanceledContext(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	want := tts.Result{Provider: "aliyun", Model: "qwen3-tts-flash"}
+	stream := &stream{done: done, result: want}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, err := stream.Finish(ctx)
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("Finish() result = %#v, want %#v", got, want)
+	}
+}
+
 func TestFinishCancellationDoesNotCloseChunksWhileWorkerSends(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -89,7 +89,7 @@ func TestProviderMapsRealtimeEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Finish() error = %v", err)
 	}
-	if result.Text != "你好" || result.SourceLanguage != "zh" || result.AudioDuration != time.Second {
+	if result.Text != "你好" || result.SourceLanguage != "zh-CN" || result.AudioDuration != time.Second {
 		t.Fatalf("result = %#v", result)
 	}
 	var events []asr.Event
@@ -98,6 +98,23 @@ func TestProviderMapsRealtimeEvents(t *testing.T) {
 	}
 	if len(events) != 2 || events[0].Type != asr.EventPartial || events[1].Type != asr.EventFinal {
 		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestFinishPrefersCompletedResultOverCanceledContext(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	want := asr.FinalResult{Text: "final", SourceLanguage: "zh-CN"}
+	stream := &stream{done: done, result: want}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, err := stream.Finish(ctx)
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("Finish() result = %#v, want %#v", got, want)
 	}
 }
 

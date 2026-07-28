@@ -108,15 +108,35 @@ type stream struct {
 func (s *stream) Chunks() <-chan tts.AudioChunk { return s.chunks }
 
 func (s *stream) Finish(ctx context.Context) (tts.Result, error) {
+	if result, err, completed := s.completedResult(); completed {
+		return result, err
+	}
 	select {
 	case <-s.done:
-		s.stateMu.Lock()
-		defer s.stateMu.Unlock()
-		return s.result, s.err
+		return s.finalResult()
 	case <-ctx.Done():
+		if result, err, completed := s.completedResult(); completed {
+			return result, err
+		}
 		s.cancel()
 		return tts.Result{}, ctx.Err()
 	}
+}
+
+func (s *stream) completedResult() (tts.Result, error, bool) {
+	select {
+	case <-s.done:
+		result, err := s.finalResult()
+		return result, err, true
+	default:
+		return tts.Result{}, nil, false
+	}
+}
+
+func (s *stream) finalResult() (tts.Result, error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.result, s.err
 }
 
 func (s *stream) Close() error {

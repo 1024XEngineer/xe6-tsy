@@ -315,11 +315,10 @@ func (r *turnRepository) ListHistory(_ context.Context, accountID string, query 
 	return r.historyResponse, nil
 }
 
-func (r *turnRepository) ParticipantBelongsToSession(context.Context, string, string) (bool, error) {
-	return r.participantInSession, nil
-}
-
 func (r *turnRepository) CorrectAttribution(_ context.Context, update turns.AttributionUpdate) (recordsv1.VoiceTurn, error) {
+	if !r.participantInSession {
+		return recordsv1.VoiceTurn{}, turns.ErrInvalidAttribution
+	}
 	r.attributionUpdate = update
 	updated := r.turn
 	updated.ParticipantID = &update.ParticipantID

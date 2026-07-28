@@ -116,6 +116,17 @@ func TestConsumeFinalTurnRejectsResolvedAttributionWithoutParticipant(t *testing
 	}
 }
 
+func TestConsumeFinalTurnRejectsEmptyParticipantID(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
+	event := validEvent()
+	emptyParticipantID := ""
+	event.ParticipantID = &emptyParticipantID
+
+	if err := service.ConsumeFinalTurn(t.Context(), event); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
+	}
+}
+
 func TestConsumeFinalTurnRejectsUnknownAttributionStatus(t *testing.T) {
 	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
 	event := validEvent()

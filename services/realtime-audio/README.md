@@ -42,6 +42,26 @@ services/realtime-audio/
 └── session/
 ```
 
+## Qwen provider adapters
+
+The provider packages keep vendor protocol details outside `pipeline`:
+
+- `asr/qwen` uses the Qwen realtime WebSocket endpoint. It sends `session.update`, streams PCM through `input_audio_buffer.append`, and sends `session.finish` before waiting for `session.finished`.
+- `translate/qwen` uses the OpenAI-compatible `POST /chat/completions` endpoint with `qwen3.6-flash`. Thinking is disabled by default for turn-level latency.
+- `tts/qwen` uses the Qwen3-TTS-Flash `POST /services/aigc/multimodal-generation/generation` endpoint with `X-DashScope-SSE: enable`, decoding Base64 audio deltas into the local `tts.Stream` port.
+
+The adapters are constructed explicitly from environment-backed configuration. Keep API keys in an ignored `.env`; `.env.example` contains only placeholders. The current default remains the offline fake providers, so ordinary unit tests never call a third-party service.
+
+Official protocol references:
+
+- [Qwen ASR realtime interaction](https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process)
+- [Qwen ASR client events](https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-client-events)
+- [Qwen ASR server events](https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events)
+- [Qwen-TTS API](https://help.aliyun.com/zh/model-studio/qwen-tts-api)
+- [Qwen3.6 model release and model names](https://help.aliyun.com/zh/model-studio/newly-released-models)
+- [Qwen DashScope API](https://help.aliyun.com/zh/model-studio/qwen-api-via-dashscope)
+- [OpenAI-compatible DashScope API](https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope)
+
 `webrtc` 规划通过 `/realtime/v1` 提供信令接口，并校验 `services/api` 签发的短期实时连接票据。
 当前仅提供服务层信令骨架，尚未注册公网 HTTP 路由。后续可以由 API Gateway 转发该路径，
 但 PeerConnection 和连接状态始终由本服务管理。

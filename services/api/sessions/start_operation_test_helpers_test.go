@@ -53,16 +53,16 @@ func (r *startOperationRepository) BeginStartOperation(
 	if r.session.ID != params.SessionID || r.session.AccountID != params.AccountID {
 		return BeginStartOperationResult{}, ErrVoiceSessionNotFound
 	}
+	if r.operation != nil && r.operation.IdempotencyKey == params.IdempotencyKey {
+		if r.operation.RequestHash != params.RequestHash {
+			return BeginStartOperationResult{}, ErrIdempotencyKeyConflict
+		}
+		return BeginStartOperationResult{Operation: *r.operation, Replayed: true}, nil
+	}
 	if r.session.Status != StatusCreated {
 		return BeginStartOperationResult{}, ErrConcurrentTransition
 	}
 	if r.operation != nil {
-		if r.operation.IdempotencyKey == params.IdempotencyKey {
-			if r.operation.RequestHash != params.RequestHash {
-				return BeginStartOperationResult{}, ErrIdempotencyKeyConflict
-			}
-			return BeginStartOperationResult{Operation: *r.operation, Replayed: true}, nil
-		}
 		if r.operation.Status != StartOperationCompensated {
 			return BeginStartOperationResult{}, ErrSessionStartInProgress
 		}

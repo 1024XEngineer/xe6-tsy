@@ -165,6 +165,60 @@ func TestStartOperationRepositoryReplaysCompletedActivation(t *testing.T) {
 	}
 }
 
+func TestBeginStartOperationReplaysCompletedOperationForActiveSession(t *testing.T) {
+	repository := activatedStartOperationRepository(t)
+	params := validBeginStartOperationParams()
+	params.OperationID = "op_unused"
+
+	result, err := repository.BeginStartOperation(context.Background(), params)
+	if err != nil {
+		t.Fatalf("BeginStartOperation() error = %v", err)
+	}
+	if !result.Replayed ||
+		result.Operation.ID != "op_1" ||
+		result.Operation.Status != StartOperationCompleted {
+		t.Fatalf("BeginStartOperation() = %#v", result)
+	}
+}
+
+func TestBeginStartOperationRejectsDifferentRequestForActiveSession(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*BeginStartOperationParams)
+		want error
+	}{
+		{
+			name: "same key different hash",
+			edit: func(params *BeginStartOperationParams) {
+				params.RequestHash = "other"
+			},
+			want: ErrIdempotencyKeyConflict,
+		},
+		{
+			name: "different key",
+			edit: func(params *BeginStartOperationParams) {
+				params.OperationID = "op_2"
+				params.IdempotencyKey = "start_2"
+				params.RequestHash = "hash_2"
+			},
+			want: ErrConcurrentTransition,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := activatedStartOperationRepository(t)
+			params := validBeginStartOperationParams()
+			test.edit(&params)
+
+			_, err := repository.BeginStartOperation(context.Background(), params)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("BeginStartOperation() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
 func TestStartOperationRepositoryDeniesCompensationAfterActivation(t *testing.T) {
 	repository := activatedStartOperationRepository(t)
 

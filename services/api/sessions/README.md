@@ -65,6 +65,19 @@ strictly forbids Stop.
 Successful cleanup changes the operation to `compensated`; failed cleanup is
 persisted as `compensation_failed` so recovery does not depend on logs.
 
+Operation status semantics are fixed as follows:
+
+- `pending`: the same request may resume; a different request returns
+  `ErrSessionStartInProgress`;
+- `compensating`: one request owns cleanup and every other request is forbidden
+  from stopping realtime;
+- `completed`: the business session is `active`, and the same key and hash
+  replay the completed operation;
+- `compensated`: realtime cleanup completed; a new Start must use a new
+  idempotency key;
+- `compensation_failed`: cleanup is uncertain and new pipelines are forbidden
+  until a follow-up recovery flow resolves it.
+
 ## Start flow
 
 ```text

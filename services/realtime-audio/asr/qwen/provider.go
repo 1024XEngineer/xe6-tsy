@@ -164,7 +164,7 @@ func realtimeEndpoint(raw, model string) (string, error) {
 }
 
 type stream struct {
-	conn       *websocket.Conn
+	conn       websocketConn
 	cancel     context.CancelFunc
 	model      string
 	provider   string
@@ -182,6 +182,13 @@ type stream struct {
 	finish  sync.Once
 	stop    sync.Once
 	closed  sync.Once
+}
+
+type websocketConn interface {
+	WriteMessage(messageType int, data []byte) error
+	ReadMessage() (messageType int, p []byte, err error)
+	Close() error
+	SetWriteDeadline(deadline time.Time) error
 }
 
 func (s *stream) PushAudio(ctx context.Context, audio []byte) error {
@@ -221,8 +228,24 @@ func (s *stream) write(ctx context.Context, value any) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if err := ctx.Err(); err != nil {
+		_ = s.conn.Close()
 		return err
 	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = s.conn.SetWriteDeadline(deadline)
+	} else {
+		_ = s.conn.SetWriteDeadline(time.Time{})
+	}
+	defer s.conn.SetWriteDeadline(time.Time{})
+	writeDone := make(chan struct{})
+	defer close(writeDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = s.conn.Close()
+		case <-writeDone:
+		}
+	}()
 	if event, ok := value.(map[string]any); ok {
 		if _, exists := event["event_id"]; !exists {
 			eventID, err := newEventID()
@@ -237,6 +260,9 @@ func (s *stream) write(ctx context.Context, value any) error {
 		return err
 	}
 	if err := s.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return err
 	}
 	return nil

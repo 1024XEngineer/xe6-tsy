@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -119,3 +121,46 @@ func TestDeriveWebSocketURL(t *testing.T) {
 		t.Fatalf("deriveWebSocketURL() = %q, want %q", got, want)
 	}
 }
+
+func TestWriteClosesConnectionWhenContextIsCanceled(t *testing.T) {
+	conn := &blockingWriteConn{closed: make(chan struct{})}
+	stream := &stream{conn: conn}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- stream.write(ctx, map[string]any{"type": "session.finish"}) }()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("write() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("write() did not stop after context cancellation")
+	}
+	select {
+	case <-conn.closed:
+	default:
+		t.Fatal("write() did not close the WebSocket")
+	}
+}
+
+type blockingWriteConn struct {
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func (c *blockingWriteConn) WriteMessage(int, []byte) error {
+	<-c.closed
+	return errors.New("connection closed")
+}
+
+func (*blockingWriteConn) ReadMessage() (int, []byte, error) {
+	return 0, nil, errors.New("not implemented")
+}
+
+func (c *blockingWriteConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return nil
+}
+
+func (*blockingWriteConn) SetWriteDeadline(time.Time) error { return nil }

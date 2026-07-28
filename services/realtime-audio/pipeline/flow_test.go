@@ -102,6 +102,41 @@ func TestTurnProcessorPropagatesUsageAcceptanceFailure(t *testing.T) {
 	}
 }
 
+func TestTurnProcessorPropagatesPostFinalFailureClassification(t *testing.T) {
+	wantErr := errors.New("translation usage unavailable")
+	finalSink := &recordingFinalSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: finalSink,
+		Usage:      &recordingUsageSink{failService: "translation", err: wantErr},
+		Audio:      &recordingAudioSink{},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+			Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+		}}),
+		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active",
+			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}),
+		Pipeline: service,
+	})
+
+	_, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{
+		SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1",
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("ProcessAudio() error = %v, want %v", err, wantErr)
+	}
+	if !errors.Is(err, ErrFinalTurnAccepted) {
+		t.Fatalf("ProcessAudio() error = %v, want ErrFinalTurnAccepted", err)
+	}
+	if len(finalSink.events) != 1 {
+		t.Fatalf("accepted FinalTurns = %d, want 1", len(finalSink.events))
+	}
+}
+
 func TestTurnProcessorConsumesASREventsBeforePushReturns(t *testing.T) {
 	stream := &pushEventStream{
 		events:      make(chan asr.Event),

@@ -133,6 +133,55 @@ func TestTurnWriterConcurrentReplayCreatesOneTurn(t *testing.T) {
 	}
 }
 
+func TestTurnWriterConcurrentConflictingReplayKeepsOnePayload(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	writer := NewTurnWriter(pool)
+	first := finalTurnEvent("event_01", "turn_01", "session_01", 1)
+	first.ParticipantID = nil
+	first.AttributionStatus = recordsv1.AttributionPending
+	second := first
+	second.TranslatedText = "different translation"
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var callersDone sync.WaitGroup
+	for _, event := range []recordsv1.FinalTurnEvent{first, second} {
+		callersDone.Go(func() {
+			<-start
+			results <- writer.StoreFinalTurn(t.Context(), event)
+		})
+	}
+	close(start)
+	callersDone.Wait()
+	close(results)
+
+	var successes, conflicts int
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, domain.ErrConflict):
+			conflicts++
+		default:
+			t.Fatalf("concurrent StoreFinalTurn() error = %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent results = %d successes, %d conflicts; want one each", successes, conflicts)
+	}
+
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM voice_turns`).Scan(&count); err != nil {
+		t.Fatalf("count final turns: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("final turn count = %d, want 1", count)
+	}
+}
+
 func TestTurnWriterRejectsParticipantFromAnotherSession(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {

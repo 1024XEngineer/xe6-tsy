@@ -8,8 +8,7 @@ import (
 )
 
 const (
-	finalTurnTopic = "final_turn.recorded"
-	usageTopic     = "usage.recorded"
+	usageTopic = "usage.recorded"
 )
 
 var (
@@ -50,7 +49,7 @@ func (s *OutboxFinalTurnSink) Publish(ctx context.Context, event FinalTurnEvent)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.outbox.Append(ctx, finalTurnTopic, event.EventID, event)
+	return s.outbox.Append(ctx, recordsv1.FinalTurnTopic, event.EventID, event)
 }
 
 // OutboxUsageFactSink adapts UsageFact events to a durable outbox.

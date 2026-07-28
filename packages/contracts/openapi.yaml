@@ -217,7 +217,7 @@ components:
         speaker_label_snapshot: { type: [string, 'null'] }
         source_language: { type: string }
         target_language: { type: string }
-        language_config_version: { type: [integer, 'null'], format: int64 }
+        language_config_version: { type: integer, format: int64, minimum: 1 }
         source_text: { type: string }
         translated_text: { type: string }
         created_at: { type: string, format: date-time }

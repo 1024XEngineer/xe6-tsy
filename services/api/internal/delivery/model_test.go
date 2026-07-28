@@ -9,13 +9,14 @@ import (
 
 func TestFinalTurnSnapshotMatchesTurnsReadBoundary(t *testing.T) {
 	snapshot := FinalTurnSnapshot{
-		TurnID:         "turn-1",
-		SessionID:      "session-1",
-		SourceLanguage: "zh-CN",
-		TargetLanguage: "en-US",
-		SourceText:     "source",
-		TranslatedText: "translation",
-		CreatedAt:      time.Date(2026, 7, 24, 1, 0, 0, 0, time.UTC),
+		TurnID:                "turn-1",
+		SessionID:             "session-1",
+		SourceLanguage:        "zh-CN",
+		TargetLanguage:        "en-US",
+		LanguageConfigVersion: 1,
+		SourceText:            "source",
+		TranslatedText:        "translation",
+		CreatedAt:             time.Date(2026, 7, 24, 1, 0, 0, 0, time.UTC),
 	}
 
 	payload, err := json.Marshal(snapshot)
@@ -26,7 +27,7 @@ func TestFinalTurnSnapshotMatchesTurnsReadBoundary(t *testing.T) {
 	encoded := string(payload)
 	for _, field := range []string{
 		`"turn_id"`, `"session_id"`, `"participant_id":null`,
-		`"speaker_label_snapshot":null`, `"language_config_version":null`,
+		`"speaker_label_snapshot":null`, `"language_config_version":1`,
 		`"source_text"`, `"translated_text"`, `"created_at"`,
 	} {
 		if !strings.Contains(encoded, field) {

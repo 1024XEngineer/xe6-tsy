@@ -7,6 +7,7 @@ import (
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
 func TestConsumeFinalTurnIsIdempotentAndPreservesEvent(t *testing.T) {
@@ -36,15 +37,8 @@ func TestConsumeFinalTurnIsIdempotentAndPreservesEvent(t *testing.T) {
 	if err := service.ConsumeFinalTurn(context.Background(), event); err != nil {
 		t.Fatalf("first ConsumeFinalTurn() error = %v", err)
 	}
-	duplicateEventID := event
-	duplicateEventID.TurnID = "vt_02"
-	if err := service.ConsumeFinalTurn(context.Background(), duplicateEventID); err != nil {
-		t.Fatalf("duplicate event ID ConsumeFinalTurn() error = %v", err)
-	}
-	duplicateTurnID := event
-	duplicateTurnID.EventID = "evt_02"
-	if err := service.ConsumeFinalTurn(context.Background(), duplicateTurnID); err != nil {
-		t.Fatalf("duplicate turn ID ConsumeFinalTurn() error = %v", err)
+	if err := service.ConsumeFinalTurn(context.Background(), event); err != nil {
+		t.Fatalf("replay ConsumeFinalTurn() error = %v", err)
 	}
 
 	if got := len(repository.events); got != 1 {
@@ -52,6 +46,51 @@ func TestConsumeFinalTurnIsIdempotentAndPreservesEvent(t *testing.T) {
 	}
 	if got := repository.events[0]; got != event {
 		t.Fatalf("stored event = %#v, want %#v", got, event)
+	}
+}
+
+func TestConsumeFinalTurnRejectsConflictingIdempotencyKeys(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*recordsv1.FinalTurnEvent)
+	}{
+		{
+			name: "event ID",
+			mutate: func(event *recordsv1.FinalTurnEvent) {
+				event.TranslatedText = "different translation"
+			},
+		},
+		{
+			name: "turn ID",
+			mutate: func(event *recordsv1.FinalTurnEvent) {
+				event.EventID = "evt_02"
+				event.TranslatedText = "different translation"
+			},
+		},
+		{
+			name: "session sequence number",
+			mutate: func(event *recordsv1.FinalTurnEvent) {
+				event.EventID = "evt_02"
+				event.TurnID = "vt_02"
+				event.TranslatedText = "different translation"
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &fakeRepository{}
+			service := NewService(repository, fakeSessionOwners{}, nil)
+			event := validEvent()
+			if err := service.ConsumeFinalTurn(context.Background(), event); err != nil {
+				t.Fatalf("first ConsumeFinalTurn() error = %v", err)
+			}
+			test.mutate(&event)
+
+			if err := service.ConsumeFinalTurn(context.Background(), event); !errors.Is(err, domain.ErrConflict) {
+				t.Fatalf("conflicting ConsumeFinalTurn() error = %v, want conflict", err)
+			}
+		})
 	}
 }
 
@@ -71,6 +110,16 @@ func TestConsumeFinalTurnRejectsUnknownAttributionStatus(t *testing.T) {
 	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
 	event := validEvent()
 	event.AttributionStatus = "unknown"
+
+	if err := service.ConsumeFinalTurn(context.Background(), event); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
+	}
+}
+
+func TestConsumeFinalTurnRejectsEmptySpeakerCode(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
+	event := validEvent()
+	event.SpeakerCode = ""
 
 	if err := service.ConsumeFinalTurn(context.Background(), event); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
@@ -175,20 +224,28 @@ func TestReadFinalTurnsPassesAccountScope(t *testing.T) {
 func validEvent() recordsv1.FinalTurnEvent {
 	participantID := "p_01"
 	return recordsv1.FinalTurnEvent{
-		EventID:           "evt_01",
-		TurnID:            "vt_01",
-		SessionID:         "vs_01",
-		ParticipantID:     &participantID,
-		SourceLanguage:    "en-US",
-		TargetLanguage:    "zh-CN",
-		AttributionStatus: recordsv1.AttributionProvisional,
+		EventVersion:          recordsv1.FinalTurnEventVersion,
+		EventID:               "evt_01",
+		TraceID:               "trace_01",
+		TurnID:                "vt_01",
+		SessionID:             "vs_01",
+		ParticipantID:         &participantID,
+		SequenceNo:            1,
+		SourceLanguage:        "en-US",
+		TargetLanguage:        "zh-CN",
+		LanguageConfigVersion: 1,
+		SourceText:            "source",
+		TranslatedText:        "translation",
+		SpeakerCode:           "speaker_01",
+		AttributionStatus:     recordsv1.AttributionProvisional,
+		StartedAt:             time.Date(2026, 7, 27, 8, 0, 0, 0, time.UTC),
+		EndedAt:               time.Date(2026, 7, 27, 8, 0, 1, 0, time.UTC),
+		OccurredAt:            time.Date(2026, 7, 27, 8, 0, 2, 0, time.UTC),
 	}
 }
 
 type fakeRepository struct {
 	events               []recordsv1.FinalTurnEvent
-	eventIDs             map[string]struct{}
-	turnIDs              map[string]struct{}
 	turn                 recordsv1.VoiceTurn
 	listResponse         recordsv1.VoiceTurnListResponse
 	historyResponse      recordsv1.VoiceTurnListResponse
@@ -199,18 +256,27 @@ type fakeRepository struct {
 }
 
 func (r *fakeRepository) StoreFinalTurn(_ context.Context, event recordsv1.FinalTurnEvent) error {
-	if r.eventIDs == nil {
-		r.eventIDs = make(map[string]struct{})
-		r.turnIDs = make(map[string]struct{})
+	hash, err := recordsv1.FinalTurnEventPayloadHash(event)
+	if err != nil {
+		return err
 	}
-	if _, exists := r.eventIDs[event.EventID]; exists {
+	duplicate := false
+	for _, stored := range r.events {
+		if stored.EventID != event.EventID && stored.TurnID != event.TurnID && (stored.SessionID != event.SessionID || stored.SequenceNo != event.SequenceNo) {
+			continue
+		}
+		duplicate = true
+		storedHash, err := recordsv1.FinalTurnEventPayloadHash(stored)
+		if err != nil {
+			return err
+		}
+		if storedHash != hash {
+			return domain.ErrConflict
+		}
+	}
+	if duplicate {
 		return nil
 	}
-	if _, exists := r.turnIDs[event.TurnID]; exists {
-		return nil
-	}
-	r.eventIDs[event.EventID] = struct{}{}
-	r.turnIDs[event.TurnID] = struct{}{}
 	r.events = append(r.events, event)
 	return nil
 }

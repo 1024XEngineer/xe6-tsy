@@ -64,6 +64,9 @@ func TestFinalTurnEventJSONPreservesNullableAttribution(t *testing.T) {
 	if got, want := actual["language_config_version"], float64(3); got != want {
 		t.Fatalf("language_config_version = %v, want %v", got, want)
 	}
+	if got, want := actual["event_version"], float64(FinalTurnEventVersion); got != want {
+		t.Fatalf("event_version = %v, want %v", got, want)
+	}
 	if got, want := actual["attribution_status"], string(AttributionPending); got != want {
 		t.Fatalf("attribution_status = %v, want %q", got, want)
 	}
@@ -79,6 +82,7 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 		name   string
 		mutate func(*FinalTurnEvent)
 	}{
+		{name: "event version", mutate: func(event *FinalTurnEvent) { event.EventVersion = 2 }},
 		{name: "event id", mutate: func(event *FinalTurnEvent) { event.EventID = "" }},
 		{name: "trace id", mutate: func(event *FinalTurnEvent) { event.TraceID = "" }},
 		{name: "turn id", mutate: func(event *FinalTurnEvent) { event.TurnID = "" }},
@@ -88,6 +92,7 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 		{name: "target language", mutate: func(event *FinalTurnEvent) { event.TargetLanguage = "" }},
 		{name: "source text", mutate: func(event *FinalTurnEvent) { event.SourceText = "" }},
 		{name: "translated text", mutate: func(event *FinalTurnEvent) { event.TranslatedText = "" }},
+		{name: "speaker code", mutate: func(event *FinalTurnEvent) { event.SpeakerCode = "" }},
 		{name: "language config version", mutate: func(event *FinalTurnEvent) { event.LanguageConfigVersion = 0 }},
 		{name: "attribution status", mutate: func(event *FinalTurnEvent) { event.AttributionStatus = "unknown" }},
 		{name: "started at", mutate: func(event *FinalTurnEvent) { event.StartedAt = time.Time{} }},
@@ -105,8 +110,40 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 	}
 }
 
+func TestFinalTurnEventPayloadHashCoversCompleteEvent(t *testing.T) {
+	event := validFinalTurnEvent()
+	hash, err := FinalTurnEventPayloadHash(event)
+	if err != nil {
+		t.Fatalf("FinalTurnEventPayloadHash() error = %v", err)
+	}
+	replayHash, err := FinalTurnEventPayloadHash(event)
+	if err != nil {
+		t.Fatalf("FinalTurnEventPayloadHash() replay error = %v", err)
+	}
+	if hash != replayHash {
+		t.Fatalf("replay hash = %x, want %x", replayHash, hash)
+	}
+
+	for _, mutate := range []func(*FinalTurnEvent){
+		func(event *FinalTurnEvent) { event.TraceID = "trace_02" },
+		func(event *FinalTurnEvent) { event.OccurredAt = event.OccurredAt.Add(time.Second) },
+		func(event *FinalTurnEvent) { event.TranslatedText = "different translation" },
+	} {
+		changed := event
+		mutate(&changed)
+		changedHash, err := FinalTurnEventPayloadHash(changed)
+		if err != nil {
+			t.Fatalf("FinalTurnEventPayloadHash() changed event error = %v", err)
+		}
+		if changedHash == hash {
+			t.Fatalf("changed event hash = %x, want a different hash", changedHash)
+		}
+	}
+}
+
 func validFinalTurnEvent() FinalTurnEvent {
 	return FinalTurnEvent{
+		EventVersion:          FinalTurnEventVersion,
 		EventID:               "evt_01",
 		TraceID:               "trace_01",
 		TurnID:                "vt_01",

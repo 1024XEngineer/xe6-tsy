@@ -58,3 +58,17 @@ WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webr
 `AccessTokenVerifier` 验证后写入 Context 的账户身份；具体 Token 签发和验证策略接入前
 默认拒绝请求。未接入数据库、验证码发送、Token 签发、队列或 Email Provider 的业务方法
 必须返回 `not_implemented`，不得伪造成功结果。
+
+## 语音记录存储集成测试
+
+语音记录 migration 使用 PostgreSQL，并通过 `integration` build tag 与默认离线测试隔离。创建
+名称以 `_test` 结尾的专用本地数据库后，设置其连接地址并执行：
+
+```powershell
+docker compose -f ../../infra/docker-compose.yml exec postgres createdb -U postgres lingow_records_test
+$env:RECORDSTORE_TEST_DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/lingow_records_test?sslmode=disable'
+go test -count=1 -tags=integration ./recordstore/...
+```
+
+测试 helper 会为每个测试创建并删除随机 schema，拒绝连接名称不以 `_test` 结尾的数据库，且绝不使用
+`DATABASE_URL`。

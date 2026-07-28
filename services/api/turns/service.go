@@ -71,6 +71,9 @@ func (s *Service) ConsumeFinalTurn(ctx context.Context, event recordsv1.FinalTur
 	if err := event.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
+	if event.ParticipantID == nil && event.AttributionStatus != recordsv1.AttributionPending {
+		return fmt.Errorf("%w: participant_id is required for resolved attribution", ErrInvalidRequest)
+	}
 	return s.repository.StoreFinalTurn(ctx, event)
 }
 

@@ -96,6 +96,26 @@ func TestConsumeFinalTurnAllowsPendingWithoutParticipant(t *testing.T) {
 	}
 }
 
+func TestConsumeFinalTurnRejectsResolvedAttributionWithoutParticipant(t *testing.T) {
+	statuses := []recordsv1.AttributionStatus{
+		recordsv1.AttributionProvisional,
+		recordsv1.AttributionConfirmed,
+		recordsv1.AttributionCorrected,
+	}
+	for _, status := range statuses {
+		t.Run(string(status), func(t *testing.T) {
+			service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
+			event := validEvent()
+			event.ParticipantID = nil
+			event.AttributionStatus = status
+
+			if err := service.ConsumeFinalTurn(t.Context(), event); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
+			}
+		})
+	}
+}
+
 func TestConsumeFinalTurnRejectsUnknownAttributionStatus(t *testing.T) {
 	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
 	event := validEvent()

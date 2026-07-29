@@ -13,9 +13,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -150,6 +152,31 @@ func TestRecordsHTTPProductionCompositionReadsOnlyOwnedTurns(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("merged session turns status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+
+	usageService := usage.NewPersistentUseCases(usage.NewPostgresRepository(pool), accountRepository)
+	if _, err := usageService.Record(t.Context(), usage.RecordInput{
+		EventVersion:   usage.UsageEventVersion,
+		ID:             "usage_http_merge",
+		TraceID:        "trace_http_merge",
+		IdempotencyKey: "usage-key-http-merge",
+		AccountID:      registered.ID,
+		SessionID:      "session_http_owner",
+		TurnID:         "turn_http_owner",
+		ServiceType:    usage.StageTranslation,
+		Provider:       "test-provider",
+		Model:          "test-model",
+		OccurredAt:     time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("record merged-account usage: %v", err)
+	}
+
+	var storedAccountID string
+	if err := pool.QueryRow(t.Context(), `SELECT account_id FROM lingow_usage_records WHERE event_id=$1`, "usage_http_merge").Scan(&storedAccountID); err != nil {
+		t.Fatalf("read merged-account usage: %v", err)
+	}
+	if storedAccountID != owner.Account.ID {
+		t.Fatalf("stored usage account_id = %q, want original owner %q", storedAccountID, owner.Account.ID)
 	}
 }
 

@@ -1,0 +1,64 @@
+package delivery
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+// OutboxDispatcher publishes committed database outbox rows to Valkey. A
+// duplicate publish is safe because message creation and usage consumers are
+// idempotent; marking the row happens only after the broker accepts it.
+type OutboxDispatcher struct {
+	repository OutboxRepository
+	queue      Queue
+	interval   time.Duration
+}
+
+func NewOutboxDispatcher(repository OutboxRepository, queue Queue, interval time.Duration) *OutboxDispatcher {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	return &OutboxDispatcher{repository: repository, queue: queue, interval: interval}
+}
+
+func (d *OutboxDispatcher) Run(ctx context.Context) error {
+	if d == nil || d.repository == nil || d.queue == nil {
+		<-ctx.Done()
+		return nil
+	}
+	if err := d.DispatchOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	ticker := time.NewTicker(d.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := d.DispatchOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				return err
+			}
+		}
+	}
+}
+
+func (d *OutboxDispatcher) DispatchOnce(ctx context.Context) error {
+	records, err := d.repository.ClaimOutbox(ctx, 50)
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if err := d.queue.Enqueue(ctx, record.AttemptID, record.Key); err != nil {
+			if markErr := d.repository.MarkOutboxFailed(ctx, record.ID, err.Error()); markErr != nil {
+				return markErr
+			}
+			continue
+		}
+		if err := d.repository.MarkOutboxPublished(ctx, record.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}

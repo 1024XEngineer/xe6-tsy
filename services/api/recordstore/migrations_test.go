@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 9 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 9", len(migrations))
+	if len(migrations) != 10 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 10", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -102,6 +102,27 @@ func TestEmbeddedMigrations(t *testing.T) {
 	} {
 		if !strings.Contains(finalTurnOutbox.SQL, constraint) {
 			t.Fatalf("final-turn outbox migration does not contain %q", constraint)
+		}
+	}
+
+	sessionCompatibility := migrations[9]
+	if sessionCompatibility.Version != 10 ||
+		sessionCompatibility.Name != "session_start_operation_compatibility" {
+		t.Fatalf(
+			"migration = %#v, want version 10 named session_start_operation_compatibility",
+			sessionCompatibility,
+		)
+	}
+	for _, expected := range []string{
+		"DEPRECATED: legacy Start request table",
+		"CREATE TABLE voice_session_start_operations",
+		"voice_session_start_operations_one_unfinished_per_session",
+		"DROP CONSTRAINT IF EXISTS voice_sessions_timestamps_valid",
+		"started_at IS NULL AND ended_at >= created_at",
+		"missing one or more critical columns",
+	} {
+		if !strings.Contains(sessionCompatibility.SQL, expected) {
+			t.Fatalf("session compatibility migration does not contain %q", expected)
 		}
 	}
 }

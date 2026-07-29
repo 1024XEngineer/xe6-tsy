@@ -61,6 +61,10 @@ production startup from silently constructing fake behavior. Building Aliyun pro
 credentials and endpoints but does not make a network request. Ordinary unit tests continue to use
 offline fakes and never call a third-party service.
 
+`pipeline.NewPostgresFinalTurnSink(pool)` is the production final-turn sink adapter. It writes the
+validated immutable event into the API service's PostgreSQL `final_turn_outbox`; the API consumer
+worker owns receipt settlement and persistence into `voice_turns`.
+
 Official protocol references:
 
 - [Qwen ASR realtime interaction](https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process)

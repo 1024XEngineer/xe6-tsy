@@ -345,7 +345,7 @@ func (a *API) retryMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if r.Header.Get("Idempotency-Key") == "" {
+	if key := r.Header.Get("Idempotency-Key"); key == "" || len(key) > delivery.MaxIdempotencyKeyLength {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}

@@ -2,6 +2,9 @@ package delivery
 
 import "time"
 
+// MaxIdempotencyKeyLength is the public contract limit for create and retry keys.
+const MaxIdempotencyKeyLength = 200
+
 // Channel identifies a supported outbound delivery mechanism.
 type Channel string
 

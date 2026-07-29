@@ -177,40 +177,57 @@ func configurePionMedia(transport *PionTransport, connection pionMediaPeerConnec
 	connection.OnTrack(func(track pionRemoteTrack) {
 		_ = source.Attach(track)
 	})
+	transport.mu.Lock()
 	transport.audioSource = source
 	transport.events = newPionEventSink(channel)
 	transport.mediaConnection = connection
 	transport.mediaConfig = normalized
 	transport.mediaNow = now
+	transport.mu.Unlock()
 	return nil
 }
 
 func configurePionTTSTrack(transport *PionTransport) error {
-	if transport == nil || transport.mediaConnection == nil {
+	if transport == nil {
 		return nil
 	}
-	if transport.ttsTrack != nil {
-		return nil
+	transport.mediaSetupMu.Lock()
+	defer transport.mediaSetupMu.Unlock()
+	transport.mu.Lock()
+	if transport.closeDone != nil {
+		transport.mu.Unlock()
+		return ErrTransportClosed
 	}
+	mediaConnection := transport.mediaConnection
 	config := transport.mediaConfig
+	mediaNow := transport.mediaNow
+	ttsTrack := transport.ttsTrack
+	events := transport.events
+	transport.mu.Unlock()
+	if mediaConnection == nil || ttsTrack != nil {
+		return nil
+	}
 	track, err := pion.NewTrackLocalStaticRTP(pion.RTPCodecCapability{
 		MimeType: "audio/L16", ClockRate: uint32(config.SampleRate), Channels: uint16(config.Channels),
 	}, config.TTSTrackID, "realtime-audio")
 	if err != nil {
 		return fmt.Errorf("create TTS track: %w", err)
 	}
-	if _, err := transport.mediaConnection.AddTrack(track); err != nil {
-		return fmt.Errorf("add TTS track: %w", err)
-	}
 	audioTrack, err := newPionAudioTrack(track, config)
 	if err != nil {
 		return err
 	}
-	transport.ttsTrack = audioTrack
-	transport.playback, err = playback.NewService(playback.Dependencies{Track: audioTrack, Events: transport.events, Now: transport.mediaNow})
+	playbackService, err := playback.NewService(playback.Dependencies{Track: audioTrack, Events: events, Now: mediaNow})
 	if err != nil {
 		return fmt.Errorf("create playback service: %w", err)
 	}
+	if _, err := mediaConnection.AddTrack(track); err != nil {
+		return fmt.Errorf("add TTS track: %w", err)
+	}
+	transport.mu.Lock()
+	transport.ttsTrack = audioTrack
+	transport.playback = playbackService
+	transport.mu.Unlock()
 	return nil
 }
 

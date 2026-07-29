@@ -87,6 +87,7 @@ type Service struct {
 }
 
 type playback struct {
+	opMu     sync.Mutex
 	snapshot Snapshot
 	eventSeq int64
 }
@@ -121,6 +122,11 @@ func (s *Service) Publish(ctx context.Context, chunk pipeline.AudioChunk) error 
 		current = &playback{snapshot: Snapshot{SessionID: chunk.SessionID, TurnID: chunk.TurnID, PlaybackID: chunk.PlaybackID, State: StatePlaying}}
 		s.current[chunk.SessionID] = current
 	}
+	s.mu.Unlock()
+
+	current.opMu.Lock()
+	defer current.opMu.Unlock()
+	s.mu.Lock()
 	if current.snapshot.PlaybackID != chunk.PlaybackID || current.snapshot.State != StatePlaying {
 		s.mu.Unlock()
 		return ErrPlaybackNotActive
@@ -135,10 +141,15 @@ func (s *Service) Publish(ctx context.Context, chunk pipeline.AudioChunk) error 
 	if current.snapshot.LastSequence == 0 {
 		current.eventSeq++
 		event := s.eventLocked(current, EventStarted, "")
+		current.snapshot.LastSequence = chunk.SequenceNo
+		s.mu.Unlock()
 		if err := s.events.Publish(ctx, event); err != nil {
-			s.mu.Unlock()
 			return fmt.Errorf("publish playback started: %w", err)
 		}
+		if err := s.track.Write(ctx, chunk); err != nil {
+			return fmt.Errorf("write TTS audio: %w", err)
+		}
+		return nil
 	}
 	current.snapshot.LastSequence = chunk.SequenceNo
 	s.mu.Unlock()
@@ -208,6 +219,15 @@ func (s *Service) settle(ctx context.Context, sessionID, playbackID string, stat
 		s.mu.Unlock()
 		return ErrPlaybackNotActive
 	}
+	s.mu.Unlock()
+
+	current.opMu.Lock()
+	defer current.opMu.Unlock()
+	s.mu.Lock()
+	if current.snapshot.PlaybackID != playbackID {
+		s.mu.Unlock()
+		return ErrPlaybackNotActive
+	}
 	if current.snapshot.State != StatePlaying {
 		s.mu.Unlock()
 		return nil
@@ -215,11 +235,10 @@ func (s *Service) settle(ctx context.Context, sessionID, playbackID string, stat
 	current.snapshot.State = state
 	current.eventSeq++
 	event := s.eventLocked(current, eventType, reason)
+	s.mu.Unlock()
 	if err := s.events.Publish(ctx, event); err != nil {
-		s.mu.Unlock()
 		return fmt.Errorf("publish playback settlement: %w", err)
 	}
-	s.mu.Unlock()
 	if stop {
 		if err := s.track.Stop(ctx, playbackID); err != nil {
 			return fmt.Errorf("stop playback: %w", err)

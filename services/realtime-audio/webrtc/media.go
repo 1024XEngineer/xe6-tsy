@@ -78,6 +78,7 @@ type PionAudioTrack struct {
 	channels   int
 
 	mu        sync.Mutex
+	writeMu   sync.Mutex
 	stopped   map[string]bool
 	sequence  uint16
 	timestamp uint32
@@ -112,10 +113,12 @@ func (t *PionAudioTrack) Write(ctx context.Context, chunk pipeline.AudioChunk) e
 	if len(chunk.Data)%(2*t.channels) != 0 {
 		return ErrInvalidDependency
 	}
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	stopped := t.stopped[chunk.PlaybackID]
 	if stopped {
+		t.mu.Unlock()
 		return ErrPlaybackStopped
 	}
 	payload := make([]byte, len(chunk.Data))
@@ -126,6 +129,7 @@ func (t *PionAudioTrack) Write(ctx context.Context, chunk pipeline.AudioChunk) e
 	t.sequence++
 	packet := &rtp.Packet{Header: rtp.Header{Version: 2, SequenceNumber: t.sequence, Timestamp: t.timestamp}, Payload: payload}
 	t.timestamp += uint32(len(chunk.Data) / (2 * t.channels))
+	t.mu.Unlock()
 	if err := t.track.WriteRTP(packet); err != nil {
 		return fmt.Errorf("write TTS sample: %w", err)
 	}
@@ -159,6 +163,7 @@ type PionEventSink struct {
 	channel pionDataChannel
 	open    chan struct{}
 	openOne sync.Once
+	sendMu  sync.Mutex
 }
 
 type pionDataChannel interface {
@@ -191,6 +196,8 @@ func (s *PionEventSink) Publish(ctx context.Context, event playback.Event) error
 		return ctx.Err()
 	case <-s.open:
 	}
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("encode translation event: %w", err)

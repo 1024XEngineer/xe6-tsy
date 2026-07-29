@@ -43,6 +43,36 @@ func TestPionAudioTrackCopiesPCMAndStopsOnlyOnePlayback(t *testing.T) {
 	}
 }
 
+func TestPionAudioTrackStopDoesNotWaitForRTPWrite(t *testing.T) {
+	recorder := &blockingRTPTrackRecorder{started: make(chan struct{}), release: make(chan struct{})}
+	track, err := newPionAudioTrack(recorder, MediaConfig{SampleRate: 16_000, Channels: 1})
+	if err != nil {
+		t.Fatalf("newPionAudioTrack() error = %v", err)
+	}
+	chunk := pipeline.AudioChunk{SessionID: "session-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+	writeDone := make(chan error, 1)
+	go func() { writeDone <- track.Write(context.Background(), chunk) }()
+	select {
+	case <-recorder.started:
+	case <-time.After(time.Second):
+		t.Fatal("Write() did not reach RTP track")
+	}
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- track.Stop(context.Background(), "playback-1") }()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Stop() waited for blocked RTP write")
+	}
+	close(recorder.release)
+	if err := <-writeDone; err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+}
+
 func TestPionEventSinkWaitsForOpenAndSendsJSON(t *testing.T) {
 	channel := &dataChannelRecorder{state: pion.DataChannelStateConnecting}
 	sink := newPionEventSink(channel)
@@ -60,6 +90,33 @@ func TestPionEventSinkWaitsForOpenAndSendsJSON(t *testing.T) {
 	}
 	if len(channel.Messages()) != 1 || !contains(channel.Messages()[0], `"event_id":"event-1"`) {
 		t.Fatalf("messages = %#v", channel.Messages())
+	}
+}
+
+func TestPionEventSinkSerializesDataChannelWrites(t *testing.T) {
+	channel := &blockingDataChannelRecorder{started: make(chan struct{}, 2), release: make(chan struct{})}
+	sink := newPionEventSink(channel)
+	event := playback.Event{EventID: "event-1", Type: playback.EventStarted, SessionID: "session-1", PlaybackID: "playback-1", SequenceNo: 1}
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- sink.Publish(context.Background(), event) }()
+	select {
+	case <-channel.started:
+	case <-time.After(time.Second):
+		t.Fatal("first event did not reach DataChannel")
+	}
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- sink.Publish(context.Background(), event) }()
+	select {
+	case <-channel.started:
+		t.Fatal("second event wrote while first DataChannel write was blocked")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(channel.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Publish() error = %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second Publish() error = %v", err)
 	}
 }
 
@@ -129,6 +186,48 @@ func TestPionFactoryConfiguresMediaWhenPeerSupportsIt(t *testing.T) {
 	}
 }
 
+func TestPionTransportAnswerConfiguresTTSTrackOnceConcurrently(t *testing.T) {
+	peer := &blockingMediaPeerRecorder{
+		mediaPeerRecorder: &mediaPeerRecorder{fakePionPeerConnection: &fakePionPeerConnection{
+			answer: pion.SessionDescription{Type: pion.SDPTypeAnswer, SDP: "answer-sdp"}, gatherComplete: closedChannel(),
+		}},
+		addStarted: make(chan struct{}, 2), release: make(chan struct{}),
+	}
+	factory := newFakePionTransportFactory(peer.fakePionPeerConnection)
+	factory.newPeerConnection = func(pion.Configuration) (pionPeerConnection, error) { return peer, nil }
+	transport, err := factory.Create(context.Background(), "session-1", "rtc_1", nil)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	answers := make(chan error, 2)
+	answer := func() {
+		_, answerErr := transport.Answer(context.Background(), SessionDescription{Type: "offer", SDP: "offer-sdp"})
+		answers <- answerErr
+	}
+	go answer()
+	select {
+	case <-peer.addStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first Answer() did not register a TTS track")
+	}
+	go answer()
+	select {
+	case <-peer.addStarted:
+		t.Fatal("second Answer() registered a duplicate TTS track")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(peer.release)
+	for range 2 {
+		if err := <-answers; err != nil {
+			t.Fatalf("Answer() error = %v", err)
+		}
+	}
+	if got := peer.trackCount(); got != 1 {
+		t.Fatalf("TTS track registrations = %d, want 1", got)
+	}
+}
+
 func TestPionTransportCloseUnblocksAudioSource(t *testing.T) {
 	peer := &mediaPeerRecorder{fakePionPeerConnection: &fakePionPeerConnection{gatherComplete: closedChannel()}}
 	factory := newFakePionTransportFactory(peer.fakePionPeerConnection)
@@ -155,6 +254,17 @@ type rtpTrackRecorder struct {
 	packets []*rtp.Packet
 }
 
+type blockingRTPTrackRecorder struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingRTPTrackRecorder) WriteRTP(*rtp.Packet) error {
+	close(r.started)
+	<-r.release
+	return nil
+}
+
 func (r *rtpTrackRecorder) WriteRTP(packet *rtp.Packet) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -174,6 +284,21 @@ type dataChannelRecorder struct {
 	state    pion.DataChannelState
 	onOpen   func()
 	messages []string
+}
+
+type blockingDataChannelRecorder struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (d *blockingDataChannelRecorder) OnOpen(func()) {}
+func (*blockingDataChannelRecorder) ReadyState() pion.DataChannelState {
+	return pion.DataChannelStateOpen
+}
+func (d *blockingDataChannelRecorder) SendText(string) error {
+	d.started <- struct{}{}
+	<-d.release
+	return nil
 }
 
 func (d *dataChannelRecorder) OnOpen(handler func()) { d.mu.Lock(); d.onOpen = handler; d.mu.Unlock() }
@@ -237,3 +362,28 @@ func (p *mediaPeerRecorder) CreateDataChannel(label string, _ *pion.DataChannelI
 func (p *mediaPeerRecorder) OnTrack(handler func(pionRemoteTrack)) { p.onTrack = handler }
 
 var _ pionMediaPeerConnection = (*mediaPeerRecorder)(nil)
+
+type blockingMediaPeerRecorder struct {
+	*mediaPeerRecorder
+	addStarted chan struct{}
+	release    chan struct{}
+	mu         sync.Mutex
+	adds       int
+}
+
+func (p *blockingMediaPeerRecorder) AddTrack(track pion.TrackLocal) (*pion.RTPSender, error) {
+	p.mu.Lock()
+	p.adds++
+	p.mu.Unlock()
+	p.addStarted <- struct{}{}
+	<-p.release
+	return nil, nil
+}
+
+func (p *blockingMediaPeerRecorder) trackCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.adds
+}
+
+var _ pionMediaPeerConnection = (*blockingMediaPeerRecorder)(nil)

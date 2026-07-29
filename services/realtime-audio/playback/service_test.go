@@ -123,6 +123,33 @@ func TestServiceRejectsSecondPlaybackWhileOneIsActive(t *testing.T) {
 	}
 }
 
+func TestServiceDoesNotHoldStateLockWhilePublishingEvent(t *testing.T) {
+	events := &blockingEvents{started: make(chan struct{}), release: make(chan struct{})}
+	service, err := NewService(Dependencies{Track: &recordingTrack{}, Events: events, Now: fixedClock})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	chunk := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+	publishDone := make(chan error, 1)
+	go func() { publishDone <- service.Publish(context.Background(), chunk) }()
+	select {
+	case <-events.started:
+	case <-time.After(time.Second):
+		t.Fatal("Publish() did not reach event sink")
+	}
+	snapshotDone := make(chan Snapshot, 1)
+	go func() { snapshotDone <- service.Snapshot("session-1") }()
+	select {
+	case <-snapshotDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Snapshot() waited for blocked event sink")
+	}
+	close(events.release)
+	if err := <-publishDone; err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+}
+
 func fixedClock() time.Time { return time.Unix(1700000000, 0).UTC() }
 
 type recordingTrack struct {
@@ -163,6 +190,17 @@ func (t *recordingTrack) StopCalls() int {
 type recordingEvents struct {
 	mu     sync.Mutex
 	events []Event
+}
+
+type blockingEvents struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (e *blockingEvents) Publish(context.Context, Event) error {
+	close(e.started)
+	<-e.release
+	return nil
 }
 
 func (e *recordingEvents) Publish(_ context.Context, event Event) error {

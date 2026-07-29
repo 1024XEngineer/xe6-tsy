@@ -15,6 +15,7 @@ import (
 // PionTransport owns signaling operations for one Pion PeerConnection.
 type PionTransport struct {
 	mu              sync.Mutex
+	mediaSetupMu    sync.Mutex
 	peerConnection  pionPeerConnection
 	endOfCandidates bool
 	closeDone       chan struct{}
@@ -33,6 +34,8 @@ func (t *PionTransport) AudioSource() segment.FrameSource {
 	if t == nil {
 		return nil
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.audioSource
 }
 
@@ -41,6 +44,8 @@ func (t *PionTransport) TTSAudioTrack() *PionAudioTrack {
 	if t == nil {
 		return nil
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.ttsTrack
 }
 
@@ -49,6 +54,8 @@ func (t *PionTransport) TranslationEvents() *PionEventSink {
 	if t == nil {
 		return nil
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.events
 }
 
@@ -57,6 +64,8 @@ func (t *PionTransport) Playback() *playback.Service {
 	if t == nil {
 		return nil
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.playback
 }
 
@@ -186,9 +195,12 @@ func (t *PionTransport) Close(ctx context.Context) error {
 	connection := t.peerConnection
 	t.mu.Unlock()
 
+	t.mu.Lock()
+	source := t.audioSource
+	t.mu.Unlock()
 	var sourceErr error
-	if t.audioSource != nil {
-		sourceErr = t.audioSource.Close()
+	if source != nil {
+		sourceErr = source.Close()
 	}
 	closeErr := errors.Join(sourceErr, connection.Close())
 	t.mu.Lock()

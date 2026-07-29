@@ -3,7 +3,6 @@ package delivery
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"time"
 )
 
@@ -28,7 +27,9 @@ func (d *OutboxDispatcher) Run(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
-	d.dispatch(ctx)
+	if err := d.DispatchOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
 	ticker := time.NewTicker(d.interval)
 	defer ticker.Stop()
 	for {
@@ -36,17 +37,10 @@ func (d *OutboxDispatcher) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			d.dispatch(ctx)
+			if err := d.DispatchOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				return err
+			}
 		}
-	}
-}
-
-// dispatch deliberately keeps the dispatcher alive after a transient storage
-// or broker error. The next tick retries the same durable outbox rows; returning
-// here would strand committed rows until the process is restarted.
-func (d *OutboxDispatcher) dispatch(ctx context.Context) {
-	if err := d.DispatchOnce(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		slog.Warn("delivery outbox dispatch failed; will retry", "error", err)
 	}
 }
 
@@ -56,7 +50,7 @@ func (d *OutboxDispatcher) DispatchOnce(ctx context.Context) error {
 		return err
 	}
 	for _, record := range records {
-		if err := d.queue.Enqueue(ctx, QueueItem{AccountID: record.AccountID, AttemptID: record.AttemptID, IdempotencyKey: record.Key}); err != nil {
+		if err := d.queue.Enqueue(ctx, record.AttemptID, record.Key); err != nil {
 			if markErr := d.repository.MarkOutboxFailed(ctx, record.ID, err.Error()); markErr != nil {
 				return markErr
 			}

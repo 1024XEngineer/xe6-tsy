@@ -27,6 +27,11 @@ var (
 
 const (
 	defaultWorkerNackDelay = time.Second
+	// defaultSendingLease bounds how long another worker waits before treating a
+	// sending row as an orphaned claim. A duplicate receipt inside this window
+	// must not record delivery_unknown while the owning worker may still be
+	// inside Provider.Send.
+	defaultSendingLease    = 5 * time.Minute
 	providerFailureCode    = "provider_error"
 	messageFailureCode     = "message_snapshot_invalid"
 	destinationFailureCode = "destination_unavailable"
@@ -195,6 +200,12 @@ func (w *Worker) handleClaimConflict(ctx context.Context, item QueueMessage, rea
 		return w.ack(ctx, item)
 	case AttemptStatusSending:
 		if !providerSupportsIdempotency(w.deps.Provider) {
+			if sendingLeaseActive(existing.StartedAt, time.Now().UTC()) {
+				// Another worker likely owns the in-flight provider call. NACK so
+				// this receipt can be retried after the lease expires or the
+				// owner commits a terminal outcome.
+				return w.retry(ctx, item, fmt.Errorf("delivery attempt still owned by active sender"))
+			}
 			code := deliveryUnknownErrorCode
 			if err := w.deps.Repository.CompleteAttempt(ctx, existing.ID, existing.MessageID, AttemptStatusFailed, MessageStatusFailed, &code); err != nil {
 				return w.retry(ctx, item, fmt.Errorf("record unknown delivery outcome: %w", err))
@@ -397,6 +408,15 @@ func (w *Worker) ready() bool {
 func providerSupportsIdempotency(provider Provider) bool {
 	capable, ok := provider.(IdempotentProvider)
 	return ok && capable.SupportsProviderIdempotency()
+}
+
+// sendingLeaseActive reports whether a sending row should be treated as owned by
+// an in-flight worker rather than an orphaned crash recovery candidate.
+func sendingLeaseActive(startedAt *time.Time, now time.Time) bool {
+	if startedAt == nil || startedAt.IsZero() {
+		return false
+	}
+	return now.Sub(startedAt.UTC()) < defaultSendingLease
 }
 
 func validMessageSnapshot(message Message) bool {

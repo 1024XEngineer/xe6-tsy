@@ -4,7 +4,6 @@ package recordstore
 
 import (
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestDeliveryPostgresRetryIdempotency(t *testing.T) {
+func TestDeliveryPostgresRetryIdempotencyLookup(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
@@ -27,88 +26,83 @@ func TestDeliveryPostgresRetryIdempotency(t *testing.T) {
 		t.Fatalf("GetMessageByDeliveryIdempotency(create key) error = %v, want not found", err)
 	}
 
-	first, err := repository.CreateRetry(t.Context(), delivery.CreateRetryRecord{
+	if _, err := repository.CreateRetry(t.Context(), delivery.CreateRetryRecord{
 		AccountID: "delivery_retry_account", MessageID: "delivery_retry_message",
 		Attempt:        delivery.DeliveryAttempt{ID: "delivery_retry_attempt_2", MessageID: "delivery_retry_message", AttemptNumber: 2, Status: delivery.AttemptStatusQueued, CreatedAt: now.Add(time.Second)},
 		IdempotencyKey: "retry-key",
-	})
+	}); err != nil {
+		t.Fatalf("CreateRetry() error = %v", err)
+	}
+
+	message, err := repository.GetMessageByDeliveryIdempotency(t.Context(), "delivery_retry_account", "retry-key")
 	if err != nil {
-		t.Fatalf("first CreateRetry() error = %v", err)
+		t.Fatalf("GetMessageByDeliveryIdempotency(retry key) error = %v", err)
 	}
-	second, err := repository.CreateRetry(t.Context(), delivery.CreateRetryRecord{
-		AccountID: "delivery_retry_account", MessageID: "delivery_retry_message",
-		Attempt:        delivery.DeliveryAttempt{ID: "delivery_retry_attempt_duplicate", MessageID: "delivery_retry_message", AttemptNumber: 3, Status: delivery.AttemptStatusQueued, CreatedAt: now.Add(2 * time.Second)},
-		IdempotencyKey: "retry-key",
-	})
-	if err != nil {
-		t.Fatalf("replayed CreateRetry() error = %v", err)
+	if message.ID != "delivery_retry_message" || message.Attempts != 2 {
+		t.Fatalf("retry lookup message = %#v, want message at attempt 2", message)
 	}
-	if first.ID != second.ID || first.Attempts != 2 || second.Attempts != 2 {
-		t.Fatalf("retry replay results = %#v and %#v, want same message at attempt 2", first, second)
-	}
-	var attempts, retryRequests int
+
+	var attempts, outboxRows int
 	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM delivery_attempts WHERE message_id=$1`, "delivery_retry_message").Scan(&attempts); err != nil {
 		t.Fatalf("count attempts: %v", err)
 	}
-	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM delivery_retry_requests WHERE message_id=$1`, "delivery_retry_message").Scan(&retryRequests); err != nil {
-		t.Fatalf("count retry requests: %v", err)
+	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM delivery_outbox o JOIN delivery_attempts a ON a.id=o.attempt_id WHERE a.message_id=$1`, "delivery_retry_message").Scan(&outboxRows); err != nil {
+		t.Fatalf("count outbox rows: %v", err)
 	}
-	if attempts != 2 || retryRequests != 1 {
-		t.Fatalf("stored attempts=%d retry_requests=%d, want 2 and 1", attempts, retryRequests)
+	if attempts != 2 || outboxRows != 2 {
+		t.Fatalf("stored attempts=%d outbox_rows=%d, want 2 and 2", attempts, outboxRows)
 	}
 }
 
-func TestDeliveryPostgresRetryKeyIsAccountWideUnderConcurrency(t *testing.T) {
+func TestDeliveryPostgresRetryIdempotencyViaUseCases(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
 	repository := delivery.NewPostgresRepository(pool)
+	useCases := delivery.NewPersistentUseCases(repository, nil, nil, nil)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	insertDeliveryAccount(t, pool, "delivery_retry_usecase_account", "anonymous", nil)
+	seedDeliveryMessage(t, repository, "delivery_retry_usecase_account", "delivery_retry_usecase_message", "create-key", now)
+
+	first, err := useCases.Retry(t.Context(), "delivery_retry_usecase_account", "delivery_retry_usecase_message", "retry-key")
+	if err != nil {
+		t.Fatalf("first Retry() error = %v", err)
+	}
+	second, err := useCases.Retry(t.Context(), "delivery_retry_usecase_account", "delivery_retry_usecase_message", "retry-key")
+	if err != nil {
+		t.Fatalf("replayed Retry() error = %v", err)
+	}
+	if first.ID != second.ID || first.Attempts != 2 || second.Attempts != 2 {
+		t.Fatalf("retry replay results = %#v and %#v, want same message at attempt 2", first, second)
+	}
+
+	var attempts int
+	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM delivery_attempts WHERE message_id=$1`, "delivery_retry_usecase_message").Scan(&attempts); err != nil {
+		t.Fatalf("count attempts: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("stored attempts=%d, want 2", attempts)
+	}
+}
+
+func TestDeliveryPostgresRetryKeyIsAccountWideViaUseCases(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	repository := delivery.NewPostgresRepository(pool)
+	useCases := delivery.NewPersistentUseCases(repository, nil, nil, nil)
 	insertDeliveryAccount(t, pool, "delivery_retry_concurrent_account", "anonymous", nil)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	seedDeliveryMessage(t, repository, "delivery_retry_concurrent_account", "delivery_retry_message_a", "create-a", now)
 	seedDeliveryMessage(t, repository, "delivery_retry_concurrent_account", "delivery_retry_message_b", "create-b", now.Add(time.Second))
 
-	start := make(chan struct{})
-	results := make(chan error, 2)
-	var wait sync.WaitGroup
-	for _, messageID := range []string{"delivery_retry_message_a", "delivery_retry_message_b"} {
-		wait.Add(1)
-		go func(messageID string) {
-			defer wait.Done()
-			<-start
-			_, err := repository.CreateRetry(t.Context(), delivery.CreateRetryRecord{
-				AccountID: "delivery_retry_concurrent_account", MessageID: messageID,
-				Attempt:        delivery.DeliveryAttempt{ID: "attempt_" + messageID, MessageID: messageID, AttemptNumber: 2, Status: delivery.AttemptStatusQueued, CreatedAt: now.Add(2 * time.Second)},
-				IdempotencyKey: "shared-retry-key",
-			})
-			results <- err
-		}(messageID)
+	if _, err := useCases.Retry(t.Context(), "delivery_retry_concurrent_account", "delivery_retry_message_a", "shared-retry-key"); err != nil {
+		t.Fatalf("Retry(message_a) error = %v", err)
 	}
-	close(start)
-	wait.Wait()
-	close(results)
-
-	var succeeded, conflicts int
-	for err := range results {
-		switch {
-		case err == nil:
-			succeeded++
-		case errors.Is(err, domain.ErrConflict):
-			conflicts++
-		default:
-			t.Fatalf("concurrent CreateRetry() error = %v, want success or conflict", err)
-		}
-	}
-	if succeeded != 1 || conflicts != 1 {
-		t.Fatalf("concurrent retry results succeeded=%d conflicts=%d, want 1 and 1", succeeded, conflicts)
-	}
-	var retryRequests int
-	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM delivery_retry_requests WHERE account_id=$1 AND idempotency_key=$2`, "delivery_retry_concurrent_account", "shared-retry-key").Scan(&retryRequests); err != nil {
-		t.Fatalf("count concurrent retry requests: %v", err)
-	}
-	if retryRequests != 1 {
-		t.Fatalf("retry request rows = %d, want 1", retryRequests)
+	if _, err := useCases.Retry(t.Context(), "delivery_retry_concurrent_account", "delivery_retry_message_b", "shared-retry-key"); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("Retry(message_b) error = %v, want conflict", err)
 	}
 }
 

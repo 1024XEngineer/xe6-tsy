@@ -11,19 +11,10 @@ import (
 // must not wrap it.
 var ErrProviderRejected = errors.New("delivery provider rejected request")
 
-// QueueItem carries the durable fields needed to publish an outbox record.
-type QueueItem struct {
-	AccountID      string
-	AttemptID      string
-	IdempotencyKey string
-}
-
-// QueueMessage carries a broker-delivered attempt and its receipt used for settlement.
+// QueueMessage carries an attempt identifier and broker receipt used for settlement.
 type QueueMessage struct {
-	AccountID      string
-	AttemptID      string
-	IdempotencyKey string
-	Receipt        string
+	AttemptID string
+	Receipt   string
 }
 
 // Repository owns message, attempt, preference, and outbox persistence boundaries.
@@ -68,15 +59,12 @@ type OutboxRepository interface {
 
 type OutboxRecord struct {
 	ID        string
-	AccountID string
 	AttemptID string
 	Key       string
 	Attempts  int
 }
 
 type IdempotencyReader interface {
-	// GetMessageByIdempotency must enforce the supplied account's ownership or
-	// account-lineage scope before returning a message.
 	GetMessageByIdempotency(context.Context, string, string) (Message, error)
 }
 
@@ -124,7 +112,7 @@ type IdempotentProvider interface {
 // Queue defines reliable attempt delivery and explicit broker settlement.
 type Queue interface {
 	// Enqueue publishes an attempt using the supplied idempotency key.
-	Enqueue(context.Context, QueueItem) error
+	Enqueue(context.Context, string, string) error // attempt ID, idempotency key
 	// Receive blocks until work is available or the context is cancelled.
 	Receive(context.Context) (QueueMessage, error)
 	// Ack confirms successful processing of a broker receipt.

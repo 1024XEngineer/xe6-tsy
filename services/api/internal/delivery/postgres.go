@@ -291,7 +291,7 @@ func (r *PostgresRepository) ClaimOutbox(ctx context.Context, limit int) ([]Outb
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT o.id,m.account_id,o.attempt_id,o.idempotency_key,o.attempts FROM delivery_outbox o JOIN delivery_attempts a ON a.id=o.attempt_id JOIN outbound_messages m ON m.id=a.message_id WHERE o.published_at IS NULL AND o.available_at <= CURRENT_TIMESTAMP ORDER BY o.created_at FOR UPDATE OF o SKIP LOCKED LIMIT $1`, limit)
+	rows, err := tx.Query(ctx, `SELECT id,attempt_id,idempotency_key,attempts FROM delivery_outbox WHERE published_at IS NULL AND available_at <= CURRENT_TIMESTAMP ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +299,7 @@ func (r *PostgresRepository) ClaimOutbox(ctx context.Context, limit int) ([]Outb
 	result := make([]OutboxRecord, 0, limit)
 	for rows.Next() {
 		var record OutboxRecord
-		if err := rows.Scan(&record.ID, &record.AccountID, &record.AttemptID, &record.Key, &record.Attempts); err != nil {
+		if err := rows.Scan(&record.ID, &record.AttemptID, &record.Key, &record.Attempts); err != nil {
 			return nil, err
 		}
 		result = append(result, record)

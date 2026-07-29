@@ -167,10 +167,8 @@ func (q *ValkeyQueue) ensureGroup(ctx context.Context) error {
 // Enqueue appends an attempt event. It does not deduplicate stream entries:
 // the attempt ID is copied into every entry and ClaimAttempt resolves races
 // after duplicate outbox publishes.
-func (q *ValkeyQueue) Enqueue(ctx context.Context, item QueueItem) error {
-	attemptID := strings.TrimSpace(item.AttemptID)
-	idempotencyKey := strings.TrimSpace(item.IdempotencyKey)
-	if attemptID == "" || idempotencyKey == "" {
+func (q *ValkeyQueue) Enqueue(ctx context.Context, attemptID, idempotencyKey string) error {
+	if strings.TrimSpace(attemptID) == "" || strings.TrimSpace(idempotencyKey) == "" {
 		return ErrValkeyQueueInvalidMessage
 	}
 	if err := q.ensureGroup(ctx); err != nil {
@@ -305,7 +303,7 @@ func (q *ValkeyQueue) firstUsable(ctx context.Context, messages []redis.XMessage
 			continue
 		}
 		q.pushPending(messages[index+1:])
-		return QueueMessage{AccountID: "", AttemptID: attemptID, IdempotencyKey: idempotencyKey, Receipt: message.ID}, true, nil
+		return QueueMessage{AttemptID: attemptID, Receipt: message.ID}, true, nil
 	}
 	return QueueMessage{}, false, nil
 }

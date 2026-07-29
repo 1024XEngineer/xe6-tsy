@@ -41,12 +41,35 @@ func (u *UseCases) Record(ctx context.Context, input RecordInput) (Detail, error
 		if err != nil {
 			return Detail{}, err
 		}
-		if owner != input.AccountID {
-			return Detail{}, domain.ErrForbidden
+		if err := u.sameCanonicalAccount(ctx, owner, input.AccountID); err != nil {
+			return Detail{}, err
 		}
+		input.AccountID = owner
 	}
 	detail, _, err := u.repository.Record(ctx, input)
 	return detail, err
+}
+
+func (u *UseCases) sameCanonicalAccount(ctx context.Context, left, right string) error {
+	if left == right {
+		return nil
+	}
+	resolver, ok := u.owners.(CanonicalAccountResolver)
+	if !ok {
+		return domain.ErrForbidden
+	}
+	canonicalLeft, err := resolver.CanonicalAccountID(ctx, left)
+	if err != nil {
+		return err
+	}
+	canonicalRight, err := resolver.CanonicalAccountID(ctx, right)
+	if err != nil {
+		return err
+	}
+	if canonicalLeft != canonicalRight {
+		return domain.ErrForbidden
+	}
+	return nil
 }
 
 func (u *UseCases) SessionUsage(ctx context.Context, accountID, sessionID string) (Summary, error) {

@@ -187,16 +187,32 @@ func (r *PostgresRepository) SessionActiveForAccount(ctx context.Context, sessio
 	return active, mapError(err)
 }
 
-// AccountIDForSession is shared by usage, language, turns, and delivery ownership adapters.
-// It returns the canonical account after an anonymous account has been merged.
+// AccountIDForSession returns the immutable owner stored on the voice session.
 func (r *PostgresRepository) AccountIDForSession(ctx context.Context, sessionID string) (string, error) {
 	var accountID string
-	err := r.pool.QueryRow(ctx, `
-		SELECT COALESCE(owner.merged_into, owner.id)
-		FROM voice_sessions AS sessions
-		JOIN lingow_accounts AS owner ON owner.id = sessions.account_id
-		WHERE sessions.id = $1`, sessionID).Scan(&accountID)
+	err := r.pool.QueryRow(ctx, `SELECT account_id FROM voice_sessions WHERE id=$1`, sessionID).Scan(&accountID)
 	return accountID, mapError(err)
+}
+
+// CanonicalAccountID follows an account's merge chain to its active owner.
+// The visited set prevents malformed historical cycles from looping forever.
+func (r *PostgresRepository) CanonicalAccountID(ctx context.Context, accountID string) (string, error) {
+	var canonicalID string
+	err := r.pool.QueryRow(ctx, `
+		WITH RECURSIVE ancestors AS (
+			SELECT id, merged_into, ARRAY[id] AS visited
+			FROM lingow_accounts
+			WHERE id = $1
+			UNION ALL
+			SELECT parent.id, parent.merged_into, child.visited || parent.id
+			FROM lingow_accounts AS parent
+			JOIN ancestors AS child ON parent.id = child.merged_into
+			WHERE NOT parent.id = ANY(child.visited)
+		)
+		SELECT id FROM ancestors
+		WHERE merged_into IS NULL
+		LIMIT 1`, accountID).Scan(&canonicalID)
+	return canonicalID, mapError(err)
 }
 
 func mapError(err error) error {

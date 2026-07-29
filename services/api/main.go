@@ -176,7 +176,12 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 
 	// Derive a domain-specific key so JWTs and record cursors never use identical key material.
 	cursorSigningKey := sha256.Sum256([]byte("lingow-record-cursor\x00" + tokenSecret))
-	services, err := recordstore.NewServices(pool, cursorSigningKey[:], accountRepository, sessionScope)
+	services, err := recordstore.NewServices(
+		pool,
+		cursorSigningKey[:],
+		recordstore.NewCanonicalSessionOwner(accountRepository),
+		sessionScope,
+	)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)

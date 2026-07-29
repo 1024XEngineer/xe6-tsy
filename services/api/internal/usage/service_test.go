@@ -127,3 +127,50 @@ func TestMemorySummaryRejectsMixedCurrencies(t *testing.T) {
 		t.Fatalf("AccountSummary() error = %v, want %v", err, domain.ErrConflict)
 	}
 }
+
+func TestRecordStoresOriginalSessionOwnerAfterAccountMerge(t *testing.T) {
+	repository := &captureRepository{}
+	input := validRecordInput()
+	input.AccountID = "account-registered"
+
+	detail, err := NewPersistentUseCases(repository, mergedSessionOwner{}).Record(t.Context(), input)
+	if err != nil {
+		t.Fatalf("Record() error = %v", err)
+	}
+	if repository.input.AccountID != "account-anonymous" {
+		t.Fatalf("repository received account_id %q, want original session owner", repository.input.AccountID)
+	}
+	if detail.AccountID != "account-anonymous" {
+		t.Fatalf("detail account_id = %q, want original session owner", detail.AccountID)
+	}
+}
+
+type captureRepository struct {
+	input RecordInput
+}
+
+func (r *captureRepository) Record(_ context.Context, input RecordInput) (Detail, bool, error) {
+	r.input = input
+	return Detail{RecordInput: input}, true, nil
+}
+
+func (*captureRepository) SessionSummary(context.Context, string, string) (Summary, error) {
+	return Summary{}, nil
+}
+
+func (*captureRepository) AccountSummary(context.Context, string, time.Time, time.Time) (Summary, error) {
+	return Summary{}, nil
+}
+
+type mergedSessionOwner struct{}
+
+func (mergedSessionOwner) AccountIDForSession(context.Context, string) (string, error) {
+	return "account-anonymous", nil
+}
+
+func (mergedSessionOwner) CanonicalAccountID(_ context.Context, accountID string) (string, error) {
+	if accountID == "account-anonymous" || accountID == "account-registered" {
+		return "account-registered", nil
+	}
+	return accountID, nil
+}

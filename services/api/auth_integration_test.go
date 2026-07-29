@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,17 +14,11 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 )
 
-func integrationDestinationKey(t *testing.T) string {
-	t.Helper()
-	return base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("d", 32)))
-}
-
 func TestAuthHTTPRefreshRotationAndPersistence(t *testing.T) {
 	databaseURL := recordsHTTPTestDatabaseURL(t)
 	t.Setenv("DATABASE_URL", databaseURL)
 	t.Setenv("JWT_SECRET", strings.Repeat("j", 36))
 	t.Setenv("AUTH_PEPPER", strings.Repeat("p", 36))
-	t.Setenv("DESTINATION_ENCRYPTION_KEY", integrationDestinationKey(t))
 	t.Setenv("VERIFICATION_SENDER", "log")
 
 	dependencies, err := newRecordsHTTPDependencies(t.Context())
@@ -38,11 +31,7 @@ func TestAuthHTTPRefreshRotationAndPersistence(t *testing.T) {
 		languages.NewHandler(nil, nil),
 		dependencies.handler,
 		dependencies.accounts,
-		dependencies.usage,
-		dependencies.delivery,
 		dependencies.tokens,
-		dependencies.pool,
-		dependencies.redisPing,
 	)
 
 	created := postAuthJSON(t, handler, http.MethodPost, "/api/v1/auth/anonymous", nil, http.StatusCreated)
@@ -74,11 +63,7 @@ func TestAuthHTTPRefreshRotationAndPersistence(t *testing.T) {
 		languages.NewHandler(nil, nil),
 		restarted.handler,
 		restarted.accounts,
-		restarted.usage,
-		restarted.delivery,
 		restarted.tokens,
-		restarted.pool,
-		restarted.redisPing,
 	)
 
 	meRequest := httptest.NewRequest(http.MethodGet, "/api/v1/account/me", nil)
@@ -100,7 +85,6 @@ func TestAuthHTTPPhoneVerificationSingleUse(t *testing.T) {
 	t.Setenv("DATABASE_URL", databaseURL)
 	t.Setenv("JWT_SECRET", strings.Repeat("j", 36))
 	t.Setenv("AUTH_PEPPER", strings.Repeat("p", 36))
-	t.Setenv("DESTINATION_ENCRYPTION_KEY", integrationDestinationKey(t))
 	t.Setenv("VERIFICATION_SENDER", "log")
 
 	dependencies, err := newRecordsHTTPDependencies(t.Context())
@@ -113,11 +97,7 @@ func TestAuthHTTPPhoneVerificationSingleUse(t *testing.T) {
 		languages.NewHandler(nil, nil),
 		dependencies.handler,
 		dependencies.accounts,
-		dependencies.usage,
-		dependencies.delivery,
 		dependencies.tokens,
-		dependencies.pool,
-		dependencies.redisPing,
 	)
 
 	const phone = "+8613800138000"

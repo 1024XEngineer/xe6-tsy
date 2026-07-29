@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 )
 
@@ -43,6 +44,17 @@ func (m *MemoryVerificationSender) LastCode(phone string) (string, bool) {
 	defer m.mu.Unlock()
 	code, ok := m.codes[phone]
 	return code, ok
+}
+
+// VerificationSenderFromEnv selects the configured verification delivery adapter.
+// Empty or "log" uses structured logs for local development.
+func VerificationSenderFromEnv() VerificationSender {
+	switch os.Getenv("VERIFICATION_SENDER") {
+	case "", "log":
+		return LogVerificationSender{}
+	default:
+		return nil
+	}
 }
 
 func maskPhone(phone string) string {

@@ -24,14 +24,19 @@ import (
 )
 
 type recordsHTTPDependencies struct {
-	handler  *recordswebapi.Server
-	accounts accounts.Service
-	tokens   accounts.AccessTokenVerifier
-	worker   finalTurnWorker
-	cleanup  func()
+	handler    *recordswebapi.Server
+	accounts   accounts.Service
+	tokens     accounts.AccessTokenVerifier
+	worker     finalTurnWorker
+	maintainer backgroundWorker
+	cleanup    func()
 }
 
 type finalTurnWorker interface {
+	Run(context.Context) error
+}
+
+type backgroundWorker interface {
 	Run(context.Context) error
 }
 
@@ -80,6 +85,16 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	maintainerCtx, cancelMaintainer := context.WithCancel(ctx)
+	defer cancelMaintainer()
+	if records.maintainer != nil {
+		go func() {
+			if err := records.maintainer.Run(maintainerCtx); err != nil && maintainerCtx.Err() == nil {
+				slog.Error("auth maintenance stopped", "error", err)
+			}
+		}()
+	}
 
 	return runHTTPAndFinalTurnWorker(ctx, server, records.worker)
 }
@@ -233,7 +248,18 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
 	}
 
-	accountUseCases := accounts.NewPersistentUseCases(accountRepository, tokens, tokens, nil)
+	digester, err := credentialDigesterFromEnv()
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+	}
+	accountUseCases := accounts.NewPersistentUseCases(
+		accountRepository,
+		tokens,
+		tokens,
+		accounts.VerificationSenderFromEnv(),
+		digester,
+	).WithVerificationPolicy(accounts.VerificationPolicyFromEnv())
 	return &recordsHTTPDependencies{
 		handler: recordswebapi.NewHandler(recordswebapi.Dependencies{
 			Participants: services.Participants,
@@ -243,11 +269,20 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 			System: recordswebapi.ContextSystemAuthorizer{},
 			Logger: slog.Default(),
 		}),
-		accounts: accountUseCases,
-		tokens:   tokens,
-		worker:   services.FinalTurnWorker,
-		cleanup:  pool.Close,
+		accounts:   accountUseCases,
+		tokens:     tokens,
+		worker:     services.FinalTurnWorker,
+		maintainer: accounts.NewAuthMaintainer(accountRepository, 0, 0),
+		cleanup:    pool.Close,
 	}, nil
+}
+
+func credentialDigesterFromEnv() (*accounts.CredentialDigester, error) {
+	pepper := os.Getenv("AUTH_PEPPER")
+	if pepper == "" {
+		return nil, nil
+	}
+	return accounts.NewCredentialDigester(pepper)
 }
 
 func recordsHTTPConfigurationFromEnv() (string, string, error) {

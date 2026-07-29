@@ -11,12 +11,11 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 )
 
-func TestMember5ProtectedRoutesRequireBearerToken(t *testing.T) {
+func TestProtectedRoutesRequireBearerToken(t *testing.T) {
 	databaseURL := recordsHTTPTestDatabaseURL(t)
 	t.Setenv("DATABASE_URL", databaseURL)
 	t.Setenv("JWT_SECRET", strings.Repeat("j", 36))
 	t.Setenv("AUTH_PEPPER", strings.Repeat("p", 36))
-	t.Setenv("DESTINATION_ENCRYPTION_KEY", integrationDestinationKey(t))
 	t.Setenv("VERIFICATION_SENDER", "log")
 
 	dependencies, err := newRecordsHTTPDependencies(t.Context())
@@ -29,11 +28,7 @@ func TestMember5ProtectedRoutesRequireBearerToken(t *testing.T) {
 		languages.NewHandler(nil, nil),
 		dependencies.handler,
 		dependencies.accounts,
-		dependencies.usage,
-		dependencies.delivery,
 		dependencies.tokens,
-		dependencies.pool,
-		dependencies.redisPing,
 	)
 
 	protected := []struct {

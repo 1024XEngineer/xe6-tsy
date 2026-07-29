@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -105,6 +106,50 @@ func TestRecordsHTTPProductionCompositionReadsOnlyOwnedTurns(t *testing.T) {
 	}
 	if errorResponse.Error.Code != recordsv1.ErrorForbidden {
 		t.Fatalf("foreign session error = %q, want %q", errorResponse.Error.Code, recordsv1.ErrorForbidden)
+	}
+
+	accountRepository := accounts.NewPostgresRepository(pool)
+	registered, err := accountRepository.FindOrCreateByPhoneHash(t.Context(), "phone_hash_http_merge")
+	if err != nil {
+		t.Fatalf("create registered account: %v", err)
+	}
+	claims, err := dependencies.tokens.VerifyAccessToken(t.Context(), owner.Tokens.AccessToken)
+	if err != nil {
+		t.Fatalf("verify anonymous token before binding: %v", err)
+	}
+	if _, err := accountRepository.BindAnonymous(t.Context(), owner.Account.ID, registered.ID); err != nil {
+		t.Fatalf("bind anonymous account: %v", err)
+	}
+	issuer, ok := dependencies.tokens.(accounts.TokenIssuer)
+	if !ok {
+		t.Fatal("production token verifier does not implement TokenIssuer")
+	}
+	registeredTokens, err := issuer.Issue(t.Context(), registered, accounts.Session{ID: claims.SessionID})
+	if err != nil {
+		t.Fatalf("issue registered token: %v", err)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/translation-history?limit=20", nil)
+	request.Header.Set("Authorization", "Bearer "+registeredTokens.AccessToken)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("merged account history status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	history = recordsv1.VoiceTurnListResponse{}
+	if err := json.Unmarshal(response.Body.Bytes(), &history); err != nil {
+		t.Fatalf("decode merged account history: %v", err)
+	}
+	if len(history.Items) != 1 || history.Items[0].ID != "turn_http_owner" {
+		t.Fatalf("merged account history items = %#v, want original owner turn", history.Items)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/session_http_owner/turns?limit=20", nil)
+	request.Header.Set("Authorization", "Bearer "+registeredTokens.AccessToken)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("merged session turns status = %d, want %d, body = %s", response.Code, http.StatusOK, response.Body.String())
 	}
 }
 

@@ -7,8 +7,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PostgresSessionScopeReader provides the complete account session scope used by
-// record queries without depending on the unfinished sessions Repository.
+// PostgresSessionScopeReader provides the complete canonical account session
+// scope used by record queries without depending on the unfinished sessions Repository.
 type PostgresSessionScopeReader struct {
 	pool *pgxpool.Pool
 }
@@ -22,9 +22,10 @@ func NewPostgresSessionScopeReader(pool *pgxpool.Pool) (*PostgresSessionScopeRea
 
 func (r *PostgresSessionScopeReader) SessionIDsForAccount(ctx context.Context, accountID string) ([]string, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id
-		FROM voice_sessions
-		WHERE account_id = $1`, accountID)
+		SELECT sessions.id
+		FROM voice_sessions AS sessions
+		JOIN lingow_accounts AS owner ON owner.id = sessions.account_id
+		WHERE COALESCE(owner.merged_into, owner.id) = $1`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("query account session scope: %w", err)
 	}

@@ -188,9 +188,14 @@ func (r *PostgresRepository) SessionActiveForAccount(ctx context.Context, sessio
 }
 
 // AccountIDForSession is shared by usage, language, turns, and delivery ownership adapters.
+// It returns the canonical account after an anonymous account has been merged.
 func (r *PostgresRepository) AccountIDForSession(ctx context.Context, sessionID string) (string, error) {
 	var accountID string
-	err := r.pool.QueryRow(ctx, `SELECT account_id FROM voice_sessions WHERE id=$1`, sessionID).Scan(&accountID)
+	err := r.pool.QueryRow(ctx, `
+		SELECT COALESCE(owner.merged_into, owner.id)
+		FROM voice_sessions AS sessions
+		JOIN lingow_accounts AS owner ON owner.id = sessions.account_id
+		WHERE sessions.id = $1`, sessionID).Scan(&accountID)
 	return accountID, mapError(err)
 }
 

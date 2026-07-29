@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 )
@@ -171,11 +172,6 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	h.mux.ServeHTTP(writer, request)
 }
 
-type startRequest struct {
-	TraceID   string `json:"trace_id"`
-	StartedBy string `json:"started_by"`
-}
-
 type stopRequest struct {
 	TraceID string `json:"trace_id"`
 	Reason  string `json:"reason"`
@@ -192,14 +188,19 @@ func (h *Handler) start(writer http.ResponseWriter, request *http.Request) {
 		h.writeError(writer, request, err)
 		return
 	}
-	var body startRequest
+	var body realtimev1.StartRequest
 	if err := decodeJSON(request, &body, true); err != nil {
 		h.writeError(writer, request, err)
 		return
 	}
+	if strings.TrimSpace(body.OperationID) == "" {
+		h.writeError(writer, request, session.ErrStartOperationIDRequired)
+		return
+	}
 	h.handleReplay(writer, request.Context(), sessionID, "start\x00"+sessionID+"\x00"+idempotencyKey, body, func() (any, error) {
 		return h.lifecycle.Start(request.Context(), session.StartRealtimeCommand{
-			SessionID: sessionID, TraceID: body.TraceID, StartedBy: body.StartedBy,
+			SessionID: sessionID, OperationID: body.OperationID,
+			TraceID: body.TraceID, StartedBy: body.StartedBy,
 		})
 	})
 }
@@ -487,6 +488,7 @@ func mapError(err error) (int, string) {
 	case err == nil:
 		return http.StatusInternalServerError, "internal_error"
 	case errors.Is(err, ErrInvalidRequest), errors.Is(err, webrtc.ErrSessionIDRequired),
+		errors.Is(err, session.ErrStartOperationIDRequired),
 		errors.Is(err, webrtc.ErrOfferSDPRequired), errors.Is(err, webrtc.ErrOfferTypeInvalid),
 		errors.Is(err, webrtc.ErrIdempotencyKeyRequired), errors.Is(err, ErrIdempotencyKeyTooLong),
 		errors.Is(err, webrtc.ErrConnectionIDRequired), errors.Is(err, webrtc.ErrCandidateIDRequired),
@@ -498,6 +500,8 @@ func mapError(err error) (int, string) {
 		return http.StatusUnauthorized, "unauthorized"
 	case errors.Is(err, session.ErrRuntimeNotFound), errors.Is(err, webrtc.ErrConnectionNotFound):
 		return http.StatusNotFound, "not_found"
+	case errors.Is(err, session.ErrRuntimeOperationConflict):
+		return http.StatusConflict, string(realtimev1.ErrorRuntimeOperationConflict)
 	case errors.Is(err, session.ErrRuntimeCleanupRequired), errors.Is(err, session.ErrSessionNotCreated),
 		errors.Is(err, webrtc.ErrIdempotencyPayloadConflict), errors.Is(err, webrtc.ErrConnectionAlreadyExists),
 		errors.Is(err, webrtc.ErrConnectionClosing), errors.Is(err, webrtc.ErrCandidatesCompleted),

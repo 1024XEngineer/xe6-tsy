@@ -45,7 +45,7 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 		return recorder
 	}
 
-	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{}`, "start-key"); response.Code != http.StatusOK {
+	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{"operation_id":"operation-1"}`, "start-key"); response.Code != http.StatusOK {
 		t.Fatalf("start status = %d, body=%s", response.Code, response.Body.String())
 	}
 	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/webrtc/offer", `{"sdp":"offer-sdp","type":"offer"}`, "offer-key"); response.Code != http.StatusOK {

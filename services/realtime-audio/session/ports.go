@@ -32,6 +32,13 @@ type PipelineManager interface {
 	Stop(ctx context.Context, sessionID string) error
 }
 
+// PipelineActivator is an optional second phase for managers that must wait
+// until LifecycleService has persisted RuntimeListening before reading media.
+// Existing PipelineManager implementations remain valid without this hook.
+type PipelineActivator interface {
+	Activate(ctx context.Context, sessionID string) error
+}
+
 // WebRTCConnectionManager closes all connection resources for a session.
 // Close must be idempotent so lifecycle retries can finish partial cleanup.
 type WebRTCConnectionManager interface {

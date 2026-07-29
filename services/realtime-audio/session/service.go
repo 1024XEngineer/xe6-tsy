@@ -68,6 +68,9 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 	if business.Status != "created" {
 		return RuntimeSnapshot{}, ErrSessionNotCreated
 	}
+	// Carry request tracing into the media graph without persisting it as
+	// business session state.
+	business.TraceID = command.TraceID
 
 	starting := RuntimeSnapshot{
 		SessionID:    command.SessionID,
@@ -101,6 +104,18 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 			wrapCleanupError("compensate pipeline", pipelineErr),
 			wrapCleanupError("save failed runtime", saveErr),
 		)
+	}
+	if activator, ok := s.deps.Pipelines.(PipelineActivator); ok {
+		if err := activator.Activate(ctx, command.SessionID); err != nil {
+			pipelineErr := s.stopPipelineForCleanup(ctx, command.SessionID)
+			failed := failureSnapshot(command.SessionID, ErrorCodeStartFailed, s.deps.Now())
+			saveErr := s.saveRuntimeForCleanup(ctx, failed)
+			return failed, errors.Join(
+				fmt.Errorf("activate pipeline: %w", err),
+				wrapCleanupError("compensate pipeline", pipelineErr),
+				wrapCleanupError("save failed runtime", saveErr),
+			)
+		}
 	}
 	return listening, nil
 }

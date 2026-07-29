@@ -24,8 +24,11 @@ const (
 
 // SessionSnapshot is the read-only business session view supplied by member 1.
 type SessionSnapshot struct {
-	SessionID    string
-	AccountID    string
+	SessionID string
+	AccountID string
+	// TraceID is runtime request metadata copied from StartRealtimeCommand.
+	// It is not business session state and is never persisted by member 3.
+	TraceID      string
 	Status       string
 	AudioConfig  json.RawMessage
 	Capabilities json.RawMessage

@@ -87,9 +87,26 @@ type Service struct {
 }
 
 type playback struct {
-	opMu     sync.Mutex
-	snapshot Snapshot
-	eventSeq int64
+	opMu       sync.Mutex
+	snapshot   Snapshot
+	eventSeq   int64
+	started    *startedPlayback
+	settlement *settlement
+}
+
+type startedPlayback struct {
+	event      Event
+	sequenceNo int64
+	eventSent  bool
+	audioSent  bool
+}
+
+type settlement struct {
+	state        State
+	event        Event
+	stop         bool
+	eventSent    bool
+	trackStopped bool
 }
 
 // NewService creates an isolated playback state machine.
@@ -131,23 +148,46 @@ func (s *Service) Publish(ctx context.Context, chunk pipeline.AudioChunk) error 
 		s.mu.Unlock()
 		return ErrPlaybackNotActive
 	}
+	if current.settlement != nil {
+		s.mu.Unlock()
+		return ErrPlaybackNotActive
+	}
 	if chunk.SequenceNo <= current.snapshot.LastSequence {
 		s.mu.Unlock()
 		return nil
+	}
+	if current.started != nil && current.started.sequenceNo != chunk.SequenceNo {
+		s.mu.Unlock()
+		return ErrSequenceInvalid
 	}
 	if current.snapshot.TurnID == "" {
 		current.snapshot.TurnID = chunk.TurnID
 	}
 	if current.snapshot.LastSequence == 0 {
-		current.eventSeq++
-		event := s.eventLocked(current, EventStarted, "")
-		current.snapshot.LastSequence = chunk.SequenceNo
-		s.mu.Unlock()
-		if err := s.events.Publish(ctx, event); err != nil {
-			return fmt.Errorf("publish playback started: %w", err)
+		if current.started == nil {
+			current.eventSeq++
+			current.started = &startedPlayback{event: s.eventLocked(current, EventStarted, ""), sequenceNo: chunk.SequenceNo}
 		}
-		if err := s.track.Write(ctx, chunk); err != nil {
-			return fmt.Errorf("write TTS audio: %w", err)
+		started := current.started
+		needEvent := !started.eventSent
+		s.mu.Unlock()
+		if needEvent {
+			if err := s.events.Publish(ctx, started.event); err != nil {
+				return fmt.Errorf("publish playback started: %w", err)
+			}
+			s.mu.Lock()
+			started.eventSent = true
+			s.mu.Unlock()
+		}
+		if !started.audioSent {
+			if err := s.track.Write(ctx, chunk); err != nil {
+				return fmt.Errorf("write TTS audio: %w", err)
+			}
+			s.mu.Lock()
+			started.audioSent = true
+			current.snapshot.LastSequence = chunk.SequenceNo
+			current.started = nil
+			s.mu.Unlock()
 		}
 		return nil
 	}
@@ -228,22 +268,47 @@ func (s *Service) settle(ctx context.Context, sessionID, playbackID string, stat
 		s.mu.Unlock()
 		return ErrPlaybackNotActive
 	}
-	if current.snapshot.State != StatePlaying {
+	if current.settlement != nil && current.settlement.event.Type != eventType {
+		s.mu.Unlock()
+		return ErrPlaybackNotActive
+	}
+	if current.settlement == nil && current.snapshot.State != StatePlaying {
 		s.mu.Unlock()
 		return nil
 	}
-	current.snapshot.State = state
-	current.eventSeq++
-	event := s.eventLocked(current, eventType, reason)
-	s.mu.Unlock()
-	if err := s.events.Publish(ctx, event); err != nil {
-		return fmt.Errorf("publish playback settlement: %w", err)
+	if current.settlement == nil {
+		current.eventSeq++
+		current.settlement = &settlement{
+			state: state, event: s.eventLocked(current, eventType, reason), stop: stop,
+		}
 	}
-	if stop {
+	pending := current.settlement
+	s.mu.Unlock()
+	if !pending.eventSent {
+		if err := s.events.Publish(ctx, pending.event); err != nil {
+			return fmt.Errorf("publish playback settlement: %w", err)
+		}
+		s.mu.Lock()
+		pending.eventSent = true
+		s.mu.Unlock()
+	}
+	if pending.stop && !pending.trackStopped {
 		if err := s.track.Stop(ctx, playbackID); err != nil {
 			return fmt.Errorf("stop playback: %w", err)
 		}
+		s.mu.Lock()
+		pending.trackStopped = true
+		s.mu.Unlock()
 	}
+	s.mu.Lock()
+	if !pending.stop {
+		pending.trackStopped = true
+	}
+	if pending.eventSent && pending.trackStopped {
+		current.snapshot.State = pending.state
+		current.settlement = nil
+	}
+	s.mu.Unlock()
 	return nil
 }
 

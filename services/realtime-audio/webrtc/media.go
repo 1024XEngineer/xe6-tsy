@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	defaultMediaSampleRate = audio.SupportedSampleRate
-	defaultMediaChannels   = 1
+	defaultTTSSampleRate = 24_000
+	defaultASRSampleRate = audio.SupportedSampleRate
+	defaultMediaChannels = 1
 )
 
 var (
@@ -33,8 +34,9 @@ var (
 	ErrPlaybackStopped     = errors.New("playback track is stopped")
 )
 
-// MediaConfig defines the local media format and advertised identifiers.
+// MediaConfig defines the local TTS output format and advertised identifiers.
 // TTS chunks are signed 16-bit little-endian PCM at SampleRate and Channels.
+// Inbound Opus is decoded separately at the ASR pipeline's fixed sample rate.
 type MediaConfig struct {
 	TTSTrackID       string
 	DataChannelLabel string
@@ -50,7 +52,7 @@ func (c MediaConfig) normalized() (MediaConfig, error) {
 		c.DataChannelLabel = defaultDataChannelLabel
 	}
 	if c.SampleRate == 0 {
-		c.SampleRate = defaultMediaSampleRate
+		c.SampleRate = defaultTTSSampleRate
 	}
 	if c.Channels == 0 {
 		c.Channels = defaultMediaChannels
@@ -99,7 +101,7 @@ func newPionAudioTrack(track pionRTPTrack, config MediaConfig) (*PionAudioTrack,
 	return &PionAudioTrack{track: track, sampleRate: config.SampleRate, channels: config.Channels, stopped: make(map[string]bool)}, nil
 }
 
-// Write publishes one PCM chunk as an RTP L16 packet.
+// Write packetizes one PCM chunk into 20ms RTP L16 packets.
 func (t *PionAudioTrack) Write(ctx context.Context, chunk pipeline.AudioChunk) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -115,23 +117,42 @@ func (t *PionAudioTrack) Write(ctx context.Context, chunk pipeline.AudioChunk) e
 	}
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	t.mu.Lock()
-	stopped := t.stopped[chunk.PlaybackID]
-	if stopped {
+	bytesPerSample := 2 * t.channels
+	samplesPerPacket := t.sampleRate / 50
+	if samplesPerPacket < 1 {
+		samplesPerPacket = 1
+	}
+	for offset := 0; offset < len(chunk.Data); {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		t.mu.Lock()
+		if t.stopped[chunk.PlaybackID] {
+			t.mu.Unlock()
+			return ErrPlaybackStopped
+		}
+		sequence := t.sequence + 1
+		timestamp := t.timestamp
 		t.mu.Unlock()
-		return ErrPlaybackStopped
-	}
-	payload := make([]byte, len(chunk.Data))
-	for index := 0; index < len(chunk.Data); index += 2 {
-		payload[index] = chunk.Data[index+1]
-		payload[index+1] = chunk.Data[index]
-	}
-	t.sequence++
-	packet := &rtp.Packet{Header: rtp.Header{Version: 2, SequenceNumber: t.sequence, Timestamp: t.timestamp}, Payload: payload}
-	t.timestamp += uint32(len(chunk.Data) / (2 * t.channels))
-	t.mu.Unlock()
-	if err := t.track.WriteRTP(packet); err != nil {
-		return fmt.Errorf("write TTS sample: %w", err)
+
+		samples := (len(chunk.Data) - offset) / bytesPerSample
+		if samples > samplesPerPacket {
+			samples = samplesPerPacket
+		}
+		payload := make([]byte, samples*bytesPerSample)
+		for index := 0; index < len(payload); index += 2 {
+			payload[index] = chunk.Data[offset+index+1]
+			payload[index+1] = chunk.Data[offset+index]
+		}
+		packet := &rtp.Packet{Header: rtp.Header{Version: 2, SequenceNumber: sequence, Timestamp: timestamp}, Payload: payload}
+		if err := t.track.WriteRTP(packet); err != nil {
+			return fmt.Errorf("write TTS sample: %w", err)
+		}
+		t.mu.Lock()
+		t.sequence = sequence
+		t.timestamp = timestamp + uint32(samples)
+		t.mu.Unlock()
+		offset += len(payload)
 	}
 	return nil
 }
@@ -221,11 +242,11 @@ type OpusDecoder struct {
 
 // NewOpusDecoder creates a mono decoder at the normalized pipeline sample rate.
 func NewOpusDecoder() (*OpusDecoder, error) {
-	decoder, err := opus.NewDecoderWithOutput(defaultMediaSampleRate, defaultMediaChannels)
+	decoder, err := opus.NewDecoderWithOutput(defaultASRSampleRate, defaultMediaChannels)
 	if err != nil {
 		return nil, err
 	}
-	return &OpusDecoder{decoder: decoder, output: make([]int16, defaultMediaSampleRate*120/1000)}, nil
+	return &OpusDecoder{decoder: decoder, output: make([]int16, defaultASRSampleRate*120/1000)}, nil
 }
 
 // Decode returns copied signed 16-bit little-endian PCM.
@@ -307,7 +328,7 @@ func (s *PionAudioSource) readLoop(track pionRemoteTrack) {
 			return
 		}
 		capturedAt := s.now()
-		frame, err := audio.NewFrame(pcm, defaultMediaSampleRate, capturedAt)
+		frame, err := audio.NewFrame(pcm, defaultASRSampleRate, capturedAt)
 		if err != nil {
 			s.setError(err)
 			s.closeDone()

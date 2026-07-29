@@ -108,6 +108,92 @@ func TestServiceCancelStopsActivePlaybackAndAllowsNextPlayback(t *testing.T) {
 	}
 }
 
+func TestServiceRetriesSettlementWhenEventPublishFails(t *testing.T) {
+	track := &recordingTrack{}
+	events := &recordingEvents{}
+	service, err := NewService(Dependencies{Track: track, Events: events, Now: fixedClock})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	chunk := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+	if err := service.Publish(context.Background(), chunk); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	events.mu.Lock()
+	events.failures = 1
+	events.mu.Unlock()
+	if err := service.Interrupt(context.Background(), "session-1", "playback-1", "user_speaking"); err == nil {
+		t.Fatal("Interrupt() unexpectedly succeeded when event publish failed")
+	}
+	if got := service.Snapshot("session-1"); got.State != StatePlaying {
+		t.Fatalf("snapshot after failed settlement = %#v, want playing", got)
+	}
+	if err := service.Publish(context.Background(), pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 2, Data: []byte{3, 4}}); !errors.Is(err, ErrPlaybackNotActive) {
+		t.Fatalf("Publish while settlement pending error = %v, want ErrPlaybackNotActive", err)
+	}
+	if err := service.Interrupt(context.Background(), "session-1", "playback-1", "user_speaking"); err != nil {
+		t.Fatalf("Interrupt(retry) error = %v", err)
+	}
+	if got := service.Snapshot("session-1"); got.State != StateInterrupted {
+		t.Fatalf("snapshot after retry = %#v", got)
+	}
+	if got := events.Attempts(); len(got) != 3 || got[1].EventID != got[2].EventID {
+		t.Fatalf("settlement event attempts = %#v, want stable event id", got)
+	}
+	if track.StopCalls() != 1 {
+		t.Fatalf("track stop calls = %d, want 1", track.StopCalls())
+	}
+}
+
+func TestServiceRetriesSettlementWhenTrackStopFails(t *testing.T) {
+	track := &recordingTrack{stopFailures: 1}
+	service, err := NewService(Dependencies{Track: track, Events: &recordingEvents{}, Now: fixedClock})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	chunk := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+	if err := service.Publish(context.Background(), chunk); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if err := service.Interrupt(context.Background(), "session-1", "playback-1", "user_speaking"); err == nil {
+		t.Fatal("Interrupt() unexpectedly succeeded when track stop failed")
+	}
+	if got := service.Snapshot("session-1"); got.State != StatePlaying {
+		t.Fatalf("snapshot after failed stop = %#v, want playing", got)
+	}
+	if err := service.Interrupt(context.Background(), "session-1", "playback-1", "user_speaking"); err != nil {
+		t.Fatalf("Interrupt(retry) error = %v", err)
+	}
+	if got := service.Snapshot("session-1"); got.State != StateInterrupted {
+		t.Fatalf("snapshot after retry = %#v", got)
+	}
+	if track.StopCalls() != 2 {
+		t.Fatalf("track stop calls = %d, want 2", track.StopCalls())
+	}
+}
+
+func TestServiceRetriesStartedEventAndAudioAfterInitialEventFailure(t *testing.T) {
+	track := &recordingTrack{}
+	events := &recordingEvents{failures: 1}
+	service, err := NewService(Dependencies{Track: track, Events: events, Now: fixedClock})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	chunk := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+	if err := service.Publish(context.Background(), chunk); err == nil {
+		t.Fatal("Publish() unexpectedly succeeded when started event failed")
+	}
+	if err := service.Publish(context.Background(), chunk); err != nil {
+		t.Fatalf("Publish(retry) error = %v", err)
+	}
+	if got := track.Chunks(); len(got) != 1 {
+		t.Fatalf("track chunks after retry = %#v, want one chunk", got)
+	}
+	if got := events.Attempts(); len(got) != 2 || got[0].EventID != got[1].EventID {
+		t.Fatalf("started event attempts = %#v, want stable event id", got)
+	}
+}
+
 func TestServiceRejectsSecondPlaybackWhileOneIsActive(t *testing.T) {
 	service, err := NewService(Dependencies{Track: &recordingTrack{}, Events: &recordingEvents{}, Now: fixedClock})
 	if err != nil {
@@ -153,9 +239,10 @@ func TestServiceDoesNotHoldStateLockWhilePublishingEvent(t *testing.T) {
 func fixedClock() time.Time { return time.Unix(1700000000, 0).UTC() }
 
 type recordingTrack struct {
-	mu     sync.Mutex
-	chunks []pipeline.AudioChunk
-	stops  int
+	mu           sync.Mutex
+	chunks       []pipeline.AudioChunk
+	stops        int
+	stopFailures int
 }
 
 func (t *recordingTrack) Write(_ context.Context, chunk pipeline.AudioChunk) error {
@@ -170,6 +257,10 @@ func (t *recordingTrack) Stop(_ context.Context, _ string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.stops++
+	if t.stopFailures > 0 {
+		t.stopFailures--
+		return errors.New("injected track stop failure")
+	}
 	return nil
 }
 
@@ -188,8 +279,10 @@ func (t *recordingTrack) StopCalls() int {
 }
 
 type recordingEvents struct {
-	mu     sync.Mutex
-	events []Event
+	mu       sync.Mutex
+	events   []Event
+	attempts []Event
+	failures int
 }
 
 type blockingEvents struct {
@@ -206,8 +299,19 @@ func (e *blockingEvents) Publish(context.Context, Event) error {
 func (e *recordingEvents) Publish(_ context.Context, event Event) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.attempts = append(e.attempts, event)
+	if e.failures > 0 {
+		e.failures--
+		return errors.New("injected event publish failure")
+	}
 	e.events = append(e.events, event)
 	return nil
+}
+
+func (e *recordingEvents) Attempts() []Event {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]Event(nil), e.attempts...)
 }
 
 func (e *recordingEvents) Types() []EventType {

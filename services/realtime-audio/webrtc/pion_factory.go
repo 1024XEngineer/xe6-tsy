@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
 	"github.com/pion/rtp"
+	"github.com/pion/sdp/v3"
 	pion "github.com/pion/webrtc/v4"
 )
 
@@ -312,3 +314,34 @@ func mapPionConnectionState(state pion.PeerConnectionState) (realtimev1.Connecti
 }
 
 var _ ConnectionTransportFactory = (*PionTransportFactory)(nil)
+
+func validateTTSAudioOffer(rawSDP string, config MediaConfig) error {
+	normalized, err := config.normalized()
+	if err != nil {
+		return err
+	}
+	var description sdp.SessionDescription
+	if err := description.UnmarshalString(rawSDP); err != nil {
+		return fmt.Errorf("parse remote SDP offer: %w", err)
+	}
+	codecs := description.GetCodecMap()
+	for _, media := range description.MediaDescriptions {
+		if media == nil || media.MediaName.Media != "audio" || media.MediaName.Port.Value == 0 {
+			continue
+		}
+		for _, format := range media.MediaName.Formats {
+			payloadType, err := strconv.ParseUint(format, 10, 8)
+			if err != nil {
+				continue
+			}
+			codec, ok := codecs[uint8(payloadType)]
+			if !ok || !strings.EqualFold(codec.Name, "L16") || codec.ClockRate != uint32(normalized.SampleRate) {
+				continue
+			}
+			if codec.EncodingParameters == strconv.Itoa(normalized.Channels) {
+				return nil
+			}
+		}
+	}
+	return ErrTTSCodecUnsupported
+}

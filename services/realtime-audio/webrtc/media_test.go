@@ -43,6 +43,62 @@ func TestPionAudioTrackCopiesPCMAndStopsOnlyOnePlayback(t *testing.T) {
 	}
 }
 
+func TestPionAudioTrackPacketizesPCMIntoTwentyMillisecondRTP(t *testing.T) {
+	fake := &rtpTrackRecorder{}
+	track, err := newPionAudioTrack(fake, MediaConfig{SampleRate: 16_000, Channels: 1})
+	if err != nil {
+		t.Fatalf("newPionAudioTrack() error = %v", err)
+	}
+	pcm := make([]byte, (320+160)*2)
+	for index := range pcm {
+		pcm[index] = byte(index)
+	}
+	if err := track.Write(context.Background(), pipeline.AudioChunk{SessionID: "session-1", PlaybackID: "playback-1", SequenceNo: 1, Data: pcm}); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	packets := fake.Packets()
+	if len(packets) != 2 {
+		t.Fatalf("RTP packet count = %d, want 2", len(packets))
+	}
+	if len(packets[0].Payload) != 320*2 || len(packets[1].Payload) != 160*2 {
+		t.Fatalf("RTP payload lengths = %d, %d; want 640, 320", len(packets[0].Payload), len(packets[1].Payload))
+	}
+	if packets[0].SequenceNumber != 1 || packets[1].SequenceNumber != 2 {
+		t.Fatalf("RTP sequence numbers = %d, %d; want 1, 2", packets[0].SequenceNumber, packets[1].SequenceNumber)
+	}
+	if packets[0].Timestamp != 0 || packets[1].Timestamp != 320 {
+		t.Fatalf("RTP timestamps = %d, %d; want 0, 320", packets[0].Timestamp, packets[1].Timestamp)
+	}
+}
+
+func TestPionAudioTrackPacketizesTwentyMillisecondsAtTwentyFourKilohertz(t *testing.T) {
+	fake := &rtpTrackRecorder{}
+	track, err := newPionAudioTrack(fake, MediaConfig{SampleRate: 24_000, Channels: 1})
+	if err != nil {
+		t.Fatalf("newPionAudioTrack() error = %v", err)
+	}
+	pcm := make([]byte, (480+1)*2)
+	if err := track.Write(context.Background(), pipeline.AudioChunk{SessionID: "session-1", PlaybackID: "playback-1", SequenceNo: 1, Data: pcm}); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	packets := fake.Packets()
+	if len(packets) != 2 || len(packets[0].Payload) != 480*2 || len(packets[1].Payload) != 2 || packets[1].Timestamp != 480 {
+		t.Fatalf("24kHz packets = %#v, want 960-byte full packet and 2-byte tail at timestamp 480", packets)
+	}
+}
+
+func TestPionAudioTrackReturnsRTPWriteError(t *testing.T) {
+	expected := errors.New("RTP write failed")
+	track, err := newPionAudioTrack(&failingRTPTrackRecorder{err: expected}, MediaConfig{SampleRate: 16_000, Channels: 1})
+	if err != nil {
+		t.Fatalf("newPionAudioTrack() error = %v", err)
+	}
+	err = track.Write(context.Background(), pipeline.AudioChunk{SessionID: "session-1", PlaybackID: "playback-1", SequenceNo: 1, Data: make([]byte, 640)})
+	if !errors.Is(err, expected) {
+		t.Fatalf("Write() error = %v, want wrapped RTP error", err)
+	}
+}
+
 func TestPionAudioTrackStopDoesNotWaitForRTPWrite(t *testing.T) {
 	recorder := &blockingRTPTrackRecorder{started: make(chan struct{}), release: make(chan struct{})}
 	track, err := newPionAudioTrack(recorder, MediaConfig{SampleRate: 16_000, Channels: 1})
@@ -175,7 +231,7 @@ func TestPionFactoryConfiguresMediaWhenPeerSupportsIt(t *testing.T) {
 	if !ok || mediaTransport.AudioSource() == nil || mediaTransport.TranslationEvents() == nil {
 		t.Fatalf("media transport = %#v", transport)
 	}
-	if _, err := transport.Answer(context.Background(), SessionDescription{Type: "offer", SDP: "offer-sdp"}); err != nil {
+	if _, err := transport.Answer(context.Background(), SessionDescription{Type: "offer", SDP: l16OfferSDP(24_000)}); err != nil {
 		t.Fatalf("Answer() error = %v", err)
 	}
 	if mediaTransport.TTSAudioTrack() == nil || mediaTransport.Playback() == nil {
@@ -202,7 +258,7 @@ func TestPionTransportAnswerConfiguresTTSTrackOnceConcurrently(t *testing.T) {
 
 	answers := make(chan error, 2)
 	answer := func() {
-		_, answerErr := transport.Answer(context.Background(), SessionDescription{Type: "offer", SDP: "offer-sdp"})
+		_, answerErr := transport.Answer(context.Background(), SessionDescription{Type: "offer", SDP: l16OfferSDP(24_000)})
 		answers <- answerErr
 	}
 	go answer()
@@ -258,6 +314,10 @@ type blockingRTPTrackRecorder struct {
 	started chan struct{}
 	release chan struct{}
 }
+
+type failingRTPTrackRecorder struct{ err error }
+
+func (r *failingRTPTrackRecorder) WriteRTP(*rtp.Packet) error { return r.err }
 
 func (r *blockingRTPTrackRecorder) WriteRTP(*rtp.Packet) error {
 	close(r.started)

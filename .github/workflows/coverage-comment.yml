@@ -110,6 +110,7 @@ jobs:
 
             core.setOutput("run_id", String(baseline.id));
             core.setOutput("branch", pullRequest.base.ref);
+            core.setOutput("available", "true");
 
       - name: Download current coverage reports
         uses: actions/download-artifact@v4

@@ -33,6 +33,9 @@ func TestRecordsHTTPProductionCompositionReadsOnlyOwnedTurns(t *testing.T) {
 		t.Fatalf("newRecordsHTTPDependencies() error = %v", err)
 	}
 	t.Cleanup(dependencies.cleanup)
+	if dependencies.worker == nil {
+		t.Fatal("newRecordsHTTPDependencies() worker = nil")
+	}
 
 	owner, err := dependencies.accounts.CreateAnonymous(t.Context())
 	if err != nil {

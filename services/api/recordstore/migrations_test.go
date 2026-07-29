@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 8 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 8", len(migrations))
+	if len(migrations) != 9 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 9", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -85,6 +85,23 @@ func TestEmbeddedMigrations(t *testing.T) {
 			if !strings.Contains(item.SQL, expected) {
 				t.Fatalf("migration %d does not contain %q", version, expected)
 			}
+		}
+	}
+
+	finalTurnOutbox := migrations[8]
+	if finalTurnOutbox.Version != 9 || finalTurnOutbox.Name != "final_turn_outbox" {
+		t.Fatalf("migration = %#v, want version 9 named final_turn_outbox", finalTurnOutbox)
+	}
+	for _, constraint := range []string{
+		"CREATE TABLE final_turn_outbox",
+		"payload_hash BYTEA NOT NULL",
+		"CONSTRAINT final_turn_outbox_status_valid",
+		"CONSTRAINT final_turn_outbox_receipt_state_valid",
+		"CREATE INDEX final_turn_outbox_available_idx",
+		"CREATE TRIGGER final_turn_outbox_reject_payload_updates",
+	} {
+		if !strings.Contains(finalTurnOutbox.SQL, constraint) {
+			t.Fatalf("final-turn outbox migration does not contain %q", constraint)
 		}
 	}
 }

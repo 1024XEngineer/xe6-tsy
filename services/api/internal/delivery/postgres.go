@@ -122,7 +122,7 @@ func (r *PostgresRepository) ClaimAttempt(ctx context.Context, id string) (Deliv
 	err := r.pool.QueryRow(ctx, `
 		UPDATE delivery_attempts
 		SET status=$2,error_code=NULL,next_attempt_at=NULL,started_at=$3,finished_at=NULL
-		WHERE id=$1 AND status='queued'
+		WHERE id=$1 AND status='queued' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
 		RETURNING id,message_id,attempt_number,status,error_code,next_attempt_at,started_at,finished_at,created_at`,
 		id, AttemptStatusSending, now,
 	).Scan(&attempt.ID, &attempt.MessageID, &attempt.AttemptNumber, &attempt.Status, &errorCode, &attempt.NextAttemptAt, &attempt.StartedAt, &attempt.FinishedAt, &attempt.CreatedAt)

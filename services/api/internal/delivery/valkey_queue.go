@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +43,7 @@ type ValkeyStreamClient interface {
 	XPendingExt(context.Context, *redis.XPendingExtArgs) *redis.XPendingExtCmd
 	XClaim(context.Context, *redis.XClaimArgs) *redis.XMessageSliceCmd
 	XAck(context.Context, string, string, ...string) *redis.IntCmd
+	XDel(context.Context, string, ...string) *redis.IntCmd
 	Do(context.Context, ...interface{}) *redis.Cmd
 }
 
@@ -68,7 +71,7 @@ func (c ValkeyQueueConfig) withDefaults() ValkeyQueueConfig {
 		c.Group = defaultDeliveryGroup
 	}
 	if c.Consumer == "" {
-		c.Consumer = defaultDeliveryConsumer
+		c.Consumer = defaultConsumerName()
 	}
 	if c.DelayStream == "" {
 		c.DelayStream = c.Stream + ":delayed"
@@ -88,6 +91,14 @@ func (c ValkeyQueueConfig) withDefaults() ValkeyQueueConfig {
 		c.BatchSize = 10
 	}
 	return c
+}
+
+func defaultConsumerName() string {
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		host = "unknown-host"
+	}
+	return defaultDeliveryConsumer + "-" + host + "-" + strconv.Itoa(os.Getpid())
 }
 
 // ValkeyQueue implements Queue on top of a Redis consumer group. Nack moves
@@ -138,10 +149,12 @@ func (q *ValkeyQueue) validate() error {
 	if q == nil || q.client == nil {
 		return ErrValkeyQueueUnavailable
 	}
+	// Stream entries are deleted after ACK. MAXLEN trimming is rejected because
+	// Redis may trim pending entries and leave the worker without a retry payload.
 	// go-redis uses -1 to explicitly omit BLOCK (useful for deterministic
 	// polling); values below -1 are never meaningful and usually indicate a
 	// configuration unit/sign error.
-	if q.stream == "" || q.group == "" || q.consumer == "" || q.delayStream == "" || q.delayKey == "" || q.stream == q.delayStream || q.stream == q.delayKey || q.delayStream == q.delayKey || q.block < -1 || q.batchSize <= 0 {
+	if q.stream == "" || q.group == "" || q.consumer == "" || q.delayStream == "" || q.delayKey == "" || q.stream == q.delayStream || q.stream == q.delayKey || q.delayStream == q.delayKey || q.block < -1 || q.batchSize <= 0 || q.maxLen > 0 {
 		return ErrValkeyQueueInvalidConfig
 	}
 	return nil
@@ -303,7 +316,7 @@ func (q *ValkeyQueue) firstUsable(ctx context.Context, messages []redis.XMessage
 			continue
 		}
 		q.pushPending(messages[index+1:])
-		return QueueMessage{AttemptID: attemptID, Receipt: message.ID}, true, nil
+		return QueueMessage{AttemptID: attemptID, IdempotencyKey: idempotencyKey, Receipt: message.ID}, true, nil
 	}
 	return QueueMessage{}, false, nil
 }
@@ -347,7 +360,47 @@ func (q *ValkeyQueue) Ack(ctx context.Context, receipt string) error {
 	if _, err := q.client.XAck(ctx, q.stream, q.group, receipt).Result(); err != nil {
 		return fmt.Errorf("ack delivery receipt %q: %w", receipt, err)
 	}
+	if _, err := q.client.XDel(ctx, q.stream, receipt).Result(); err != nil {
+		return fmt.Errorf("delete acknowledged delivery receipt %q: %w", receipt, err)
+	}
 	return nil
+}
+
+// Renew resets the pending-entry idle timer while a provider call is in
+// progress. The receipt must still belong to this consumer; a missing receipt
+// is reported so the worker can stop treating the lease as valid.
+func (q *ValkeyQueue) Renew(ctx context.Context, receipt string) error {
+	if err := q.validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(receipt) == "" {
+		return ErrValkeyQueueInvalidMessage
+	}
+	messages, err := q.client.XClaim(ctx, &redis.XClaimArgs{
+		Stream:   q.stream,
+		Group:    q.group,
+		Consumer: q.consumer,
+		MinIdle:  0,
+		Messages: []string{receipt},
+	}).Result()
+	if err != nil {
+		return fmt.Errorf("renew delivery receipt %q: %w", receipt, err)
+	}
+	if len(messages) == 0 {
+		return fmt.Errorf("renew delivery receipt %q: receipt is no longer pending", receipt)
+	}
+	return nil
+}
+
+func (q *ValkeyQueue) LeaseInterval() time.Duration {
+	if q == nil || q.claimIdle <= 0 {
+		return 10 * time.Second
+	}
+	interval := q.claimIdle / 3
+	if interval < time.Second {
+		return time.Second
+	}
+	return interval
 }
 
 // Nack atomically removes a receipt from the consumer group's PEL and records
@@ -356,18 +409,32 @@ func (q *ValkeyQueue) Ack(ctx context.Context, receipt string) error {
 // leave the attempt acknowledged without a durable delayed copy because all
 // steps run inside one Redis script.
 func (q *ValkeyQueue) Nack(ctx context.Context, receipt string, availableAt time.Time) error {
+	return q.nack(ctx, QueueMessage{Receipt: receipt}, availableAt)
+}
+
+// NackMessage preserves the durable broker identity if the original stream
+// payload was trimmed while it was pending. Without the fallback fields, a
+// missing XRANGE entry cannot be retried safely.
+func (q *ValkeyQueue) NackMessage(ctx context.Context, item QueueMessage, availableAt time.Time) error {
+	return q.nack(ctx, item, availableAt)
+}
+
+func (q *ValkeyQueue) nack(ctx context.Context, item QueueMessage, availableAt time.Time) error {
 	if err := q.validate(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(receipt) == "" {
+	if strings.TrimSpace(item.Receipt) == "" {
+		return ErrValkeyQueueInvalidMessage
+	}
+	if item.AttemptID != "" && item.IdempotencyKey == "" {
 		return ErrValkeyQueueInvalidMessage
 	}
 	if availableAt.IsZero() {
 		availableAt = time.Now().UTC()
 	}
-	cmd := q.client.Do(ctx, "EVAL", nackScript, 3, q.stream, q.delayStream, q.delayKey, q.group, receipt, availableAt.UTC().UnixMilli())
+	cmd := q.client.Do(ctx, "EVAL", nackScript, 3, q.stream, q.delayStream, q.delayKey, q.group, item.Receipt, availableAt.UTC().UnixMilli(), item.AttemptID, item.IdempotencyKey)
 	if _, err := cmd.Int(); err != nil {
-		return fmt.Errorf("nack delivery receipt %q: %w", receipt, err)
+		return fmt.Errorf("nack delivery receipt %q: %w", item.Receipt, err)
 	}
 	return nil
 }
@@ -410,11 +477,16 @@ func isUnsupportedAutoClaimError(err error) bool {
 const nackScript = `
 local entries = redis.call('XRANGE', KEYS[1], ARGV[2], ARGV[2])
 if #entries == 0 then
-  -- The stream entry may have been trimmed after it entered the PEL. ACK still
-  -- removes the orphaned pending ID; otherwise every recovery scan sees it
-  -- forever even though there is no payload left to retry.
+  -- The stream entry may have been trimmed after it entered the PEL. A worker
+  -- that still has the durable identity can rebuild the delayed payload;
+  -- receipt-only callers fail closed instead of silently losing the retry.
+  if ARGV[4] == nil or ARGV[4] == '' or ARGV[5] == nil or ARGV[5] == '' then
+    return redis.error_reply('delivery entry missing from stream')
+  end
+  local delayed_id = redis.call('XADD', KEYS[2], '*', 'attempt_id', ARGV[4], 'idempotency_key', ARGV[5])
+  redis.call('ZADD', KEYS[3], ARGV[3], delayed_id)
   redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])
-  return 0
+  return 1
 end
 local fields = entries[1][2]
 local attempt = false

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
@@ -104,7 +105,14 @@ func (w *Worker) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return err
+			// Process has already NACKed recoverable failures. Keep this worker
+			// alive so the delayed entry can be consumed without requiring an
+			// external supervisor for every transient dependency failure.
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(w.retryDelay()):
+			}
 		}
 	}
 }
@@ -248,7 +256,7 @@ func (w *Worker) deliver(ctx context.Context, item QueueMessage, reader WorkerMe
 		return w.completeFailedAndAck(ctx, item, attempt.ID, message.ID, destinationFailureCode, fmt.Errorf("%w: verified destination identity is invalid", ErrInvalidQueueMessage))
 	}
 
-	sendErr := w.deps.Provider.Send(ctx, SendRequest{
+	sendErr := w.sendWithLease(ctx, item, SendRequest{
 		Message:                message,
 		Attempt:                attempt,
 		Destination:            destination,
@@ -278,6 +286,69 @@ func (w *Worker) deliver(ctx context.Context, item QueueMessage, reader WorkerMe
 		return w.retry(ctx, item, fmt.Errorf("record successful delivery: %w", err))
 	}
 	return w.ack(ctx, item)
+}
+
+func (w *Worker) sendWithLease(ctx context.Context, item QueueMessage, request SendRequest) error {
+	leaseQueue, ok := w.queue.(LeaseQueue)
+	if !ok {
+		return w.deps.Provider.Send(ctx, request)
+	}
+	leaseCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	interval := leaseQueue.LeaseInterval()
+	if interval <= 0 {
+		interval = defaultWorkerNackDelay
+	}
+	done := make(chan struct{})
+	var renewErr error
+	stopped := false
+	var renewMu sync.Mutex
+	var renewWG sync.WaitGroup
+	renewWG.Add(1)
+	go func() {
+		defer renewWG.Done()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if err := leaseQueue.Renew(leaseCtx, item.Receipt); err != nil {
+					renewMu.Lock()
+					if !stopped && renewErr == nil {
+						renewErr = err
+					}
+					shouldCancel := !stopped
+					renewMu.Unlock()
+					if !shouldCancel {
+						return
+					}
+					// Stop the provider call once ownership is no longer
+					// provable. Its result is then handled as an ambiguous
+					// provider outcome by the normal retry path.
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	sendErr := w.deps.Provider.Send(leaseCtx, request)
+	renewMu.Lock()
+	stopped = true
+	renewMu.Unlock()
+	cancel()
+	close(done)
+	renewWG.Wait()
+	renewMu.Lock()
+	err := renewErr
+	renewMu.Unlock()
+	if err != nil {
+		return errors.Join(sendErr, fmt.Errorf("renew delivery lease: %w", err))
+	}
+	return sendErr
 }
 
 func (w *Worker) reconcileTerminalMessage(ctx context.Context, item QueueMessage, attempt DeliveryAttempt, message Message) error {
@@ -340,7 +411,14 @@ func (w *Worker) retry(ctx context.Context, item QueueMessage, cause error) erro
 	if delay <= 0 {
 		delay = defaultWorkerNackDelay
 	}
-	if err := w.queue.Nack(ctx, item.Receipt, time.Now().Add(delay)); err != nil {
+	availableAt := time.Now().Add(delay)
+	var err error
+	if nacker, ok := w.queue.(PayloadNacker); ok && item.AttemptID != "" && item.IdempotencyKey != "" {
+		err = nacker.NackMessage(ctx, item, availableAt)
+	} else {
+		err = w.queue.Nack(ctx, item.Receipt, availableAt)
+	}
+	if err != nil {
 		return errors.Join(cause, fmt.Errorf("nack delivery: %w", err))
 	}
 	return cause

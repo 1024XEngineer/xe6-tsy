@@ -33,6 +33,7 @@ type valkeyQueueFake struct {
 	readErr     error
 
 	acked   []string
+	deleted []string
 	doCalls [][]interface{}
 	doValue interface{}
 	doErr   error
@@ -109,6 +110,13 @@ func (f *valkeyQueueFake) XAck(ctx context.Context, _, _ string, ids ...string) 
 	return cmd
 }
 
+func (f *valkeyQueueFake) XDel(ctx context.Context, _ string, ids ...string) *redis.IntCmd {
+	f.deleted = append(f.deleted, ids...)
+	cmd := redis.NewIntCmd(ctx)
+	cmd.SetVal(int64(len(ids)))
+	return cmd
+}
+
 func (f *valkeyQueueFake) Do(ctx context.Context, args ...interface{}) *redis.Cmd {
 	f.doCalls = append(f.doCalls, args)
 	cmd := redis.NewCmd(ctx)
@@ -153,7 +161,7 @@ func TestValkeyQueueReceiveClaimsStaleBeforeReadingNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Receive() error = %v", err)
 	}
-	if got != (QueueMessage{AttemptID: "attempt-7", Receipt: "7-0"}) {
+	if got != (QueueMessage{AttemptID: "attempt-7", IdempotencyKey: "key-7", Receipt: "7-0"}) {
 		t.Fatalf("Receive() = %#v, want claimed receipt", got)
 	}
 	if fake.autoCalls != 1 {
@@ -262,14 +270,55 @@ func TestValkeyQueueNackCarriesAvailableAtToAtomicScript(t *testing.T) {
 		t.Fatalf("EVAL calls = %d, want 1", len(fake.doCalls))
 	}
 	args := fake.doCalls[0]
-	if len(args) != 9 || args[0] != "EVAL" || args[1] != nackScript || args[2] != 3 || args[3] != "delivery" || args[4] != "delivery:delayed" || args[5] != "delivery:delay" || args[6] != "workers" || args[7] != "11-0" || args[8] != availableAt.UnixMilli() {
+	if len(args) != 11 || args[0] != "EVAL" || args[1] != nackScript || args[2] != 3 || args[3] != "delivery" || args[4] != "delivery:delayed" || args[5] != "delivery:delay" || args[6] != "workers" || args[7] != "11-0" || args[8] != availableAt.UnixMilli() || args[9] != "" || args[10] != "" {
 		t.Fatalf("EVAL args = %#v, want stream/group/receipt/availableAt", args)
 	}
 	if !strings.Contains(nackScript, "ZADD") || !strings.Contains(nackScript, "XACK") {
 		t.Fatal("Nack script does not atomically persist delay and settle receipt")
 	}
-	if !strings.Contains(nackScript, "if #entries == 0 then\n  -- The stream entry may have been trimmed") || !strings.Contains(nackScript, "redis.call('XACK', KEYS[1], ARGV[1], ARGV[2])\n  return 0") {
-		t.Fatal("Nack script does not clear a PEL receipt whose stream entry was trimmed")
+	if !strings.Contains(nackScript, "if #entries == 0 then") || !strings.Contains(nackScript, "delivery entry missing from stream") || !strings.Contains(nackScript, "ARGV[4]") {
+		t.Fatal("Nack script does not fail closed or rebuild a trimmed stream entry")
+	}
+}
+
+func TestValkeyQueueNackMessageCarriesFallbackIdentity(t *testing.T) {
+	fake := &valkeyQueueFake{}
+	queue := NewValkeyQueue(fake, ValkeyQueueConfig{Stream: "delivery", Group: "workers", Consumer: "worker-1"})
+	if err := queue.NackMessage(context.Background(), QueueMessage{AttemptID: "attempt-1", IdempotencyKey: "key-1", Receipt: "11-0"}, time.Unix(1_800_000_000, 0)); err != nil {
+		t.Fatalf("NackMessage() error = %v", err)
+	}
+	args := fake.doCalls[0]
+	if args[9] != "attempt-1" || args[10] != "key-1" {
+		t.Fatalf("fallback args = %#v, want attempt and idempotency identity", args[9:])
+	}
+}
+
+func TestValkeyQueueAckDeletesSettledEntry(t *testing.T) {
+	fake := &valkeyQueueFake{}
+	queue := NewValkeyQueue(fake, ValkeyQueueConfig{Stream: "delivery", Group: "workers", Consumer: "worker-1"})
+	if err := queue.Ack(context.Background(), "11-0"); err != nil {
+		t.Fatalf("Ack() error = %v", err)
+	}
+	if len(fake.acked) != 1 || len(fake.deleted) != 1 || fake.deleted[0] != "11-0" {
+		t.Fatalf("acked=%v deleted=%v, want receipt settled and deleted", fake.acked, fake.deleted)
+	}
+}
+
+func TestValkeyQueueRenewsPendingReceipt(t *testing.T) {
+	fake := &valkeyQueueFake{claim: []redis.XMessage{{ID: "11-0"}}}
+	queue := NewValkeyQueue(fake, ValkeyQueueConfig{Stream: "delivery", Group: "workers", Consumer: "worker-1", ClaimIdle: 30 * time.Second})
+	if err := queue.Renew(context.Background(), "11-0"); err != nil {
+		t.Fatalf("Renew() error = %v", err)
+	}
+	if fake.claimCalls != 1 || queue.LeaseInterval() != 10*time.Second {
+		t.Fatalf("claim calls=%d lease interval=%s, want 1 and 10s", fake.claimCalls, queue.LeaseInterval())
+	}
+}
+
+func TestValkeyQueueRejectsMaxLenBecausePendingEntriesMustNotBeTrimmed(t *testing.T) {
+	queue := NewValkeyQueue(&valkeyQueueFake{}, ValkeyQueueConfig{MaxLen: 100})
+	if err := queue.Ack(context.Background(), "1-0"); !errors.Is(err, ErrValkeyQueueInvalidConfig) {
+		t.Fatalf("Ack() error = %v, want ErrValkeyQueueInvalidConfig", err)
 	}
 }
 

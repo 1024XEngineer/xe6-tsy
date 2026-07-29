@@ -13,8 +13,25 @@ var ErrProviderRejected = errors.New("delivery provider rejected request")
 
 // QueueMessage carries an attempt identifier and broker receipt used for settlement.
 type QueueMessage struct {
-	AttemptID string
-	Receipt   string
+	AttemptID      string
+	IdempotencyKey string
+	Receipt        string
+}
+
+// LeaseQueue can renew the broker ownership of an in-flight receipt. Workers
+// use this optional capability while a provider call is running; queues that
+// do not support leases retain the existing at-least-once behavior.
+type LeaseQueue interface {
+	Renew(context.Context, string) error
+	LeaseInterval() time.Duration
+}
+
+// PayloadNacker can rebuild a delayed entry when the original stream payload
+// was trimmed before the worker could NACK it. The durable attempt identity is
+// still the source of truth, but retaining the idempotency key lets the broker
+// recover without silently dropping the retry.
+type PayloadNacker interface {
+	NackMessage(context.Context, QueueMessage, time.Time) error
 }
 
 // Repository owns message, attempt, preference, and outbox persistence boundaries.

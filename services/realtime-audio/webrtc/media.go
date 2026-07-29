@@ -32,6 +32,7 @@ var (
 	ErrRemoteTrackAttached = errors.New("remote audio track is already attached")
 	ErrDecoderRequired     = errors.New("RTP audio decoder is required")
 	ErrPlaybackStopped     = errors.New("playback track is stopped")
+	ErrAudioChunkPending   = errors.New("audio chunk write is pending")
 )
 
 // MediaConfig defines the local TTS output format and advertised identifiers.
@@ -82,8 +83,19 @@ type PionAudioTrack struct {
 	mu        sync.Mutex
 	writeMu   sync.Mutex
 	stopped   map[string]bool
+	pending   map[audioChunkKey]pendingAudioChunk
 	sequence  uint16
 	timestamp uint32
+}
+
+type audioChunkKey struct {
+	playbackID string
+	sequenceNo int64
+}
+
+type pendingAudioChunk struct {
+	offset  int
+	dataLen int
 }
 
 type pionRTPTrack interface {
@@ -98,7 +110,10 @@ func newPionAudioTrack(track pionRTPTrack, config MediaConfig) (*PionAudioTrack,
 	if err != nil {
 		return nil, err
 	}
-	return &PionAudioTrack{track: track, sampleRate: config.SampleRate, channels: config.Channels, stopped: make(map[string]bool)}, nil
+	return &PionAudioTrack{
+		track: track, sampleRate: config.SampleRate, channels: config.Channels,
+		stopped: make(map[string]bool), pending: make(map[audioChunkKey]pendingAudioChunk),
+	}, nil
 }
 
 // Write packetizes one PCM chunk into 20ms RTP L16 packets.
@@ -117,13 +132,32 @@ func (t *PionAudioTrack) Write(ctx context.Context, chunk pipeline.AudioChunk) e
 	}
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
+	key := audioChunkKey{playbackID: chunk.PlaybackID, sequenceNo: chunk.SequenceNo}
+	t.mu.Lock()
+	progress, hasPending := t.pending[key]
+	if !hasPending {
+		for pendingKey := range t.pending {
+			if pendingKey.playbackID == chunk.PlaybackID {
+				t.mu.Unlock()
+				return ErrAudioChunkPending
+			}
+		}
+	} else if progress.dataLen != len(chunk.Data) {
+		t.mu.Unlock()
+		return ErrInvalidDependency
+	}
+	offset := progress.offset
+	t.mu.Unlock()
 	bytesPerSample := 2 * t.channels
 	samplesPerPacket := t.sampleRate / 50
 	if samplesPerPacket < 1 {
 		samplesPerPacket = 1
 	}
-	for offset := 0; offset < len(chunk.Data); {
+	for offset < len(chunk.Data) {
 		if err := ctx.Err(); err != nil {
+			if offset > 0 {
+				t.savePending(key, offset, len(chunk.Data))
+			}
 			return err
 		}
 		t.mu.Lock()
@@ -146,6 +180,7 @@ func (t *PionAudioTrack) Write(ctx context.Context, chunk pipeline.AudioChunk) e
 		}
 		packet := &rtp.Packet{Header: rtp.Header{Version: 2, SequenceNumber: sequence, Timestamp: timestamp}, Payload: payload}
 		if err := t.track.WriteRTP(packet); err != nil {
+			t.savePending(key, offset, len(chunk.Data))
 			return fmt.Errorf("write TTS sample: %w", err)
 		}
 		t.mu.Lock()
@@ -154,7 +189,16 @@ func (t *PionAudioTrack) Write(ctx context.Context, chunk pipeline.AudioChunk) e
 		t.mu.Unlock()
 		offset += len(payload)
 	}
+	t.mu.Lock()
+	delete(t.pending, key)
+	t.mu.Unlock()
 	return nil
+}
+
+func (t *PionAudioTrack) savePending(key audioChunkKey, offset, dataLen int) {
+	t.mu.Lock()
+	t.pending[key] = pendingAudioChunk{offset: offset, dataLen: dataLen}
+	t.mu.Unlock()
 }
 
 // Publish adapts the track to pipeline.AudioChunkSink.

@@ -100,6 +100,44 @@ func TestPionAudioTrackReturnsRTPWriteError(t *testing.T) {
 	}
 }
 
+func TestPionAudioTrackRetriesOnlyUnsentPacketsAfterPartialFailure(t *testing.T) {
+	expected := errors.New("second RTP write failed")
+	recorder := &partialFailureRTPTrackRecorder{failAt: 2, err: expected}
+	track, err := newPionAudioTrack(recorder, MediaConfig{SampleRate: 16_000, Channels: 1})
+	if err != nil {
+		t.Fatalf("newPionAudioTrack() error = %v", err)
+	}
+	pcm := make([]byte, (320+160)*2)
+	for index := range pcm {
+		pcm[index] = byte(index)
+	}
+	chunk := pipeline.AudioChunk{SessionID: "session-1", PlaybackID: "playback-1", SequenceNo: 1, Data: pcm}
+	if err := track.Write(context.Background(), chunk); !errors.Is(err, expected) {
+		t.Fatalf("first Write() error = %v, want %v", err, expected)
+	}
+	if got := len(recorder.Packets()); got != 1 {
+		t.Fatalf("successful packets after partial failure = %d, want 1", got)
+	}
+	if err := track.Write(context.Background(), chunk); err != nil {
+		t.Fatalf("retry Write() error = %v", err)
+	}
+	packets := recorder.Packets()
+	if len(packets) != 2 {
+		t.Fatalf("successful packets after retry = %d, want 2", len(packets))
+	}
+	if packets[0].SequenceNumber != 1 || packets[1].SequenceNumber != 2 {
+		t.Fatalf("packet sequence numbers = %d, %d; want 1, 2", packets[0].SequenceNumber, packets[1].SequenceNumber)
+	}
+	wantPayload := make([]byte, len(pcm[320*2:]))
+	for index := 0; index < len(wantPayload); index += 2 {
+		wantPayload[index] = pcm[320*2+index+1]
+		wantPayload[index+1] = pcm[320*2+index]
+	}
+	if !reflect.DeepEqual(packets[1].Payload, wantPayload) {
+		t.Fatalf("retry payload = %v, want unsent PCM tail", packets[1].Payload)
+	}
+}
+
 func TestPionAudioTrackStopDoesNotWaitForRTPWrite(t *testing.T) {
 	recorder := &blockingRTPTrackRecorder{started: make(chan struct{}), release: make(chan struct{})}
 	track, err := newPionAudioTrack(recorder, MediaConfig{SampleRate: 16_000, Channels: 1})
@@ -380,7 +418,32 @@ type blockingRTPTrackRecorder struct {
 
 type failingRTPTrackRecorder struct{ err error }
 
+type partialFailureRTPTrackRecorder struct {
+	mu      sync.Mutex
+	packets []*rtp.Packet
+	failAt  int
+	err     error
+	failed  bool
+}
+
 func (r *failingRTPTrackRecorder) WriteRTP(*rtp.Packet) error { return r.err }
+
+func (r *partialFailureRTPTrackRecorder) WriteRTP(packet *rtp.Packet) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.failed && len(r.packets)+1 == r.failAt {
+		r.failed = true
+		return r.err
+	}
+	r.packets = append(r.packets, packet.Clone())
+	return nil
+}
+
+func (r *partialFailureRTPTrackRecorder) Packets() []*rtp.Packet {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*rtp.Packet(nil), r.packets...)
+}
 
 func (r *blockingRTPTrackRecorder) WriteRTP(*rtp.Packet) error {
 	close(r.started)

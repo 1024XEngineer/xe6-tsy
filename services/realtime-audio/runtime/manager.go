@@ -300,7 +300,8 @@ func (m *Manager) run(item *entry, ctx context.Context) {
 	}
 	item.err = err
 	item.finished = true
-	if reportFailure && reportErr == nil && ctx.Err() == nil && m.entries[item.request.SessionID] == item {
+	if reportFailure && reportErr == nil && ctx.Err() == nil && item.source.closeError() == nil &&
+		m.entries[item.request.SessionID] == item {
 		delete(m.entries, item.request.SessionID)
 	}
 	close(item.done)

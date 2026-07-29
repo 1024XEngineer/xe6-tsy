@@ -136,10 +136,11 @@ func TestManagerClosesPreparedInputWhenActivationIsCanceled(t *testing.T) {
 
 func TestManagerReportsTerminalFailureAndAllowsRetry(t *testing.T) {
 	base := time.Unix(1700000000, 0)
+	closeErr := errors.New("close audio input")
 	first := &fakeFrameSource{frames: []audio.Frame{
 		mustFrame(t, []byte{1, 0}, base),
 		mustFrame(t, []byte{0, 0}, base.Add(100*time.Millisecond)),
-	}}
+	}, closeErrors: []error{closeErr, closeErr, nil}}
 	second := &fakeFrameSource{}
 	reporter := &recordingRuntimeReporter{
 		failureCalled:   make(chan struct{}),
@@ -192,8 +193,25 @@ func TestManagerReportsTerminalFailureAndAllowsRetry(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for failure report completion")
 	}
-	if err := <-retryDone; err != nil {
-		t.Fatalf("retry Start() error = %v", err)
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		item := manager.entries[snapshot.SessionID]
+		retained := item != nil && item.terminal && item.finished
+		manager.mu.Unlock()
+		if retained {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("terminal entry was removed despite source close failure")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := <-retryDone; !errors.Is(err, closeErr) {
+		t.Fatalf("retry Start() error = %v, want source close error", err)
+	}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("second retry Start() error = %v", err)
 	}
 	if calls := reporter.FailureCalls(); calls != 1 {
 		t.Fatalf("failure report calls = %d, want 1", calls)

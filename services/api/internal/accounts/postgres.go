@@ -255,6 +255,54 @@ func (r *PostgresRepository) BindAnonymous(ctx context.Context, anonymousID, reg
 	return r.GetAccount(ctx, registeredID)
 }
 
+// BindAnonymousAndCreateSession is the login-path variant of BindAnonymous.
+// All ownership changes and the first registered session are committed by one
+// transaction, so a session insert failure rolls the merge back.
+func (r *PostgresRepository) BindAnonymousAndCreateSession(ctx context.Context, anonymousID, registeredID string, session Session) (Account, error) {
+	if anonymousID == "" || registeredID == "" || anonymousID == registeredID || session.ID == "" || session.AccountID != registeredID {
+		return Account{}, domain.ErrConflict
+	}
+	var account Account
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var anonymousKind string
+		var mergedInto *string
+		if err := tx.QueryRow(ctx, `SELECT kind, merged_into FROM lingow_accounts WHERE id=$1 FOR UPDATE`, anonymousID).Scan(&anonymousKind, &mergedInto); err != nil {
+			return mapError(err)
+		}
+		if mergedInto != nil && *mergedInto != registeredID {
+			return domain.ErrConflict
+		}
+		if mergedInto == nil && anonymousKind != string(AccountKindAnonymous) {
+			return domain.ErrConflict
+		}
+		var registeredKind string
+		var createdAt time.Time
+		if err := tx.QueryRow(ctx, `SELECT kind, created_at FROM lingow_accounts WHERE id=$1 AND merged_into IS NULL FOR UPDATE`, registeredID).Scan(&registeredKind, &createdAt); err != nil {
+			return mapError(err)
+		}
+		if registeredKind != string(AccountKindRegistered) {
+			return domain.ErrConflict
+		}
+		if mergedInto == nil {
+			if _, err := tx.Exec(ctx, `UPDATE lingow_auth_sessions SET account_id=$2 WHERE account_id=$1`, anonymousID, registeredID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE lingow_accounts SET merged_into=$2 WHERE id=$1`, anonymousID, registeredID); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, insertSessionSQL, session.ID, session.AccountID, session.RefreshHash, session.ExpiresAt, session.CreatedAt); err != nil {
+			return err
+		}
+		account = Account{ID: registeredID, Kind: AccountKindRegistered, CreatedAt: createdAt}
+		return nil
+	})
+	if err != nil {
+		return Account{}, mapError(err)
+	}
+	return account, nil
+}
+
 func (r *PostgresRepository) CreateSession(ctx context.Context, session Session) error {
 	_, err := r.pool.Exec(ctx, insertSessionSQL, session.ID, session.AccountID, session.RefreshHash, session.ExpiresAt, session.CreatedAt)
 	return mapError(err)

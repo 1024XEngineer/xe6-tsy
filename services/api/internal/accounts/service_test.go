@@ -128,6 +128,67 @@ func TestPhoneVerificationRestoresChallengeWhenSessionPersistenceFails(t *testin
 	}
 }
 
+func TestPhoneVerificationUsesAtomicBindForAnonymousAccount(t *testing.T) {
+	digester, err := NewCredentialDigester("01234567890123456789012345678901")
+	if err != nil {
+		t.Fatalf("NewCredentialDigester() error = %v", err)
+	}
+	legacyHash, err := digester.EncryptLegacyPhoneHash(hashValue("+8613800000000"))
+	if err != nil {
+		t.Fatalf("EncryptLegacyPhoneHash() error = %v", err)
+	}
+	repository := &challengeTestRepository{
+		refreshTestRepository: *newRefreshTestRepository(),
+		consumed: PhoneChallenge{
+			ID: "challenge_atomic", PhoneHash: digester.PhoneHash("+8613800000000"), LegacyPhoneHash: legacyHash,
+		},
+		phoneAccount: Account{ID: "acct-registered", Kind: AccountKindRegistered, CreatedAt: time.Unix(1, 0).UTC()},
+	}
+	service := NewPersistentUseCases(repository, &refreshTestIssuer{}, nil, verificationSenderStub{}, digester)
+	ctx := authcontext.WithAccountID(t.Context(), "acct-anonymous")
+
+	result, err := service.VerifyPhone(ctx, "challenge_atomic", "123456", "acct-anonymous")
+	if err != nil {
+		t.Fatalf("VerifyPhone() error = %v", err)
+	}
+	if !repository.atomicBindCalled {
+		t.Fatal("VerifyPhone() did not use atomic anonymous binding")
+	}
+	if repository.createSessionCalls != 0 {
+		t.Fatalf("CreateSession() calls = %d, want 0", repository.createSessionCalls)
+	}
+	if result.Account.ID != "acct-registered" || result.Account.Kind != AccountKindRegistered {
+		t.Fatalf("VerifyPhone() account = %#v, want registered account", result.Account)
+	}
+}
+
+func TestPhoneVerificationDoesNotBindWhenSessionIssuanceFails(t *testing.T) {
+	digester, err := NewCredentialDigester("01234567890123456789012345678901")
+	if err != nil {
+		t.Fatalf("NewCredentialDigester() error = %v", err)
+	}
+	legacyHash, err := digester.EncryptLegacyPhoneHash(hashValue("+8613800000000"))
+	if err != nil {
+		t.Fatalf("EncryptLegacyPhoneHash() error = %v", err)
+	}
+	repository := &challengeTestRepository{
+		refreshTestRepository: *newRefreshTestRepository(),
+		consumed: PhoneChallenge{
+			ID: "challenge_atomic_fail", PhoneHash: digester.PhoneHash("+8613800000000"), LegacyPhoneHash: legacyHash,
+		},
+		phoneAccount: Account{ID: "acct-registered", Kind: AccountKindRegistered, CreatedAt: time.Unix(1, 0).UTC()},
+	}
+	issuer := &refreshTestIssuer{issueErr: errors.New("issuer unavailable")}
+	service := NewPersistentUseCases(repository, issuer, nil, verificationSenderStub{}, digester)
+
+	if _, err := service.VerifyPhone(authcontext.WithAccountID(t.Context(), "acct-anonymous"), "challenge_atomic_fail", "123456", "acct-anonymous"); !errors.Is(err, issuer.issueErr) {
+		t.Fatalf("VerifyPhone() error = %v, want issuer error", err)
+	}
+	if repository.atomicBindCalled {
+		t.Fatal("VerifyPhone() bound anonymous account despite token issuance failure")
+	}
+}
+
 func TestPhoneVerificationRestoreSurvivesRequestCancellation(t *testing.T) {
 	digester, err := NewCredentialDigester("01234567890123456789012345678901")
 	if err != nil {
@@ -268,6 +329,8 @@ type challengeTestRepository struct {
 	phoneAccount       Account
 	createSessionErr   error
 	createSessionHook  func()
+	atomicBindCalled   bool
+	createSessionCalls int
 }
 
 func (r *challengeTestRepository) CreateChallenge(_ context.Context, challenge PhoneChallenge) error {
@@ -294,6 +357,7 @@ func (r *challengeTestRepository) FindOrCreateByPhoneHashes(context.Context, str
 }
 
 func (r *challengeTestRepository) CreateSession(ctx context.Context, session Session) error {
+	r.createSessionCalls++
 	if r.createSessionErr != nil {
 		if r.createSessionHook != nil {
 			r.createSessionHook()
@@ -301,6 +365,20 @@ func (r *challengeTestRepository) CreateSession(ctx context.Context, session Ses
 		return r.createSessionErr
 	}
 	return r.refreshTestRepository.CreateSession(ctx, session)
+}
+
+func (r *challengeTestRepository) BindAnonymousAndCreateSession(_ context.Context, anonymousID, registeredID string, session Session) (Account, error) {
+	r.atomicBindCalled = true
+	if anonymousID != "acct-anonymous" || registeredID != r.phoneAccount.ID || session.AccountID != registeredID {
+		return Account{}, domain.ErrConflict
+	}
+	if r.createSessionErr != nil {
+		return Account{}, r.createSessionErr
+	}
+	r.refreshTestRepository.mu.Lock()
+	r.refreshTestRepository.successors = append(r.refreshTestRepository.successors, session)
+	r.refreshTestRepository.mu.Unlock()
+	return r.phoneAccount, nil
 }
 
 func newRefreshTestRepository() *refreshTestRepository {
@@ -342,6 +420,17 @@ func (r *refreshTestRepository) FindOrCreateByPhoneHashes(context.Context, strin
 
 func (r *refreshTestRepository) BindAnonymous(context.Context, string, string) (Account, error) {
 	return Account{}, domain.ErrNotImplemented
+}
+
+func (r *refreshTestRepository) BindAnonymousAndCreateSession(_ context.Context, _, _ string, session Session) (Account, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.createCalls++
+	if r.rotateErr != nil {
+		return Account{}, r.rotateErr
+	}
+	r.successors = append(r.successors, session)
+	return r.account, nil
 }
 
 func (r *refreshTestRepository) CreateSession(_ context.Context, session Session) error {

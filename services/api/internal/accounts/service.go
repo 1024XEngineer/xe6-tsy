@@ -131,10 +131,16 @@ func (u *UseCases) VerifyPhone(ctx context.Context, challengeID, code, anonymous
 		return AuthResult{}, err
 	}
 	if anonymousAccountID != "" {
-		challengeAccount, err = u.repository.BindAnonymous(ctx, anonymousAccountID, challengeAccount.ID)
+		session, tokens, prepareErr := u.prepareSession(ctx, challengeAccount)
+		if prepareErr != nil {
+			return AuthResult{}, prepareErr
+		}
+		challengeAccount, err = u.repository.BindAnonymousAndCreateSession(ctx, anonymousAccountID, challengeAccount.ID, session)
 		if err != nil {
 			return AuthResult{}, err
 		}
+		completed = true
+		return AuthResult{Account: challengeAccount, Tokens: tokens}, nil
 	}
 	result, err = u.issueSession(ctx, challengeAccount)
 	if err != nil {

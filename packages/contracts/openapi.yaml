@@ -18,6 +18,7 @@ paths:
       responses:
         '202': { description: Accepted, content: { application/json: { schema: { type: object, required: [challenge_id], properties: { challenge_id: { type: string } } } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /auth/phone/login:
     post:
@@ -26,6 +27,8 @@ paths:
       responses:
         '200': { description: Verified, content: { application/json: { schema: { $ref: '#/components/schemas/AuthResult' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /auth/token/refresh:
     post:
@@ -34,6 +37,7 @@ paths:
       responses:
         '200': { description: Refreshed, content: { application/json: { schema: { $ref: '#/components/schemas/Tokens' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /auth/logout:
     post:
@@ -42,6 +46,7 @@ paths:
       responses:
         '204': { description: Logged out }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /account/me:
     get:
@@ -192,8 +197,44 @@ components:
   responses:
     BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     Unauthorized: { description: Missing or invalid account context, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Forbidden: { description: Authenticated account does not own the requested resource, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    TooManyRequests: { description: Phone verification requests are temporarily rate limited, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotImplemented: { description: Business implementation is intentionally pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
+    RealtimeRuntimeState:
+      type: string
+      enum: [stopped, starting, listening, asr_processing, translating, tts_processing, playing, stopping, failed]
+    RealtimeRuntimeErrorCode:
+      type: string
+      enum: [realtime_start_failed, realtime_stop_failed]
+    RealtimeRuntimeSnapshot:
+      type: object
+      additionalProperties: false
+      required: [session_id, start_operation_id, runtime_state, current_turn_id, current_playback_id, last_error_code, updated_at]
+      properties:
+        session_id: { type: string }
+        start_operation_id: { type: string }
+        runtime_state: { $ref: '#/components/schemas/RealtimeRuntimeState' }
+        current_turn_id: { type: [string, 'null'] }
+        current_playback_id: { type: [string, 'null'] }
+        last_error_code: { type: [string, 'null'] }
+        updated_at: { type: string, format: date-time }
+    WebRTCConnectionState:
+      type: string
+      enum: [new, connecting, connected, disconnected, failed, closed]
+    WebRTCErrorCode:
+      type: string
+      enum: [webrtc_connection_not_found, webrtc_connection_not_ready, webrtc_connection_failed]
+    WebRTCConnectionSnapshot:
+      type: object
+      additionalProperties: false
+      required: [session_id, connection_id, state, version, updated_at]
+      properties:
+        session_id: { type: string }
+        connection_id: { type: string }
+        state: { $ref: '#/components/schemas/WebRTCConnectionState' }
+        version: { type: integer, format: int64, minimum: 1 }
+        updated_at: { type: string, format: date-time }
     Account:
       type: object
       required: [id, kind, created_at]
@@ -215,7 +256,12 @@ components:
       type: object
       additionalProperties: false
       required: [challenge_id, code]
-      properties: { challenge_id: { type: string }, code: { type: string }, anonymous_account_id: { type: string } }
+      properties:
+        challenge_id: { type: string }
+        code: { type: string }
+        anonymous_account_id:
+          type: string
+          description: When supplied, the request must include a Bearer access token for this same anonymous account.
     Stage: { type: string, enum: [asr, translation, tts, diarization] }
     UsageSummary:
       type: object
@@ -242,7 +288,7 @@ components:
       type: object
       additionalProperties: false
       required: [channel, destination_ref, turn_ids]
-      properties: { channel: { $ref: '#/components/schemas/Channel' }, destination_ref: { type: string }, turn_ids: { type: array, minItems: 1, uniqueItems: true, items: { type: string } } }
+      properties: { channel: { $ref: '#/components/schemas/Channel' }, destination_ref: { type: string }, turn_ids: { type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: { type: string } } }
     FinalTurnSnapshot:
       type: object
       required: [turn_id, session_id, participant_id, speaker_label_snapshot, source_language, target_language, language_config_version, source_text, translated_text, created_at]
@@ -253,7 +299,7 @@ components:
         speaker_label_snapshot: { type: [string, 'null'] }
         source_language: { type: string }
         target_language: { type: string }
-        language_config_version: { type: [integer, 'null'], format: int64 }
+        language_config_version: { type: integer, format: int64, minimum: 1 }
         source_text: { type: string }
         translated_text: { type: string }
         created_at: { type: string, format: date-time }
@@ -290,13 +336,13 @@ components:
       additionalProperties: false
       required: [code]
       properties:
-        code: { type: string, minLength: 1, description: WeChat OAuth login code exchanged server-side for OpenID }
+        code: { type: string, minLength: 1, description: 'WeChat OAuth login code exchanged server-side for OpenID' }
     BindEmailRequest:
       type: object
       additionalProperties: false
       required: [token]
       properties:
-        token: { type: string, minLength: 1, description: One-time email verification token; dev mode accepts dev: prefixed addresses }
+        token: { type: string, minLength: 1, description: 'One-time email verification token; dev mode accepts dev: prefixed addresses' }
     Error:
       type: object
       required: [error]

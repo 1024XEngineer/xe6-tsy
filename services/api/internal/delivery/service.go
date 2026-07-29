@@ -30,7 +30,7 @@ func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, erro
 	if u.repository == nil {
 		return Message{}, domain.ErrNotImplemented
 	}
-	if input.AccountID == "" || input.IdempotencyKey == "" || len(input.IdempotencyKey) > 200 || !IsSupportedChannel(input.Channel) || input.DestinationRef == "" || len(input.TurnIDs) == 0 || hasDuplicateTurnIDs(input.TurnIDs) {
+	if input.AccountID == "" || input.IdempotencyKey == "" || len(input.IdempotencyKey) > MaxIdempotencyKeyLength || !IsSupportedChannel(input.Channel) || input.DestinationRef == "" || len(input.TurnIDs) == 0 || hasDuplicateTurnIDs(input.TurnIDs) {
 		return Message{}, domain.ErrInvalidArgument
 	}
 	if existing, handled, err := u.resolveCreateIdempotency(ctx, input); handled || err != nil {
@@ -103,7 +103,7 @@ func (u *UseCases) Retry(ctx context.Context, accountID, messageID, key string) 
 	if u.repository == nil {
 		return Message{}, domain.ErrNotImplemented
 	}
-	if accountID == "" || messageID == "" || key == "" {
+	if accountID == "" || messageID == "" || key == "" || len(key) > MaxIdempotencyKeyLength {
 		return Message{}, domain.ErrInvalidArgument
 	}
 	u.keys.Lock()

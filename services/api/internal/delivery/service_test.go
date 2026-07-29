@@ -204,6 +204,20 @@ func TestRetryKeysAreScopedByAccount(t *testing.T) {
 	}
 }
 
+func TestRetryRejectsOversizedIdempotencyKey(t *testing.T) {
+	repository := &retryRepositoryStub{current: map[string]Message{
+		"account-1": {ID: "message-1", AccountID: "account-1", Status: MessageStatusFailed, Attempts: 1},
+	}}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+
+	if _, err := service.Retry(t.Context(), "account-1", "message-1", string(make([]byte, MaxIdempotencyKeyLength+1))); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("Retry() error = %v, want invalid argument", err)
+	}
+	if len(repository.created) != 0 {
+		t.Fatalf("CreateRetry calls = %d, want 0", len(repository.created))
+	}
+}
+
 func TestRetryUsesDurableLookupAfterProcessStateIsLost(t *testing.T) {
 	repository := &retryRepositoryStub{current: map[string]Message{
 		"account-1": {ID: "message-1", AccountID: "account-1", Status: MessageStatusFailed, Attempts: 1},

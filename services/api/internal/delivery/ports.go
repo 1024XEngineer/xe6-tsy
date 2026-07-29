@@ -2,22 +2,19 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
-// QueueItem carries the durable fields needed to publish an outbox record.
-type QueueItem struct {
-	AccountID      string
-	AttemptID      string
-	IdempotencyKey string
-}
+// ErrProviderRejected marks a provider response that definitively rejects a
+// request. Worker treats this marker as terminal; transient transport errors
+// must not wrap it.
+var ErrProviderRejected = errors.New("delivery provider rejected request")
 
-// QueueMessage carries a broker-delivered attempt and its receipt used for settlement.
+// QueueMessage carries an attempt identifier and broker receipt used for settlement.
 type QueueMessage struct {
-	AccountID      string
-	AttemptID      string
-	IdempotencyKey string
-	Receipt        string
+	AttemptID string
+	Receipt   string
 }
 
 // Repository owns message, attempt, preference, and outbox persistence boundaries.
@@ -33,6 +30,11 @@ type Repository interface {
 	// ClaimAttempt atomically transitions a queued attempt to sending. Only the
 	// caller that successfully claims it may invoke the external provider.
 	ClaimAttempt(context.Context, string) (DeliveryAttempt, error)
+	// RequeueAttempt atomically releases an attempt that has not reached the
+	// provider boundary. It must only transition sending -> queued; a provider
+	// error after invocation deliberately does not use this operation because
+	// acceptance may be unknown.
+	RequeueAttempt(context.Context, string, time.Time) error
 	// CompleteAttempt atomically records one terminal attempt result and its
 	// corresponding user-visible message result before the broker is ACKed.
 	CompleteAttempt(context.Context, string, string, DeliveryAttemptStatus, MessageStatus, *string) error
@@ -57,15 +59,12 @@ type OutboxRepository interface {
 
 type OutboxRecord struct {
 	ID        string
-	AccountID string
 	AttemptID string
 	Key       string
 	Attempts  int
 }
 
 type IdempotencyReader interface {
-	// GetMessageByIdempotency must enforce the supplied account's ownership or
-	// account-lineage scope before returning a message.
 	GetMessageByIdempotency(context.Context, string, string) (Message, error)
 }
 
@@ -113,7 +112,7 @@ type IdempotentProvider interface {
 // Queue defines reliable attempt delivery and explicit broker settlement.
 type Queue interface {
 	// Enqueue publishes an attempt using the supplied idempotency key.
-	Enqueue(context.Context, QueueItem) error
+	Enqueue(context.Context, string, string) error // attempt ID, idempotency key
 	// Receive blocks until work is available or the context is cancelled.
 	Receive(context.Context) (QueueMessage, error)
 	// Ack confirms successful processing of a broker receipt.

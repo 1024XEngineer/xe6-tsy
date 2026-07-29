@@ -104,28 +104,6 @@ func (u *UseCases) SessionUsage(ctx context.Context, accountID, sessionID string
 	return u.repository.SessionSummary(ctx, accountID, sessionID)
 }
 
-func (u *UseCases) sameCanonicalAccount(ctx context.Context, left, right string) error {
-	if left == right {
-		return nil
-	}
-	resolver, ok := u.owners.(CanonicalAccountResolver)
-	if !ok {
-		return domain.ErrForbidden
-	}
-	canonicalLeft, err := resolver.CanonicalAccountID(ctx, left)
-	if err != nil {
-		return err
-	}
-	canonicalRight, err := resolver.CanonicalAccountID(ctx, right)
-	if err != nil {
-		return err
-	}
-	if canonicalLeft != canonicalRight {
-		return domain.ErrForbidden
-	}
-	return nil
-}
-
 func (u *UseCases) AccountUsage(ctx context.Context, accountID string, start, end time.Time) (Summary, error) {
 	if u.repository == nil {
 		return Summary{}, domain.ErrNotImplemented

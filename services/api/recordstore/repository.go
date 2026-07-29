@@ -25,6 +25,7 @@ type ParticipantRepository struct {
 	writer participantWriter
 }
 
+// NewParticipantRepository composes the read and write capabilities used by participants.Service.
 func NewParticipantRepository(reader participantReader, writer participantWriter) (*ParticipantRepository, error) {
 	if reader == nil || writer == nil {
 		return nil, fmt.Errorf("create participant repository: reader and writer are required")
@@ -76,6 +77,7 @@ type TurnRepository struct {
 	writer turnWriter
 }
 
+// NewTurnRepository composes the read and write capabilities used by turns.Service.
 func NewTurnRepository(reader turnReader, writer turnWriter) (*TurnRepository, error) {
 	if reader == nil || writer == nil {
 		return nil, fmt.Errorf("create turn repository: reader and writer are required")

@@ -4,9 +4,7 @@ package recordstore
 
 import (
 	"context"
-	"errors"
 	"testing"
-	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
@@ -58,10 +56,10 @@ WHERE id = $1`, event.TurnID).Scan(&count, &participant, &status); err != nil {
 	if err := outbox.Append(t.Context(), recordsv1.FinalTurnTopic, event.EventID, event); err != nil {
 		t.Fatalf("replay Append() error = %v", err)
 	}
-	replayCtx, cancelReplay := context.WithTimeout(t.Context(), 100*time.Millisecond)
-	defer cancelReplay()
-	if _, err := outbox.Receive(replayCtx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Receive() replay error = %v, want deadline exceeded", err)
+	if _, found, err := outbox.receiveOnce(t.Context()); err != nil {
+		t.Fatalf("receiveOnce() replay error = %v", err)
+	} else if found {
+		t.Fatal("receiveOnce() returned replay after Ack")
 	}
 }
 

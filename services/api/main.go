@@ -27,7 +27,12 @@ type recordsHTTPDependencies struct {
 	handler  *recordswebapi.Server
 	accounts accounts.Service
 	tokens   accounts.AccessTokenVerifier
+	worker   finalTurnWorker
 	cleanup  func()
+}
+
+type finalTurnWorker interface {
+	Run(context.Context) error
 }
 
 // main wires foundation use cases into the HTTP server and owns graceful shutdown.
@@ -76,23 +81,64 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	return runHTTPAndFinalTurnWorker(ctx, server, records.worker)
+}
+
+func runHTTPAndFinalTurnWorker(ctx context.Context, server *http.Server, worker finalTurnWorker) error {
+	workerCtx, cancelWorker := context.WithCancel(ctx)
+	defer cancelWorker()
+
 	serverErrors := make(chan error, 1)
 	go func() {
-		slog.Info("Lingow API listening", "address", address)
+		slog.Info("Lingow API listening", "address", server.Addr)
 		serverErrors <- server.ListenAndServe()
 	}()
+	workerErrors := make(chan error, 1)
+	go func() { workerErrors <- worker.Run(workerCtx) }()
 
+	var (
+		runErr     error
+		workerDone bool
+	)
 	select {
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
-			return err
+			runErr = fmt.Errorf("run API HTTP server: %w", err)
 		}
-		return nil
+	case err := <-workerErrors:
+		workerDone = true
+		if err != nil {
+			runErr = fmt.Errorf("run final turn worker: %w", err)
+		} else if ctx.Err() == nil {
+			runErr = errors.New("final turn worker stopped unexpectedly")
+		}
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return server.Shutdown(shutdownCtx)
 	}
+	cancelWorker()
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	shutdownErrors := make(chan error, 1)
+	go func() { shutdownErrors <- server.Shutdown(shutdownCtx) }()
+	if !workerDone {
+		select {
+		case err := <-workerErrors:
+			if err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("stop final turn worker: %w", err))
+			}
+		default:
+			select {
+			case err := <-workerErrors:
+				if err != nil {
+					runErr = errors.Join(runErr, fmt.Errorf("stop final turn worker: %w", err))
+				}
+			case <-shutdownCtx.Done():
+				runErr = errors.Join(runErr, fmt.Errorf("stop final turn worker: %w", shutdownCtx.Err()))
+			}
+		}
+	}
+	shutdownErr := <-shutdownErrors
+	return errors.Join(runErr, shutdownErr)
 }
 
 func newLanguageHandler(ctx context.Context) (*languages.Handler, func(), error) {
@@ -199,6 +245,7 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		}),
 		accounts: accountUseCases,
 		tokens:   tokens,
+		worker:   services.FinalTurnWorker,
 		cleanup:  pool.Close,
 	}, nil
 }

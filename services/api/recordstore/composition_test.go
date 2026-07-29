@@ -37,7 +37,7 @@ func TestNewServicesBuildsRecordsServiceChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServices() error = %v", err)
 	}
-	if services.Participants == nil || services.Turns == nil || services.FinalTurns == nil {
+	if services.Participants == nil || services.Turns == nil || services.FinalTurns == nil || services.FinalTurnWorker == nil {
 		t.Fatalf("NewServices() = %#v, want all service fields", services)
 	}
 }

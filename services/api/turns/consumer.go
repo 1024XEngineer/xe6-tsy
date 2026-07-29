@@ -9,6 +9,10 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
+// ErrFinalTurnSettlement marks a transport Ack, Nack, or Reject failure that leaves receipt state
+// uncertain and requires the worker supervisor to restart the consumer.
+var ErrFinalTurnSettlement = errors.New("final turn delivery settlement failed")
+
 // FinalTurnDelivery hides transport receipt details while preserving explicit Ack/Nack control.
 type FinalTurnDelivery interface {
 	Event() recordsv1.FinalTurnEvent
@@ -31,17 +35,17 @@ func (h *FinalTurnHandler) Handle(ctx context.Context, delivery FinalTurnDeliver
 	if err := h.consumer.ConsumeFinalTurn(ctx, delivery.Event()); err != nil {
 		if isPermanentFinalTurnError(err) {
 			if rejectErr := delivery.Reject(); rejectErr != nil {
-				return fmt.Errorf("reject invalid final turn: %w", errors.Join(err, rejectErr))
+				return fmt.Errorf("%w: reject invalid final turn: %w", ErrFinalTurnSettlement, errors.Join(err, rejectErr))
 			}
 			return fmt.Errorf("reject invalid final turn: %w", err)
 		}
 		if nackErr := delivery.Nack(); nackErr != nil {
-			return fmt.Errorf("nack final turn after consume error: %w", errors.Join(err, nackErr))
+			return fmt.Errorf("%w: nack final turn after consume error: %w", ErrFinalTurnSettlement, errors.Join(err, nackErr))
 		}
 		return fmt.Errorf("consume final turn: %w", err)
 	}
 	if err := delivery.Ack(); err != nil {
-		return fmt.Errorf("ack final turn: %w", err)
+		return fmt.Errorf("%w: ack final turn: %w", ErrFinalTurnSettlement, err)
 	}
 	return nil
 }

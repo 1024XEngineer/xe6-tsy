@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 8 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 8", len(migrations))
+	if len(migrations) != 10 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 10", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -85,6 +85,44 @@ func TestEmbeddedMigrations(t *testing.T) {
 			if !strings.Contains(item.SQL, expected) {
 				t.Fatalf("migration %d does not contain %q", version, expected)
 			}
+		}
+	}
+
+	finalTurnOutbox := migrations[8]
+	if finalTurnOutbox.Version != 9 || finalTurnOutbox.Name != "final_turn_outbox" {
+		t.Fatalf("migration = %#v, want version 9 named final_turn_outbox", finalTurnOutbox)
+	}
+	for _, constraint := range []string{
+		"CREATE TABLE final_turn_outbox",
+		"payload_hash BYTEA NOT NULL",
+		"CONSTRAINT final_turn_outbox_status_valid",
+		"CONSTRAINT final_turn_outbox_receipt_state_valid",
+		"CREATE INDEX final_turn_outbox_available_idx",
+		"CREATE TRIGGER final_turn_outbox_reject_payload_updates",
+	} {
+		if !strings.Contains(finalTurnOutbox.SQL, constraint) {
+			t.Fatalf("final-turn outbox migration does not contain %q", constraint)
+		}
+	}
+
+	sessionCompatibility := migrations[9]
+	if sessionCompatibility.Version != 10 ||
+		sessionCompatibility.Name != "session_start_operation_compatibility" {
+		t.Fatalf(
+			"migration = %#v, want version 10 named session_start_operation_compatibility",
+			sessionCompatibility,
+		)
+	}
+	for _, expected := range []string{
+		"DEPRECATED: legacy Start request table",
+		"CREATE TABLE voice_session_start_operations",
+		"voice_session_start_operations_one_unfinished_per_session",
+		"DROP CONSTRAINT IF EXISTS voice_sessions_timestamps_valid",
+		"started_at IS NULL AND ended_at >= created_at",
+		"missing one or more critical columns",
+	} {
+		if !strings.Contains(sessionCompatibility.SQL, expected) {
+			t.Fatalf("session compatibility migration does not contain %q", expected)
 		}
 	}
 }

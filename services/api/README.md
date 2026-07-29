@@ -68,6 +68,11 @@ PostgreSQL participant/turn repositories 与账户 session scope。
 客户端账户字段和 `X-Account-ID` 不参与授权。当前仓库尚无可信 system actor 凭据契约，因此两个
 AI-only PATCH 路由在生产装配中保持 fail-closed，普通 Access Token 返回 `403 forbidden`。
 
+API 同时运行 PostgreSQL `final_turn_outbox` consumer。事件使用 `event_id` 和完整 payload hash
+保证发布重放一致，worker 通过 receipt lease 领取消息：成功写入后 Ack，临时存储错误 Nack 并延迟
+重试，非法事件或幂等冲突 Reject。服务关闭时停止领取新事件，并在数据库 pool 关闭前等待当前结算；
+如果结算失败，进程以错误退出而不会把它伪装成正常关闭。
+
 ## 语音记录存储集成测试
 
 语音记录 migration 使用 PostgreSQL，并通过 `integration` build tag 与默认离线测试隔离。创建

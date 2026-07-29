@@ -261,12 +261,15 @@ clients.
 The service currently implements Create, account-scoped Detail, State, and
 List queries, durable idempotent Start orchestration with repository-owned
 bounded compensation and interrupted-owner recovery, and the basic idempotent
-End flow with cleanup-confirmed terminal commits.
+End flow with cleanup-confirmed terminal commits. `PostgresRepository`
+implements the persistent Session, StartOperation, compensation, EndIntent,
+and lifecycle-transition contracts against the final control-plane tables.
 Detail and State combine an owned persistent session with one validated runtime
 snapshot; List remains persistent-only.
 
 Runtime-failure handling, HTTP handlers, route registration, OpenAPI,
-repositories, and production adapters belong to follow-up reviewable slices.
+production wiring, and realtime/language/WebRTC adapters belong to follow-up
+reviewable slices.
 No stub in this package returns fabricated success data. It does not change
 `main.go`, `go.work`, shared authentication, shared error responses, or
 request-ID middleware.

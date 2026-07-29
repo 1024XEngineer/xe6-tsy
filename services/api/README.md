@@ -58,9 +58,15 @@ WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webr
 未完成边界。受保护路由只接受 `AccessTokenVerifier` 验证后写入 Context 的账户身份。未接入
 验证码发送或真实 Email Provider 的业务方法必须返回 `not_implemented`，不得伪造成功结果。
 
-消息投递的 Queue、Worker 和 Provider 适配器已提供可注入的运行时边界，但尚未由 `main.go`
-组合。Provider 未配置时不得伪造发送成功；Worker 会释放 sending 租约并延迟重新入队，等待
-运行时接线完成。生产组合必须先基于最新鉴权迁移（包括账户 lineage 函数）完成，再启用异步投递。
+消息投递的 Queue、Worker 和 Provider 适配器已提供可注入的运行时边界，但默认不会启动。
+将 `LINGOW_DELIVERY_RUNTIME=enabled` 后，`main.go` 才会组合 PostgreSQL、Valkey、持久化
+账户/用量/消息服务、Outbox Dispatcher 和 Delivery Worker。未接入数据库、验证码发送、Token
+签发、队列或 Email Provider 的业务方法必须返回 `not_implemented`，不得伪造成功结果。
+生产组合必须先基于最新鉴权迁移（包括账户 lineage 函数）完成，再启用异步投递。
+
+运行时启用还要求 `DATABASE_URL`、`REDIS_URL`、至少 32 字节的 `JWT_SECRET` 和
+`LINGOW_DELIVERY_DESTINATION_KEY`。`LINGOW_DELIVERY_PROVIDER` 默认是
+`unconfigured`；`fake_email` 只允许本地或测试环境显式选择，不能用于生产。
 
 ## 语音记录 HTTP 装配
 

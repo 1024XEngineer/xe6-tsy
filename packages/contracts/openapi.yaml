@@ -158,9 +158,10 @@ components:
     RealtimeRuntimeSnapshot:
       type: object
       additionalProperties: false
-      required: [session_id, runtime_state, current_turn_id, current_playback_id, last_error_code, updated_at]
+      required: [session_id, start_operation_id, runtime_state, current_turn_id, current_playback_id, last_error_code, updated_at]
       properties:
         session_id: { type: string }
+        start_operation_id: { type: string }
         runtime_state: { $ref: '#/components/schemas/RealtimeRuntimeState' }
         current_turn_id: { type: [string, 'null'] }
         current_playback_id: { type: [string, 'null'] }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -121,6 +122,85 @@ func TestHandlerMapsLifecycleAndTicketErrors(t *testing.T) {
 	}
 }
 
+func TestHandlerReservesReplayBeforeRunningLifecycle(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	lifecycle := &blockingLifecycleFake{
+		runtime: session.RuntimeSnapshot{SessionID: "session-1", RuntimeState: session.RuntimeListening, UpdatedAt: now},
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	handler := newReplayHandler(t, lifecycle, func() time.Time { return now }, time.Minute, 8)
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firstDone <- replayRequest(handler, `{"trace_id":"trace-start","started_by":"browser"}`, "start-key")
+	}()
+	<-lifecycle.entered
+
+	conflict := replayRequest(handler, `{"trace_id":"different","started_by":"browser"}`, "start-key")
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("in-flight payload conflict status = %d, body=%s", conflict.Code, conflict.Body.String())
+	}
+	close(lifecycle.release)
+	if first := <-firstDone; first.Code != http.StatusOK {
+		t.Fatalf("first start status = %d, body=%s", first.Code, first.Body.String())
+	}
+	if got := lifecycle.starts.Load(); got != 1 {
+		t.Fatalf("lifecycle starts = %d, want 1", got)
+	}
+}
+
+func TestHandlerExpiresReplayRecords(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	lifecycle := &lifecycleFake{runtime: session.RuntimeSnapshot{SessionID: "session-1", RuntimeState: session.RuntimeListening, UpdatedAt: now}}
+	handler := newReplayHandler(t, lifecycle, func() time.Time { return now }, time.Minute, 8)
+	body := `{"trace_id":"trace-start","started_by":"browser"}`
+	if response := replayRequest(handler, body, "start-key"); response.Code != http.StatusOK {
+		t.Fatalf("first start status = %d, body=%s", response.Code, response.Body.String())
+	}
+	now = now.Add(time.Minute + time.Second)
+	if response := replayRequest(handler, body, "start-key"); response.Code != http.StatusOK {
+		t.Fatalf("expired replay status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if lifecycle.starts != 2 {
+		t.Fatalf("lifecycle starts after expiry = %d, want 2", lifecycle.starts)
+	}
+}
+
+func TestHandlerRejectsReplayWhenCapacityIsExhausted(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	lifecycle := &lifecycleFake{runtime: session.RuntimeSnapshot{SessionID: "session-1", RuntimeState: session.RuntimeListening, UpdatedAt: now}}
+	handler := newReplayHandler(t, lifecycle, func() time.Time { return now }, time.Minute, 1)
+	body := `{"trace_id":"trace-start","started_by":"browser"}`
+	if response := replayRequest(handler, body, "start-key-1"); response.Code != http.StatusOK {
+		t.Fatalf("first start status = %d, body=%s", response.Code, response.Body.String())
+	}
+	full := replayRequest(handler, body, "start-key-2")
+	if full.Code != http.StatusServiceUnavailable {
+		t.Fatalf("full replay status = %d, body=%s", full.Code, full.Body.String())
+	}
+	now = now.Add(time.Minute + time.Second)
+	if response := replayRequest(handler, body, "start-key-2"); response.Code != http.StatusOK {
+		t.Fatalf("recovered replay status = %d, body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandlerDoesNotCacheFailedReplay(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.lifecycle.startErr = errors.New("temporary lifecycle failure")
+	failed := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{}`, "start-key")
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("failed start status = %d, body=%s", failed.Code, failed.Body.String())
+	}
+	fixture.lifecycle.startErr = nil
+	recovered := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{}`, "start-key")
+	if recovered.Code != http.StatusOK {
+		t.Fatalf("recovered start status = %d, body=%s", recovered.Code, recovered.Body.String())
+	}
+	if fixture.lifecycle.starts != 2 {
+		t.Fatalf("lifecycle starts after recovery = %d, want 2", fixture.lifecycle.starts)
+	}
+}
+
 func TestHandlerRejectsWrongSessionTicketAndAcceptsRepeatedCandidate(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.tickets.ticket.SessionID = "another-session"
@@ -162,6 +242,30 @@ func newFixture(t *testing.T) fixture {
 	return fixture{handler: handler, lifecycle: lifecycle, signaling: handler.signaling.(*signalingFake), tickets: tickets, config: config}
 }
 
+func newReplayHandler(t *testing.T, lifecycle Lifecycle, now func() time.Time, replayTTL time.Duration, replayMax int) *Handler {
+	t.Helper()
+	baseNow := time.Unix(1700000000, 0).UTC()
+	tickets := &ticketFake{ticket: webrtc.ConnectionTicket{SessionID: "session-1", AccountID: "account-1", ExpiresAt: baseNow.Add(time.Hour)}}
+	config := &configFake{value: WebRTCConfig{SessionID: "session-1", ExpiresAt: baseNow.Add(time.Hour), ICETransportPolicy: "all"}}
+	handler, err := New(Dependencies{
+		Lifecycle: lifecycle, Signaling: &signalingFake{}, Tickets: tickets, Config: config, Now: now,
+		ReplayTTL: replayTTL, ReplayMaxEntries: replayMax,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return handler
+}
+
+func replayRequest(handler http.Handler, body, idempotencyKey string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, "/realtime/v1/sessions/session-1/start", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer realtime-ticket")
+	request.Header.Set("Idempotency-Key", idempotencyKey)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
 func (f fixture) request(method, path, body, idempotencyKey string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer realtime-ticket")
@@ -180,6 +284,33 @@ type lifecycleFake struct {
 	stopErr  error
 	starts   int
 	stops    int
+}
+
+type blockingLifecycleFake struct {
+	runtime session.RuntimeSnapshot
+	entered chan struct{}
+	release chan struct{}
+	starts  atomic.Int32
+}
+
+func (f *blockingLifecycleFake) Start(ctx context.Context, _ session.StartRealtimeCommand) (session.RuntimeSnapshot, error) {
+	if f.starts.Add(1) == 1 {
+		close(f.entered)
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return session.RuntimeSnapshot{}, ctx.Err()
+		}
+	}
+	return f.runtime, nil
+}
+
+func (f *blockingLifecycleFake) Stop(context.Context, session.StopRealtimeCommand) (session.RuntimeSnapshot, error) {
+	return f.runtime, nil
+}
+
+func (f *blockingLifecycleFake) GetRuntimeState(context.Context, string) (session.RuntimeSnapshot, error) {
+	return f.runtime, nil
 }
 
 func (f *lifecycleFake) Start(_ context.Context, command session.StartRealtimeCommand) (session.RuntimeSnapshot, error) {

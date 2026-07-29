@@ -22,9 +22,12 @@ const (
 )
 
 var (
+	// ErrFinalTurnOutboxRequired indicates that a queue operation has no PostgreSQL pool.
 	ErrFinalTurnOutboxRequired = errors.New("final turn outbox is required")
+	// ErrFinalTurnOutboxConflict indicates reuse of an event ID with another immutable payload.
 	ErrFinalTurnOutboxConflict = errors.New("final turn outbox payload conflict")
-	ErrFinalTurnOutboxPayload  = errors.New("invalid final turn outbox payload")
+	// ErrFinalTurnOutboxPayload indicates an unsupported topic, key, or payload value.
+	ErrFinalTurnOutboxPayload = errors.New("invalid final turn outbox payload")
 )
 
 // FinalTurnOutbox stores final events and exposes receipt-based delivery to the records worker.
@@ -137,10 +140,8 @@ func (o *FinalTurnOutbox) receiveOnce(ctx context.Context) (turns.FinalTurnDeliv
 
 	var event recordsv1.FinalTurnEvent
 	if err := json.Unmarshal(payload, &event); err != nil {
-		return nil, false, fmt.Errorf("decode final turn outbox event: %w", err)
-	}
-	if err := event.Validate(); err != nil {
-		return nil, false, fmt.Errorf("validate final turn outbox event: %w", err)
+		// Claim the row with an empty event so the handler can Reject malformed durable input.
+		event = recordsv1.FinalTurnEvent{}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, false, fmt.Errorf("commit final turn outbox claim: %w", err)
@@ -195,7 +196,14 @@ func (o *FinalTurnOutbox) settle(parent context.Context, eventID, receipt, statu
 		rowsAffected = result.RowsAffected()
 	}
 	if rowsAffected != 1 {
-		return fmt.Errorf("settle final turn outbox event: receipt is no longer active")
+		var currentStatus string
+		err := o.pool.QueryRow(ctx, `SELECT status FROM final_turn_outbox WHERE event_id = $1`, eventID).Scan(&currentStatus)
+		if err == nil {
+			// A different worker may have reclaimed or settled the lease. The final-turn
+			// write is idempotent, so the stale receipt must not stop the consumer.
+			return nil
+		}
+		return fmt.Errorf("settle final turn outbox event: receipt is no longer active: %w", MapError(err))
 	}
 	return nil
 }

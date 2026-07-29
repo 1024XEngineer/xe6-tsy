@@ -9,6 +9,8 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
+// ErrFinalTurnSettlement marks a transport Ack, Nack, or Reject failure that leaves receipt state
+// uncertain and requires the worker supervisor to restart the consumer.
 var ErrFinalTurnSettlement = errors.New("final turn delivery settlement failed")
 
 // FinalTurnDelivery hides transport receipt details while preserving explicit Ack/Nack control.

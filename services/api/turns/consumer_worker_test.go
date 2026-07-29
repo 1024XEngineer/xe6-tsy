@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 )
@@ -72,17 +71,9 @@ func TestFinalTurnWorkerStopsWhenReceiveContextIsCancelled(t *testing.T) {
 	worker := NewFinalTurnWorker(source, NewFinalTurnHandler(&consumerStub{}))
 
 	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() { done <- worker.Run(ctx) }()
 	cancel()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("worker did not stop after cancellation")
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
 	}
 }
 

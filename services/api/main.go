@@ -118,7 +118,8 @@ func runHTTPAndFinalTurnWorker(ctx context.Context, server *http.Server, worker 
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
-	shutdownErr := server.Shutdown(shutdownCtx)
+	shutdownErrors := make(chan error, 1)
+	go func() { shutdownErrors <- server.Shutdown(shutdownCtx) }()
 	if !workerDone {
 		select {
 		case err := <-workerErrors:
@@ -136,6 +137,7 @@ func runHTTPAndFinalTurnWorker(ctx context.Context, server *http.Server, worker 
 			}
 		}
 	}
+	shutdownErr := <-shutdownErrors
 	return errors.Join(runErr, shutdownErr)
 }
 

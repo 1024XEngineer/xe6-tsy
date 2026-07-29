@@ -40,11 +40,11 @@ func (w *FinalTurnWorker) Run(ctx context.Context) error {
 			return fmt.Errorf("receive final turn: %w", err)
 		}
 		if err := w.handler.Handle(ctx, delivery); err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
 			if errors.Is(err, ErrFinalTurnSettlement) {
 				return err
+			}
+			if ctx.Err() != nil {
+				return nil
 			}
 		}
 	}

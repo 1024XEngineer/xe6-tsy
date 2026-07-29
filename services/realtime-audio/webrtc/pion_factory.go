@@ -8,6 +8,7 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/pion/rtp"
 	pion "github.com/pion/webrtc/v4"
 )
 
@@ -21,6 +22,7 @@ type ICEServerConfig struct {
 // PionTransportConfig supplies the STUN/TURN servers used by new PeerConnections.
 type PionTransportConfig struct {
 	ICEServers []ICEServerConfig
+	Media      MediaConfig
 }
 
 // PionTransportFactory creates one Pion PeerConnection per connection generation.
@@ -28,6 +30,7 @@ type PionTransportFactory struct {
 	configuration     pion.Configuration
 	newPeerConnection func(pion.Configuration) (pionPeerConnection, error)
 	now               func() time.Time
+	media             MediaConfig
 }
 
 type pionPeerConnection interface {
@@ -41,6 +44,13 @@ type pionPeerConnection interface {
 	Close() error
 }
 
+type pionMediaPeerConnection interface {
+	pionPeerConnection
+	AddTrack(pion.TrackLocal) (*pion.RTPSender, error)
+	CreateDataChannel(string, *pion.DataChannelInit) (pionDataChannel, error)
+	OnTrack(func(pionRemoteTrack))
+}
+
 type pionPeerConnectionAdapter struct {
 	*pion.PeerConnection
 }
@@ -49,22 +59,52 @@ func (p *pionPeerConnectionAdapter) GatheringComplete() <-chan struct{} {
 	return pion.GatheringCompletePromise(p.PeerConnection)
 }
 
+func (p *pionPeerConnectionAdapter) CreateDataChannel(label string, options *pion.DataChannelInit) (pionDataChannel, error) {
+	return p.PeerConnection.CreateDataChannel(label, options)
+}
+
+func (p *pionPeerConnectionAdapter) OnTrack(handler func(pionRemoteTrack)) {
+	p.PeerConnection.OnTrack(func(track *pion.TrackRemote, _ *pion.RTPReceiver) {
+		if handler != nil {
+			handler(&pionRemoteTrackAdapter{track: track})
+		}
+	})
+}
+
+type pionRemoteTrackAdapter struct {
+	track *pion.TrackRemote
+}
+
+func (t *pionRemoteTrackAdapter) ReadRTP() (*rtp.Packet, error) {
+	packet, _, err := t.track.ReadRTP()
+	return packet, err
+}
+
 // NewPionTransportFactory validates config before it can create network resources.
 func NewPionTransportFactory(config PionTransportConfig) (*PionTransportFactory, error) {
 	configuration, err := pionConfiguration(config)
 	if err != nil {
 		return nil, err
 	}
+	mediaConfig, err := config.Media.normalized()
+	if err != nil {
+		return nil, err
+	}
+	api, err := newPionAPI(mediaConfig)
+	if err != nil {
+		return nil, err
+	}
 	return &PionTransportFactory{
 		configuration: configuration,
 		newPeerConnection: func(configuration pion.Configuration) (pionPeerConnection, error) {
-			connection, err := pion.NewPeerConnection(configuration)
+			connection, err := api.NewPeerConnection(configuration)
 			if err != nil {
 				return nil, err
 			}
 			return &pionPeerConnectionAdapter{PeerConnection: connection}, nil
 		},
-		now: func() time.Time { return time.Now().UTC() },
+		now:   func() time.Time { return time.Now().UTC() },
+		media: mediaConfig,
 	}, nil
 }
 
@@ -103,7 +143,76 @@ func (f *PionTransportFactory) Create(
 		}
 		onState(mapped, now())
 	})
-	return &PionTransport{peerConnection: connection}, nil
+	transport := &PionTransport{peerConnection: connection}
+	if mediaConnection, ok := connection.(pionMediaPeerConnection); ok {
+		if err := configurePionMedia(transport, mediaConnection, f.media, now); err != nil {
+			_ = connection.Close()
+			return nil, err
+		}
+	}
+	return transport, nil
+}
+
+func configurePionMedia(transport *PionTransport, connection pionMediaPeerConnection, config MediaConfig, now func() time.Time) error {
+	if transport == nil || connection == nil {
+		return ErrMediaUnavailable
+	}
+	normalized, err := config.normalized()
+	if err != nil {
+		return err
+	}
+	track, err := pion.NewTrackLocalStaticRTP(pion.RTPCodecCapability{
+		MimeType: "audio/L16", ClockRate: uint32(normalized.SampleRate), Channels: uint16(normalized.Channels),
+	}, normalized.TTSTrackID, "realtime-audio")
+	if err != nil {
+		return fmt.Errorf("create TTS track: %w", err)
+	}
+	if _, err := connection.AddTrack(track); err != nil {
+		return fmt.Errorf("add TTS track: %w", err)
+	}
+	channel, err := connection.CreateDataChannel(normalized.DataChannelLabel, nil)
+	if err != nil {
+		return fmt.Errorf("create translation DataChannel: %w", err)
+	}
+	decoder, err := NewOpusDecoder()
+	if err != nil {
+		return fmt.Errorf("create Opus decoder: %w", err)
+	}
+	source, err := newPionAudioSource(decoder, now)
+	if err != nil {
+		return err
+	}
+	connection.OnTrack(func(track pionRemoteTrack) {
+		_ = source.Attach(track)
+	})
+	audioTrack, err := newPionAudioTrack(track, normalized)
+	if err != nil {
+		return err
+	}
+	transport.audioSource = source
+	transport.ttsTrack = audioTrack
+	transport.events = newPionEventSink(channel)
+	return nil
+}
+
+func newPionAPI(config MediaConfig) (*pion.API, error) {
+	normalized, err := config.normalized()
+	if err != nil {
+		return nil, err
+	}
+	mediaEngine := &pion.MediaEngine{}
+	if err := mediaEngine.RegisterDefaultCodecs(); err != nil {
+		return nil, fmt.Errorf("register default codecs: %w", err)
+	}
+	if err := mediaEngine.RegisterCodec(pion.RTPCodecParameters{
+		RTPCodecCapability: pion.RTPCodecCapability{
+			MimeType: "audio/L16", ClockRate: uint32(normalized.SampleRate), Channels: uint16(normalized.Channels),
+		},
+		PayloadType: 118,
+	}, pion.RTPCodecTypeAudio); err != nil {
+		return nil, fmt.Errorf("register TTS codec: %w", err)
+	}
+	return pion.NewAPI(pion.WithMediaEngine(mediaEngine)), nil
 }
 
 func pionConfiguration(config PionTransportConfig) (pion.Configuration, error) {

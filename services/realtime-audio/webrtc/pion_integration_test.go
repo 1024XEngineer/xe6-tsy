@@ -11,7 +11,11 @@ import (
 )
 
 func TestPionTransportIntegrationAppliesGatheredAnswer(t *testing.T) {
-	client, err := pion.NewPeerConnection(pion.Configuration{})
+	api, err := newPionAPI(MediaConfig{})
+	if err != nil {
+		t.Fatalf("create client Pion API: %v", err)
+	}
+	client, err := api.NewPeerConnection(pion.Configuration{})
 	if err != nil {
 		t.Fatalf("create client PeerConnection: %v", err)
 	}

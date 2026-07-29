@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
 	pion "github.com/pion/webrtc/v4"
 )
 
@@ -15,6 +16,33 @@ type PionTransport struct {
 	endOfCandidates bool
 	closeDone       chan struct{}
 	closeErr        error
+	audioSource     *PionAudioSource
+	ttsTrack        *PionAudioTrack
+	events          *PionEventSink
+}
+
+// AudioSource returns the normalized inbound source, when media was enabled.
+func (t *PionTransport) AudioSource() segment.FrameSource {
+	if t == nil {
+		return nil
+	}
+	return t.audioSource
+}
+
+// TTSAudioTrack returns the outbound track writer, when media was enabled.
+func (t *PionTransport) TTSAudioTrack() *PionAudioTrack {
+	if t == nil {
+		return nil
+	}
+	return t.ttsTrack
+}
+
+// TranslationEvents returns the ordered DataChannel event sink, when enabled.
+func (t *PionTransport) TranslationEvents() *PionEventSink {
+	if t == nil {
+		return nil
+	}
+	return t.events
 }
 
 // Answer applies an offer and returns the fully gathered local answer.
@@ -164,3 +192,4 @@ func (t *PionTransport) openPeerConnection() (pionPeerConnection, error) {
 }
 
 var _ ConnectionTransport = (*PionTransport)(nil)
+var _ MediaTransport = (*PionTransport)(nil)

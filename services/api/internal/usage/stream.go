@@ -103,7 +103,11 @@ func (q *ValkeyUsageStream) Ack(ctx context.Context, receipt string) error {
 }
 
 func (q *ValkeyUsageStream) Nack(ctx context.Context, receipt string) error {
-	return q.Ack(ctx, receipt)
+	if receipt == "" {
+		return nil
+	}
+	// Leave the entry in the consumer-group pending list so autoclaim can retry it.
+	return nil
 }
 
 func (q *ValkeyUsageStream) autoclaim(ctx context.Context) (StreamMessage, bool, error) {

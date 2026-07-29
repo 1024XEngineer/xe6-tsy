@@ -190,6 +190,9 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		if err := item.source.closeContext(ctx); err != nil {
+			return fmt.Errorf("close previous audio input: %w", err)
+		}
 		m.mu.Lock()
 		if m.entries[snapshot.SessionID] == item {
 			delete(m.entries, snapshot.SessionID)
@@ -353,22 +356,21 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 		m.mu.Unlock()
 		return nil
 	}
-	// A settled terminal entry keeps the worker's processing/reporting error
-	// for retry and observability. Stop is only cleaning up that entry now, so
-	// it must not replay the historical error as a cleanup failure.
-	settled := item.finished && item.terminal
+	// A finished entry keeps the previous worker or cleanup attempt's error.
+	// Stop must report only the close attempt performed by this call.
+	finished := item.finished
 	item.stopping = true
 	active := item.active
 	item.cancel()
 	m.mu.Unlock()
 
-	closeDone := item.source.beginClose()
-	if !active {
+	closeAttempt := item.source.beginClose()
+	if !active || finished {
 		select {
-		case <-closeDone:
+		case <-closeAttempt.done:
 			m.mu.Lock()
 			if !item.finished {
-				item.err = item.source.closeError()
+				item.err = closeAttempt.err
 				item.finished = true
 				close(item.done)
 			}
@@ -381,10 +383,12 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	case <-item.done:
 		m.mu.Lock()
 		err := item.err
-		if settled {
+		if closeAttempt.err != nil {
+			err = closeAttempt.err
+		} else if finished {
 			err = nil
 		}
-		if m.entries[sessionID] == item {
+		if closeAttempt.err == nil && m.entries[sessionID] == item {
 			delete(m.entries, sessionID)
 		}
 		m.mu.Unlock()
@@ -394,43 +398,61 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	}
 }
 
+// closeOnceSource coalesces concurrent attempts, remains closed after success,
+// and permits a later cleanup call to retry a failed close.
 type closeOnceSource struct {
 	segment.FrameSource
-	once sync.Once
+	mu      sync.Mutex
+	attempt *closeAttempt
+	err     error
+}
+
+type closeAttempt struct {
 	done chan struct{}
-	mu   sync.Mutex
 	err  error
 }
 
 func newCloseOnceSource(source segment.FrameSource) *closeOnceSource {
-	return &closeOnceSource{FrameSource: source, done: make(chan struct{})}
+	return &closeOnceSource{FrameSource: source}
 }
 
-func (s *closeOnceSource) beginClose() <-chan struct{} {
-	s.once.Do(func() {
-		go func() {
-			var err error
-			if s.FrameSource != nil {
-				err = s.FrameSource.Close()
-			}
-			s.mu.Lock()
-			s.err = err
-			s.mu.Unlock()
-			close(s.done)
-		}()
-	})
-	return s.done
+func (s *closeOnceSource) beginClose() *closeAttempt {
+	s.mu.Lock()
+	if s.attempt != nil {
+		attempt := s.attempt
+		s.mu.Unlock()
+		return attempt
+	}
+	attempt := &closeAttempt{done: make(chan struct{})}
+	s.attempt = attempt
+	s.mu.Unlock()
+
+	go func() {
+		if s.FrameSource != nil {
+			attempt.err = s.FrameSource.Close()
+		}
+		s.mu.Lock()
+		s.err = attempt.err
+		if attempt.err != nil && s.attempt == attempt {
+			s.attempt = nil
+		}
+		close(attempt.done)
+		s.mu.Unlock()
+	}()
+	return attempt
 }
 
 func (s *closeOnceSource) Close() error {
-	<-s.beginClose()
-	return s.closeError()
+	attempt := s.beginClose()
+	<-attempt.done
+	return attempt.err
 }
 
 func (s *closeOnceSource) closeContext(ctx context.Context) error {
+	attempt := s.beginClose()
 	select {
-	case <-s.beginClose():
-		return s.closeError()
+	case <-attempt.done:
+		return attempt.err
 	case <-ctx.Done():
 		return ctx.Err()
 	}

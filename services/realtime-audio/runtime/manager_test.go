@@ -355,6 +355,81 @@ func TestManagerRetainsFinishedEntryWhenFailureReportFails(t *testing.T) {
 	}
 }
 
+func TestManagerStartRetriesRetainedTerminalSourceClose(t *testing.T) {
+	closeErr := errors.New("close audio input")
+	reporter := &recordingRuntimeReporter{
+		failureErr:      errors.New("runtime repository unavailable"),
+		failureReturned: make(chan struct{}),
+	}
+	first := &fakeFrameSource{
+		frames: []audio.Frame{
+			mustFrame(t, []byte{1, 0}, time.Unix(1700000000, 0)),
+			mustFrame(t, []byte{0, 0}, time.Unix(1700000000, 100000000)),
+		},
+		closeErrors: []error{closeErr, closeErr, nil},
+	}
+	second := &fakeFrameSource{}
+	openCalls := 0
+	deps := testDependencies(first, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.Runtime = reporter
+	deps.FrameSources = FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
+		openCalls++
+		if openCalls == 1 {
+			return AudioInput{Source: first, SourceLanguage: "zh-CN"}, nil
+		}
+		return AudioInput{Source: second, SourceLanguage: "zh-CN"}, nil
+	})
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{StartErr: errors.New("ASR unavailable")}),
+		Translation: &translate.FakeProvider{Result: translate.Result{Text: "y", Provider: "llm", Model: "qwen3.6-flash"}},
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "tts", Model: "v1"}}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	select {
+	case <-reporter.failureReturned:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed report")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		item := manager.entries[snapshot.SessionID]
+		settled := item != nil && item.terminal && item.finished
+		manager.mu.Unlock()
+		if settled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("finished terminal entry was not retained")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := manager.Start(context.Background(), snapshot); !errors.Is(err, closeErr) {
+		t.Fatalf("retry Start() error = %v, want source close error", err)
+	}
+	if openCalls != 1 {
+		t.Fatalf("source open calls after failed cleanup = %d, want 1", openCalls)
+	}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("second retry Start() error = %v", err)
+	}
+	if openCalls != 2 {
+		t.Fatalf("source open calls after cleanup retry = %d, want 2", openCalls)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Stop() after retry = %v", err)
+	}
+}
+
 func TestManagerStopIgnoresSettledWorkerError(t *testing.T) {
 	reporter := &recordingRuntimeReporter{
 		failureErr:      errors.New("runtime repository unavailable"),
@@ -412,6 +487,81 @@ func TestManagerStopIgnoresSettledWorkerError(t *testing.T) {
 	}
 	if source.CloseCalls() != 1 {
 		t.Fatalf("source close calls = %d, want 1", source.CloseCalls())
+	}
+}
+
+func TestManagerStopRetriesSettledSourceCloseError(t *testing.T) {
+	closeErr := errors.New("close audio input")
+	reporter := &recordingRuntimeReporter{
+		failureErr:      errors.New("runtime repository unavailable"),
+		failureReturned: make(chan struct{}),
+	}
+	source := &fakeFrameSource{
+		frames: []audio.Frame{
+			mustFrame(t, []byte{1, 0}, time.Unix(1700000000, 0)),
+			mustFrame(t, []byte{0, 0}, time.Unix(1700000000, 100000000)),
+		},
+		closeErrors: []error{closeErr, closeErr, nil},
+	}
+	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.Runtime = reporter
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{StartErr: errors.New("ASR unavailable")}),
+		Translation: &translate.FakeProvider{Result: translate.Result{Text: "y", Provider: "llm", Model: "qwen3.6-flash"}},
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "tts", Model: "v1"}}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	select {
+	case <-reporter.failureReturned:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed report")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		item := manager.entries[snapshot.SessionID]
+		settled := item != nil && item.terminal && item.finished
+		manager.mu.Unlock()
+		if settled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("finished terminal entry was not retained")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != closeErr {
+		t.Fatalf("Stop() error = %v, want source close error", err)
+	}
+	manager.mu.Lock()
+	_, retained := manager.entries[snapshot.SessionID]
+	manager.mu.Unlock()
+	if !retained {
+		t.Fatal("Stop() removed entry after source close failure")
+	}
+	if source.CloseCalls() != 2 {
+		t.Fatalf("source close calls = %d, want 2", source.CloseCalls())
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("retry Stop() error = %v", err)
+	}
+	manager.mu.Lock()
+	_, retained = manager.entries[snapshot.SessionID]
+	manager.mu.Unlock()
+	if retained {
+		t.Fatal("retry Stop() retained entry after source close succeeded")
+	}
+	if source.CloseCalls() != 3 {
+		t.Fatalf("source close calls after retry = %d, want 3", source.CloseCalls())
 	}
 }
 
@@ -626,6 +776,7 @@ type fakeFrameSource struct {
 	waitForClose bool
 	index        int
 	closeCalls   int
+	closeErrors  []error
 	closed       chan struct{}
 }
 
@@ -714,6 +865,7 @@ func (s *fakeFrameSource) ReadFrame(ctx context.Context) (audio.Frame, error) {
 func (s *fakeFrameSource) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	call := s.closeCalls
 	s.closeCalls++
 	if s.closed == nil {
 		s.closed = make(chan struct{})
@@ -722,6 +874,9 @@ func (s *fakeFrameSource) Close() error {
 	case <-s.closed:
 	default:
 		close(s.closed)
+	}
+	if call < len(s.closeErrors) {
+		return s.closeErrors[call]
 	}
 	return nil
 }

@@ -38,7 +38,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: ${{ matrix.module }}/go.mod
-          cache: true
 
       - name: Download Go modules
         run: go mod download

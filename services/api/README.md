@@ -76,8 +76,9 @@ AI-only PATCH 路由在生产装配中保持 fail-closed，普通 Access Token �
 ```powershell
 docker compose -f ../../infra/docker-compose.yml exec postgres createdb -U postgres lingow_records_test
 $env:RECORDSTORE_TEST_DATABASE_URL = 'postgres://postgres:postgres@localhost:5432/lingow_records_test?sslmode=disable'
-go test -count=1 -tags=integration ./recordstore/...
+go test -count=1 -tags=integration . ./recordstore/...
 ```
 
-测试 helper 会为每个测试创建并删除随机 schema，拒绝连接名称不以 `_test` 结尾的数据库，且绝不使用
+测试 helper 会为每个测试创建并删除随机 schema，并拒绝连接名称不以 `_test` 结尾的数据库。主包的
+生产装配测试只会从 `RECORDSTORE_TEST_DATABASE_URL` 派生隔离后的 `DATABASE_URL`，不会使用外部设置的
 `DATABASE_URL`。

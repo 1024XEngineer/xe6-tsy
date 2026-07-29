@@ -37,6 +37,13 @@ type AudioChunkSink interface {
 	Publish(ctx context.Context, chunk AudioChunk) error
 }
 
+// AudioPlaybackLifecycle closes the playback event sequence after chunks have started.
+// It is optional so existing sinks remain valid.
+type AudioPlaybackLifecycle interface {
+	Complete(ctx context.Context, sessionID, playbackID string) error
+	Cancel(ctx context.Context, sessionID, playbackID, reason string) error
+}
+
 // PipelineDependencies wires provider and event boundaries for one service.
 type PipelineDependencies struct {
 	Translator     translate.Provider
@@ -169,12 +176,16 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return finalTurnAcceptedError("start TTS", err)
 	}
 	defer stream.Close()
-	if err := s.publishTTSChunks(ctx, turn, playbackID, stream.Chunks()); err != nil {
-		return finalTurnAcceptedError("stream TTS audio", err)
+	played, err := s.publishTTSChunks(ctx, turn, playbackID, stream.Chunks())
+	if err != nil {
+		return finalTurnAcceptedError("stream TTS audio", errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_stream_failed", played)))
 	}
 	ttsResult, err := stream.Finish(ctx)
 	if err != nil {
-		return finalTurnAcceptedError("finish TTS", err)
+		return finalTurnAcceptedError("finish TTS", errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_finish_failed", played)))
+	}
+	if err := s.completePlayback(ctx, turn.SessionID, playbackID, played); err != nil {
+		return finalTurnAcceptedError("complete playback", err)
 	}
 	if err := s.publishUsage(ctx, turn, "tts", ttsResult.Provider, ttsResult.Model, ttsResult.AudioDuration.Milliseconds(), 0, 0, ttsResult.CostAmount, ttsResult.Currency); err != nil {
 		return finalTurnAcceptedError("publish TTS usage", err)
@@ -186,27 +197,45 @@ func finalTurnAcceptedError(operation string, err error) error {
 	return fmt.Errorf("%w: %s: %w", ErrFinalTurnAccepted, operation, err)
 }
 
-func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, chunks <-chan tts.AudioChunk) error {
+func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, chunks <-chan tts.AudioChunk) (bool, error) {
 	playing := false
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return playing, ctx.Err()
 		case chunk, ok := <-chunks:
 			if !ok {
-				return nil
+				return playing, nil
 			}
 			if !playing {
 				if err := s.reportRuntime(ctx, turn, session.RuntimePlaying, playbackID); err != nil {
-					return fmt.Errorf("report playing runtime: %w", err)
+					return false, fmt.Errorf("report playing runtime: %w", err)
 				}
 				playing = true
 			}
 			if err := s.audio.Publish(ctx, AudioChunk{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, SequenceNo: chunk.SequenceNo, Data: append([]byte(nil), chunk.Data...)}); err != nil {
-				return fmt.Errorf("publish audio chunk: %w", err)
+				return playing, fmt.Errorf("publish audio chunk: %w", err)
 			}
 		}
 	}
+}
+
+func (s *PipelineService) completePlayback(ctx context.Context, sessionID, playbackID string, played bool) error {
+	lifecycle, ok := s.audio.(AudioPlaybackLifecycle)
+	if !played || !ok {
+		return nil
+	}
+	return lifecycle.Complete(ctx, sessionID, playbackID)
+}
+
+func (s *PipelineService) cancelPlayback(ctx context.Context, sessionID, playbackID, reason string, played bool) error {
+	lifecycle, ok := s.audio.(AudioPlaybackLifecycle)
+	if !played || !ok {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	return lifecycle.Cancel(cleanupCtx, sessionID, playbackID, reason)
 }
 
 func (s *PipelineService) validate() error {

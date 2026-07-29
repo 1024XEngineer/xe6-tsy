@@ -8,6 +8,7 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
 	"github.com/pion/rtp"
 	pion "github.com/pion/webrtc/v4"
 )
@@ -192,6 +193,10 @@ func configurePionMedia(transport *PionTransport, connection pionMediaPeerConnec
 	transport.audioSource = source
 	transport.ttsTrack = audioTrack
 	transport.events = newPionEventSink(channel)
+	transport.playback, err = playback.NewService(playback.Dependencies{Track: audioTrack, Events: transport.events, Now: now})
+	if err != nil {
+		return fmt.Errorf("create playback service: %w", err)
+	}
 	return nil
 }
 

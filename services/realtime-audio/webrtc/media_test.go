@@ -99,7 +99,7 @@ func TestPionFactoryConfiguresMediaWhenPeerSupportsIt(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 	mediaTransport, ok := transport.(*PionTransport)
-	if !ok || mediaTransport.AudioSource() == nil || mediaTransport.TTSAudioTrack() == nil || mediaTransport.TranslationEvents() == nil {
+	if !ok || mediaTransport.AudioSource() == nil || mediaTransport.TTSAudioTrack() == nil || mediaTransport.TranslationEvents() == nil || mediaTransport.Playback() == nil {
 		t.Fatalf("media transport = %#v", transport)
 	}
 	if len(peer.trackAdds) != 1 || peer.dataChannelLabel != defaultDataChannel {

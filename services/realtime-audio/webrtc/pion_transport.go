@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
 	pion "github.com/pion/webrtc/v4"
 )
@@ -19,6 +20,7 @@ type PionTransport struct {
 	audioSource     *PionAudioSource
 	ttsTrack        *PionAudioTrack
 	events          *PionEventSink
+	playback        *playback.Service
 }
 
 // AudioSource returns the normalized inbound source, when media was enabled.
@@ -43,6 +45,14 @@ func (t *PionTransport) TranslationEvents() *PionEventSink {
 		return nil
 	}
 	return t.events
+}
+
+// Playback returns the transport-bound playback state machine.
+func (t *PionTransport) Playback() *playback.Service {
+	if t == nil {
+		return nil
+	}
+	return t.playback
 }
 
 // Answer applies an offer and returns the fully gathered local answer.

@@ -69,6 +69,7 @@ type MediaTransport interface {
 	AudioSource() segment.FrameSource
 	TTSAudioTrack() *PionAudioTrack
 	TranslationEvents() *PionEventSink
+	Playback() *playback.Service
 }
 
 // PionAudioTrack writes normalized PCM into a Pion sample track.

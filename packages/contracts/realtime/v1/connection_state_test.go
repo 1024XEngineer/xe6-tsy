@@ -67,6 +67,20 @@ func TestOpenAPIWebRTCContractMatchesGoTypes(t *testing.T) {
 	if got := snapshot.Properties["state"].Ref; got != "#/components/schemas/WebRTCConnectionState" {
 		t.Fatalf("WebRTCConnectionSnapshot.state ref = %q", got)
 	}
+
+	connectionPath := spec.Paths["/realtime/v1/sessions/{session_id}/connection"]
+	okResponse := connectionPath.Get.Responses["200"]
+	if got := okResponse.Content["application/json"].Schema.Ref; got != "#/components/schemas/WebRTCConnectionSnapshot" {
+		t.Fatalf("connection 200 schema ref = %q", got)
+	}
+	notFoundResponse := connectionPath.Get.Responses["404"]
+	if got := notFoundResponse.Content["application/json"].Schema.Ref; got != "#/components/schemas/WebRTCConnectionError" {
+		t.Fatalf("connection 404 schema ref = %q", got)
+	}
+	errorBody := spec.Components.Schemas["WebRTCConnectionErrorBody"]
+	if got := errorBody.Properties["code"].Ref; got != "#/components/schemas/WebRTCErrorCode" {
+		t.Fatalf("WebRTCConnectionErrorBody.code ref = %q", got)
+	}
 }
 
 func stringValues[T ~string](values []T) []string {
@@ -78,6 +92,15 @@ func stringValues[T ~string](values []T) []string {
 }
 
 type openAPISpec struct {
+	Paths map[string]struct {
+		Get struct {
+			Responses map[string]struct {
+				Content map[string]struct {
+					Schema openAPIProperty `yaml:"schema"`
+				} `yaml:"content"`
+			} `yaml:"responses"`
+		} `yaml:"get"`
+	} `yaml:"paths"`
 	Components struct {
 		Schemas map[string]openAPISchema `yaml:"schemas"`
 	} `yaml:"components"`

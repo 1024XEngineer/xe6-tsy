@@ -21,6 +21,7 @@ var (
 	ErrClientRequest            = errors.New("invalid realtime client request")
 	ErrClientUnauthorized       = errors.New("realtime client unauthorized")
 	ErrClientConflict           = errors.New("realtime client conflict")
+	ErrConnectionNotFound       = errors.New("realtime WebRTC connection not found")
 	ErrRuntimeOperationConflict = errors.New("realtime runtime operation conflict")
 	ErrDependencyUnavailable    = errors.New("realtime dependency unavailable")
 	ErrInvalidResponse          = errors.New("invalid realtime response")
@@ -136,6 +137,63 @@ func (c *Client) Start(
 	return snapshot, nil
 }
 
+// GetConnection reads the authoritative WebRTC transport snapshot and rejects
+// malformed provider responses before they cross into API session readiness.
+func (c *Client) GetConnection(
+	ctx context.Context,
+	sessionID string,
+) (realtimev1.ConnectionSnapshot, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return realtimev1.ConnectionSnapshot{}, ErrClientRequest
+	}
+	token, err := c.ticket(ctx, sessionID)
+	if err != nil {
+		return realtimev1.ConnectionSnapshot{}, err
+	}
+	endpoint, err := url.JoinPath(
+		c.baseURL, "realtime/v1/sessions", sessionID, "connection",
+	)
+	if err != nil {
+		return realtimev1.ConnectionSnapshot{}, fmt.Errorf(
+			"%w: build connection endpoint: %v", ErrClientDependency, err,
+		)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return realtimev1.ConnectionSnapshot{}, fmt.Errorf(
+			"%w: build connection request: %v", ErrClientRequest, err,
+		)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := c.http.Do(request)
+	if err != nil {
+		return realtimev1.ConnectionSnapshot{}, preserveContextError(
+			ctx, fmt.Errorf("%w: %v", ErrDependencyUnavailable, err),
+		)
+	}
+	defer response.Body.Close()
+	reader := io.LimitReader(response.Body, maxClientResponseBytes+1)
+	if response.StatusCode < http.StatusOK ||
+		response.StatusCode >= http.StatusMultipleChoices {
+		return realtimev1.ConnectionSnapshot{}, decodeClientError(
+			response.StatusCode, reader,
+		)
+	}
+	var snapshot realtimev1.ConnectionSnapshot
+	if err := json.NewDecoder(reader).Decode(&snapshot); err != nil {
+		return realtimev1.ConnectionSnapshot{}, fmt.Errorf(
+			"%w: decode connection response: %v", ErrInvalidResponse, err,
+		)
+	}
+	if snapshot.SessionID != sessionID ||
+		strings.TrimSpace(snapshot.ConnectionID) == "" ||
+		!snapshot.State.Valid() || snapshot.Version <= 0 ||
+		snapshot.UpdatedAt.IsZero() {
+		return realtimev1.ConnectionSnapshot{}, ErrInvalidResponse
+	}
+	return snapshot, nil
+}
+
 func (c *Client) ticket(ctx context.Context, sessionID string) (string, error) {
 	token, err := c.tickets.Token(ctx, sessionID)
 	if err != nil {
@@ -163,6 +221,8 @@ func decodeClientError(status int, reader io.Reader) error {
 		return ErrClientRequest
 	case "unauthorized":
 		return ErrClientUnauthorized
+	case string(realtimev1.ErrorConnectionNotFound):
+		return ErrConnectionNotFound
 	case string(realtimev1.ErrorRuntimeOperationConflict):
 		return ErrRuntimeOperationConflict
 	case "conflict":

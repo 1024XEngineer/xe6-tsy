@@ -51,6 +51,12 @@ type Signaling interface {
 	AddCandidates(context.Context, string, string, webrtc.CandidateRequest) (webrtc.CandidateResponse, error)
 }
 
+// ConnectionReader returns the current WebRTC transport fact without exposing
+// the manager's mutation or in-memory ownership APIs across the HTTP boundary.
+type ConnectionReader interface {
+	GetCurrent(context.Context, string) (realtimev1.ConnectionSnapshot, error)
+}
+
 // ConfigReader returns the typed runtime WebRTC configuration for one session.
 type ConfigReader interface {
 	GetConfig(context.Context, string) (WebRTCConfig, error)
@@ -88,6 +94,7 @@ type AudioConfig struct {
 type Dependencies struct {
 	Lifecycle                  Lifecycle
 	Signaling                  Signaling
+	Connections                ConnectionReader
 	Tickets                    webrtc.TicketValidator
 	Config                     ConfigReader
 	Now                        func() time.Time
@@ -98,12 +105,13 @@ type Dependencies struct {
 
 // Handler serves the realtime control-plane routes.
 type Handler struct {
-	lifecycle Lifecycle
-	signaling Signaling
-	tickets   webrtc.TicketValidator
-	config    ConfigReader
-	now       func() time.Time
-	mux       *http.ServeMux
+	lifecycle   Lifecycle
+	signaling   Signaling
+	connections ConnectionReader
+	tickets     webrtc.TicketValidator
+	config      ConfigReader
+	now         func() time.Time
+	mux         *http.ServeMux
 
 	replayMu                   sync.Mutex
 	replays                    map[string]*replayRecord
@@ -124,7 +132,9 @@ type replayRecord struct {
 
 // New validates dependencies and registers the default /realtime/v1 routes.
 func New(dependencies Dependencies) (*Handler, error) {
-	if dependencies.Lifecycle == nil || dependencies.Signaling == nil || dependencies.Tickets == nil || dependencies.Config == nil {
+	if dependencies.Lifecycle == nil || dependencies.Signaling == nil ||
+		dependencies.Connections == nil || dependencies.Tickets == nil ||
+		dependencies.Config == nil {
 		return nil, ErrInvalidDependency
 	}
 	if dependencies.Now == nil {
@@ -145,6 +155,7 @@ func New(dependencies Dependencies) (*Handler, error) {
 	h := &Handler{
 		lifecycle:                  dependencies.Lifecycle,
 		signaling:                  dependencies.Signaling,
+		connections:                dependencies.Connections,
 		tickets:                    dependencies.Tickets,
 		config:                     dependencies.Config,
 		now:                        dependencies.Now,
@@ -163,6 +174,7 @@ func (h *Handler) registerRoutes(prefix string) {
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/start", h.start)
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/stop", h.stop)
 	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/runtime", h.runtime)
+	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/connection", h.connection)
 	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/webrtc/config", h.configHandler)
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/webrtc/offer", h.offer)
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/ice-candidates", h.candidates)
@@ -238,6 +250,20 @@ func (h *Handler) runtime(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	snapshot, err := h.lifecycle.GetRuntimeState(request.Context(), sessionID)
+	if err != nil {
+		h.writeError(writer, request, err)
+		return
+	}
+	h.writeJSON(writer, http.StatusOK, snapshot)
+}
+
+func (h *Handler) connection(writer http.ResponseWriter, request *http.Request) {
+	sessionID := request.PathValue("session_id")
+	if _, err := h.authorize(request.Context(), request, sessionID); err != nil {
+		h.writeError(writer, request, err)
+		return
+	}
+	snapshot, err := h.connections.GetCurrent(request.Context(), sessionID)
 	if err != nil {
 		h.writeError(writer, request, err)
 		return
@@ -498,8 +524,10 @@ func mapError(err error) (int, string) {
 		errors.Is(err, webrtc.ErrTicketExpired), errors.Is(err, webrtc.ErrTicketSessionMismatch),
 		errors.Is(err, webrtc.ErrTicketAccountRequired):
 		return http.StatusUnauthorized, "unauthorized"
-	case errors.Is(err, session.ErrRuntimeNotFound), errors.Is(err, webrtc.ErrConnectionNotFound):
+	case errors.Is(err, session.ErrRuntimeNotFound):
 		return http.StatusNotFound, "not_found"
+	case errors.Is(err, webrtc.ErrConnectionNotFound):
+		return http.StatusNotFound, string(realtimev1.ErrorConnectionNotFound)
 	case errors.Is(err, session.ErrRuntimeOperationConflict):
 		return http.StatusConflict, string(realtimev1.ErrorRuntimeOperationConflict)
 	case errors.Is(err, session.ErrRuntimeCleanupRequired), errors.Is(err, session.ErrSessionNotCreated),
@@ -521,3 +549,4 @@ func mapError(err error) (int, string) {
 var _ http.Handler = (*Handler)(nil)
 var _ Lifecycle = (*session.LifecycleService)(nil)
 var _ Signaling = (*webrtc.SignalingService)(nil)
+var _ ConnectionReader = (webrtc.ConnectionManager)(nil)

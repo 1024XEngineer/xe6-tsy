@@ -87,6 +87,85 @@ func TestHandlerDelegatesOfferCandidatesRuntimeAndConfig(t *testing.T) {
 	}
 }
 
+func TestHandlerReturnsAllConnectionStates(t *testing.T) {
+	for _, state := range []realtimev1.ConnectionState{
+		realtimev1.ConnectionNew,
+		realtimev1.ConnectionConnecting,
+		realtimev1.ConnectionConnected,
+		realtimev1.ConnectionDisconnected,
+		realtimev1.ConnectionFailed,
+		realtimev1.ConnectionClosed,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			fixture := newFixture(t)
+			fixture.connections.snapshot.State = state
+			response := fixture.request(
+				http.MethodGet,
+				"/realtime/v1/sessions/session-1/connection",
+				"",
+				"",
+			)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+			}
+			var snapshot realtimev1.ConnectionSnapshot
+			if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if snapshot.SessionID != "session-1" ||
+				snapshot.ConnectionID != "connection-1" ||
+				snapshot.State != state ||
+				snapshot.UpdatedAt.IsZero() {
+				t.Fatalf("snapshot = %#v", snapshot)
+			}
+		})
+	}
+}
+
+func TestHandlerMapsConnectionReaderErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		status   int
+		wantCode string
+	}{
+		{
+			name:     "not found",
+			err:      webrtc.ErrConnectionNotFound,
+			status:   http.StatusNotFound,
+			wantCode: string(realtimev1.ErrorConnectionNotFound),
+		},
+		{
+			name:     "provider",
+			err:      errors.New("provider unavailable"),
+			status:   http.StatusInternalServerError,
+			wantCode: "internal_error",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			fixture.connections.err = test.err
+			response := fixture.request(
+				http.MethodGet,
+				"/realtime/v1/sessions/session-1/connection",
+				"",
+				"",
+			)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+			}
+			var payload errorResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if payload.Error.Code != test.wantCode {
+				t.Fatalf("error.code = %q, want %q", payload.Error.Code, test.wantCode)
+			}
+		})
+	}
+}
+
 func TestHandlerRejectsMalformedAndMissingIdentity(t *testing.T) {
 	fixture := newFixture(t)
 
@@ -304,11 +383,12 @@ func TestHandlerRejectsWrongSessionTicketAndAcceptsRepeatedCandidate(t *testing.
 }
 
 type fixture struct {
-	handler   http.Handler
-	lifecycle *lifecycleFake
-	signaling *signalingFake
-	tickets   *ticketFake
-	config    *configFake
+	handler     http.Handler
+	lifecycle   *lifecycleFake
+	signaling   *signalingFake
+	connections *connectionFake
+	tickets     *ticketFake
+	config      *configFake
 }
 
 func newFixture(t *testing.T) fixture {
@@ -323,11 +403,22 @@ func newFixture(t *testing.T) fixture {
 	}
 	tickets := &ticketFake{ticket: webrtc.ConnectionTicket{SessionID: "session-1", AccountID: "account-1", ExpiresAt: now.Add(time.Hour)}}
 	config := &configFake{value: WebRTCConfig{SessionID: "session-1", ExpiresAt: now.Add(time.Hour), ICETransportPolicy: "all"}}
-	handler, err := New(Dependencies{Lifecycle: lifecycle, Signaling: &signalingFake{}, Tickets: tickets, Config: config, Now: func() time.Time { return now }})
+	connections := &connectionFake{snapshot: realtimev1.ConnectionSnapshot{
+		SessionID: "session-1", ConnectionID: "connection-1",
+		State: realtimev1.ConnectionConnected, Version: 1, UpdatedAt: now,
+	}}
+	handler, err := New(Dependencies{
+		Lifecycle: lifecycle, Signaling: &signalingFake{}, Connections: connections,
+		Tickets: tickets, Config: config, Now: func() time.Time { return now },
+	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	return fixture{handler: handler, lifecycle: lifecycle, signaling: handler.signaling.(*signalingFake), tickets: tickets, config: config}
+	return fixture{
+		handler: handler, lifecycle: lifecycle,
+		signaling: handler.signaling.(*signalingFake), connections: connections,
+		tickets: tickets, config: config,
+	}
 }
 
 func newReplayHandler(t *testing.T, lifecycle Lifecycle, now func() time.Time, replayTTL time.Duration, replayMax int) *Handler {
@@ -340,7 +431,8 @@ func newReplayHandlerWithLimits(t *testing.T, lifecycle Lifecycle, now func() ti
 	tickets := &sessionTicketFake{expiresAt: baseNow.Add(time.Hour)}
 	config := &configFake{value: WebRTCConfig{SessionID: "session-1", ExpiresAt: baseNow.Add(time.Hour), ICETransportPolicy: "all"}}
 	handler, err := New(Dependencies{
-		Lifecycle: lifecycle, Signaling: &signalingFake{}, Tickets: tickets, Config: config, Now: now,
+		Lifecycle: lifecycle, Signaling: &signalingFake{}, Connections: &connectionFake{},
+		Tickets: tickets, Config: config, Now: now,
 		ReplayTTL: replayTTL, ReplayMaxEntries: replayMax, ReplayMaxEntriesPerSession: replayMaxPerSession,
 	})
 	if err != nil {
@@ -460,6 +552,18 @@ func (f *lifecycleFake) GetRuntimeState(context.Context, string) (session.Runtim
 type signalingFake struct {
 	offerCalls     int
 	candidateCalls int
+}
+
+type connectionFake struct {
+	snapshot realtimev1.ConnectionSnapshot
+	err      error
+}
+
+func (f *connectionFake) GetCurrent(ctx context.Context, _ string) (realtimev1.ConnectionSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return realtimev1.ConnectionSnapshot{}, err
+	}
+	return f.snapshot, f.err
 }
 
 func (f *signalingFake) Offer(_ context.Context, token, sessionID string, request webrtc.OfferRequest) (webrtc.OfferResponse, error) {

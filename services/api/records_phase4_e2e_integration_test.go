@@ -193,7 +193,7 @@ func TestRecordsPhase4HTTPAndSnapshotConsistency(t *testing.T) {
 	}
 	var sessionTurnsBody recordsv1.VoiceTurnListResponse
 	decodePhase4JSON(t, sessionTurnsResponse, &sessionTurnsBody)
-	assertPhase4TurnIDs(t, sessionTurnsBody.Items, produced.attributed.ID, produced.pending.ID)
+	assertPhase4TurnIDs(t, sessionTurnsBody.Items, produced.pending.ID, produced.attributed.ID)
 
 	participantsResponse := phase4HTTPRequest(handler, http.MethodGet, "/api/v1/voice-sessions/"+fixture.ownerSession+"/participants?limit=20", fixture.ownerAccessToken, "")
 	if participantsResponse.Code != http.StatusOK {
@@ -347,12 +347,13 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 			Provider: "integration-tts",
 			Model:    "integration-tts-model",
 		}}),
-		Speakers:   recordsServices.Participants,
-		FinalTurns: pipeline.NewPostgresFinalTurnSink(pool),
-		Usage:      phase4UsageSink{},
-		Audio:      phase4AudioSink{},
-		Runtime:    phase4RuntimeReporter{},
-		Now:        func() time.Time { return fixture.currentTime },
+		Speakers:       recordsServices.Participants,
+		FinalTurns:     pipeline.NewPostgresFinalTurnSink(pool),
+		Usage:          phase4UsageSink{},
+		Audio:          phase4AudioSink{},
+		Runtime:        phase4RuntimeReporter{},
+		SpeakerTimeout: 5 * time.Second,
+		Now:            func() time.Time { return fixture.currentTime },
 	})
 	return fixture
 }

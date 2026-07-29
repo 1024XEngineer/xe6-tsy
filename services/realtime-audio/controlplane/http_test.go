@@ -184,6 +184,57 @@ func TestHandlerRejectsReplayWhenCapacityIsExhausted(t *testing.T) {
 	}
 }
 
+func TestHandlerIsolatesReplayCapacityPerSession(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	lifecycle := &multiSessionLifecycleFake{runtime: session.RuntimeSnapshot{RuntimeState: session.RuntimeListening, UpdatedAt: now}}
+	handler := newReplayHandlerWithLimits(t, lifecycle, func() time.Time { return now }, time.Minute, 2, 1)
+	body := `{}`
+	if response := replayRequestForSession(handler, "session-1", body, "session-1-key"); response.Code != http.StatusOK {
+		t.Fatalf("first session start status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if response := replayRequestForSession(handler, "session-1", body, "session-1-key-2"); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("second session-1 key status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if response := replayRequestForSession(handler, "session-2", body, "session-2-key"); response.Code != http.StatusOK {
+		t.Fatalf("session-2 start status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if lifecycle.starts != 2 {
+		t.Fatalf("lifecycle starts = %d, want 2", lifecycle.starts)
+	}
+}
+
+func TestHandlerRejectsOversizedIdempotencyKey(t *testing.T) {
+	fixture := newFixture(t)
+	key := strings.Repeat("k", maxIdempotencyKeyBytes+1)
+	response := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{}`, key)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversized idempotency key status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if fixture.lifecycle.starts != 0 {
+		t.Fatalf("lifecycle starts = %d, want 0", fixture.lifecycle.starts)
+	}
+}
+
+func TestHandlerRejectsBodyBeyondLimitIncludingTrailingWhitespace(t *testing.T) {
+	fixture := newFixture(t)
+	body := `{}` + strings.Repeat(" ", maxBodyBytes)
+	response := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", body, "body-limit-key")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversized body status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if fixture.lifecycle.starts != 0 {
+		t.Fatalf("lifecycle starts = %d, want 0", fixture.lifecycle.starts)
+	}
+}
+
+func TestHandlerMapsMissingConnectionIDToBadRequest(t *testing.T) {
+	fixture := newFixture(t)
+	response := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/ice-candidates", `{"candidates":[]}`, "")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("missing connection id status = %d, body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestHandlerDoesNotCacheFailedReplay(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.lifecycle.startErr = errors.New("temporary lifecycle failure")
@@ -243,13 +294,17 @@ func newFixture(t *testing.T) fixture {
 }
 
 func newReplayHandler(t *testing.T, lifecycle Lifecycle, now func() time.Time, replayTTL time.Duration, replayMax int) *Handler {
+	return newReplayHandlerWithLimits(t, lifecycle, now, replayTTL, replayMax, 0)
+}
+
+func newReplayHandlerWithLimits(t *testing.T, lifecycle Lifecycle, now func() time.Time, replayTTL time.Duration, replayMax, replayMaxPerSession int) *Handler {
 	t.Helper()
 	baseNow := time.Unix(1700000000, 0).UTC()
-	tickets := &ticketFake{ticket: webrtc.ConnectionTicket{SessionID: "session-1", AccountID: "account-1", ExpiresAt: baseNow.Add(time.Hour)}}
+	tickets := &sessionTicketFake{expiresAt: baseNow.Add(time.Hour)}
 	config := &configFake{value: WebRTCConfig{SessionID: "session-1", ExpiresAt: baseNow.Add(time.Hour), ICETransportPolicy: "all"}}
 	handler, err := New(Dependencies{
 		Lifecycle: lifecycle, Signaling: &signalingFake{}, Tickets: tickets, Config: config, Now: now,
-		ReplayTTL: replayTTL, ReplayMaxEntries: replayMax,
+		ReplayTTL: replayTTL, ReplayMaxEntries: replayMax, ReplayMaxEntriesPerSession: replayMaxPerSession,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -258,7 +313,11 @@ func newReplayHandler(t *testing.T, lifecycle Lifecycle, now func() time.Time, r
 }
 
 func replayRequest(handler http.Handler, body, idempotencyKey string) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(http.MethodPost, "/realtime/v1/sessions/session-1/start", strings.NewReader(body))
+	return replayRequestForSession(handler, "session-1", body, idempotencyKey)
+}
+
+func replayRequestForSession(handler http.Handler, sessionID, body, idempotencyKey string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, "/realtime/v1/sessions/"+sessionID+"/start", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer realtime-ticket")
 	request.Header.Set("Idempotency-Key", idempotencyKey)
 	recorder := httptest.NewRecorder()
@@ -324,6 +383,26 @@ func (f *lifecycleFake) Start(_ context.Context, command session.StartRealtimeCo
 	return f.runtime, nil
 }
 
+type multiSessionLifecycleFake struct {
+	runtime session.RuntimeSnapshot
+	starts  int
+}
+
+func (f *multiSessionLifecycleFake) Start(_ context.Context, command session.StartRealtimeCommand) (session.RuntimeSnapshot, error) {
+	f.starts++
+	f.runtime.SessionID = command.SessionID
+	return f.runtime, nil
+}
+
+func (f *multiSessionLifecycleFake) Stop(_ context.Context, command session.StopRealtimeCommand) (session.RuntimeSnapshot, error) {
+	f.runtime.SessionID = command.SessionID
+	return f.runtime, nil
+}
+
+func (f *multiSessionLifecycleFake) GetRuntimeState(context.Context, string) (session.RuntimeSnapshot, error) {
+	return f.runtime, nil
+}
+
 func (f *lifecycleFake) Stop(_ context.Context, command session.StopRealtimeCommand) (session.RuntimeSnapshot, error) {
 	f.stops++
 	if f.stopErr != nil {
@@ -357,6 +436,9 @@ func (f *signalingFake) AddCandidates(_ context.Context, token, sessionID string
 	if token == "" || sessionID == "" {
 		return webrtc.CandidateResponse{}, webrtc.ErrRealtimeTokenRequired
 	}
+	if request.ConnectionID == "" {
+		return webrtc.CandidateResponse{}, webrtc.ErrConnectionIDRequired
+	}
 	return webrtc.CandidateResponse{ConnectionID: request.ConnectionID, AcceptedCandidateIDs: []string{"candidate-1"}, EndOfCandidates: request.EndOfCandidates}, nil
 }
 
@@ -367,6 +449,14 @@ type ticketFake struct {
 
 func (f *ticketFake) Validate(context.Context, string, string) (webrtc.ConnectionTicket, error) {
 	return f.ticket, f.err
+}
+
+type sessionTicketFake struct {
+	expiresAt time.Time
+}
+
+func (f *sessionTicketFake) Validate(_ context.Context, _ string, sessionID string) (webrtc.ConnectionTicket, error) {
+	return webrtc.ConnectionTicket{SessionID: sessionID, AccountID: "account-1", ExpiresAt: f.expiresAt}, nil
 }
 
 type configFake struct {

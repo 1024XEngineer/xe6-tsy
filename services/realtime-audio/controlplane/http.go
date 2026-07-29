@@ -2,6 +2,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,18 +20,21 @@ import (
 )
 
 const (
-	defaultRoutePrefix      = "/realtime/v1"
-	maxBodyBytes            = 1 << 20
-	defaultReplayTTL        = 10 * time.Minute
-	defaultReplayMaxEntries = 4096
+	defaultRoutePrefix                = "/realtime/v1"
+	maxBodyBytes                      = 1 << 20
+	maxIdempotencyKeyBytes            = 256
+	defaultReplayTTL                  = 10 * time.Minute
+	defaultReplayMaxEntries           = 4096
+	defaultReplayMaxEntriesPerSession = 64
 )
 
 var (
-	ErrInvalidDependency = errors.New("invalid control-plane dependency")
-	ErrInvalidRequest    = errors.New("invalid control-plane request")
-	ErrTicketRequired    = errors.New("realtime ticket is required")
-	ErrConfigSession     = errors.New("WebRTC config session mismatch")
-	ErrReplayCapacity    = errors.New("control-plane replay capacity exhausted")
+	ErrInvalidDependency     = errors.New("invalid control-plane dependency")
+	ErrInvalidRequest        = errors.New("invalid control-plane request")
+	ErrTicketRequired        = errors.New("realtime ticket is required")
+	ErrConfigSession         = errors.New("WebRTC config session mismatch")
+	ErrReplayCapacity        = errors.New("control-plane replay capacity exhausted")
+	ErrIdempotencyKeyTooLong = errors.New("idempotency key exceeds maximum length")
 )
 
 // Lifecycle is the realtime media lifecycle owned by session.LifecycleService.
@@ -81,13 +85,14 @@ type AudioConfig struct {
 
 // Dependencies wires existing lifecycle, ticket, signaling, and config ports.
 type Dependencies struct {
-	Lifecycle        Lifecycle
-	Signaling        Signaling
-	Tickets          webrtc.TicketValidator
-	Config           ConfigReader
-	Now              func() time.Time
-	ReplayTTL        time.Duration
-	ReplayMaxEntries int
+	Lifecycle                  Lifecycle
+	Signaling                  Signaling
+	Tickets                    webrtc.TicketValidator
+	Config                     ConfigReader
+	Now                        func() time.Time
+	ReplayTTL                  time.Duration
+	ReplayMaxEntries           int
+	ReplayMaxEntriesPerSession int
 }
 
 // Handler serves the realtime control-plane routes.
@@ -99,13 +104,16 @@ type Handler struct {
 	now       func() time.Time
 	mux       *http.ServeMux
 
-	replayMu         sync.Mutex
-	replays          map[string]*replayRecord
-	replayTTL        time.Duration
-	replayMaxEntries int
+	replayMu                   sync.Mutex
+	replays                    map[string]*replayRecord
+	replayEntriesBySession     map[string]int
+	replayTTL                  time.Duration
+	replayMaxEntries           int
+	replayMaxEntriesPerSession int
 }
 
 type replayRecord struct {
+	sessionID string
 	hash      string
 	value     any
 	err       error
@@ -127,16 +135,24 @@ func New(dependencies Dependencies) (*Handler, error) {
 	if dependencies.ReplayMaxEntries <= 0 {
 		dependencies.ReplayMaxEntries = defaultReplayMaxEntries
 	}
+	if dependencies.ReplayMaxEntriesPerSession <= 0 {
+		dependencies.ReplayMaxEntriesPerSession = defaultReplayMaxEntriesPerSession
+	}
+	if dependencies.ReplayMaxEntriesPerSession > dependencies.ReplayMaxEntries {
+		dependencies.ReplayMaxEntriesPerSession = dependencies.ReplayMaxEntries
+	}
 	h := &Handler{
-		lifecycle:        dependencies.Lifecycle,
-		signaling:        dependencies.Signaling,
-		tickets:          dependencies.Tickets,
-		config:           dependencies.Config,
-		now:              dependencies.Now,
-		mux:              http.NewServeMux(),
-		replays:          make(map[string]*replayRecord),
-		replayTTL:        dependencies.ReplayTTL,
-		replayMaxEntries: dependencies.ReplayMaxEntries,
+		lifecycle:                  dependencies.Lifecycle,
+		signaling:                  dependencies.Signaling,
+		tickets:                    dependencies.Tickets,
+		config:                     dependencies.Config,
+		now:                        dependencies.Now,
+		mux:                        http.NewServeMux(),
+		replays:                    make(map[string]*replayRecord),
+		replayEntriesBySession:     make(map[string]int),
+		replayTTL:                  dependencies.ReplayTTL,
+		replayMaxEntries:           dependencies.ReplayMaxEntries,
+		replayMaxEntriesPerSession: dependencies.ReplayMaxEntriesPerSession,
 	}
 	h.registerRoutes(defaultRoutePrefix)
 	return h, nil
@@ -181,7 +197,7 @@ func (h *Handler) start(writer http.ResponseWriter, request *http.Request) {
 		h.writeError(writer, request, err)
 		return
 	}
-	h.handleReplay(writer, request.Context(), "start\x00"+sessionID+"\x00"+idempotencyKey, body, func() (any, error) {
+	h.handleReplay(writer, request.Context(), sessionID, "start\x00"+sessionID+"\x00"+idempotencyKey, body, func() (any, error) {
 		return h.lifecycle.Start(request.Context(), session.StartRealtimeCommand{
 			SessionID: sessionID, TraceID: body.TraceID, StartedBy: body.StartedBy,
 		})
@@ -207,7 +223,7 @@ func (h *Handler) stop(writer http.ResponseWriter, request *http.Request) {
 	if body.Reason == "" {
 		body.Reason = "user_requested"
 	}
-	h.handleReplay(writer, request.Context(), "stop\x00"+sessionID+"\x00"+idempotencyKey, body, func() (any, error) {
+	h.handleReplay(writer, request.Context(), sessionID, "stop\x00"+sessionID+"\x00"+idempotencyKey, body, func() (any, error) {
 		return h.lifecycle.Stop(request.Context(), session.StopRealtimeCommand{
 			SessionID: sessionID, TraceID: body.TraceID, Reason: body.Reason, EndedAt: h.now(),
 		})
@@ -316,13 +332,13 @@ func (h *Handler) authorize(ctx context.Context, request *http.Request, sessionI
 	return token, nil
 }
 
-func (h *Handler) handleReplay(writer http.ResponseWriter, ctx context.Context, key string, body any, operation func() (any, error)) {
+func (h *Handler) handleReplay(writer http.ResponseWriter, ctx context.Context, sessionID, key string, body any, operation func() (any, error)) {
 	hash, err := bodyHash(body)
 	if err != nil {
 		h.writeError(writer, nil, err)
 		return
 	}
-	record, owner, err := h.reserveReplay(key, hash)
+	record, owner, err := h.reserveReplay(sessionID, key, hash)
 	if err != nil {
 		h.writeError(writer, nil, err)
 		return
@@ -344,7 +360,7 @@ func (h *Handler) handleReplay(writer http.ResponseWriter, ctx context.Context, 
 	value, err := operation()
 	h.replayMu.Lock()
 	if err != nil {
-		delete(h.replays, key)
+		h.removeReplayLocked(key, record)
 		record.err = err
 		close(record.ready)
 		h.replayMu.Unlock()
@@ -358,13 +374,13 @@ func (h *Handler) handleReplay(writer http.ResponseWriter, ctx context.Context, 
 	h.writeJSON(writer, http.StatusOK, value)
 }
 
-func (h *Handler) reserveReplay(key, hash string) (*replayRecord, bool, error) {
+func (h *Handler) reserveReplay(sessionID, key, hash string) (*replayRecord, bool, error) {
 	now := h.now()
 	h.replayMu.Lock()
 	defer h.replayMu.Unlock()
 	if previous, ok := h.replays[key]; ok {
 		if !previous.expiresAt.IsZero() && !previous.expiresAt.After(now) {
-			delete(h.replays, key)
+			h.removeReplayLocked(key, previous)
 		} else {
 			if previous.hash != hash {
 				return nil, false, webrtc.ErrIdempotencyPayloadConflict
@@ -373,11 +389,12 @@ func (h *Handler) reserveReplay(key, hash string) (*replayRecord, bool, error) {
 		}
 	}
 	h.purgeExpiredReplaysLocked(now)
-	if len(h.replays) >= h.replayMaxEntries {
+	if len(h.replays) >= h.replayMaxEntries || h.replayEntriesBySession[sessionID] >= h.replayMaxEntriesPerSession {
 		return nil, false, ErrReplayCapacity
 	}
-	record := &replayRecord{hash: hash, ready: make(chan struct{})}
+	record := &replayRecord{sessionID: sessionID, hash: hash, ready: make(chan struct{})}
 	h.replays[key] = record
+	h.replayEntriesBySession[sessionID]++
 	return record, true, nil
 }
 
@@ -386,12 +403,29 @@ func (h *Handler) purgeExpiredReplaysLocked(now time.Time) {
 		if record.expiresAt.IsZero() || record.expiresAt.After(now) {
 			continue
 		}
-		delete(h.replays, key)
+		h.removeReplayLocked(key, record)
+	}
+}
+
+func (h *Handler) removeReplayLocked(key string, expected *replayRecord) {
+	record, ok := h.replays[key]
+	if !ok || (expected != nil && record != expected) {
+		return
+	}
+	delete(h.replays, key)
+	if count := h.replayEntriesBySession[record.sessionID] - 1; count > 0 {
+		h.replayEntriesBySession[record.sessionID] = count
+	} else {
+		delete(h.replayEntriesBySession, record.sessionID)
 	}
 }
 
 func requiredIdempotencyKey(request *http.Request) (string, error) {
-	key := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	raw := request.Header.Get("Idempotency-Key")
+	if len([]byte(raw)) > maxIdempotencyKeyBytes {
+		return "", ErrIdempotencyKeyTooLong
+	}
+	key := strings.TrimSpace(raw)
 	if key == "" {
 		return "", webrtc.ErrIdempotencyKeyRequired
 	}
@@ -407,7 +441,11 @@ func bearerToken(raw string) (string, error) {
 }
 
 func decodeJSON(request *http.Request, target any, allowEmpty bool) error {
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(request.Body, maxBodyBytes+1))
+	if err != nil || len(body) > maxBodyBytes {
+		return ErrInvalidRequest
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		if allowEmpty && errors.Is(err, io.EOF) {
@@ -450,7 +488,8 @@ func mapError(err error) (int, string) {
 		return http.StatusInternalServerError, "internal_error"
 	case errors.Is(err, ErrInvalidRequest), errors.Is(err, webrtc.ErrSessionIDRequired),
 		errors.Is(err, webrtc.ErrOfferSDPRequired), errors.Is(err, webrtc.ErrOfferTypeInvalid),
-		errors.Is(err, webrtc.ErrIdempotencyKeyRequired), errors.Is(err, webrtc.ErrCandidateIDRequired),
+		errors.Is(err, webrtc.ErrIdempotencyKeyRequired), errors.Is(err, ErrIdempotencyKeyTooLong),
+		errors.Is(err, webrtc.ErrConnectionIDRequired), errors.Is(err, webrtc.ErrCandidateIDRequired),
 		errors.Is(err, webrtc.ErrCandidateRequired):
 		return http.StatusBadRequest, "invalid_request"
 	case errors.Is(err, ErrTicketRequired), errors.Is(err, webrtc.ErrRealtimeTokenRequired),

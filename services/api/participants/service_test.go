@@ -7,6 +7,7 @@ import (
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
 func TestListChecksSessionOwnership(t *testing.T) {
@@ -20,6 +21,7 @@ func TestListChecksSessionOwnership(t *testing.T) {
 		{name: "owner", accountID: "acct_01", ownerID: "acct_01"},
 		{name: "another account", accountID: "acct_02", ownerID: "acct_01", wantErr: ErrForbidden},
 		{name: "missing session", accountID: "acct_01", ownerErr: ErrSessionNotFound, wantErr: ErrSessionNotFound},
+		{name: "storage missing session", accountID: "acct_01", ownerErr: domain.ErrNotFound, wantErr: ErrSessionNotFound},
 	}
 
 	for _, test := range tests {

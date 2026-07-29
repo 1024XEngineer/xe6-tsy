@@ -8,8 +8,7 @@ import (
 )
 
 const (
-	finalTurnTopic = "final_turn.recorded"
-	usageTopic     = "usage.recorded"
+	usageTopic = "usage.recorded"
 )
 
 var (
@@ -19,7 +18,9 @@ var (
 	ErrOutboxRequired = errors.New("durable outbox is required")
 )
 
-// DurableOutbox accepts an event before a sink reports successful publication.
+// DurableOutbox accepts an event before a sink reports successful publication. Append returns nil
+// only after the entry can survive process failure. Replaying the same topic, key, and payload is
+// idempotent; reusing a key with a different payload must return a conflict without overwriting it.
 type DurableOutbox interface {
 	Append(ctx context.Context, topic, idempotencyKey string, payload any) error
 }
@@ -39,7 +40,8 @@ func NewOutboxFinalTurnSink(outbox DurableOutbox) *OutboxFinalTurnSink {
 	return &OutboxFinalTurnSink{outbox: outbox}
 }
 
-// Publish reports success only after the outbox accepts the typed event.
+// Publish reports success only after one durable append. Retry and uncertain-commit handling belong
+// to the outbox implementation so this adapter never submits a mutated replacement event.
 func (s *OutboxFinalTurnSink) Publish(ctx context.Context, event FinalTurnEvent) error {
 	if err := event.Validate(); err != nil {
 		return err
@@ -50,7 +52,7 @@ func (s *OutboxFinalTurnSink) Publish(ctx context.Context, event FinalTurnEvent)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.outbox.Append(ctx, finalTurnTopic, event.EventID, event)
+	return s.outbox.Append(ctx, recordsv1.FinalTurnTopic, event.EventID, event)
 }
 
 // OutboxUsageFactSink adapts UsageFact events to a durable outbox.

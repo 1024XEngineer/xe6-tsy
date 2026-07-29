@@ -32,16 +32,73 @@ type ListPage struct {
 }
 
 // StartTransitionParams atomically records the created-to-active transition
-// and the start request's idempotent result. Implementations check an existing
-// key and request hash before Expected so an already-active replay can return
-// its stored result without invoking realtime again.
+// and completes the matching pending StartOperation. Implementations check the
+// operation, key, and request hash before Expected so an already-active replay
+// can return its stored result without invoking realtime again.
 type StartTransitionParams struct {
 	SessionID      string
 	AccountID      string
+	OperationID    string
 	Expected       Status
 	StartedAt      time.Time
 	IdempotencyKey string
 	RequestHash    string
+}
+
+// BeginStartOperationParams creates a durable pending operation before the
+// realtime boundary is called.
+type BeginStartOperationParams struct {
+	OperationID    string
+	SessionID      string
+	AccountID      string
+	IdempotencyKey string
+	RequestHash    string
+	CreatedAt      time.Time
+}
+
+// BeginStartOperationResult distinguishes a newly-created operation from an
+// idempotent replay of the same key and request hash.
+type BeginStartOperationResult struct {
+	Operation StartOperation
+	Replayed  bool
+}
+
+// ClaimStartCompensationParams asks the repository for exclusive permission to
+// stop realtime after activation could not be confirmed.
+type ClaimStartCompensationParams struct {
+	SessionID   string
+	AccountID   string
+	OperationID string
+	ClaimID     string
+	ClaimedAt   time.Time
+}
+
+// ClaimStartCompensationResult is the only authority for destructive Start
+// compensation. A pending operation may be claimed once. If it is already
+// compensating, the same persisted ClaimID reclaims it idempotently so
+// interrupted cleanup can resume; a different ClaimID never takes ownership.
+// Claimed=false always forbids Realtime.Stop.
+type ClaimStartCompensationResult struct {
+	Claimed bool
+	Reason  StartCompensationClaimReason
+}
+
+// CompleteStartCompensationParams records cleanup confirmed by realtime.
+type CompleteStartCompensationParams struct {
+	SessionID   string
+	AccountID   string
+	OperationID string
+	ClaimID     string
+	CompletedAt time.Time
+}
+
+// FailStartCompensationParams preserves a failed cleanup attempt for recovery.
+type FailStartCompensationParams struct {
+	SessionID   string
+	AccountID   string
+	OperationID string
+	ClaimID     string
+	FailedAt    time.Time
 }
 
 // EndTransitionParams records a cleanup-confirmed transition to ended. End
@@ -64,9 +121,8 @@ type FailureTransitionParams struct {
 	ErrorCode string
 }
 
-// EndIntent persists a requested shutdown before cross-service cleanup is
-// confirmed. CompletedAt distinguishes a resumable intent from an audited,
-// completed request without deleting its idempotency record.
+// EndIntent stores one End request identity before realtime cleanup.
+// CompletedAt marks that the corresponding business transition was committed.
 type EndIntent struct {
 	SessionID      string
 	AccountID      string
@@ -89,16 +145,40 @@ func (i EndIntent) Completed() bool {
 }
 
 // Repository owns voice_sessions persistence and operation idempotency.
-// Implementations atomically own create and start idempotency, while EndIntent
-// exclusively owns end idempotency. GetOwned must not reveal whether a missing
-// session belongs to another account. AccountID is mandatory on every external
-// read or mutation, and Expected changes return ErrConcurrentTransition.
+// Implementations atomically bind StartOperation activation or compensation to
+// the business session, while EndIntent exclusively owns end idempotency.
+// GetOwned must not reveal whether a missing session belongs to another
+// account. AccountID is mandatory on every external read or mutation, and
+// Expected changes return ErrConcurrentTransition.
 type Repository interface {
 	Create(ctx context.Context, params CreateParams) (session VoiceSession, replayed bool, err error)
 	GetOwned(ctx context.Context, accountID string, sessionID string) (VoiceSession, error)
 	List(ctx context.Context, filter ListFilter) (ListPage, error)
+	// GetStartOperation returns the matching request when present. If another
+	// key owns a pending, compensating, or compensation_failed operation for the
+	// Session, it returns ErrSessionStartInProgress before readiness is checked.
+	// A compensated operation does not block a new key and is reported as
+	// ErrStartOperationNotFound. Implementations must also make
+	// BeginStartOperation conflict with an incomplete EndIntent so a new
+	// runtime cannot start after shutdown persistence begins.
+	GetStartOperation(
+		ctx context.Context,
+		accountID string,
+		sessionID string,
+		idempotencyKey string,
+	) (StartOperation, error)
+	BeginStartOperation(ctx context.Context, params BeginStartOperationParams) (BeginStartOperationResult, error)
+	// ClaimStartCompensation is idempotent for the matching OperationID and
+	// persisted ClaimID while the operation remains compensating.
+	ClaimStartCompensation(ctx context.Context, params ClaimStartCompensationParams) (ClaimStartCompensationResult, error)
+	CompleteStartCompensation(ctx context.Context, params CompleteStartCompensationParams) error
+	FailStartCompensation(ctx context.Context, params FailStartCompensationParams) error
+	// SaveEndIntent atomically creates or replays the session's EndIntent. A
+	// different request identity conflicts. An unfinished StartOperation returns
+	// ErrSessionStartInProgress so created -> ended cannot orphan a runtime.
 	SaveEndIntent(ctx context.Context, intent EndIntent) (saved EndIntent, replayed bool, err error)
 	GetEndIntent(ctx context.Context, accountID string, sessionID string) (EndIntent, error)
+	// CompleteEndIntent is idempotent after the business transition commits.
 	CompleteEndIntent(ctx context.Context, accountID string, sessionID string, completedAt time.Time) error
 	TransitionToActive(ctx context.Context, params StartTransitionParams) (session VoiceSession, replayed bool, err error)
 	TransitionToEnded(ctx context.Context, params EndTransitionParams) (VoiceSession, error)
@@ -106,18 +186,30 @@ type Repository interface {
 }
 
 // RealtimeLifecycle is the only media-plane lifecycle dependency used by
-// session management. Start accepts a still-created business session.
+// session management. Start accepts a still-created business session. Calls
+// with the same SessionID and OperationID are idempotent and return the latest
+// snapshot for that runtime; a different OperationID must not claim an existing
+// runtime and returns ErrRealtimeAlreadyRunning or ErrConcurrentTransition.
+// Stop is idempotent for one SessionID and EndReason. Success confirms all
+// owned resources are cleaned and returns a valid RuntimeStopped snapshot.
 type RealtimeLifecycle interface {
 	Start(ctx context.Context, command StartRealtimeCommand) (RuntimeSnapshot, error)
 	Stop(ctx context.Context, command StopRealtimeCommand) (RuntimeSnapshot, error)
+
+	// GetRuntimeState returns ErrRuntimeSnapshotNotFound when the realtime
+	// dependency is reachable but no runtime record exists. Adapters must map
+	// provider-specific missing-runtime errors to that sentinel. Cancellation,
+	// deadline, not-implemented, and other dependency failures must remain
+	// distinguishable for the session service's boundary mapping.
 	GetRuntimeState(ctx context.Context, sessionID string) (RuntimeSnapshot, error)
 }
 
-// StartRealtimeCommand carries trace and actor information across the service boundary.
+// StartRealtimeCommand binds one durable operation to the runtime it creates.
 type StartRealtimeCommand struct {
-	SessionID string
-	TraceID   string
-	StartedBy string
+	SessionID   string
+	OperationID string
+	TraceID     string
+	StartedBy   string
 }
 
 // StopRealtimeCommand carries the requested shutdown reason and timestamp.
@@ -173,9 +265,11 @@ type RuntimeFailureConsumer interface {
 	ConsumeRuntimeFailure(ctx context.Context, failure RuntimeFailure) error
 }
 
-// IDGenerator and Clock keep ID and time creation deterministic in unit tests.
+// IDGenerator creates stable entity and operation identities. The two ID kinds
+// remain separate so persistence and compensation claims can be audited.
 type IDGenerator interface {
 	NewVoiceSessionID() string
+	NewStartOperationID() string
 }
 
 // Clock provides UTC timestamps without coupling services to wall-clock time.

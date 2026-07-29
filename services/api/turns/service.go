@@ -8,6 +8,7 @@ import (
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
 var (
@@ -19,16 +20,16 @@ var (
 	ErrInvalidAttribution  = errors.New("invalid voice turn attribution")
 )
 
-// Repository persists final turns. StoreFinalTurn must atomically deduplicate a FinalTurnEvent
-// by event ID or turn ID, and CorrectAttribution must change only attribution fields.
+// Repository persists final turns. StoreFinalTurn must atomically deduplicate a FinalTurnEvent by
+// event ID, turn ID, or session and sequence number. It accepts a duplicate only when
+// recordsv1.FinalTurnEventPayloadHash matches the stored value; otherwise it returns a conflict.
+// CorrectAttribution must change only attribution fields.
 type Repository interface {
 	StoreFinalTurn(ctx context.Context, event recordsv1.FinalTurnEvent) error
-	ListSession(ctx context.Context, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
-	Find(ctx context.Context, turnID string) (recordsv1.VoiceTurn, error)
+	ListSession(ctx context.Context, accountID, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
+	Find(ctx context.Context, accountID, turnID string) (recordsv1.VoiceTurn, error)
 	ListHistory(ctx context.Context, accountID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error)
-	ParticipantBelongsToSession(ctx context.Context, participantID, sessionID string) (bool, error)
 	CorrectAttribution(ctx context.Context, update AttributionUpdate) (recordsv1.VoiceTurn, error)
-	ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error)
 }
 
 // AttributionUpdate contains only the mutable part of a final turn. CorrectedBy and CorrectedAt
@@ -66,8 +67,14 @@ func NewService(repository Repository, sessions recordsv1.SessionOwnerReader, no
 // ConsumeFinalTurn stores one final realtime event. The repository owns the atomic event/turn
 // deduplication transaction because at-least-once delivery can race across consumer instances.
 func (s *Service) ConsumeFinalTurn(ctx context.Context, event recordsv1.FinalTurnEvent) error {
-	if !validFinalTurnEvent(event) {
-		return ErrInvalidRequest
+	if err := event.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	if event.ParticipantID != nil && *event.ParticipantID == "" {
+		return fmt.Errorf("%w: participant_id cannot be empty", ErrInvalidRequest)
+	}
+	if event.ParticipantID == nil && event.AttributionStatus != recordsv1.AttributionPending {
+		return fmt.Errorf("%w: participant_id is required for resolved attribution", ErrInvalidRequest)
 	}
 	return s.repository.StoreFinalTurn(ctx, event)
 }
@@ -77,18 +84,15 @@ func (s *Service) ListSession(ctx context.Context, accountID, sessionID string, 
 		return recordsv1.VoiceTurnListResponse{}, err
 	}
 	query.SessionID = sessionID
-	return s.repository.ListSession(ctx, sessionID, query)
+	return s.repository.ListSession(ctx, accountID, sessionID, query)
 }
 
 func (s *Service) Get(ctx context.Context, accountID, turnID string) (recordsv1.VoiceTurn, error) {
 	if accountID == "" || turnID == "" {
 		return recordsv1.VoiceTurn{}, ErrInvalidRequest
 	}
-	turn, err := s.repository.Find(ctx, turnID)
+	turn, err := s.repository.Find(ctx, accountID, turnID)
 	if err != nil {
-		return recordsv1.VoiceTurn{}, err
-	}
-	if err := s.requireOwner(ctx, accountID, turn.SessionID); err != nil {
 		return recordsv1.VoiceTurn{}, err
 	}
 	return turn, nil
@@ -98,16 +102,8 @@ func (s *Service) CorrectAttribution(ctx context.Context, accountID, turnID stri
 	if !validAttributionRequest(turnID, request) {
 		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
 	}
-	turn, err := s.Get(ctx, accountID, turnID)
-	if err != nil {
+	if _, err := s.Get(ctx, accountID, turnID); err != nil {
 		return recordsv1.VoiceTurn{}, err
-	}
-	belongs, err := s.repository.ParticipantBelongsToSession(ctx, request.ParticipantID, turn.SessionID)
-	if err != nil {
-		return recordsv1.VoiceTurn{}, err
-	}
-	if !belongs {
-		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
 	}
 	return s.repository.CorrectAttribution(ctx, AttributionUpdate{
 		TurnID:            turnID,
@@ -120,7 +116,7 @@ func (s *Service) CorrectAttribution(ctx context.Context, accountID, turnID stri
 }
 
 func (s *Service) ListHistory(ctx context.Context, accountID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
-	if accountID == "" {
+	if accountID == "" || (query.CreatedFrom != nil && query.CreatedTo != nil && query.CreatedFrom.After(*query.CreatedTo)) {
 		return recordsv1.VoiceTurnListResponse{}, ErrInvalidRequest
 	}
 	if query.SessionID != "" {
@@ -131,38 +127,21 @@ func (s *Service) ListHistory(ctx context.Context, accountID string, query recor
 	return s.repository.ListHistory(ctx, accountID, query)
 }
 
-// ReadFinalTurns implements the account-scoped contract used by outbound message creation.
-func (s *Service) ReadFinalTurns(ctx context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error) {
-	if accountID == "" {
-		return nil, ErrInvalidRequest
-	}
-	return s.repository.ReadFinalTurns(ctx, accountID, turnIDs)
-}
-
 func (s *Service) requireOwner(ctx context.Context, accountID, sessionID string) error {
 	if accountID == "" || sessionID == "" {
 		return ErrInvalidRequest
 	}
 	ownerID, err := s.sessions.AccountIDForSession(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return ErrSessionNotFound
+		}
 		return fmt.Errorf("read session owner: %w", err)
 	}
 	if ownerID != accountID {
 		return ErrForbidden
 	}
 	return nil
-}
-
-func validFinalTurnEvent(event recordsv1.FinalTurnEvent) bool {
-	if event.EventID == "" || event.TurnID == "" || event.SessionID == "" || event.SourceLanguage == "" || event.TargetLanguage == "" {
-		return false
-	}
-	switch event.AttributionStatus {
-	case recordsv1.AttributionPending, recordsv1.AttributionProvisional, recordsv1.AttributionConfirmed, recordsv1.AttributionCorrected:
-	default:
-		return false
-	}
-	return event.ParticipantID != nil || event.AttributionStatus == recordsv1.AttributionPending
 }
 
 func validAttributionRequest(turnID string, request recordsv1.UpdateAttributionRequest) bool {
@@ -173,4 +152,3 @@ func validAttributionRequest(turnID string, request recordsv1.UpdateAttributionR
 }
 
 var _ recordsv1.FinalTurnConsumer = (*Service)(nil)
-var _ recordsv1.TurnReader = (*Service)(nil)

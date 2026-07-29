@@ -3,27 +3,35 @@ package session
 import (
 	"encoding/json"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 // RuntimeState describes media-plane progress independently of business state.
-type RuntimeState string
+type RuntimeState = realtimev1.RuntimeState
 
 const (
-	RuntimeStopped       RuntimeState = "stopped"
-	RuntimeStarting      RuntimeState = "starting"
-	RuntimeListening     RuntimeState = "listening"
-	RuntimeASRProcessing RuntimeState = "asr_processing"
-	RuntimeTranslating   RuntimeState = "translating"
-	RuntimeTTSProcessing RuntimeState = "tts_processing"
-	RuntimePlaying       RuntimeState = "playing"
-	RuntimeStopping      RuntimeState = "stopping"
-	RuntimeFailed        RuntimeState = "failed"
+	RuntimeStopped       = realtimev1.RuntimeStopped
+	RuntimeStarting      = realtimev1.RuntimeStarting
+	RuntimeListening     = realtimev1.RuntimeListening
+	RuntimeASRProcessing = realtimev1.RuntimeASRProcessing
+	RuntimeTranslating   = realtimev1.RuntimeTranslating
+	RuntimeTTSProcessing = realtimev1.RuntimeTTSProcessing
+	RuntimePlaying       = realtimev1.RuntimePlaying
+	RuntimeStopping      = realtimev1.RuntimeStopping
+	RuntimeFailed        = realtimev1.RuntimeFailed
 )
 
 // SessionSnapshot is the read-only business session view supplied by member 1.
 type SessionSnapshot struct {
-	SessionID    string
-	AccountID    string
+	SessionID string
+	AccountID string
+	// StartOperationID is runtime ownership metadata copied from StartRealtimeCommand.
+	// It is not business session state and is never persisted by member 3 there.
+	StartOperationID string
+	// TraceID is runtime request metadata copied from StartRealtimeCommand.
+	// It is not business session state and is never persisted by member 3.
+	TraceID      string
 	Status       string
 	AudioConfig  json.RawMessage
 	Capabilities json.RawMessage
@@ -46,21 +54,23 @@ type LanguageConfigSnapshot struct {
 	UpdatedAt     time.Time
 }
 
-// RuntimeSnapshot is the authoritative media-plane state for one session.
-type RuntimeSnapshot struct {
+// RuntimeSnapshot is the authoritative shared media-plane state for one session.
+type RuntimeSnapshot = realtimev1.RuntimeSnapshot
+
+// ProcessingStateUpdate carries one pipeline-owned progress transition into lifecycle state.
+type ProcessingStateUpdate struct {
 	SessionID         string
 	RuntimeState      RuntimeState
 	CurrentTurnID     *string
 	CurrentPlaybackID *string
-	LastErrorCode     *string
-	UpdatedAt         time.Time
 }
 
-// StartRealtimeCommand carries control-plane tracing data into startup.
+// StartRealtimeCommand binds one durable control-plane operation to startup.
 type StartRealtimeCommand struct {
-	SessionID string
-	TraceID   string
-	StartedBy string
+	SessionID   string
+	OperationID string
+	TraceID     string
+	StartedBy   string
 }
 
 // StopRealtimeCommand carries the requested shutdown reason and timestamp.

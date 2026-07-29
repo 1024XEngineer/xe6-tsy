@@ -38,9 +38,9 @@ API_ADDR=:8080
 REALTIME_ADDR=:8090
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/lingow?sslmode=disable
 REDIS_URL=redis://localhost:6379/0
-JWT_SECRET=local-dev-only
+JWT_SECRET=local-dev-only-secret-change-me-1234
 ASR_PROVIDER=mock
-TRANSLATION_PROVIDER=mock
+LLM_PROVIDER=mock
 TTS_PROVIDER=mock
 ```
 

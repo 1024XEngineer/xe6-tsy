@@ -197,6 +197,63 @@ func TestInternalErrorLogsCauseWithoutExposingIt(t *testing.T) {
 	}
 }
 
+func TestRegisterAppliesAuthenticationToEveryRoute(t *testing.T) {
+	participantRepository := &participantRepository{}
+	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01"}}
+	owners := sessionOwners{ownerID: "acct_01"}
+	server := NewHandler(Dependencies{
+		Participants: participants.NewService(participantRepository, owners, nil),
+		Turns:        turns.NewService(turnRepository, owners, nil),
+		Accounts:     ContextAccountProvider{},
+		System:       ContextSystemAuthorizer{},
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	authenticatedCalls := 0
+	authenticate := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			authenticatedCalls++
+			if request.Header.Get("Authorization") != "Bearer access-token" {
+				writer.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			ctx := WithAccountID(request.Context(), "acct_01")
+			next.ServeHTTP(writer, request.WithContext(ctx))
+		})
+	}
+	mux := http.NewServeMux()
+	server.Register(mux, authenticate)
+
+	unauthenticated := httptest.NewRequest(http.MethodGet, "/api/v1/translation-history", nil)
+	if response := serve(mux, unauthenticated); response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+
+	tests := []struct {
+		method     string
+		path       string
+		wantStatus int
+	}{
+		{method: http.MethodGet, path: "/api/v1/voice-sessions/vs_01/participants", wantStatus: http.StatusOK},
+		{method: http.MethodPatch, path: "/api/v1/voice-sessions/vs_01/participants/p_01", wantStatus: http.StatusForbidden},
+		{method: http.MethodGet, path: "/api/v1/voice-sessions/vs_01/turns", wantStatus: http.StatusOK},
+		{method: http.MethodGet, path: "/api/v1/voice-turns/vt_01", wantStatus: http.StatusOK},
+		{method: http.MethodPatch, path: "/api/v1/voice-turns/vt_01/attribution", wantStatus: http.StatusForbidden},
+		{method: http.MethodGet, path: "/api/v1/translation-history", wantStatus: http.StatusOK},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest(test.method, test.path, nil)
+		request.Header.Set("Authorization", "Bearer access-token")
+		response := serve(mux, request)
+		if response.Code != test.wantStatus {
+			t.Fatalf("%s %s status = %d, want %d; body = %s", test.method, test.path, response.Code, test.wantStatus, response.Body.String())
+		}
+	}
+	if authenticatedCalls != len(tests)+1 {
+		t.Fatalf("authentication calls = %d, want %d", authenticatedCalls, len(tests)+1)
+	}
+}
+
 func newHandler(t *testing.T, participantRepository *participantRepository, turnRepository *turnRepository, ownerID string) http.Handler {
 	t.Helper()
 	return newHandlerWithLogger(t, participantRepository, turnRepository, ownerID, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -219,7 +276,7 @@ func newHandlerWithLogger(t *testing.T, participantRepository *participantReposi
 		Logger:       logger,
 	})
 	mux := http.NewServeMux()
-	handler.Register(mux)
+	handler.Register(mux, func(next http.Handler) http.Handler { return next })
 	return mux
 }
 
@@ -267,7 +324,7 @@ type participantRepository struct {
 	update       participants.Update
 }
 
-func (r *participantRepository) List(_ context.Context, _ string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+func (r *participantRepository) List(_ context.Context, _, _ string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
 	r.listQuery = query
 	return r.listResponse, nil
 }
@@ -297,12 +354,12 @@ func (*turnRepository) StoreFinalTurn(context.Context, recordsv1.FinalTurnEvent)
 	return nil
 }
 
-func (r *turnRepository) ListSession(_ context.Context, _ string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+func (r *turnRepository) ListSession(_ context.Context, _, _ string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
 	r.listQuery = query
 	return r.listResponse, nil
 }
 
-func (r *turnRepository) Find(context.Context, string) (recordsv1.VoiceTurn, error) {
+func (r *turnRepository) Find(context.Context, string, string) (recordsv1.VoiceTurn, error) {
 	if r.findErr != nil {
 		return recordsv1.VoiceTurn{}, r.findErr
 	}
@@ -315,11 +372,10 @@ func (r *turnRepository) ListHistory(_ context.Context, accountID string, query 
 	return r.historyResponse, nil
 }
 
-func (r *turnRepository) ParticipantBelongsToSession(context.Context, string, string) (bool, error) {
-	return r.participantInSession, nil
-}
-
 func (r *turnRepository) CorrectAttribution(_ context.Context, update turns.AttributionUpdate) (recordsv1.VoiceTurn, error) {
+	if !r.participantInSession {
+		return recordsv1.VoiceTurn{}, turns.ErrInvalidAttribution
+	}
 	r.attributionUpdate = update
 	updated := r.turn
 	updated.ParticipantID = &update.ParticipantID

@@ -42,8 +42,53 @@ services/realtime-audio/
 └── session/
 ```
 
-`webrtc` 对外提供 `/realtime/v1` 信令接口，并校验 `services/api` 签发的短期实时连接票据。
-API Gateway 可以转发该路径，但 PeerConnection 和连接状态始终由本服务管理。
+## Qwen provider adapters
+
+The provider packages keep vendor protocol details outside `pipeline`:
+
+- `asr/qwen` uses the Qwen realtime WebSocket endpoint. It sends `session.update`, streams PCM through `input_audio_buffer.append`, and sends `session.finish` before waiting for `session.finished`.
+- `translate/qwen` uses the OpenAI-compatible `POST /chat/completions` endpoint with `qwen3.6-flash`. Thinking is disabled by default for turn-level latency.
+- `tts/qwen` uses the Qwen3-TTS-Flash `POST /services/aigc/multimodal-generation/generation` endpoint with `X-DashScope-SSE: enable`, decoding Base64 audio deltas into the local `tts.Stream` port.
+
+The adapters are constructed explicitly from typed configuration values.
+`config.LoadProviderConfigFromEnvironment` reads typed settings from the process environment, and
+`config.BuildProviders` selects each adapter independently. The service entrypoint does not yet invoke
+this assembly or load `.env` files automatically, so `.env.example` remains a configuration reference.
+Keep API keys in an ignored `.env`. The canonical selector keys are
+`ASR_PROVIDER`, `LLM_PROVIDER`, and `TTS_PROVIDER`; each defaults to `mock` and currently accepts
+`mock` or `aliyun`. Mock selection requires explicit offline provider instances, which prevents a
+production startup from silently constructing fake behavior. Building Aliyun providers validates
+credentials and endpoints but does not make a network request. Ordinary unit tests continue to use
+offline fakes and never call a third-party service.
+
+`pipeline.NewPostgresFinalTurnSink(pool)` is the production final-turn sink adapter. It writes the
+validated immutable event into the API service's PostgreSQL `final_turn_outbox`; the API consumer
+worker owns receipt settlement and persistence into `voice_turns`.
+
+Official protocol references:
+
+- [Qwen ASR realtime interaction](https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process)
+- [Qwen ASR client events](https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-client-events)
+- [Qwen ASR server events](https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events)
+- [Qwen-TTS API](https://help.aliyun.com/zh/model-studio/qwen-tts-api)
+- [Qwen3.6 model release and model names](https://help.aliyun.com/zh/model-studio/newly-released-models)
+- [Qwen DashScope API](https://help.aliyun.com/zh/model-studio/qwen-api-via-dashscope)
+- [OpenAI-compatible DashScope API](https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope)
+
+`webrtc` 规划通过 `/realtime/v1` 提供信令接口，并校验 `services/api` 签发的短期实时连接票据。
+当前仅提供服务层信令骨架，尚未注册公网 HTTP 路由。后续可以由 API Gateway 转发该路径，
+但 PeerConnection 和连接状态始终由本服务管理。
+
+当前内存 manager 在 Offer 成功后产生初始的 `connecting` 快照，并支持读取当前连接及应用
+`new/connecting/connected/disconnected/failed/closed` 状态回调。Pion Adapter 尚未接入，
+因此骨架不会自动进入 `connected`，也不能作为 Pipeline 启动就绪依据。接入 Pion 后仍须以
+`connected` 作为启动条件。Adapter 可以在 manager 关闭前报告 `closed` transport 状态；
+manager 的 `Close` 本身不发布可查询的 `closed` 快照，成功后立即删除记录，后续查询返回
+`not_found`。
+
+当前票据校验也是 `Open` 前的单次授权检查。接入正式会话生命周期时，必须在 `Open` 准入点
+重新校验可撤销的生命周期授权，或由 manager 强制校验 session generation/终止标记，使已通过
+前置校验但尚未开户的旧请求无法越过 `Stop(session_id)`。
 
 `Stop(session_id)` 必须幂等，并在返回成功前停止 Pipeline、取消 Provider Context、关闭
 DataChannel、Track 和 PeerConnection。连接租约或空闲超时负责兜底清理失去控制面的孤立连接。

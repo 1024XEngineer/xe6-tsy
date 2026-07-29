@@ -7,44 +7,28 @@ import (
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
 func TestConsumeFinalTurnIsIdempotentAndPreservesEvent(t *testing.T) {
 	repository := &fakeRepository{}
 	service := NewService(repository, fakeSessionOwners{}, nil)
-	participantID := "p_01"
 	confidence := 0.91
-	event := recordsv1.FinalTurnEvent{
-		EventID:               "evt_01",
-		TurnID:                "vt_01",
-		SessionID:             "vs_01",
-		ParticipantID:         &participantID,
-		SequenceNo:            4,
-		SourceLanguage:        "en-US",
-		TargetLanguage:        "zh-CN",
-		LanguageConfigVersion: 8,
-		SourceText:            "Hello",
-		TranslatedText:        "Ni hao",
-		SpeakerCode:           "speaker_01",
-		SpeakerConfidence:     &confidence,
-		AttributionStatus:     recordsv1.AttributionProvisional,
-		StartedAt:             time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC),
-		EndedAt:               time.Date(2026, 7, 24, 8, 0, 2, 0, time.UTC),
-		OccurredAt:            time.Date(2026, 7, 24, 8, 0, 3, 0, time.UTC),
-	}
+	event := validEvent()
+	event.SequenceNo = 4
+	event.LanguageConfigVersion = 8
+	event.SourceText = "Hello"
+	event.TranslatedText = "Ni hao"
+	event.SpeakerConfidence = &confidence
+	event.StartedAt = time.Date(2026, 7, 24, 8, 0, 0, 0, time.UTC)
+	event.EndedAt = time.Date(2026, 7, 24, 8, 0, 2, 0, time.UTC)
+	event.OccurredAt = time.Date(2026, 7, 24, 8, 0, 3, 0, time.UTC)
 
 	if err := service.ConsumeFinalTurn(context.Background(), event); err != nil {
 		t.Fatalf("first ConsumeFinalTurn() error = %v", err)
 	}
-	duplicateEventID := event
-	duplicateEventID.TurnID = "vt_02"
-	if err := service.ConsumeFinalTurn(context.Background(), duplicateEventID); err != nil {
-		t.Fatalf("duplicate event ID ConsumeFinalTurn() error = %v", err)
-	}
-	duplicateTurnID := event
-	duplicateTurnID.EventID = "evt_02"
-	if err := service.ConsumeFinalTurn(context.Background(), duplicateTurnID); err != nil {
-		t.Fatalf("duplicate turn ID ConsumeFinalTurn() error = %v", err)
+	if err := service.ConsumeFinalTurn(context.Background(), event); err != nil {
+		t.Fatalf("replay ConsumeFinalTurn() error = %v", err)
 	}
 
 	if got := len(repository.events); got != 1 {
@@ -52,6 +36,51 @@ func TestConsumeFinalTurnIsIdempotentAndPreservesEvent(t *testing.T) {
 	}
 	if got := repository.events[0]; got != event {
 		t.Fatalf("stored event = %#v, want %#v", got, event)
+	}
+}
+
+func TestConsumeFinalTurnRejectsConflictingIdempotencyKeys(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*recordsv1.FinalTurnEvent)
+	}{
+		{
+			name: "event ID",
+			mutate: func(event *recordsv1.FinalTurnEvent) {
+				event.TranslatedText = "different translation"
+			},
+		},
+		{
+			name: "turn ID",
+			mutate: func(event *recordsv1.FinalTurnEvent) {
+				event.EventID = "evt_02"
+				event.TranslatedText = "different translation"
+			},
+		},
+		{
+			name: "session sequence number",
+			mutate: func(event *recordsv1.FinalTurnEvent) {
+				event.EventID = "evt_02"
+				event.TurnID = "vt_02"
+				event.TranslatedText = "different translation"
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &fakeRepository{}
+			service := NewService(repository, fakeSessionOwners{}, nil)
+			event := validEvent()
+			if err := service.ConsumeFinalTurn(context.Background(), event); err != nil {
+				t.Fatalf("first ConsumeFinalTurn() error = %v", err)
+			}
+			test.mutate(&event)
+
+			if err := service.ConsumeFinalTurn(context.Background(), event); !errors.Is(err, domain.ErrConflict) {
+				t.Fatalf("conflicting ConsumeFinalTurn() error = %v, want conflict", err)
+			}
+		})
 	}
 }
 
@@ -67,10 +96,51 @@ func TestConsumeFinalTurnAllowsPendingWithoutParticipant(t *testing.T) {
 	}
 }
 
+func TestConsumeFinalTurnRejectsResolvedAttributionWithoutParticipant(t *testing.T) {
+	statuses := []recordsv1.AttributionStatus{
+		recordsv1.AttributionProvisional,
+		recordsv1.AttributionConfirmed,
+		recordsv1.AttributionCorrected,
+	}
+	for _, status := range statuses {
+		t.Run(string(status), func(t *testing.T) {
+			service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
+			event := validEvent()
+			event.ParticipantID = nil
+			event.AttributionStatus = status
+
+			if err := service.ConsumeFinalTurn(t.Context(), event); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
+			}
+		})
+	}
+}
+
+func TestConsumeFinalTurnRejectsEmptyParticipantID(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
+	event := validEvent()
+	emptyParticipantID := ""
+	event.ParticipantID = &emptyParticipantID
+
+	if err := service.ConsumeFinalTurn(t.Context(), event); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
+	}
+}
+
 func TestConsumeFinalTurnRejectsUnknownAttributionStatus(t *testing.T) {
 	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
 	event := validEvent()
 	event.AttributionStatus = "unknown"
+
+	if err := service.ConsumeFinalTurn(context.Background(), event); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
+	}
+}
+
+func TestConsumeFinalTurnRejectsEmptySpeakerCode(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
+	event := validEvent()
+	event.SpeakerCode = ""
 
 	if err := service.ConsumeFinalTurn(context.Background(), event); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("ConsumeFinalTurn() error = %v, want invalid request", err)
@@ -124,12 +194,12 @@ func TestCorrectAttributionRejectsInvalidTarget(t *testing.T) {
 	}{
 		{name: "invalid status", accountID: "acct_01", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionPending}, wantErr: ErrInvalidAttribution},
 		{name: "participant belongs to another session", accountID: "acct_01", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionConfirmed}, wantErr: ErrInvalidAttribution},
-		{name: "cross account", accountID: "acct_02", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionConfirmed}, participant: true, wantErr: ErrForbidden},
+		{name: "cross account", accountID: "acct_02", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionConfirmed}, participant: true, wantErr: ErrTurnNotFound},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			repository := &fakeRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: test.participant}
+			repository := &fakeRepository{ownedAccountID: "acct_01", turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: test.participant}
 			service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
 
 			_, err := service.CorrectAttribution(context.Background(), test.accountID, "vt_01", test.request)
@@ -142,14 +212,15 @@ func TestCorrectAttributionRejectsInvalidTarget(t *testing.T) {
 
 func TestGetAndListOperationsEnforceOwnership(t *testing.T) {
 	repository := &fakeRepository{
+		ownedAccountID:  "acct_01",
 		turn:            recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
 		listResponse:    recordsv1.VoiceTurnListResponse{Items: []recordsv1.VoiceTurn{{ID: "vt_01"}}},
 		historyResponse: recordsv1.VoiceTurnListResponse{Items: []recordsv1.VoiceTurn{{ID: "vt_01"}}},
 	}
 	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
 
-	if _, err := service.Get(context.Background(), "acct_02", "vt_01"); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("Get() error = %v, want forbidden", err)
+	if _, err := service.Get(context.Background(), "acct_02", "vt_01"); !errors.Is(err, ErrTurnNotFound) {
+		t.Fatalf("Get() error = %v, want not found", err)
 	}
 	if _, err := service.ListSession(context.Background(), "acct_02", "vs_01", recordsv1.ListTurnsQuery{}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ListSession() error = %v, want forbidden", err)
@@ -157,38 +228,70 @@ func TestGetAndListOperationsEnforceOwnership(t *testing.T) {
 	if _, err := service.ListHistory(context.Background(), "acct_02", recordsv1.ListTurnsQuery{SessionID: "vs_01"}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ListHistory() error = %v, want forbidden", err)
 	}
+
+	if _, err := service.Get(context.Background(), "acct_01", "vt_01"); err != nil {
+		t.Fatalf("owner Get() error = %v", err)
+	}
+	if repository.findAccountID != "acct_01" {
+		t.Fatalf("Get() repository account = %q, want acct_01", repository.findAccountID)
+	}
+	if _, err := service.ListSession(context.Background(), "acct_01", "vs_01", recordsv1.ListTurnsQuery{}); err != nil {
+		t.Fatalf("owner ListSession() error = %v", err)
+	}
+	if repository.listAccountID != "acct_01" {
+		t.Fatalf("ListSession() repository account = %q, want acct_01", repository.listAccountID)
+	}
 }
 
-func TestReadFinalTurnsPassesAccountScope(t *testing.T) {
-	repository := &fakeRepository{snapshots: []recordsv1.FinalTurnSnapshot{{TurnID: "vt_01"}}}
+func TestListSessionMapsStorageNotFound(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeSessionOwners{err: domain.ErrNotFound}, nil)
+
+	_, err := service.ListSession(t.Context(), "acct_01", "vs_missing", recordsv1.ListTurnsQuery{Limit: 20})
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("ListSession() error = %v, want %v", err, ErrSessionNotFound)
+	}
+}
+
+func TestListHistoryRejectsReverseTimeRange(t *testing.T) {
+	repository := &fakeRepository{}
 	service := NewService(repository, fakeSessionOwners{}, nil)
+	from := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
+	to := from.Add(-time.Second)
 
-	snapshots, err := service.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01"})
-	if err != nil {
-		t.Fatalf("ReadFinalTurns() error = %v", err)
-	}
-	if repository.readAccountID != "acct_01" || len(snapshots) != 1 {
-		t.Fatalf("ReadFinalTurns() account = %q, snapshots = %#v", repository.readAccountID, snapshots)
+	_, err := service.ListHistory(context.Background(), "acct_01", recordsv1.ListTurnsQuery{
+		Limit:       20,
+		CreatedFrom: &from,
+		CreatedTo:   &to,
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("ListHistory() error = %v, want invalid request", err)
 	}
 }
-
 func validEvent() recordsv1.FinalTurnEvent {
 	participantID := "p_01"
 	return recordsv1.FinalTurnEvent{
-		EventID:           "evt_01",
-		TurnID:            "vt_01",
-		SessionID:         "vs_01",
-		ParticipantID:     &participantID,
-		SourceLanguage:    "en-US",
-		TargetLanguage:    "zh-CN",
-		AttributionStatus: recordsv1.AttributionProvisional,
+		EventVersion:          recordsv1.FinalTurnEventVersion,
+		EventID:               "evt_01",
+		TraceID:               "trace_01",
+		TurnID:                "vt_01",
+		SessionID:             "vs_01",
+		ParticipantID:         &participantID,
+		SequenceNo:            1,
+		SourceLanguage:        "en-US",
+		TargetLanguage:        "zh-CN",
+		LanguageConfigVersion: 1,
+		SourceText:            "source",
+		TranslatedText:        "translation",
+		SpeakerCode:           "speaker_01",
+		AttributionStatus:     recordsv1.AttributionProvisional,
+		StartedAt:             time.Date(2026, 7, 27, 8, 0, 0, 0, time.UTC),
+		EndedAt:               time.Date(2026, 7, 27, 8, 0, 1, 0, time.UTC),
+		OccurredAt:            time.Date(2026, 7, 27, 8, 0, 2, 0, time.UTC),
 	}
 }
 
 type fakeRepository struct {
 	events               []recordsv1.FinalTurnEvent
-	eventIDs             map[string]struct{}
-	turnIDs              map[string]struct{}
 	turn                 recordsv1.VoiceTurn
 	listResponse         recordsv1.VoiceTurnListResponse
 	historyResponse      recordsv1.VoiceTurnListResponse
@@ -196,30 +299,51 @@ type fakeRepository struct {
 	lastUpdate           AttributionUpdate
 	snapshots            []recordsv1.FinalTurnSnapshot
 	readAccountID        string
+	readTurnIDs          []string
+	findAccountID        string
+	listAccountID        string
+	ownedAccountID       string
+	readErr              error
+	readCalls            int
+	mutateReadTurnIDs    bool
 }
 
 func (r *fakeRepository) StoreFinalTurn(_ context.Context, event recordsv1.FinalTurnEvent) error {
-	if r.eventIDs == nil {
-		r.eventIDs = make(map[string]struct{})
-		r.turnIDs = make(map[string]struct{})
+	hash, err := recordsv1.FinalTurnEventPayloadHash(event)
+	if err != nil {
+		return err
 	}
-	if _, exists := r.eventIDs[event.EventID]; exists {
+	duplicate := false
+	for _, stored := range r.events {
+		if stored.EventID != event.EventID && stored.TurnID != event.TurnID && (stored.SessionID != event.SessionID || stored.SequenceNo != event.SequenceNo) {
+			continue
+		}
+		duplicate = true
+		storedHash, err := recordsv1.FinalTurnEventPayloadHash(stored)
+		if err != nil {
+			return err
+		}
+		if storedHash != hash {
+			return domain.ErrConflict
+		}
+	}
+	if duplicate {
 		return nil
 	}
-	if _, exists := r.turnIDs[event.TurnID]; exists {
-		return nil
-	}
-	r.eventIDs[event.EventID] = struct{}{}
-	r.turnIDs[event.TurnID] = struct{}{}
 	r.events = append(r.events, event)
 	return nil
 }
 
-func (r *fakeRepository) ListSession(context.Context, string, recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+func (r *fakeRepository) ListSession(_ context.Context, accountID, _ string, _ recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+	r.listAccountID = accountID
 	return r.listResponse, nil
 }
 
-func (r *fakeRepository) Find(context.Context, string) (recordsv1.VoiceTurn, error) {
+func (r *fakeRepository) Find(_ context.Context, accountID, _ string) (recordsv1.VoiceTurn, error) {
+	r.findAccountID = accountID
+	if r.ownedAccountID != "" && accountID != r.ownedAccountID {
+		return recordsv1.VoiceTurn{}, ErrTurnNotFound
+	}
 	return r.turn, nil
 }
 
@@ -227,11 +351,10 @@ func (r *fakeRepository) ListHistory(context.Context, string, recordsv1.ListTurn
 	return r.historyResponse, nil
 }
 
-func (r *fakeRepository) ParticipantBelongsToSession(context.Context, string, string) (bool, error) {
-	return r.participantInSession, nil
-}
-
 func (r *fakeRepository) CorrectAttribution(_ context.Context, update AttributionUpdate) (recordsv1.VoiceTurn, error) {
+	if !r.participantInSession {
+		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
+	}
 	r.lastUpdate = update
 	updated := r.turn
 	updated.ParticipantID = &update.ParticipantID
@@ -242,9 +365,14 @@ func (r *fakeRepository) CorrectAttribution(_ context.Context, update Attributio
 	return updated, nil
 }
 
-func (r *fakeRepository) ReadFinalTurns(_ context.Context, accountID string, _ []string) ([]recordsv1.FinalTurnSnapshot, error) {
+func (r *fakeRepository) ReadFinalTurns(_ context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error) {
+	r.readCalls++
 	r.readAccountID = accountID
-	return r.snapshots, nil
+	r.readTurnIDs = append([]string(nil), turnIDs...)
+	if r.mutateReadTurnIDs && len(turnIDs) > 1 {
+		turnIDs[0], turnIDs[len(turnIDs)-1] = turnIDs[len(turnIDs)-1], turnIDs[0]
+	}
+	return r.snapshots, r.readErr
 }
 
 type fakeSessionOwners struct {

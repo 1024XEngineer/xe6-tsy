@@ -8,6 +8,7 @@ import (
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
 var (
@@ -20,7 +21,7 @@ var (
 // Repository persists session participants. Implementations must reject a participant ID that
 // does not belong to the supplied session and must not mutate voice turns when mapping changes.
 type Repository interface {
-	List(ctx context.Context, sessionID string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error)
+	List(ctx context.Context, accountID, sessionID string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error)
 	Update(ctx context.Context, sessionID, participantID string, update Update) (recordsv1.Participant, error)
 	FindOrCreate(ctx context.Context, observation recordsv1.SpeakerObservation) (recordsv1.Participant, error)
 }
@@ -66,7 +67,7 @@ func (s *Service) List(ctx context.Context, accountID, sessionID string, query r
 	if err := s.requireOwner(ctx, accountID, sessionID); err != nil {
 		return recordsv1.ParticipantListResponse{}, err
 	}
-	return s.repository.List(ctx, sessionID, query)
+	return s.repository.List(ctx, accountID, sessionID, query)
 }
 
 func (s *Service) Update(ctx context.Context, accountID, sessionID, participantID string, update Update) (recordsv1.Participant, error) {
@@ -115,6 +116,9 @@ func (s *Service) requireOwner(ctx context.Context, accountID, sessionID string)
 	}
 	ownerID, err := s.sessions.AccountIDForSession(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return ErrSessionNotFound
+		}
 		return fmt.Errorf("read session owner: %w", err)
 	}
 	if ownerID != accountID {

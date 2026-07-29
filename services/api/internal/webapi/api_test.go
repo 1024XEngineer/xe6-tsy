@@ -2,12 +2,15 @@ package webapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
@@ -29,6 +32,36 @@ func (tokenVerifierFake) VerifyAccessToken(_ context.Context, token string) (acc
 		return accounts.AccessTokenClaims{}, domain.ErrUnauthorized
 	}
 	return accounts.AccessTokenClaims{AccountID: "account-1", SessionID: "session-1"}, nil
+}
+
+type accountFake struct {
+	verifyPhoneCalled bool
+	verifyPhoneCtx    context.Context
+	verifyPhoneAnon   string
+	phoneChallengeErr error
+}
+
+func (f *accountFake) CreateAnonymous(context.Context) (accounts.AuthResult, error) {
+	return accounts.AuthResult{}, domain.ErrNotImplemented
+}
+func (f *accountFake) CreatePhoneChallenge(context.Context, string) (string, error) {
+	if f.phoneChallengeErr != nil {
+		return "", f.phoneChallengeErr
+	}
+	return "", domain.ErrNotImplemented
+}
+func (f *accountFake) VerifyPhone(ctx context.Context, _, _, anonymousAccountID string) (accounts.AuthResult, error) {
+	f.verifyPhoneCalled = true
+	f.verifyPhoneCtx = ctx
+	f.verifyPhoneAnon = anonymousAccountID
+	return accounts.AuthResult{Account: accounts.Account{ID: "registered-account"}}, nil
+}
+func (f *accountFake) Refresh(context.Context, string) (accounts.Tokens, error) {
+	return accounts.Tokens{}, domain.ErrNotImplemented
+}
+func (f *accountFake) Logout(context.Context, string) error { return domain.ErrNotImplemented }
+func (f *accountFake) Me(context.Context, string) (accounts.Account, error) {
+	return accounts.Account{}, domain.ErrNotImplemented
 }
 
 func authenticate(request *http.Request) *http.Request {
@@ -91,6 +124,30 @@ func TestInvalidMessageDoesNotReachService(t *testing.T) {
 	}
 	if fake.created.AccountID != "" {
 		t.Fatal("service was called for an invalid request")
+	}
+}
+
+func TestPhoneChallengeRateLimitUsesRetryableHTTPStatus(t *testing.T) {
+	fake := &accountFake{phoneChallengeErr: domain.ErrRateLimited}
+	handler := webapi.New(fake, usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verification-codes", strings.NewReader(`{"phone":"+8613800000000"}`))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusTooManyRequests)
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error.Code != "rate_limited" {
+		t.Fatalf("error code = %q, want rate_limited", payload.Error.Code)
 	}
 }
 
@@ -169,6 +226,66 @@ func TestCreateMessageRequiresUniqueTurnsAndEmail(t *testing.T) {
 	}
 }
 
+func TestCreateMessageRejectsOversizedTurnBatch(t *testing.T) {
+	turnIDs := make([]string, recordsv1.MaxFinalTurnBatchSize+1)
+	for index := range turnIDs {
+		turnIDs[index] = "turn-" + strconv.Itoa(index)
+	}
+	body, err := json.Marshal(delivery.CreateInput{
+		Channel:        delivery.ChannelEmail,
+		DestinationRef: "verified",
+		TurnIDs:        turnIDs,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(string(body)))
+	request = authenticate(request)
+	request.Header.Set("Idempotency-Key", "oversized-message")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.created.AccountID != "" {
+		t.Fatal("oversized request reached service")
+	}
+}
+
+func TestCreateMessageAllowsMaximumTurnBatch(t *testing.T) {
+	turnIDs := make([]string, recordsv1.MaxFinalTurnBatchSize)
+	for index := range turnIDs {
+		turnIDs[index] = "turn-" + strconv.Itoa(index)
+	}
+	body, err := json.Marshal(delivery.CreateInput{
+		Channel:        delivery.ChannelEmail,
+		DestinationRef: "verified",
+		TurnIDs:        turnIDs,
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(string(body)))
+	request = authenticate(request)
+	request.Header.Set("Idempotency-Key", "maximum-message")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	if fake.created.AccountID != "account-1" || len(fake.created.TurnIDs) != recordsv1.MaxFinalTurnBatchSize {
+		t.Fatalf("unexpected input: %#v", fake.created)
+	}
+}
+
 func TestRetryPassesMessageResourceID(t *testing.T) {
 	fake := &deliveryFake{}
 	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
@@ -184,6 +301,24 @@ func TestRetryPassesMessageResourceID(t *testing.T) {
 	}
 	if fake.retryAccountID != "account-1" || fake.retryMessageID != "message-1" || fake.retryIdempotency != "retry-message-1" {
 		t.Fatalf("unexpected retry input: account=%q message=%q key=%q", fake.retryAccountID, fake.retryMessageID, fake.retryIdempotency)
+	}
+}
+
+func TestRetryRejectsOversizedIdempotencyKey(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", nil)
+	request = authenticate(request)
+	request.Header.Set("Idempotency-Key", strings.Repeat("k", delivery.MaxIdempotencyKeyLength+1))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.retryMessageID != "" {
+		t.Fatal("oversized retry key reached service")
 	}
 }
 
@@ -259,5 +394,87 @@ func TestInvalidBearerTokenCannotReuseInjectedAccountContext(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuthenticateMiddlewareInjectsVerifiedIdentity(t *testing.T) {
+	var gotAccountID string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAccountID, _ = webapi.AccountIDFromContext(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := webapi.Authenticate(tokenVerifierFake{}, next)
+	request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	request.Header.Set("Authorization", "Bearer access-token")
+	request.Header.Set("X-Account-ID", "forged-account")
+	request = request.WithContext(webapi.WithAccountID(request.Context(), "preexisting-account"))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if gotAccountID != "account-1" {
+		t.Fatalf("account context = %q, want verified account", gotAccountID)
+	}
+}
+
+func TestPhoneBindingRequiresBearerForMatchingAnonymousAccount(t *testing.T) {
+	tests := []struct {
+		name       string
+		authorize  string
+		anonymous  string
+		wantStatus int
+		wantCall   bool
+	}{
+		{name: "missing token", anonymous: "account-1", wantStatus: http.StatusUnauthorized},
+		{name: "mismatched account", authorize: "Bearer access-token", anonymous: "other-account", wantStatus: http.StatusForbidden},
+		{name: "matching account", authorize: "Bearer access-token", anonymous: "account-1", wantStatus: http.StatusOK, wantCall: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &accountFake{}
+			handler := webapi.New(fake, usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/phone/login", strings.NewReader(`{"challenge_id":"challenge-1","code":"123456","anonymous_account_id":"`+test.anonymous+`"}`))
+			if test.authorize != "" {
+				request.Header.Set("Authorization", test.authorize)
+			}
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if fake.verifyPhoneCalled != test.wantCall {
+				t.Fatalf("VerifyPhone called = %v, want %v", fake.verifyPhoneCalled, test.wantCall)
+			}
+			if test.wantCall {
+				accountID, ok := webapi.AccountIDFromContext(fake.verifyPhoneCtx)
+				if !ok || accountID != "account-1" {
+					t.Fatalf("service context account = %q (ok=%v), want account-1", accountID, ok)
+				}
+				if fake.verifyPhoneAnon != "account-1" {
+					t.Fatalf("anonymous account ID = %q, want account-1", fake.verifyPhoneAnon)
+				}
+			}
+		})
+	}
+}
+
+func TestPhoneLoginWithoutAnonymousBindingRemainsPublic(t *testing.T) {
+	fake := &accountFake{}
+	handler := webapi.New(fake, usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/phone/login", strings.NewReader(`{"challenge_id":"challenge-1","code":"123456"}`))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if !fake.verifyPhoneCalled {
+		t.Fatal("public phone login did not reach account service")
 	}
 }

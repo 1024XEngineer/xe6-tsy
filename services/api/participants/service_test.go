@@ -7,6 +7,7 @@ import (
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
 func TestListChecksSessionOwnership(t *testing.T) {
@@ -20,6 +21,7 @@ func TestListChecksSessionOwnership(t *testing.T) {
 		{name: "owner", accountID: "acct_01", ownerID: "acct_01"},
 		{name: "another account", accountID: "acct_02", ownerID: "acct_01", wantErr: ErrForbidden},
 		{name: "missing session", accountID: "acct_01", ownerErr: ErrSessionNotFound, wantErr: ErrSessionNotFound},
+		{name: "storage missing session", accountID: "acct_01", ownerErr: domain.ErrNotFound, wantErr: ErrSessionNotFound},
 	}
 
 	for _, test := range tests {
@@ -39,6 +41,9 @@ func TestListChecksSessionOwnership(t *testing.T) {
 			}
 			if len(response.Items) != 1 || response.Items[0].ID != "p_01" {
 				t.Fatalf("List() response = %#v", response)
+			}
+			if repository.listAccountID != test.accountID {
+				t.Fatalf("List() repository account = %q, want %q", repository.listAccountID, test.accountID)
 			}
 		})
 	}
@@ -113,9 +118,11 @@ type fakeRepository struct {
 	update        Update
 	turnMutations int
 	participants  map[string]recordsv1.Participant
+	listAccountID string
 }
 
-func (r *fakeRepository) List(context.Context, string, recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+func (r *fakeRepository) List(_ context.Context, accountID, _ string, _ recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+	r.listAccountID = accountID
 	return r.listResponse, nil
 }
 

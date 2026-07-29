@@ -3,6 +3,8 @@ package sessions
 import (
 	"encoding/json"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 // Status is the persisted business lifecycle state owned by services/api.
@@ -16,19 +18,41 @@ const (
 	StatusFailed  Status = "failed"
 )
 
-// RuntimeState is the media-plane lifecycle state returned by realtime-audio.
-type RuntimeState string
+// StartOperationStatus is the repository-owned lifecycle for one durable Start
+// attempt. It is the cross-instance authority for activation and compensation.
+type StartOperationStatus string
 
 const (
-	RuntimeStopped       RuntimeState = "stopped"
-	RuntimeStarting      RuntimeState = "starting"
-	RuntimeListening     RuntimeState = "listening"
-	RuntimeASRProcessing RuntimeState = "asr_processing"
-	RuntimeTranslating   RuntimeState = "translating"
-	RuntimeTTSProcessing RuntimeState = "tts_processing"
-	RuntimePlaying       RuntimeState = "playing"
-	RuntimeStopping      RuntimeState = "stopping"
-	RuntimeFailed        RuntimeState = "failed"
+	StartOperationPending            StartOperationStatus = "pending"
+	StartOperationCompensating       StartOperationStatus = "compensating"
+	StartOperationCompleted          StartOperationStatus = "completed"
+	StartOperationCompensated        StartOperationStatus = "compensated"
+	StartOperationCompensationFailed StartOperationStatus = "compensation_failed"
+)
+
+// StartCompensationClaimReason explains why a repository denied compensation.
+// Service code must treat every denied reason as a strict prohibition on Stop.
+type StartCompensationClaimReason string
+
+const (
+	StartCompensationSessionNotCreated   StartCompensationClaimReason = "session_not_created"
+	StartCompensationOperationMismatch   StartCompensationClaimReason = "operation_mismatch"
+	StartCompensationOperationNotPending StartCompensationClaimReason = "operation_not_pending"
+)
+
+// RuntimeState is the shared media-plane lifecycle state returned by realtime-audio.
+type RuntimeState = realtimev1.RuntimeState
+
+const (
+	RuntimeStopped       = realtimev1.RuntimeStopped
+	RuntimeStarting      = realtimev1.RuntimeStarting
+	RuntimeListening     = realtimev1.RuntimeListening
+	RuntimeASRProcessing = realtimev1.RuntimeASRProcessing
+	RuntimeTranslating   = realtimev1.RuntimeTranslating
+	RuntimeTTSProcessing = realtimev1.RuntimeTTSProcessing
+	RuntimePlaying       = realtimev1.RuntimePlaying
+	RuntimeStopping      = realtimev1.RuntimeStopping
+	RuntimeFailed        = realtimev1.RuntimeFailed
 )
 
 // ConnectionState is the WebRTC connection lifecycle owned by the connection
@@ -107,6 +131,27 @@ type VoiceSession struct {
 	CreatedAt    time.Time       `json:"created_at"`
 }
 
+// StartOperation binds one idempotent Start request to its activation and
+// compensation state. CompensationClaimID identifies the request that alone
+// may stop realtime while the operation is compensating.
+type StartOperation struct {
+	ID                  string
+	SessionID           string
+	AccountID           string
+	IdempotencyKey      string
+	RequestHash         string
+	Status              StartOperationStatus
+	CompensationClaimID *string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+// MatchesRequest reports whether a repeated Start request has the same stable
+// idempotency identity.
+func (o StartOperation) MatchesRequest(idempotencyKey string, requestHash string) bool {
+	return o.IdempotencyKey == idempotencyKey && o.RequestHash == requestHash
+}
+
 // VoiceSessionListItem is the persistent-only list projection. Keeping this
 // separate prevents list queries from loading large configuration snapshots or
 // reaching into realtime and WebRTC providers.
@@ -119,14 +164,17 @@ type VoiceSessionListItem struct {
 	CreatedAt time.Time  `json:"created_at"`
 }
 
-// RuntimeSnapshot is the read-only media-plane state consumed by this module.
+// RuntimeSnapshot is the consumer-owned media-plane projection used by session
+// management. StartOperationID binds a running instance to the durable Start
+// operation that created it; adapters must map it explicitly.
 type RuntimeSnapshot struct {
-	SessionID         string
-	RuntimeState      RuntimeState
-	CurrentTurnID     *string
-	CurrentPlaybackID *string
-	LastErrorCode     *string
-	UpdatedAt         time.Time
+	SessionID         string       `json:"session_id"`
+	StartOperationID  string       `json:"start_operation_id"`
+	RuntimeState      RuntimeState `json:"runtime_state"`
+	CurrentTurnID     *string      `json:"current_turn_id"`
+	CurrentPlaybackID *string      `json:"current_playback_id"`
+	LastErrorCode     *string      `json:"last_error_code"`
+	UpdatedAt         time.Time    `json:"updated_at"`
 }
 
 // WebRTCConnectionSnapshot is independent from RuntimeSnapshot and is used
@@ -187,18 +235,15 @@ func (s Status) Valid() bool {
 	}
 }
 
-// Valid reports whether the state belongs to the media-plane lifecycle.
-func (s RuntimeState) Valid() bool {
+// Valid reports whether the status belongs to the durable Start operation
+// lifecycle.
+func (s StartOperationStatus) Valid() bool {
 	switch s {
-	case RuntimeStopped,
-		RuntimeStarting,
-		RuntimeListening,
-		RuntimeASRProcessing,
-		RuntimeTranslating,
-		RuntimeTTSProcessing,
-		RuntimePlaying,
-		RuntimeStopping,
-		RuntimeFailed:
+	case StartOperationPending,
+		StartOperationCompensating,
+		StartOperationCompleted,
+		StartOperationCompensated,
+		StartOperationCompensationFailed:
 		return true
 	default:
 		return false

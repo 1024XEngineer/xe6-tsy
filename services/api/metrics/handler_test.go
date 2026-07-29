@@ -9,7 +9,9 @@ import (
 
 func TestMetricsHandlerReturnsCounters(t *testing.T) {
 	RecordDeliveryProcessed()
+	RecordDeliveryFailed()
 	RecordUsageRecorded()
+	RecordUsageRejected()
 
 	mux := http.NewServeMux()
 	Register(mux)
@@ -25,7 +27,7 @@ func TestMetricsHandlerReturnsCounters(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if snapshot.DeliveryProcessed == 0 || snapshot.UsageRecorded == 0 {
+	if snapshot.DeliveryProcessed == 0 || snapshot.DeliveryFailed == 0 || snapshot.UsageRecorded == 0 || snapshot.UsageRejected == 0 {
 		t.Fatalf("snapshot = %#v, want non-zero counters", snapshot)
 	}
 }

@@ -366,7 +366,7 @@ func (r *PostgresRepository) SessionActiveForAccount(ctx context.Context, sessio
 	return active, mapError(err)
 }
 
-// AccountIDForSession is shared by usage, language, turns, and delivery ownership adapters.
+// AccountIDForSession returns the immutable owner stored on the voice session.
 func (r *PostgresRepository) AccountIDForSession(ctx context.Context, sessionID string) (string, error) {
 	var accountID string
 	err := r.pool.QueryRow(ctx, `SELECT account_id FROM voice_sessions WHERE id=$1`, sessionID).Scan(&accountID)

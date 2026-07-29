@@ -22,8 +22,8 @@ type SessionOwnerReader interface {
 	AccountIDForSession(context.Context, string) (string, error)
 }
 
-// CanonicalAccountResolver is optional for lightweight owner adapters. A
-// persistent adapter should implement it when account merges are enabled.
+// CanonicalAccountResolver lets persistent owner adapters compare accounts
+// across an anonymous-to-registered merge without changing stored fact ownership.
 type CanonicalAccountResolver interface {
 	CanonicalAccountID(context.Context, string) (string, error)
 }

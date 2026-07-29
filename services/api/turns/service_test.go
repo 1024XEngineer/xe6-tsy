@@ -243,6 +243,15 @@ func TestGetAndListOperationsEnforceOwnership(t *testing.T) {
 	}
 }
 
+func TestListSessionMapsStorageNotFound(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeSessionOwners{err: domain.ErrNotFound}, nil)
+
+	_, err := service.ListSession(t.Context(), "acct_01", "vs_missing", recordsv1.ListTurnsQuery{Limit: 20})
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("ListSession() error = %v, want %v", err, ErrSessionNotFound)
+	}
+}
+
 func TestListHistoryRejectsReverseTimeRange(t *testing.T) {
 	repository := &fakeRepository{}
 	service := NewService(repository, fakeSessionOwners{}, nil)

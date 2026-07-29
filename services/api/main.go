@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,8 +19,16 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
+	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
+
+type recordsHTTPDependencies struct {
+	handler  *recordswebapi.Server
+	accounts accounts.Service
+	tokens   accounts.AccessTokenVerifier
+	cleanup  func()
+}
 
 // main wires foundation use cases into the HTTP server and owns graceful shutdown.
 func main() {
@@ -29,6 +39,10 @@ func main() {
 }
 
 func run() error {
+	if _, _, err := recordsHTTPConfigurationFromEnv(); err != nil {
+		return err
+	}
+
 	address := os.Getenv("API_ADDR")
 	if address == "" {
 		address = ":8080"
@@ -42,7 +56,13 @@ func run() error {
 		defer cleanup()
 	}
 
-	mux := buildMux(langHandler)
+	records, err := newRecordsHTTPDependencies(context.Background())
+	if err != nil {
+		return err
+	}
+	defer records.cleanup()
+
+	mux := buildMux(langHandler, records.handler, records.accounts, records.tokens)
 
 	server := &http.Server{
 		Addr:              address,
@@ -117,10 +137,99 @@ func sessionOwnerFromEnv() languages.SessionOwnerReader {
 	}
 }
 
-func buildMux(lang *languages.Handler) *http.ServeMux {
-	accountUseCases := accounts.NewUseCases()
-	mux := internalwebapi.New(accountUseCases, usage.NewUseCases(), delivery.NewUseCases(), accountUseCases)
-	lang.Register(mux)
-	recordswebapi.NewNotImplementedHandler(slog.Default()).Register(mux)
+func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, error) {
+	const (
+		accessTokenIssuer   = "lingow-api"
+		accessTokenAudience = "lingow-client"
+	)
+
+	databaseURL, tokenSecret, err := recordsHTTPConfigurationFromEnv()
+	if err != nil {
+		return nil, err
+	}
+
+	pool, err := recordstore.Open(ctx, databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+	}
+	if err := recordstore.Migrate(ctx, pool); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+	}
+
+	accountRepository := accounts.NewPostgresRepository(pool)
+	tokens, err := accounts.NewHMACIssuerWithAccount(
+		tokenSecret,
+		accessTokenIssuer,
+		accessTokenAudience,
+		accountRepository.SessionActiveForAccount,
+	)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+	}
+	sessionScope, err := recordstore.NewPostgresSessionScopeReader(pool)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+	}
+
+	// Derive a domain-specific key so JWTs and record cursors never use identical key material.
+	cursorSigningKey := sha256.Sum256([]byte("lingow-record-cursor\x00" + tokenSecret))
+	services, err := recordstore.NewServices(
+		pool,
+		cursorSigningKey[:],
+		recordstore.NewCanonicalSessionOwner(accountRepository),
+		sessionScope,
+	)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+	}
+
+	accountUseCases := accounts.NewPersistentUseCases(accountRepository, tokens, tokens, nil)
+	return &recordsHTTPDependencies{
+		handler: recordswebapi.NewHandler(recordswebapi.Dependencies{
+			Participants: services.Participants,
+			Turns:        services.Turns,
+			Accounts:     recordswebapi.ContextAccountProvider{},
+			// No production system credential exists yet; PATCH routes stay fail-closed.
+			System: recordswebapi.ContextSystemAuthorizer{},
+			Logger: slog.Default(),
+		}),
+		accounts: accountUseCases,
+		tokens:   tokens,
+		cleanup:  pool.Close,
+	}, nil
+}
+
+func recordsHTTPConfigurationFromEnv() (string, string, error) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		return "", "", fmt.Errorf("initialize records HTTP: DATABASE_URL is required")
+	}
+	tokenSecret := os.Getenv("JWT_SECRET")
+	if tokenSecret == "" {
+		return "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET is required")
+	}
+	if len([]byte(tokenSecret)) < 32 {
+		return "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET must be at least 32 bytes")
+	}
+	return databaseURL, tokenSecret, nil
+}
+
+func buildMux(
+	lang *languages.Handler,
+	records *recordswebapi.Server,
+	accountUseCases accounts.Service,
+	tokens accounts.AccessTokenVerifier,
+) *http.ServeMux {
+	mux := internalwebapi.New(accountUseCases, usage.NewUseCases(), delivery.NewUseCases(), tokens)
+	lang.Register(mux, func(next http.Handler) http.Handler {
+		return internalwebapi.Authenticate(tokens, next)
+	})
+	records.Register(mux, func(next http.Handler) http.Handler {
+		return records.Authenticate(tokens, next)
+	})
 	return mux
 }

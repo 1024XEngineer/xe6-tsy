@@ -102,14 +102,17 @@ func NewHandler(dependencies Dependencies) *Server {
 	return server
 }
 
-// Register attaches all voice-record routes to the application mux.
-func (s *Server) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/participants", s.listParticipants)
-	mux.HandleFunc("PATCH /api/v1/voice-sessions/{id}/participants/{participant_id}", s.updateParticipant)
-	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/turns", s.listSessionTurns)
-	mux.HandleFunc("GET /api/v1/voice-turns/{id}", s.getTurn)
-	mux.HandleFunc("PATCH /api/v1/voice-turns/{id}/attribution", s.correctAttribution)
-	mux.HandleFunc("GET /api/v1/translation-history", s.listHistory)
+// Register attaches all voice-record routes behind the caller's authentication boundary.
+func (s *Server) Register(mux *http.ServeMux, authenticate func(http.Handler) http.Handler) {
+	if authenticate == nil {
+		panic("webapi authentication middleware is required")
+	}
+	mux.Handle("GET /api/v1/voice-sessions/{id}/participants", authenticate(http.HandlerFunc(s.listParticipants)))
+	mux.Handle("PATCH /api/v1/voice-sessions/{id}/participants/{participant_id}", authenticate(http.HandlerFunc(s.updateParticipant)))
+	mux.Handle("GET /api/v1/voice-sessions/{id}/turns", authenticate(http.HandlerFunc(s.listSessionTurns)))
+	mux.Handle("GET /api/v1/voice-turns/{id}", authenticate(http.HandlerFunc(s.getTurn)))
+	mux.Handle("PATCH /api/v1/voice-turns/{id}/attribution", authenticate(http.HandlerFunc(s.correctAttribution)))
+	mux.Handle("GET /api/v1/translation-history", authenticate(http.HandlerFunc(s.listHistory)))
 }
 
 func (s *Server) listParticipants(writer http.ResponseWriter, request *http.Request) {

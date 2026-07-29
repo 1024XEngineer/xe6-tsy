@@ -121,6 +121,6 @@ func buildMux(lang *languages.Handler) *http.ServeMux {
 	accountUseCases := accounts.NewUseCases()
 	mux := internalwebapi.New(accountUseCases, usage.NewUseCases(), delivery.NewUseCases(), accountUseCases)
 	lang.Register(mux)
-	recordswebapi.NewNotImplementedHandler(slog.Default()).Register(mux)
+	recordswebapi.NewNotImplementedHandler(slog.Default()).Register(mux, func(next http.Handler) http.Handler { return next })
 	return mux
 }

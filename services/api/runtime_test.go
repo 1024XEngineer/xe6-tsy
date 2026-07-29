@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net"
 	"net/http"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -41,6 +44,47 @@ func (runtimeTestOutboxRepo) MarkOutboxPublished(context.Context, string) error 
 
 func (runtimeTestOutboxRepo) MarkOutboxFailed(context.Context, string, string) error { return nil }
 
+type runtimeTestDestinationReader struct{}
+
+func (runtimeTestDestinationReader) ResolveVerifiedDestination(context.Context, string, delivery.Channel, string) (delivery.VerifiedDestination, error) {
+	return delivery.VerifiedDestination{}, nil
+}
+
+type runtimeTestWorkerRepo struct{}
+
+func (runtimeTestWorkerRepo) CreateMessage(context.Context, delivery.CreateMessageRecord) error { return nil }
+func (runtimeTestWorkerRepo) GetMessage(context.Context, string, string) (delivery.Message, error) {
+	return delivery.Message{}, nil
+}
+func (runtimeTestWorkerRepo) CreateRetry(context.Context, delivery.CreateRetryRecord) (delivery.Message, error) {
+	return delivery.Message{}, nil
+}
+func (runtimeTestWorkerRepo) GetAttempt(context.Context, string) (delivery.DeliveryAttempt, error) {
+	return delivery.DeliveryAttempt{}, nil
+}
+func (runtimeTestWorkerRepo) ClaimAttempt(context.Context, string) (delivery.DeliveryAttempt, error) {
+	return delivery.DeliveryAttempt{}, nil
+}
+func (runtimeTestWorkerRepo) RequeueAttempt(context.Context, string, time.Time) error { return nil }
+func (runtimeTestWorkerRepo) CompleteAttempt(context.Context, string, string, delivery.DeliveryAttemptStatus, delivery.MessageStatus, *string) error {
+	return nil
+}
+func (runtimeTestWorkerRepo) SetMessageStatus(context.Context, string, delivery.MessageStatus, *string) error {
+	return nil
+}
+func (runtimeTestWorkerRepo) SetAttemptStatus(context.Context, string, delivery.DeliveryAttemptStatus, *string) error {
+	return nil
+}
+func (runtimeTestWorkerRepo) ListPreferences(context.Context, string) ([]delivery.Preference, error) {
+	return nil, nil
+}
+func (runtimeTestWorkerRepo) PutPreference(context.Context, delivery.Preference) (delivery.Preference, error) {
+	return delivery.Preference{}, nil
+}
+func (runtimeTestWorkerRepo) GetMessageForWorker(context.Context, string) (delivery.Message, error) {
+	return delivery.Message{}, nil
+}
+
 func testConfiguredRuntimePool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	return reflect.New(reflect.TypeOf(pgxpool.Pool{})).Interface().(*pgxpool.Pool)
@@ -60,6 +104,49 @@ func newRuntimeServeFixture(t *testing.T) *configuredRuntime {
 			Destinations: nil,
 			Provider:     delivery.UnconfiguredProvider{},
 		}),
+	}
+}
+
+func newRuntimeBlockingServeFixture(t *testing.T) *configuredRuntime {
+	t.Helper()
+	redisClient := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
+	t.Cleanup(func() { _ = redisClient.Close() })
+	queue := runtimeTestQueue{}
+	return &configuredRuntime{
+		pool:       testConfiguredRuntimePool(t),
+		redis:      redisClient,
+		dispatcher: delivery.NewOutboxDispatcher(runtimeTestOutboxRepo{}, queue, time.Second),
+		worker: delivery.NewConfiguredWorker(queue, delivery.WorkerDependencies{
+			Repository:   runtimeTestWorkerRepo{},
+			Destinations: runtimeTestDestinationReader{},
+			Provider:     delivery.UnconfiguredProvider{},
+		}),
+	}
+}
+
+func testRuntimeConfig(t *testing.T) config.Config {
+	t.Helper()
+	return config.Config{
+		APIAddr:        "127.0.0.1:0",
+		DatabaseURL:    "",
+		RedisURL:       "redis://127.0.0.1:6379/0",
+		JWTSecret:      strings.Repeat("x", 32),
+		JWTIssuer:      "lingow-api",
+		JWTAudience:    "lingow-client",
+		DestinationKey: base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
+	}
+}
+
+func TestRunConfiguredFailsWhenDatabaseURLMissing(t *testing.T) {
+	if err := runConfigured(testRuntimeConfig(t)); err == nil {
+		t.Fatal("runConfigured() succeeded without database URL")
+	}
+}
+
+func TestNewConfiguredRuntimeRejectsMissingDatabaseURL(t *testing.T) {
+	_, _, err := newConfiguredRuntime(context.Background(), testRuntimeConfig(t))
+	if err == nil {
+		t.Fatal("newConfiguredRuntime() succeeded without database URL")
 	}
 }
 
@@ -220,6 +307,48 @@ func TestRunDeliveryComponentRetriesTransientErrors(t *testing.T) {
 	case err := <-errs:
 		t.Fatalf("runDeliveryComponent() sent error %v after cancel", err)
 	default:
+	}
+}
+
+func TestRunDeliveryComponentStopsTimerOnContextCancelDuringRetry(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errs := make(chan error, 1)
+	var components sync.WaitGroup
+	components.Add(1)
+	go runDeliveryComponent(ctx, "worker", func(context.Context) error {
+		return errors.New("transient")
+	}, errs, &components)
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	components.Wait()
+
+	select {
+	case err := <-errs:
+		t.Fatalf("runDeliveryComponent() sent error %v on canceled context", err)
+	default:
+	}
+}
+
+func TestConfiguredRuntimeServeStopsOnTerminationSignal(t *testing.T) {
+	runtime := newRuntimeBlockingServeFixture(t)
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("Kill() error = %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve() error = %v, want graceful shutdown", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve() did not stop after SIGTERM")
 	}
 }
 

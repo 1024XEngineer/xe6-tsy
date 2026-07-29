@@ -65,7 +65,7 @@ func Authenticate(tokens accounts.AccessTokenVerifier, next http.Handler) http.H
 			writeError(w, r, domain.ErrUnauthorized)
 			return
 		}
-		ctx, err := authenticatedContext(r.Context(), r.Header.Get("Authorization"), tokens)
+		ctx, err := AuthenticatedContext(r.Context(), r.Header.Get("Authorization"), tokens)
 		if err != nil {
 			writeError(w, r, domain.ErrUnauthorized)
 			return
@@ -74,11 +74,11 @@ func Authenticate(tokens accounts.AccessTokenVerifier, next http.Handler) http.H
 	})
 }
 
-// authenticatedContext validates a Bearer credential and returns a context
+// AuthenticatedContext validates a Bearer credential and returns a context
 // containing only the account identity established by the verifier. Keeping
 // this helper separate lets conditional auth flows (such as optional
 // anonymous-account binding during phone login) reuse the exact same parser.
-func authenticatedContext(ctx context.Context, authorization string, tokens accounts.AccessTokenVerifier) (context.Context, error) {
+func AuthenticatedContext(ctx context.Context, authorization string, tokens accounts.AccessTokenVerifier) (context.Context, error) {
 	parts := strings.Fields(authorization)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || tokens == nil {
 		return nil, domain.ErrUnauthorized
@@ -204,7 +204,7 @@ func (a *API) verifyPhone(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if request.AnonymousAccountID != "" {
 		var err error
-		ctx, err = authenticatedContext(ctx, r.Header.Get("Authorization"), a.tokens)
+		ctx, err = AuthenticatedContext(ctx, r.Header.Get("Authorization"), a.tokens)
 		if err != nil {
 			writeError(w, r, err)
 			return

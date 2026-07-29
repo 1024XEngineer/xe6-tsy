@@ -207,7 +207,7 @@ func buildMux(
 	mux := internalwebapi.New(accountUseCases, usage.NewUseCases(), delivery.NewUseCases(), tokens)
 	lang.Register(mux)
 	records.Register(mux, func(next http.Handler) http.Handler {
-		return internalwebapi.Authenticate(tokens, next)
+		return records.Authenticate(tokens, next)
 	})
 	return mux
 }

@@ -29,8 +29,8 @@ func TestBuildMuxActivatesAuthenticatedVoiceRecordRoutes(t *testing.T) {
 		wantStatus    int
 		wantErrorCode recordsv1.ErrorCode
 	}{
-		{name: "missing token", method: http.MethodGet, path: "/api/v1/translation-history", wantStatus: http.StatusUnauthorized},
-		{name: "invalid token", method: http.MethodGet, path: "/api/v1/translation-history", accessToken: "invalid", wantStatus: http.StatusUnauthorized},
+		{name: "missing token", method: http.MethodGet, path: "/api/v1/translation-history", wantStatus: http.StatusUnauthorized, wantErrorCode: recordsv1.ErrorUnauthenticated},
+		{name: "invalid token", method: http.MethodGet, path: "/api/v1/translation-history", accessToken: "invalid", wantStatus: http.StatusUnauthorized, wantErrorCode: recordsv1.ErrorUnauthenticated},
 		{name: "list participants", method: http.MethodGet, path: "/api/v1/voice-sessions/vs_01/participants", accessToken: "account-token", wantStatus: http.StatusOK},
 		{name: "update participant stays system only", method: http.MethodPatch, path: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"voice_profile_id":null}`, accessToken: "account-token", wantStatus: http.StatusForbidden, wantErrorCode: recordsv1.ErrorForbidden},
 		{name: "list session turns", method: http.MethodGet, path: "/api/v1/voice-sessions/vs_01/turns", accessToken: "account-token", wantStatus: http.StatusOK},

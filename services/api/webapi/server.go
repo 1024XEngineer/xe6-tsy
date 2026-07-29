@@ -13,6 +13,8 @@ import (
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/authcontext"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
+	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 )
@@ -113,6 +115,23 @@ func (s *Server) Register(mux *http.ServeMux, authenticate func(http.Handler) ht
 	mux.Handle("GET /api/v1/voice-turns/{id}", authenticate(http.HandlerFunc(s.getTurn)))
 	mux.Handle("PATCH /api/v1/voice-turns/{id}/attribution", authenticate(http.HandlerFunc(s.correctAttribution)))
 	mux.Handle("GET /api/v1/translation-history", authenticate(http.HandlerFunc(s.listHistory)))
+}
+
+// Authenticate applies the shared Bearer-token parser while preserving the
+// voice-record error contract for authentication failures.
+func (s *Server) Authenticate(tokens accounts.AccessTokenVerifier, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		ctx, err := internalwebapi.AuthenticatedContext(
+			request.Context(),
+			request.Header.Get("Authorization"),
+			tokens,
+		)
+		if err != nil {
+			s.writeError(writer, recordsv1.ErrorUnauthenticated, errors.New("authentication is required"))
+			return
+		}
+		next.ServeHTTP(writer, request.WithContext(ctx))
+	})
 }
 
 func (s *Server) listParticipants(writer http.ResponseWriter, request *http.Request) {

@@ -23,11 +23,6 @@ import (
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
-const (
-	accessTokenIssuer   = "lingow-api"
-	accessTokenAudience = "lingow-client"
-)
-
 type recordsHTTPDependencies struct {
 	handler  *recordswebapi.Server
 	accounts accounts.Service
@@ -139,6 +134,11 @@ func sessionOwnerFromEnv() languages.SessionOwnerReader {
 }
 
 func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, error) {
+	const (
+		accessTokenIssuer   = "lingow-api"
+		accessTokenAudience = "lingow-client"
+	)
+
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		return nil, fmt.Errorf("initialize records HTTP: DATABASE_URL is required")

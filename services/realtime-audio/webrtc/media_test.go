@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
 	"github.com/pion/rtp"
@@ -173,6 +174,68 @@ func TestPionEventSinkSerializesDataChannelWrites(t *testing.T) {
 	}
 	if err := <-secondDone; err != nil {
 		t.Fatalf("second Publish() error = %v", err)
+	}
+}
+
+func TestPionEventSinkPublishUnblocksWhenTransportCloses(t *testing.T) {
+	peer := &mediaPeerRecorder{
+		fakePionPeerConnection: &fakePionPeerConnection{gatherComplete: closedChannel()},
+		dataChannelState:       pion.DataChannelStateConnecting,
+	}
+	factory := newFakePionTransportFactory(peer.fakePionPeerConnection)
+	factory.newPeerConnection = func(pion.Configuration) (pionPeerConnection, error) { return peer, nil }
+	transport, err := factory.Create(context.Background(), "session-1", "rtc_1", nil)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	sink := transport.(*PionTransport).TranslationEvents()
+	event := playback.Event{EventID: "event-1", Type: playback.EventStarted, SessionID: "session-1", PlaybackID: "playback-1", SequenceNo: 1}
+	publishDone := make(chan error, 1)
+	go func() { publishDone <- sink.Publish(context.Background(), event) }()
+	select {
+	case err := <-publishDone:
+		t.Fatalf("Publish() returned before transport close: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	if err := transport.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	select {
+	case err := <-publishDone:
+		if !errors.Is(err, ErrTransportClosed) {
+			t.Fatalf("Publish() after transport close error = %v, want ErrTransportClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Publish() remained blocked after transport close")
+	}
+}
+
+func TestPionAudioSourceDrainsBufferedFramesAfterClose(t *testing.T) {
+	decoder := &fakeRTPDecoder{pcm: []byte{1, 2}}
+	source, err := newPionAudioSource(decoder, func() time.Time { return time.Unix(1700000000, 0).UTC() })
+	if err != nil {
+		t.Fatalf("newPionAudioSource() error = %v", err)
+	}
+	frames := make([]audio.Frame, 3)
+	for index := range frames {
+		frames[index], err = audio.NewFrame([]byte{byte(index + 1), 0}, defaultASRSampleRate, time.Unix(int64(index+1), 0).UTC())
+		if err != nil {
+			t.Fatalf("audio.NewFrame() error = %v", err)
+		}
+		source.frames <- frames[index]
+	}
+	source.closeDone()
+	for index := range frames {
+		frame, readErr := source.ReadFrame(context.Background())
+		if readErr != nil {
+			t.Fatalf("ReadFrame(%d) error = %v", index, readErr)
+		}
+		if !reflect.DeepEqual(frame, frames[index]) {
+			t.Fatalf("ReadFrame(%d) = %#v, want %#v", index, frame, frames[index])
+		}
+	}
+	if _, err := source.ReadFrame(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatalf("ReadFrame(after drain) error = %v, want io.EOF", err)
 	}
 }
 
@@ -407,6 +470,7 @@ type mediaPeerRecorder struct {
 	trackAdds        []pion.TrackLocal
 	dataChannelLabel string
 	dataChannel      *dataChannelRecorder
+	dataChannelState pion.DataChannelState
 	onTrack          func(pionRemoteTrack)
 }
 
@@ -416,7 +480,11 @@ func (p *mediaPeerRecorder) AddTrack(track pion.TrackLocal) (*pion.RTPSender, er
 }
 func (p *mediaPeerRecorder) CreateDataChannel(label string, _ *pion.DataChannelInit) (pionDataChannel, error) {
 	p.dataChannelLabel = label
-	p.dataChannel = &dataChannelRecorder{state: pion.DataChannelStateOpen}
+	state := p.dataChannelState
+	if state == pion.DataChannelStateUnknown {
+		state = pion.DataChannelStateOpen
+	}
+	p.dataChannel = &dataChannelRecorder{state: state}
 	return p.dataChannel, nil
 }
 func (p *mediaPeerRecorder) OnTrack(handler func(pionRemoteTrack)) { p.onTrack = handler }

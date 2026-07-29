@@ -194,6 +194,34 @@ func TestServiceRetriesStartedEventAndAudioAfterInitialEventFailure(t *testing.T
 	}
 }
 
+func TestServiceRetriesChunkWhenTrackWriteFails(t *testing.T) {
+	track := &recordingTrack{writeFailures: map[int64]int{2: 1}}
+	service, err := NewService(Dependencies{Track: track, Events: &recordingEvents{}, Now: fixedClock})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	first := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+	second := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 2, Data: []byte{3, 4}}
+	if err := service.Publish(context.Background(), first); err != nil {
+		t.Fatalf("Publish(first) error = %v", err)
+	}
+	if err := service.Publish(context.Background(), second); err == nil {
+		t.Fatal("Publish(second) unexpectedly succeeded when track write failed")
+	}
+	if got := service.Snapshot("session-1"); got.LastSequence != 1 {
+		t.Fatalf("snapshot after failed chunk = %#v, want sequence 1", got)
+	}
+	if err := service.Publish(context.Background(), second); err != nil {
+		t.Fatalf("Publish(second retry) error = %v", err)
+	}
+	if got := service.Snapshot("session-1"); got.LastSequence != 2 {
+		t.Fatalf("snapshot after chunk retry = %#v, want sequence 2", got)
+	}
+	if got := track.Chunks(); !reflect.DeepEqual(got, []pipeline.AudioChunk{first, second}) {
+		t.Fatalf("track chunks = %#v, want first and retried second chunk", got)
+	}
+}
+
 func TestServiceRejectsSecondPlaybackWhileOneIsActive(t *testing.T) {
 	service, err := NewService(Dependencies{Track: &recordingTrack{}, Events: &recordingEvents{}, Now: fixedClock})
 	if err != nil {
@@ -239,17 +267,23 @@ func TestServiceDoesNotHoldStateLockWhilePublishingEvent(t *testing.T) {
 func fixedClock() time.Time { return time.Unix(1700000000, 0).UTC() }
 
 type recordingTrack struct {
-	mu           sync.Mutex
-	chunks       []pipeline.AudioChunk
-	stops        int
-	stopFailures int
+	mu            sync.Mutex
+	chunks        []pipeline.AudioChunk
+	stops         int
+	stopFailures  int
+	writeFailures map[int64]int
 }
 
 func (t *recordingTrack) Write(_ context.Context, chunk pipeline.AudioChunk) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	if remaining := t.writeFailures[chunk.SequenceNo]; remaining > 0 {
+		t.writeFailures[chunk.SequenceNo] = remaining - 1
+		t.mu.Unlock()
+		return errors.New("injected track write failure")
+	}
 	chunk.Data = append([]byte(nil), chunk.Data...)
 	t.chunks = append(t.chunks, chunk)
+	t.mu.Unlock()
 	return nil
 }
 

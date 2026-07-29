@@ -191,12 +191,14 @@ func (s *Service) Publish(ctx context.Context, chunk pipeline.AudioChunk) error 
 		}
 		return nil
 	}
-	current.snapshot.LastSequence = chunk.SequenceNo
 	s.mu.Unlock()
 
 	if err := s.track.Write(ctx, chunk); err != nil {
 		return fmt.Errorf("write TTS audio: %w", err)
 	}
+	s.mu.Lock()
+	current.snapshot.LastSequence = chunk.SequenceNo
+	s.mu.Unlock()
 	return nil
 }
 

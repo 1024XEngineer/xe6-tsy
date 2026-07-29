@@ -181,10 +181,14 @@ func (t *PionAudioTrack) Stop(ctx context.Context, playbackID string) error {
 
 // PionEventSink serializes playback events to one translation-events DataChannel.
 type PionEventSink struct {
-	channel pionDataChannel
-	open    chan struct{}
-	openOne sync.Once
-	sendMu  sync.Mutex
+	channel  pionDataChannel
+	open     chan struct{}
+	closed   chan struct{}
+	openOne  sync.Once
+	closeOne sync.Once
+	stateMu  sync.Mutex
+	closeErr error
+	sendMu   sync.Mutex
 }
 
 type pionDataChannel interface {
@@ -194,7 +198,7 @@ type pionDataChannel interface {
 }
 
 func newPionEventSink(channel pionDataChannel) *PionEventSink {
-	sink := &PionEventSink{channel: channel, open: make(chan struct{})}
+	sink := &PionEventSink{channel: channel, open: make(chan struct{}), closed: make(chan struct{})}
 	if channel != nil {
 		channel.OnOpen(func() { sink.openOne.Do(func() { close(sink.open) }) })
 		if channel.ReadyState() == webrtc.DataChannelStateOpen {
@@ -202,6 +206,30 @@ func newPionEventSink(channel pionDataChannel) *PionEventSink {
 		}
 	}
 	return sink
+}
+
+func (s *PionEventSink) close(err error) {
+	if s == nil {
+		return
+	}
+	if err == nil {
+		err = ErrTransportClosed
+	}
+	s.closeOne.Do(func() {
+		s.stateMu.Lock()
+		s.closeErr = err
+		s.stateMu.Unlock()
+		close(s.closed)
+	})
+}
+
+func (s *PionEventSink) terminalError() error {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.closeErr != nil {
+		return s.closeErr
+	}
+	return ErrTransportClosed
 }
 
 // Publish waits for DataChannel open and sends one JSON event in order.
@@ -216,9 +244,16 @@ func (s *PionEventSink) Publish(ctx context.Context, event playback.Event) error
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-s.open:
+	case <-s.closed:
+		return s.terminalError()
 	}
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
+	select {
+	case <-s.closed:
+		return s.terminalError()
+	default:
+	}
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("encode translation event: %w", err)

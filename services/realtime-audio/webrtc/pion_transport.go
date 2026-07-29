@@ -214,7 +214,11 @@ func (t *PionTransport) Close(ctx context.Context) error {
 
 	t.mu.Lock()
 	source := t.audioSource
+	events := t.events
 	t.mu.Unlock()
+	if events != nil {
+		events.close(ErrTransportClosed)
+	}
 	var sourceErr error
 	if source != nil {
 		sourceErr = source.Close()

@@ -26,7 +26,7 @@ func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 		mustFrame(t, []byte{1, 0}, base),
 		mustFrame(t, []byte{1, 0}, base.Add(20*time.Millisecond)),
 		mustFrame(t, []byte{0, 0}, base.Add(100*time.Millisecond)),
-	}}
+	}, waitForClose: true}
 	asrProvider := asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
 		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
 	}})

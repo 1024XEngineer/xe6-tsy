@@ -114,7 +114,11 @@ func TestRecordsHTTPProductionCompositionReadsOnlyOwnedTurns(t *testing.T) {
 	}
 
 	accountRepository := accounts.NewPostgresRepository(pool)
-	registered, err := accountRepository.FindOrCreateByPhoneHash(t.Context(), "phone_hash_http_merge")
+	registered, err := accountRepository.FindOrCreateByPhoneHashes(
+		t.Context(),
+		"phone_hash_v2_http_merge",
+		"phone_hash_legacy_http_merge",
+	)
 	if err != nil {
 		t.Fatalf("create registered account: %v", err)
 	}

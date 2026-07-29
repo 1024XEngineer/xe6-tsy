@@ -135,6 +135,27 @@ func TestHandlerMapsLifecycleAndTicketErrors(t *testing.T) {
 	}
 }
 
+func TestHandlerMapsRuntimeOperationConflictCode(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.lifecycle.startErr = session.ErrRuntimeOperationConflict
+	response := fixture.request(
+		http.MethodPost,
+		"/realtime/v1/sessions/session-1/start",
+		`{"operation_id":"operation-1"}`,
+		"start-key",
+	)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var payload errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := payload.Error.Code; got != string(realtimev1.ErrorRuntimeOperationConflict) {
+		t.Fatalf("error.code = %q", got)
+	}
+}
+
 func TestHandlerReservesReplayBeforeRunningLifecycle(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
 	lifecycle := &blockingLifecycleFake{

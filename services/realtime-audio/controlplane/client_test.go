@@ -68,6 +68,24 @@ func TestClientMapsRuntimeOwnershipConflict(t *testing.T) {
 	}
 }
 
+func TestClientKeepsGenericConflictDistinct(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.lifecycle.startErr = session.ErrRuntimeCleanupRequired
+	server := httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+	client := newTestClient(t, server.URL)
+
+	_, err := client.Start(t.Context(), "session-1", realtimev1.StartRequest{
+		OperationID: "operation-1",
+	})
+	if !errors.Is(err, ErrClientConflict) {
+		t.Fatalf("Start() error = %v, want ErrClientConflict", err)
+	}
+	if errors.Is(err, ErrRuntimeOperationConflict) {
+		t.Fatalf("Start() error = %v, must not match ErrRuntimeOperationConflict", err)
+	}
+}
+
 func TestClientRejectsEmptyOrMismatchedOperation(t *testing.T) {
 	fixture := newFixture(t)
 	server := httptest.NewServer(fixture.handler)

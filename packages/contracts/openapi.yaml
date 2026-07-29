@@ -179,6 +179,30 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /realtime/v1/sessions/{session_id}/start:
+    servers:
+      - url: /
+    post:
+      operationId: startRealtimeSession
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RealtimeStartRequest' }
+      responses:
+        '200':
+          description: Runtime started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
+        '409':
+          description: Runtime is owned by another Start operation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuntimeOperationConflictError' }
 components:
   securitySchemes:
     accountContext:
@@ -208,6 +232,30 @@ components:
     RealtimeRuntimeErrorCode:
       type: string
       enum: [realtime_start_failed, realtime_stop_failed]
+    ControlPlaneErrorCode:
+      type: string
+      enum: [runtime_operation_conflict]
+    RuntimeOperationConflictError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/RuntimeOperationConflictErrorBody' }
+    RuntimeOperationConflictErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        message: { type: string }
+    RealtimeStartRequest:
+      type: object
+      additionalProperties: false
+      required: [operation_id]
+      properties:
+        operation_id: { type: string, minLength: 1 }
+        trace_id: { type: string }
+        started_by: { type: string }
     RealtimeRuntimeSnapshot:
       type: object
       additionalProperties: false

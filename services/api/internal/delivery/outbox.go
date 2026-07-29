@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 )
 
@@ -27,9 +28,7 @@ func (d *OutboxDispatcher) Run(ctx context.Context) error {
 		<-ctx.Done()
 		return nil
 	}
-	if err := d.DispatchOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		return err
-	}
+	d.dispatch(ctx)
 	ticker := time.NewTicker(d.interval)
 	defer ticker.Stop()
 	for {
@@ -37,10 +36,17 @@ func (d *OutboxDispatcher) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if err := d.DispatchOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				return err
-			}
+			d.dispatch(ctx)
 		}
+	}
+}
+
+// dispatch deliberately keeps the dispatcher alive after a transient storage
+// or broker error. The next tick retries the same durable outbox rows; returning
+// here would strand committed rows until the process is restarted.
+func (d *OutboxDispatcher) dispatch(ctx context.Context) {
+	if err := d.DispatchOnce(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		slog.Warn("delivery outbox dispatch failed; will retry", "error", err)
 	}
 }
 

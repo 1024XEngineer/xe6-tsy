@@ -72,7 +72,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 	for version, content := range map[int64][]string{
 		3: {"max_attempts", "lingow_phone_challenges_phone_created_idx"},
 		4: {"lingow_account_lineage", "WITH RECURSIVE lineage"},
-		5: {"phone_hash_v2", "lingow_accounts_phone_hash_v2_key"},
+		5: {"phone_hash_v2", "lingow_accounts_phone_hash_v2_key", "expires_at = created_at + INTERVAL '1 second'"},
 		6: {"SET phone_hash = NULL", "phone_hash_v2 IS NOT NULL"},
 		7: {"SET cost_amount = NULL", "lingow_usage_records_pricing_pair_valid"},
 	} {

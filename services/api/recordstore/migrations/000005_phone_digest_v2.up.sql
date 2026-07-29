@@ -27,6 +27,13 @@ UPDATE lingow_phone_challenges
 SET legacy_phone_hash = phone_hash
 WHERE legacy_phone_hash IS NULL;
 
+-- v1 challenges used the pre-v2 code digest and cannot be verified by the new
+-- verifier. Expire them during the pre-production migration so clients obtain
+-- a fresh v2 challenge instead of receiving an unexplained verification error.
+UPDATE lingow_phone_challenges
+SET expires_at = created_at + INTERVAL '1 second'
+WHERE digest_version = 1;
+
 ALTER TABLE lingow_phone_challenges
     ALTER COLUMN legacy_phone_hash SET NOT NULL;
 

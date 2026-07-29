@@ -24,14 +24,13 @@ func (r *PostgresSessionScopeReader) SessionIDsForAccount(ctx context.Context, a
 	rows, err := r.pool.Query(ctx, `
 		SELECT id
 		FROM voice_sessions
-		WHERE account_id = $1
-		ORDER BY id ASC`, accountID)
+		WHERE account_id = $1`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("query account session scope: %w", err)
 	}
 	defer rows.Close()
 
-	ids := make([]string, 0)
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {

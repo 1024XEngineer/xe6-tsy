@@ -27,11 +27,26 @@ func TestMigrateRecordsSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppliedMigrations() error = %v", err)
 	}
-	if len(statuses) != 1 {
-		t.Fatalf("len(AppliedMigrations()) = %d, want 1", len(statuses))
+	want := []struct {
+		version int64
+		name    string
+	}{
+		{1, "voice_records"},
+		{2, "member5_control_plane"},
+		{3, "phone_challenge_hardening"},
+		{4, "account_lineage"},
+		{5, "phone_digest_v2"},
+		{6, "phone_digest_cleanup"},
+		{7, "usage_pricing_consistency"},
 	}
-	if status := statuses[0]; status.Version != 1 || status.Name != "voice_records" || status.AppliedAt.IsZero() {
-		t.Fatalf("AppliedMigrations()[0] = %#v, want applied voice_records version 1", status)
+	if len(statuses) != len(want) {
+		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))
+	}
+	for index, expected := range want {
+		status := statuses[index]
+		if status.Version != expected.version || status.Name != expected.name || status.AppliedAt.IsZero() {
+			t.Fatalf("AppliedMigrations()[%d] = %#v, want applied %s version %d", index, status, expected.name, expected.version)
+		}
 	}
 }
 
@@ -44,6 +59,145 @@ func TestRecordSchemaConstraints(t *testing.T) {
 	testConcurrentSpeakerMappingConstraint(t, pool)
 	testProviderSpeakerConstraint(t, pool)
 	testTurnConstraints(t, pool)
+	testSessionLifecycleConstraints(t, pool)
+	testStartOperationConstraints(t, pool)
+	testStartOperationStateConstraints(t, pool)
+}
+
+func testSessionLifecycleConstraints(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	createdAt := time.Date(2026, time.July, 29, 10, 0, 0, 0, time.UTC)
+	endedAt := createdAt.Add(time.Minute)
+	_, err := pool.Exec(t.Context(), `
+		INSERT INTO lingow_accounts (id, kind, created_at)
+		VALUES ('acct_session_constraints', 'anonymous', $1)`, createdAt)
+	if err != nil {
+		t.Fatalf("insert session constraint account: %v", err)
+	}
+	_, err = pool.Exec(t.Context(), `
+		INSERT INTO voice_sessions (
+			id, account_id, status, audio_config, capabilities, ended_at, created_at
+		) VALUES (
+			'session_ended_before_start', 'acct_session_constraints', 'ended',
+			'{}'::jsonb, '{}'::jsonb, $1, $2
+		)`, endedAt, createdAt)
+	if err != nil {
+		t.Fatalf("insert directly-ended session: %v", err)
+	}
+	_, err = pool.Exec(t.Context(), `
+		INSERT INTO voice_sessions (
+			id, account_id, status, audio_config, capabilities, ended_at, created_at
+		) VALUES (
+			'session_invalid_end_time', 'acct_session_constraints', 'ended',
+			'{}'::jsonb, '{}'::jsonb, $1, $2
+		)`, createdAt.Add(-time.Second), createdAt)
+	assertPostgresCode(t, err, "23514")
+}
+
+func testStartOperationConstraints(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	createdAt := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
+	_, err := pool.Exec(t.Context(), `
+		INSERT INTO lingow_accounts (id, kind, created_at)
+		VALUES ('acct_start_01', 'anonymous', $1)`, createdAt)
+	if err != nil {
+		t.Fatalf("insert start-operation account: %v", err)
+	}
+	_, err = pool.Exec(t.Context(), `
+		INSERT INTO voice_sessions (
+			id, account_id, status, audio_config, capabilities, created_at
+		) VALUES (
+			'vs_start_01', 'acct_start_01', 'created', '{}'::jsonb, '{}'::jsonb, $1
+		)`, createdAt)
+	if err != nil {
+		t.Fatalf("insert start-operation session: %v", err)
+	}
+
+	insert := func(operationID, key, status string, claimID *string, startedAt *time.Time) error {
+		_, err := pool.Exec(t.Context(), `
+			INSERT INTO voice_session_start_operations (
+				operation_id, session_id, account_id, idempotency_key, request_hash,
+				status, compensation_claim_id, started_at, created_at, updated_at
+			) VALUES ($1, 'vs_start_01', 'acct_start_01', $2, 'hash', $3, $4, $5, $6, $6)`,
+			operationID, key, status, claimID, startedAt, createdAt)
+		return err
+	}
+
+	if err := insert("op_start_01", "start_key_01", "pending", nil, nil); err != nil {
+		t.Fatalf("insert pending start operation: %v", err)
+	}
+	assertPostgresCode(t, insert("op_start_02", "start_key_02", "pending", nil, nil), "23505")
+
+	startedAt := createdAt.Add(time.Minute)
+	_, err = pool.Exec(t.Context(), `
+		UPDATE voice_session_start_operations
+		SET status = 'completed', started_at = $1, updated_at = $1
+		WHERE operation_id = 'op_start_01'`, startedAt)
+	if err != nil {
+		t.Fatalf("complete start operation: %v", err)
+	}
+	if err := insert("op_start_02", "start_key_02", "pending", nil, nil); err != nil {
+		t.Fatalf("insert pending operation after completion: %v", err)
+	}
+
+	claimID := "claim_start_02"
+	_, err = pool.Exec(t.Context(), `
+		UPDATE voice_session_start_operations
+		SET status = 'compensation_failed', compensation_claim_id = $1, updated_at = $2
+		WHERE operation_id = 'op_start_02'`, claimID, startedAt)
+	if err != nil {
+		t.Fatalf("mark compensation failed: %v", err)
+	}
+	assertPostgresCode(t, insert("op_start_03", "start_key_03", "pending", nil, nil), "23505")
+}
+
+func testStartOperationStateConstraints(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	createdAt := time.Date(2026, time.July, 29, 11, 0, 0, 0, time.UTC)
+	_, err := pool.Exec(t.Context(), `
+		INSERT INTO lingow_accounts (id, kind, created_at)
+		VALUES ('acct_start_states', 'anonymous', $1)`, createdAt)
+	if err != nil {
+		t.Fatalf("insert start-operation state account: %v", err)
+	}
+	for _, sessionID := range []string{
+		"session_invalid_pending",
+		"session_invalid_compensating",
+		"session_invalid_completed",
+		"session_invalid_compensated",
+	} {
+		_, err = pool.Exec(t.Context(), `
+			INSERT INTO voice_sessions (
+				id, account_id, status, audio_config, capabilities, created_at
+			) VALUES ($1, 'acct_start_states', 'created', '{}'::jsonb, '{}'::jsonb, $2)`,
+			sessionID, createdAt)
+		if err != nil {
+			t.Fatalf("insert start-operation state session %q: %v", sessionID, err)
+		}
+	}
+
+	insert := func(operationID, sessionID, status string, claimID *string, startedAt *time.Time) error {
+		_, err := pool.Exec(t.Context(), `
+			INSERT INTO voice_session_start_operations (
+				operation_id, session_id, account_id, idempotency_key, request_hash,
+				status, compensation_claim_id, started_at, created_at, updated_at
+			) VALUES ($1, $2, 'acct_start_states', $1, 'hash', $3, $4, $5, $6, $6)`,
+			operationID, sessionID, status, claimID, startedAt, createdAt)
+		return err
+	}
+
+	assertPostgresCode(t, insert(
+		"op_invalid_pending", "session_invalid_pending", "pending", nil, &createdAt,
+	), "23514")
+	assertPostgresCode(t, insert(
+		"op_invalid_compensating", "session_invalid_compensating", "compensating", nil, nil,
+	), "23514")
+	assertPostgresCode(t, insert(
+		"op_invalid_completed", "session_invalid_completed", "completed", nil, nil,
+	), "23514")
+	assertPostgresCode(t, insert(
+		"op_invalid_compensated", "session_invalid_compensated", "compensated", nil, nil,
+	), "23514")
 }
 
 func testConcurrentSpeakerMappingConstraint(t *testing.T, pool *pgxpool.Pool) {

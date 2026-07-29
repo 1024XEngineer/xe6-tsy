@@ -18,6 +18,7 @@ paths:
       responses:
         '202': { description: Accepted, content: { application/json: { schema: { type: object, required: [challenge_id], properties: { challenge_id: { type: string } } } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /auth/phone/login:
     post:
@@ -26,6 +27,8 @@ paths:
       responses:
         '200': { description: Verified, content: { application/json: { schema: { $ref: '#/components/schemas/AuthResult' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /auth/token/refresh:
     post:
@@ -34,6 +37,7 @@ paths:
       responses:
         '200': { description: Refreshed, content: { application/json: { schema: { $ref: '#/components/schemas/Tokens' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /auth/logout:
     post:
@@ -42,6 +46,7 @@ paths:
       responses:
         '204': { description: Logged out }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /account/me:
     get:
@@ -140,6 +145,8 @@ components:
   responses:
     BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     Unauthorized: { description: Missing or invalid account context, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Forbidden: { description: Authenticated account does not own the requested resource, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    TooManyRequests: { description: Phone verification requests are temporarily rate limited, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotImplemented: { description: Business implementation is intentionally pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
     RealtimeRuntimeState:
@@ -196,7 +203,12 @@ components:
       type: object
       additionalProperties: false
       required: [challenge_id, code]
-      properties: { challenge_id: { type: string }, code: { type: string }, anonymous_account_id: { type: string } }
+      properties:
+        challenge_id: { type: string }
+        code: { type: string }
+        anonymous_account_id:
+          type: string
+          description: When supplied, the request must include a Bearer access token for this same anonymous account.
     Stage: { type: string, enum: [asr, translation, tts, diarization] }
     UsageSummary:
       type: object

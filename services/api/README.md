@@ -56,8 +56,11 @@ WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webr
 
 账户、用量和消息投递当前为可编译契约骨架。受保护路由只接受经过
 `AccessTokenVerifier` 验证后写入 Context 的账户身份；具体 Token 签发和验证策略接入前
-默认拒绝请求。未接入数据库、验证码发送、Token 签发、队列或 Email Provider 的业务方法
-必须返回 `not_implemented`，不得伪造成功结果。
+默认拒绝请求。消息投递的 Queue、Worker 和 Provider 适配器已经提供可注入的运行时边界，
+但尚未由 `main.go` 组合；未接入数据库、验证码发送、Token 签发、队列或 Email Provider
+的业务方法必须返回 `not_implemented`，不得伪造成功结果。生产组合必须先基于最新鉴权迁移
+（包括账户 lineage 函数）完成，再启用异步投递。
+Provider 未配置时不得伪造发送成功；Worker 会释放 sending 租约并延迟重新入队，等待运行时接线完成。
 
 ## 语音记录存储集成测试
 

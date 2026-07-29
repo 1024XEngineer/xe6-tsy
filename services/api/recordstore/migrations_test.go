@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 2 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 2", len(migrations))
+	if len(migrations) != 7 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 7", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -63,5 +63,27 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if !strings.Contains(controlPlane.SQL, "CONSTRAINT delivery_outbox_attempt_key UNIQUE (attempt_id)") {
 		t.Fatal("delivery outbox must keep attempt_id as the durable unique identity")
+	}
+
+	byVersion := make(map[int64]migration, len(migrations))
+	for _, item := range migrations {
+		byVersion[item.Version] = item
+	}
+	for version, content := range map[int64][]string{
+		3: {"max_attempts", "lingow_phone_challenges_phone_created_idx"},
+		4: {"lingow_account_lineage", "WITH RECURSIVE lineage"},
+		5: {"phone_hash_v2", "lingow_accounts_phone_hash_v2_key", "expires_at = created_at + INTERVAL '1 second'"},
+		6: {"SET phone_hash = NULL", "phone_hash_v2 IS NOT NULL"},
+		7: {"SET cost_amount = NULL", "lingow_usage_records_pricing_pair_valid"},
+	} {
+		item, ok := byVersion[version]
+		if !ok {
+			t.Fatalf("missing account-hardening migration version %d", version)
+		}
+		for _, expected := range content {
+			if !strings.Contains(item.SQL, expected) {
+				t.Fatalf("migration %d does not contain %q", version, expected)
+			}
+		}
 	}
 }

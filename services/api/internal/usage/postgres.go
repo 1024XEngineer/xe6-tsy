@@ -2,8 +2,7 @@ package usage
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"time"
@@ -16,34 +15,38 @@ import (
 
 type PostgresRepository struct{ pool *pgxpool.Pool }
 
+const usageDetailProjection = `event_version,event_id,trace_id,idempotency_key,payload_hash,account_id,session_id,turn_id,service_type,provider,model,input_tokens,output_tokens,audio_duration_ms,COALESCE(cost_amount::text,''),COALESCE(currency,''),occurred_at,recorded_at`
+
 func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
 }
 
 func (r *PostgresRepository) Record(ctx context.Context, input RecordInput) (Detail, bool, error) {
-	payload, err := json.Marshal(input)
+	hash, err := hashRecordInput(input)
 	if err != nil {
 		return Detail{}, false, err
 	}
-	hash := sha256.Sum256(payload)
 	now := time.Now().UTC()
-	result, err := r.pool.Exec(ctx, `INSERT INTO lingow_usage_records (event_version, event_id, trace_id, idempotency_key, payload_hash, account_id, session_id, turn_id, service_type, provider, model, input_tokens, output_tokens, audio_duration_ms, cost_amount, currency, occurred_at, recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NULLIF($15,'')::numeric,NULLIF($16,''),$17,$18) ON CONFLICT (idempotency_key) DO NOTHING`, input.EventVersion, input.ID, input.TraceID, input.IdempotencyKey, hash[:], input.AccountID, input.SessionID, input.TurnID, input.ServiceType, input.Provider, input.Model, input.InputTokens, input.OutputTokens, input.AudioDurationMS, input.CostAmount, input.Currency, input.OccurredAt.UTC(), now)
-	if err != nil {
+	var storedHash []byte
+	// RETURNING makes the first response use the same NUMERIC and TIMESTAMPTZ
+	// representation as a later idempotent replay.
+	row := r.pool.QueryRow(ctx, `INSERT INTO lingow_usage_records (event_version, event_id, trace_id, idempotency_key, payload_hash, account_id, session_id, turn_id, service_type, provider, model, input_tokens, output_tokens, audio_duration_ms, cost_amount, currency, occurred_at, recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NULLIF($15,'')::numeric,NULLIF($16,''),$17,$18) ON CONFLICT (idempotency_key) DO NOTHING RETURNING `+usageDetailProjection, input.EventVersion, input.ID, input.TraceID, input.IdempotencyKey, hash[:], input.AccountID, input.SessionID, input.TurnID, input.ServiceType, input.Provider, input.Model, input.InputTokens, input.OutputTokens, input.AudioDurationMS, input.CostAmount, input.Currency, input.OccurredAt.UTC(), now)
+	detail, err := scanUsageDetail(row, &storedHash)
+	if err == nil {
+		return detail, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return Detail{}, false, mapUsageError(err)
 	}
-	if result.RowsAffected() == 0 {
-		var storedHash []byte
-		detail, err := r.scanDetail(ctx, `SELECT event_version,event_id,trace_id,idempotency_key,payload_hash,account_id,session_id,turn_id,service_type,provider,model,input_tokens,output_tokens,audio_duration_ms,COALESCE(cost_amount::text,''),COALESCE(currency,''),occurred_at,recorded_at FROM lingow_usage_records WHERE idempotency_key=$1`, input.IdempotencyKey, &storedHash)
-		if err != nil {
-			return Detail{}, false, err
-		}
-		if !equalHash(storedHash, hash[:]) {
-			return Detail{}, false, domain.ErrConflict
-		}
-		return detail, false, nil
+
+	detail, err = r.scanDetail(ctx, `SELECT `+usageDetailProjection+` FROM lingow_usage_records WHERE idempotency_key=$1`, &storedHash, input.IdempotencyKey)
+	if err != nil {
+		return Detail{}, false, err
 	}
-	detail := Detail{RecordInput: input, RecordedAt: now}
-	return detail, true, nil
+	if !equalHash(storedHash, hash[:]) {
+		return Detail{}, false, domain.ErrConflict
+	}
+	return detail, false, nil
 }
 
 func (r *PostgresRepository) SessionSummary(ctx context.Context, accountID, sessionID string) (Summary, error) {
@@ -56,7 +59,7 @@ func (r *PostgresRepository) AccountSummary(ctx context.Context, accountID strin
 
 func (r *PostgresRepository) summary(ctx context.Context, accountID, sessionID string, start, end time.Time) (Summary, error) {
 	args := []any{accountID}
-	where := `account_id=$1`
+	where := `account_id IN (SELECT account_id FROM lingow_account_lineage($1))`
 	if sessionID != "" {
 		args = append(args, sessionID)
 		where += fmt.Sprintf(" AND session_id=$%d", len(args))
@@ -65,7 +68,9 @@ func (r *PostgresRepository) summary(ctx context.Context, accountID, sessionID s
 		args = append(args, start, end)
 		where += fmt.Sprintf(" AND occurred_at >= $%d AND occurred_at < $%d", len(args)-1, len(args))
 	}
-	rows, err := r.pool.Query(ctx, `SELECT service_type,COALESCE(currency,''),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(audio_duration_ms),0),CASE WHEN COUNT(cost_amount)=0 THEN '' ELSE SUM(cost_amount)::text END FROM lingow_usage_records WHERE `+where+` GROUP BY service_type,currency ORDER BY service_type,currency`, args...)
+	// Counts preserve the distinction between fully unknown pricing and a
+	// partially priced group, which must not be reported as a lower total.
+	rows, err := r.pool.Query(ctx, `SELECT service_type,COALESCE(currency,''),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(audio_duration_ms),0),COALESCE(SUM(cost_amount),0)::text,COUNT(*),COUNT(cost_amount) FROM lingow_usage_records WHERE `+where+` GROUP BY service_type,currency ORDER BY service_type,currency`, args...)
 	if err != nil {
 		return Summary{}, mapUsageError(err)
 	}
@@ -74,9 +79,15 @@ func (r *PostgresRepository) summary(ctx context.Context, accountID, sessionID s
 	seen := make(map[Stage]bool)
 	for rows.Next() {
 		var total StageTotal
-		if err := rows.Scan(&total.ServiceType, &total.Currency, &total.InputTokens, &total.OutputTokens, &total.AudioDurationMS, &total.CostAmount); err != nil {
+		var rowCount, costCount int64
+		if err := rows.Scan(&total.ServiceType, &total.Currency, &total.InputTokens, &total.OutputTokens, &total.AudioDurationMS, &total.CostAmount, &rowCount, &costCount); err != nil {
 			return Summary{}, err
 		}
+		amount, err := aggregateCost(total.CostAmount, total.Currency, rowCount, costCount)
+		if err != nil {
+			return Summary{}, err
+		}
+		total.CostAmount = amount
 		if seen[total.ServiceType] {
 			return Summary{}, domain.ErrConflict
 		}
@@ -89,16 +100,41 @@ func (r *PostgresRepository) summary(ctx context.Context, accountID, sessionID s
 	return result, nil
 }
 
-func (r *PostgresRepository) scanDetail(ctx context.Context, query string, arg any, hash *[]byte) (Detail, error) {
-	var detail Detail
-	var service Stage
-	err := r.pool.QueryRow(ctx, query, arg).Scan(&detail.EventVersion, &detail.ID, &detail.TraceID, &detail.IdempotencyKey, hash, &detail.AccountID, &detail.SessionID, &detail.TurnID, &service, &detail.Provider, &detail.Model, &detail.InputTokens, &detail.OutputTokens, &detail.AudioDurationMS, &detail.CostAmount, &detail.Currency, &detail.OccurredAt, &detail.RecordedAt)
-	detail.ServiceType = service
+func aggregateCost(amount, currency string, rowCount, costCount int64) (string, error) {
+	if rowCount <= 0 || costCount < 0 || costCount > rowCount {
+		return "", domain.ErrConflict
+	}
+	if costCount == 0 {
+		if currency != "" {
+			return "", domain.ErrConflict
+		}
+		return "", nil
+	}
+	if costCount != rowCount || currency == "" {
+		return "", domain.ErrConflict
+	}
+	normalized, ok := addMoney("", amount)
+	if !ok {
+		return "", domain.ErrConflict
+	}
+	return normalized, nil
+}
+
+func (r *PostgresRepository) scanDetail(ctx context.Context, query string, hash *[]byte, args ...any) (Detail, error) {
+	detail, err := scanUsageDetail(r.pool.QueryRow(ctx, query, args...), hash)
 	return detail, mapUsageError(err)
 }
 
+func scanUsageDetail(row pgx.Row, hash *[]byte) (Detail, error) {
+	var detail Detail
+	var service Stage
+	err := row.Scan(&detail.EventVersion, &detail.ID, &detail.TraceID, &detail.IdempotencyKey, hash, &detail.AccountID, &detail.SessionID, &detail.TurnID, &service, &detail.Provider, &detail.Model, &detail.InputTokens, &detail.OutputTokens, &detail.AudioDurationMS, &detail.CostAmount, &detail.Currency, &detail.OccurredAt, &detail.RecordedAt)
+	detail.ServiceType = service
+	return detail, err
+}
+
 func equalHash(left, right []byte) bool {
-	return len(left) == len(right) && string(left) == string(right)
+	return len(left) == len(right) && subtle.ConstantTimeCompare(left, right) == 1
 }
 func mapUsageError(err error) error {
 	if err == nil {

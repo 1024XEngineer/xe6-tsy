@@ -2,8 +2,14 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrProviderRejected marks a provider response that definitively rejects a
+// request. Worker treats this marker as terminal; transient transport errors
+// must not wrap it.
+var ErrProviderRejected = errors.New("delivery provider rejected request")
 
 // QueueMessage carries an attempt identifier and broker receipt used for settlement.
 type QueueMessage struct {
@@ -24,6 +30,11 @@ type Repository interface {
 	// ClaimAttempt atomically transitions a queued attempt to sending. Only the
 	// caller that successfully claims it may invoke the external provider.
 	ClaimAttempt(context.Context, string) (DeliveryAttempt, error)
+	// RequeueAttempt atomically releases an attempt that has not reached the
+	// provider boundary. It must only transition sending -> queued; a provider
+	// error after invocation deliberately does not use this operation because
+	// acceptance may be unknown.
+	RequeueAttempt(context.Context, string, time.Time) error
 	// CompleteAttempt atomically records one terminal attempt result and its
 	// corresponding user-visible message result before the broker is ACKed.
 	CompleteAttempt(context.Context, string, string, DeliveryAttemptStatus, MessageStatus, *string) error

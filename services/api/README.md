@@ -54,10 +54,19 @@ WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webr
 结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
 本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。
 
-账户、用量和消息投递当前为可编译契约骨架。受保护路由只接受经过
-`AccessTokenVerifier` 验证后写入 Context 的账户身份；具体 Token 签发和验证策略接入前
-默认拒绝请求。未接入数据库、验证码发送、Token 签发、队列或 Email Provider 的业务方法
-必须返回 `not_implemented`，不得伪造成功结果。
+账户持久化和 HMAC Access Token 已接入生产装配；手机号验证码发送、用量消费和消息投递仍是
+未完成边界。受保护路由只接受 `AccessTokenVerifier` 验证后写入 Context 的账户身份。未接入
+验证码发送、Queue 或 Email Provider 的业务方法必须返回 `not_implemented`，不得伪造成功结果。
+
+## 语音记录 HTTP 装配
+
+API 启动语音记录路由需要 `DATABASE_URL` 和至少 32 字节的 `JWT_SECRET`。缺少配置或数据库
+不可用时启动直接失败，不回退到 501 handler。启动时会应用 recordstore migration，并组装真实
+PostgreSQL participant/turn repositories 与账户 session scope。
+
+六条 records 路由统一经过 Bearer token 验证。GET 只读取当前账户拥有会话中的 final records；
+客户端账户字段和 `X-Account-ID` 不参与授权。当前仓库尚无可信 system actor 凭据契约，因此两个
+AI-only PATCH 路由在生产装配中保持 fail-closed，普通 Access Token 返回 `403 forbidden`。
 
 ## 语音记录存储集成测试
 

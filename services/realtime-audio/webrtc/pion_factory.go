@@ -66,7 +66,7 @@ func (p *pionPeerConnectionAdapter) CreateDataChannel(label string, options *pio
 
 func (p *pionPeerConnectionAdapter) OnTrack(handler func(pionRemoteTrack)) {
 	p.PeerConnection.OnTrack(func(track *pion.TrackRemote, _ *pion.RTPReceiver) {
-		if handler != nil {
+		if handler != nil && track.Kind() == pion.RTPCodecTypeAudio {
 			handler(&pionRemoteTrackAdapter{track: track})
 		}
 	})
@@ -162,15 +162,6 @@ func configurePionMedia(transport *PionTransport, connection pionMediaPeerConnec
 	if err != nil {
 		return err
 	}
-	track, err := pion.NewTrackLocalStaticRTP(pion.RTPCodecCapability{
-		MimeType: "audio/L16", ClockRate: uint32(normalized.SampleRate), Channels: uint16(normalized.Channels),
-	}, normalized.TTSTrackID, "realtime-audio")
-	if err != nil {
-		return fmt.Errorf("create TTS track: %w", err)
-	}
-	if _, err := connection.AddTrack(track); err != nil {
-		return fmt.Errorf("add TTS track: %w", err)
-	}
 	channel, err := connection.CreateDataChannel(normalized.DataChannelLabel, nil)
 	if err != nil {
 		return fmt.Errorf("create translation DataChannel: %w", err)
@@ -186,14 +177,37 @@ func configurePionMedia(transport *PionTransport, connection pionMediaPeerConnec
 	connection.OnTrack(func(track pionRemoteTrack) {
 		_ = source.Attach(track)
 	})
-	audioTrack, err := newPionAudioTrack(track, normalized)
+	transport.audioSource = source
+	transport.events = newPionEventSink(channel)
+	transport.mediaConnection = connection
+	transport.mediaConfig = normalized
+	transport.mediaNow = now
+	return nil
+}
+
+func configurePionTTSTrack(transport *PionTransport) error {
+	if transport == nil || transport.mediaConnection == nil {
+		return nil
+	}
+	if transport.ttsTrack != nil {
+		return nil
+	}
+	config := transport.mediaConfig
+	track, err := pion.NewTrackLocalStaticRTP(pion.RTPCodecCapability{
+		MimeType: "audio/L16", ClockRate: uint32(config.SampleRate), Channels: uint16(config.Channels),
+	}, config.TTSTrackID, "realtime-audio")
+	if err != nil {
+		return fmt.Errorf("create TTS track: %w", err)
+	}
+	if _, err := transport.mediaConnection.AddTrack(track); err != nil {
+		return fmt.Errorf("add TTS track: %w", err)
+	}
+	audioTrack, err := newPionAudioTrack(track, config)
 	if err != nil {
 		return err
 	}
-	transport.audioSource = source
 	transport.ttsTrack = audioTrack
-	transport.events = newPionEventSink(channel)
-	transport.playback, err = playback.NewService(playback.Dependencies{Track: audioTrack, Events: transport.events, Now: now})
+	transport.playback, err = playback.NewService(playback.Dependencies{Track: audioTrack, Events: transport.events, Now: transport.mediaNow})
 	if err != nil {
 		return fmt.Errorf("create playback service: %w", err)
 	}

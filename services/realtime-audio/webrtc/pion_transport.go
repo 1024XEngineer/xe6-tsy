@@ -2,8 +2,10 @@ package webrtc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
@@ -21,6 +23,9 @@ type PionTransport struct {
 	ttsTrack        *PionAudioTrack
 	events          *PionEventSink
 	playback        *playback.Service
+	mediaConnection pionMediaPeerConnection
+	mediaConfig     MediaConfig
+	mediaNow        func() time.Time
 }
 
 // AudioSource returns the normalized inbound source, when media was enabled.
@@ -72,6 +77,9 @@ func (t *PionTransport) Answer(ctx context.Context, offer SessionDescription) (S
 	}
 	if err := connection.SetRemoteDescription(pion.SessionDescription{Type: pion.SDPTypeOffer, SDP: offer.SDP}); err != nil {
 		return SessionDescription{}, fmt.Errorf("set remote SDP offer: %w", err)
+	}
+	if err := configurePionTTSTrack(t); err != nil {
+		return SessionDescription{}, err
 	}
 	answer, err := connection.CreateAnswer(nil)
 	if err != nil {
@@ -178,7 +186,11 @@ func (t *PionTransport) Close(ctx context.Context) error {
 	connection := t.peerConnection
 	t.mu.Unlock()
 
-	closeErr := connection.Close()
+	var sourceErr error
+	if t.audioSource != nil {
+		sourceErr = t.audioSource.Close()
+	}
+	closeErr := errors.Join(sourceErr, connection.Close())
 	t.mu.Lock()
 	t.closeErr = closeErr
 	close(done)

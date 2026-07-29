@@ -90,8 +90,24 @@ func TestPionAudioSourceDecodesRemoteRTP(t *testing.T) {
 	}
 }
 
+func TestOpusDecoderDecodesWebRTCSilencePacket(t *testing.T) {
+	decoder, err := NewOpusDecoder()
+	if err != nil {
+		t.Fatalf("NewOpusDecoder() error = %v", err)
+	}
+	pcm, err := decoder.Decode([]byte{0xf8, 0xff, 0xfe})
+	if err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+	if len(pcm) == 0 || len(pcm)%2 != 0 {
+		t.Fatalf("PCM length = %d", len(pcm))
+	}
+}
+
 func TestPionFactoryConfiguresMediaWhenPeerSupportsIt(t *testing.T) {
-	peer := &mediaPeerRecorder{fakePionPeerConnection: &fakePionPeerConnection{gatherComplete: closedChannel()}}
+	peer := &mediaPeerRecorder{fakePionPeerConnection: &fakePionPeerConnection{
+		answer: pion.SessionDescription{Type: pion.SDPTypeAnswer, SDP: "answer-sdp"}, gatherComplete: closedChannel(),
+	}}
 	factory := newFakePionTransportFactory(peer.fakePionPeerConnection)
 	factory.newPeerConnection = func(pion.Configuration) (pionPeerConnection, error) { return peer, nil }
 	transport, err := factory.Create(context.Background(), "session-1", "rtc_1", nil)
@@ -99,11 +115,34 @@ func TestPionFactoryConfiguresMediaWhenPeerSupportsIt(t *testing.T) {
 		t.Fatalf("Create() error = %v", err)
 	}
 	mediaTransport, ok := transport.(*PionTransport)
-	if !ok || mediaTransport.AudioSource() == nil || mediaTransport.TTSAudioTrack() == nil || mediaTransport.TranslationEvents() == nil || mediaTransport.Playback() == nil {
+	if !ok || mediaTransport.AudioSource() == nil || mediaTransport.TranslationEvents() == nil {
 		t.Fatalf("media transport = %#v", transport)
 	}
-	if len(peer.trackAdds) != 1 || peer.dataChannelLabel != defaultDataChannel {
+	if _, err := transport.Answer(context.Background(), SessionDescription{Type: "offer", SDP: "offer-sdp"}); err != nil {
+		t.Fatalf("Answer() error = %v", err)
+	}
+	if mediaTransport.TTSAudioTrack() == nil || mediaTransport.Playback() == nil {
+		t.Fatalf("TTS media was not configured after remote offer")
+	}
+	if len(peer.trackAdds) != 1 || peer.dataChannelLabel != defaultDataChannelLabel {
 		t.Fatalf("media setup: tracks=%d label=%q", len(peer.trackAdds), peer.dataChannelLabel)
+	}
+}
+
+func TestPionTransportCloseUnblocksAudioSource(t *testing.T) {
+	peer := &mediaPeerRecorder{fakePionPeerConnection: &fakePionPeerConnection{gatherComplete: closedChannel()}}
+	factory := newFakePionTransportFactory(peer.fakePionPeerConnection)
+	factory.newPeerConnection = func(pion.Configuration) (pionPeerConnection, error) { return peer, nil }
+	transport, err := factory.Create(context.Background(), "session-1", "rtc_1", nil)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	source := transport.(*PionTransport).AudioSource()
+	if err := transport.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if _, err := source.ReadFrame(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatalf("ReadFrame() error = %v, want io.EOF", err)
 	}
 }
 

@@ -22,7 +22,6 @@ import (
 const (
 	defaultMediaSampleRate = audio.SupportedSampleRate
 	defaultMediaChannels   = 1
-	defaultDataChannel     = "translation-events"
 )
 
 var (
@@ -48,7 +47,7 @@ func (c MediaConfig) normalized() (MediaConfig, error) {
 		c.TTSTrackID = defaultTTSTrackID
 	}
 	if c.DataChannelLabel == "" {
-		c.DataChannelLabel = defaultDataChannel
+		c.DataChannelLabel = defaultDataChannelLabel
 	}
 	if c.SampleRate == 0 {
 		c.SampleRate = defaultMediaSampleRate

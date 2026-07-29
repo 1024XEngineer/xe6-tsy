@@ -93,6 +93,29 @@ func TestBuildMuxRegistersLanguageRoutes(t *testing.T) {
 	}
 }
 
+func TestNewRecordsHTTPDependenciesRequiresConfiguration(t *testing.T) {
+	tests := []struct {
+		name        string
+		databaseURL string
+		tokenSecret string
+		wantError   string
+	}{
+		{name: "database URL", tokenSecret: strings.Repeat("s", 32), wantError: "DATABASE_URL is required"},
+		{name: "token secret", databaseURL: "postgres://unused", wantError: "JWT_SECRET is required"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", test.databaseURL)
+			t.Setenv("JWT_SECRET", test.tokenSecret)
+
+			_, err := newRecordsHTTPDependencies(t.Context())
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("newRecordsHTTPDependencies() error = %v, want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
 func newRecordsTestHandler() *recordswebapi.Server {
 	owners := mainSessionOwners{}
 	return recordswebapi.NewHandler(recordswebapi.Dependencies{

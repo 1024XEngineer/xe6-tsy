@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
@@ -52,6 +53,10 @@ func (r *retryRepositoryStub) GetAttempt(context.Context, string) (DeliveryAttem
 
 func (r *retryRepositoryStub) ClaimAttempt(context.Context, string) (DeliveryAttempt, error) {
 	return DeliveryAttempt{}, domain.ErrNotFound
+}
+
+func (r *retryRepositoryStub) RequeueAttempt(context.Context, string, time.Time) error {
+	return nil
 }
 
 func (r *retryRepositoryStub) CompleteAttempt(context.Context, string, string, DeliveryAttemptStatus, MessageStatus, *string) error {
@@ -112,7 +117,7 @@ func TestCreateReplayRequiresSameRequest(t *testing.T) {
 	service := NewPersistentUseCases(repository, nil, nil, nil)
 	input := CreateInput{
 		AccountID: "account-1", IdempotencyKey: "create-key", Channel: ChannelEmail,
-		DestinationRef: "primary", TurnIDs: []string{"turn-1", "turn-2"},
+		DestinationRef: "primary", TurnIDs: []string{"turn-2", "turn-1"},
 	}
 
 	message, err := service.Create(t.Context(), input)
@@ -123,11 +128,6 @@ func TestCreateReplayRequiresSameRequest(t *testing.T) {
 		t.Fatalf("CreateMessage calls = %d, want 0", repository.createCalls)
 	}
 
-	input.TurnIDs = []string{"turn-2", "turn-1"}
-	if _, err := service.Create(t.Context(), input); !errors.Is(err, domain.ErrConflict) {
-		t.Fatalf("Create() reordered turns error = %v, want conflict", err)
-	}
-	input.TurnIDs = []string{"turn-1", "turn-2"}
 	input.DestinationRef = "other"
 	if _, err := service.Create(t.Context(), input); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("Create() mismatch error = %v, want conflict", err)
@@ -136,22 +136,6 @@ func TestCreateReplayRequiresSameRequest(t *testing.T) {
 	input.TurnIDs = []string{"turn-1", "turn-3"}
 	if _, err := service.Create(t.Context(), input); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("Create() turn mismatch error = %v, want conflict", err)
-	}
-}
-
-func TestCreateReplayAcceptsMessageFromMergedAccountLineage(t *testing.T) {
-	repository := &retryRepositoryStub{createLookup: Message{
-		ID: "message-1", AccountID: "anonymous-1", Channel: ChannelEmail,
-		DestinationRef: "primary", Turns: []FinalTurnSnapshot{{TurnID: "turn-1"}},
-	}}
-	service := NewPersistentUseCases(repository, nil, nil, nil)
-
-	message, err := service.Create(t.Context(), CreateInput{
-		AccountID: "registered-1", IdempotencyKey: "create-key", Channel: ChannelEmail,
-		DestinationRef: "primary", TurnIDs: []string{"turn-1"},
-	})
-	if err != nil || message.ID != "message-1" {
-		t.Fatalf("Create() = (%#v, %v), want historical message replay", message, err)
 	}
 }
 
@@ -203,20 +187,6 @@ func TestRetryRejectsUnknownNonIdempotentDelivery(t *testing.T) {
 	}
 }
 
-func TestRetryRejectsOversizedIdempotencyKey(t *testing.T) {
-	repository := &retryRepositoryStub{current: map[string]Message{
-		"account-1": {ID: "message-1", AccountID: "account-1", Status: MessageStatusFailed, Attempts: 1},
-	}}
-	service := NewPersistentUseCases(repository, nil, nil, nil)
-
-	if _, err := service.Retry(t.Context(), "account-1", "message-1", string(make([]byte, MaxIdempotencyKeyLength+1))); !errors.Is(err, domain.ErrInvalidArgument) {
-		t.Fatalf("Retry() error = %v, want invalid argument", err)
-	}
-	if len(repository.created) != 0 {
-		t.Fatalf("CreateRetry calls = %d, want 0", len(repository.created))
-	}
-}
-
 func TestRetryKeysAreScopedByAccount(t *testing.T) {
 	repository := &retryRepositoryStub{current: map[string]Message{
 		"account-1": {ID: "message-1", AccountID: "account-1", Status: MessageStatusFailed, Attempts: 1},
@@ -231,6 +201,20 @@ func TestRetryKeysAreScopedByAccount(t *testing.T) {
 	}
 	if len(repository.created) != 2 {
 		t.Fatalf("CreateRetry calls = %d, want 2", len(repository.created))
+	}
+}
+
+func TestRetryRejectsOversizedIdempotencyKey(t *testing.T) {
+	repository := &retryRepositoryStub{current: map[string]Message{
+		"account-1": {ID: "message-1", AccountID: "account-1", Status: MessageStatusFailed, Attempts: 1},
+	}}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+
+	if _, err := service.Retry(t.Context(), "account-1", "message-1", string(make([]byte, MaxIdempotencyKeyLength+1))); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("Retry() error = %v, want invalid argument", err)
+	}
+	if len(repository.created) != 0 {
+		t.Fatalf("CreateRetry calls = %d, want 0", len(repository.created))
 	}
 }
 

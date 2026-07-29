@@ -67,7 +67,7 @@ func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, erro
 	u.createKeys[scopedIdempotencyKey(input.AccountID, input.IdempotencyKey)] = message.ID
 	u.keys.Unlock()
 	if !isOutboxBacked(u.repository) && u.queue != nil {
-		if err := u.queue.Enqueue(ctx, QueueItem{AccountID: input.AccountID, AttemptID: attempt.ID, IdempotencyKey: input.IdempotencyKey}); err != nil {
+		if err := u.queue.Enqueue(ctx, attempt.ID, input.IdempotencyKey); err != nil {
 			return Message{}, err
 		}
 	}
@@ -86,9 +86,7 @@ func (u *UseCases) resolveCreateIdempotency(ctx context.Context, input CreateInp
 	if err != nil {
 		return Message{}, true, err
 	}
-	// The repository applies the current account's lineage scope. A replay may
-	// therefore return a message created under a merged historical account.
-	if existing.Channel != input.Channel || existing.DestinationRef != input.DestinationRef || !sameTurnSelection(existing.Turns, input.TurnIDs) {
+	if existing.AccountID != input.AccountID || existing.Channel != input.Channel || existing.DestinationRef != input.DestinationRef || !sameTurnSelection(existing.Turns, input.TurnIDs) {
 		return Message{}, true, domain.ErrConflict
 	}
 	return existing, true, nil
@@ -145,7 +143,7 @@ func (u *UseCases) Retry(ctx context.Context, accountID, messageID, key string) 
 	u.retryKeys[scopedIdempotencyKey(accountID, key)] = messageID
 	u.keys.Unlock()
 	if !isOutboxBacked(u.repository) && u.queue != nil {
-		if err := u.queue.Enqueue(ctx, QueueItem{AccountID: accountID, AttemptID: attempt.ID, IdempotencyKey: key}); err != nil {
+		if err := u.queue.Enqueue(ctx, attempt.ID, key); err != nil {
 			return Message{}, err
 		}
 	}
@@ -223,12 +221,23 @@ func sameTurnSelection(turns []FinalTurnSnapshot, turnIDs []string) bool {
 	if len(turns) != len(turnIDs) {
 		return false
 	}
-	for index, turn := range turns {
-		if turn.TurnID == "" || turn.TurnID != turnIDs[index] {
+	want := make(map[string]struct{}, len(turnIDs))
+	for _, turnID := range turnIDs {
+		if turnID == "" {
 			return false
 		}
+		want[turnID] = struct{}{}
 	}
-	return true
+	if len(want) != len(turnIDs) {
+		return false
+	}
+	for _, turn := range turns {
+		if _, exists := want[turn.TurnID]; !exists {
+			return false
+		}
+		delete(want, turn.TurnID)
+	}
+	return len(want) == 0
 }
 
 func cloneTurns(source []FinalTurnSnapshot) []FinalTurnSnapshot {

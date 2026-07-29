@@ -315,6 +315,7 @@ func TestWorkerClaimConflictAcknowledgesQueuedDuplicate(t *testing.T) {
 func TestWorkerClaimConflictNonIdempotentSendingRecordsUnknown(t *testing.T) {
 	queue, repository, provider, worker := newWorkerFixture()
 	repository.attempt.Status = AttemptStatusSending
+	repository.attempt.StartedAt = timePointer(time.Now().UTC().Add(-defaultSendingLease))
 	repository.claimErr = domain.ErrConflict
 
 	if err := worker.Process(t.Context(), QueueMessage{AttemptID: "attempt-1", Receipt: "receipt-1"}); err != nil {
@@ -326,6 +327,21 @@ func TestWorkerClaimConflictNonIdempotentSendingRecordsUnknown(t *testing.T) {
 	completion := repository.completions[0]
 	if completion.code == nil || *completion.code != deliveryUnknownErrorCode {
 		t.Fatalf("unknown code = %v, want %q", completion.code, deliveryUnknownErrorCode)
+	}
+}
+
+func TestWorkerClaimConflictNonIdempotentActiveSendingNacks(t *testing.T) {
+	queue, repository, provider, worker := newWorkerFixture()
+	repository.attempt.Status = AttemptStatusSending
+	repository.attempt.StartedAt = timePointer(time.Now().UTC())
+	repository.claimErr = domain.ErrConflict
+
+	err := worker.Process(t.Context(), QueueMessage{AttemptID: "attempt-1", Receipt: "receipt-1"})
+	if err == nil {
+		t.Fatal("Process() error = nil, want active sender retry")
+	}
+	if provider.calls != 0 || len(repository.completions) != 0 || len(queue.acks) != 0 || len(queue.nacks) != 1 {
+		t.Fatalf("calls=%d completions=%d acks=%d nacks=%d", provider.calls, len(repository.completions), len(queue.acks), len(queue.nacks))
 	}
 }
 
@@ -657,6 +673,8 @@ func equalStrings(left, right []string) bool {
 }
 
 func stringPointer(value string) *string { return &value }
+
+func timePointer(value time.Time) *time.Time { return &value }
 
 func equalOptionalStrings(left, right []*string) bool {
 	if len(left) != len(right) {

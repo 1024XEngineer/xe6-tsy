@@ -59,3 +59,32 @@ func TestDispatchOnceMarksPublishedAfterQueueAccepts(t *testing.T) {
 		t.Fatal("DispatchOnce() did not mark the accepted outbox record")
 	}
 }
+
+func TestOutboxDispatcherRunContinuesAfterTransientError(t *testing.T) {
+	repository := &outboxRepositoryStub{
+		records:   []OutboxRecord{{ID: "outbox-1", AttemptID: "attempt-1", Key: "key-1"}},
+		markError: errors.New("database unavailable"),
+	}
+	dispatcher := NewOutboxDispatcher(repository, outboxQueueStub{enqueueError: errors.New("queue unavailable")}, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- dispatcher.Run(ctx) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Run() returned early with %v", err)
+	case <-time.After(20 * time.Millisecond):
+		cancel()
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() after cancel error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not stop after cancellation")
+	}
+}

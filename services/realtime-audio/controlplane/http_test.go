@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
-	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
@@ -122,11 +122,11 @@ func TestHandlerMapsLifecycleAndTicketErrors(t *testing.T) {
 }
 
 type fixture struct {
-	handler    http.Handler
-	lifecycle  *lifecycleFake
-	signaling  *signalingFake
-	tickets    *ticketFake
-	config     *configFake
+	handler   http.Handler
+	lifecycle *lifecycleFake
+	signaling *signalingFake
+	tickets   *ticketFake
+	config    *configFake
 }
 
 func newFixture(t *testing.T) fixture {
@@ -142,7 +142,7 @@ func newFixture(t *testing.T) fixture {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	return fixture{handler: handler, lifecycle: lifecycle, signaling: handler.(*Handler).signaling.(*signalingFake), tickets: tickets, config: config}
+	return fixture{handler: handler, lifecycle: lifecycle, signaling: handler.signaling.(*signalingFake), tickets: tickets, config: config}
 }
 
 func (f fixture) request(method, path, body, idempotencyKey string) *httptest.ResponseRecorder {

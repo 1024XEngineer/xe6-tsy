@@ -350,6 +350,34 @@ func revokeSessionResult(rowsAffected int64) error {
 	return nil
 }
 
+// PurgeExpiredAuthSessions revokes sessions that have passed their expiry so
+// refresh lookup stays bounded and expired credentials cannot linger active.
+func (r *PostgresRepository) PurgeExpiredAuthSessions(ctx context.Context) (int64, error) {
+	result, err := r.pool.Exec(ctx, `
+		UPDATE lingow_auth_sessions
+		SET revoked_at = CURRENT_TIMESTAMP
+		WHERE revoked_at IS NULL
+		  AND expires_at <= CURRENT_TIMESTAMP`)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return result.RowsAffected(), nil
+}
+
+// PurgeStalePhoneChallenges removes expired and long-consumed challenges so
+// verification state does not grow without bound.
+func (r *PostgresRepository) PurgeStalePhoneChallenges(ctx context.Context, retention time.Duration) (int64, error) {
+	cutoff := time.Now().UTC().Add(-retention)
+	result, err := r.pool.Exec(ctx, `
+		DELETE FROM lingow_phone_challenges
+		WHERE expires_at <= CURRENT_TIMESTAMP
+		   OR (used_at IS NOT NULL AND used_at <= $1)`, cutoff)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return result.RowsAffected(), nil
+}
+
 func (r *PostgresRepository) SessionActive(ctx context.Context, id string) (bool, error) {
 	var active bool
 	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM lingow_auth_sessions WHERE id=$1 AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP)`, id).Scan(&active)

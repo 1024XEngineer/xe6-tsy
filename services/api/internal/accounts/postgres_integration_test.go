@@ -275,3 +275,82 @@ func accountsTestDatabase(t *testing.T) *pgxpool.Pool {
 	}
 	return pool
 }
+
+func TestPostgresRefreshRotationIsSingleUse(t *testing.T) {
+	pool := accountsTestDatabase(t)
+	repository := NewPostgresRepository(pool)
+	digester := integrationCredentialDigester(t)
+	issuer, err := NewHMACIssuerWithAccount(
+		strings.Repeat("j", 36),
+		"lingow-api",
+		"lingow-client",
+		repository.SessionActiveForAccount,
+	)
+	if err != nil {
+		t.Fatalf("NewHMACIssuerWithAccount() error = %v", err)
+	}
+	service := NewPersistentUseCases(repository, issuer, issuer, verificationSenderStub{}, digester)
+
+	anonymous, err := service.CreateAnonymous(t.Context())
+	if err != nil {
+		t.Fatalf("CreateAnonymous() error = %v", err)
+	}
+	rotated, err := service.Refresh(t.Context(), anonymous.Tokens.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	if _, err := service.Refresh(t.Context(), anonymous.Tokens.RefreshToken); !errorsIsUnauthorized(err) {
+		t.Fatalf("replay Refresh() error = %v, want unauthorized", err)
+	}
+	if _, err := issuer.VerifyAccessToken(t.Context(), rotated.AccessToken); err != nil {
+		t.Fatalf("VerifyAccessToken() after refresh error = %v", err)
+	}
+}
+
+func TestPostgresAuthMaintenancePurgesExpiredState(t *testing.T) {
+	pool := accountsTestDatabase(t)
+	repository := NewPostgresRepository(pool)
+	now := time.Now().UTC()
+
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO lingow_accounts (id, kind, created_at) VALUES ('acct_expired', 'anonymous', $1)`,
+		now); err != nil {
+		t.Fatalf("insert account: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO lingow_auth_sessions (id, account_id, refresh_hash, expires_at, created_at)
+		VALUES ('auths_expired', 'acct_expired', 'hash-expired', $1, $2)`,
+		now.Add(-time.Hour), now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("insert expired session: %v", err)
+	}
+	digester := integrationCredentialDigester(t)
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO lingow_phone_challenges
+			(id, phone_hash, legacy_phone_hash, code_hash, digest_version, expires_at, created_at, used_at, attempts, max_attempts)
+		VALUES ('challenge_expired', $1, $2, $3, 2, $4, $5, $6, 1, 5)`,
+		digester.PhoneHash("+8613800000099"),
+		"legacy",
+		digester.CodeHash("challenge_expired", "123456"),
+		now.Add(-time.Hour),
+		now.Add(-2*time.Hour),
+		now.Add(-90*24*time.Hour),
+	); err != nil {
+		t.Fatalf("insert stale challenge: %v", err)
+	}
+
+	sessions, err := repository.PurgeExpiredAuthSessions(t.Context())
+	if err != nil {
+		t.Fatalf("PurgeExpiredAuthSessions() error = %v", err)
+	}
+	if sessions != 1 {
+		t.Fatalf("purged sessions = %d, want 1", sessions)
+	}
+
+	challenges, err := repository.PurgeStalePhoneChallenges(t.Context(), 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("PurgeStalePhoneChallenges() error = %v", err)
+	}
+	if challenges != 1 {
+		t.Fatalf("purged challenges = %d, want 1", challenges)
+	}
+}

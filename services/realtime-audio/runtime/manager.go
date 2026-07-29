@@ -26,6 +26,8 @@ var (
 	ErrPipelineStopping   = errors.New("realtime runtime pipeline is stopping")
 )
 
+const failureReportTimeout = 5 * time.Second
+
 // AudioInput is the typed handoff from a WebRTC media adapter to the audio loop.
 // SourceLanguage belongs to the input track, not to the language configuration
 // reader; the latter is still read once by pipeline.TurnOpener for every Turn.
@@ -49,6 +51,13 @@ func (f FrameSourceFactoryFunc) Open(ctx context.Context, snapshot session.Sessi
 // SegmenterFactory creates isolated VAD state for one session.
 type SegmenterFactory func() (*vad.Segmenter, error)
 
+// RuntimeReporter combines the narrow processing and terminal-failure ports
+// required by a complete manager lifecycle.
+type RuntimeReporter interface {
+	session.RuntimeStateReporter
+	session.RuntimeFailureReporter
+}
+
 // Dependencies contains member-3-owned adapters and downstream sinks.
 type Dependencies struct {
 	FrameSources   FrameSourceFactory
@@ -58,7 +67,7 @@ type Dependencies struct {
 	FinalTurns     recordsv1.FinalTurnSink
 	Usage          pipeline.UsageFactSink
 	Audio          pipeline.AudioChunkSink
-	Runtime        session.RuntimeStateReporter
+	Runtime        RuntimeReporter
 	Allocator      pipeline.TurnAllocator
 	SpeakerTimeout time.Duration
 	VoiceID        string
@@ -72,6 +81,7 @@ type Manager struct {
 	mu        sync.Mutex
 	locks     keyedLocker
 	processor *pipeline.TurnProcessor
+	failure   session.RuntimeFailureReporter
 	deps      Dependencies
 	entries   map[string]*entry
 }
@@ -135,7 +145,8 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		processor: pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
 			ASR: providers.ASR, Opener: opener, Pipeline: service,
 		}),
-		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
+		failure: deps.Runtime,
+		deps:    deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
 	}, nil
 }
 
@@ -241,14 +252,41 @@ func (m *Manager) Activate(ctx context.Context, sessionID string) error {
 
 func (m *Manager) run(item *entry, ctx context.Context) {
 	err := item.service.Run(ctx, item.request)
+	if err != nil && ctx.Err() == nil {
+		reportErr := m.reportFailure(ctx, item.request.SessionID)
+		if reportErr != nil {
+			if !errors.Is(reportErr, context.Canceled) {
+				err = errors.Join(err, fmt.Errorf("report runtime failure: %w", reportErr))
+			}
+		}
+	}
 	m.mu.Lock()
-	if errors.Is(err, context.Canceled) && item.source.closeError() == nil {
+	if ctx.Err() != nil && item.source.closeError() == nil {
 		err = nil
 	}
 	item.err = err
 	item.finished = true
+	if err != nil && ctx.Err() == nil && m.entries[item.request.SessionID] == item {
+		delete(m.entries, item.request.SessionID)
+	}
 	close(item.done)
 	m.mu.Unlock()
+}
+
+func (m *Manager) reportFailure(ctx context.Context, sessionID string) error {
+	reportCtx, cancel := context.WithTimeout(ctx, failureReportTimeout)
+	defer cancel()
+
+	// Lifecycle Stop may hold its session lock while waiting for this worker.
+	// Keep the report cancelable so Stop cannot deadlock behind failure storage.
+	done := make(chan error, 1)
+	go func() { done <- m.failure.SetRuntimeFailed(reportCtx, sessionID) }()
+	select {
+	case err := <-done:
+		return err
+	case <-reportCtx.Done():
+		return reportCtx.Err()
+	}
 }
 
 // Stop cancels processing, closes the input source, and waits for the loop.

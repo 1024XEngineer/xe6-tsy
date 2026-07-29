@@ -25,6 +25,13 @@ type RuntimeStateReporter interface {
 	SetProcessingState(ctx context.Context, update ProcessingStateUpdate) error
 }
 
+// RuntimeFailureReporter persists a terminal media-pipeline failure.
+// Processing failures intentionally carry no new public error code until the
+// shared RuntimeErrorCode contract is frozen; RuntimeFailed is authoritative.
+type RuntimeFailureReporter interface {
+	SetRuntimeFailed(ctx context.Context, sessionID string) error
+}
+
 // PipelineManager owns processing contexts created for a realtime session.
 // Stop must be idempotent: an already stopped or absent pipeline returns nil.
 type PipelineManager interface {

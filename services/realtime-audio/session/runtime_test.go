@@ -69,3 +69,51 @@ func TestLifecycleRejectsInvalidRuntimeProgress(t *testing.T) {
 		})
 	}
 }
+
+func TestLifecycleSetRuntimeFailedPersistsTerminalState(t *testing.T) {
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
+	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{
+		SessionID:         "session-1",
+		RuntimeState:      RuntimePlaying,
+		CurrentTurnID:     stringPointer("turn-1"),
+		CurrentPlaybackID: stringPointer("playback-1"),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := service.SetRuntimeFailed(context.Background(), "session-1"); err != nil {
+		t.Fatalf("SetRuntimeFailed() error = %v", err)
+	}
+	got, err := service.GetRuntimeState(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("GetRuntimeState() error = %v", err)
+	}
+	if got.RuntimeState != RuntimeFailed || got.CurrentTurnID != nil || got.CurrentPlaybackID != nil || got.LastErrorCode != nil {
+		t.Fatalf("failed runtime = %#v", got)
+	}
+	if err := service.SetRuntimeFailed(context.Background(), "session-1"); err != nil {
+		t.Fatalf("repeated SetRuntimeFailed() error = %v", err)
+	}
+}
+
+func TestLifecycleSetRuntimeFailedDoesNotOverrideShutdown(t *testing.T) {
+	for _, state := range []RuntimeState{RuntimeStopping, RuntimeStopped, RuntimeFailed} {
+		t.Run(string(state), func(t *testing.T) {
+			service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
+			lastError := "existing_error"
+			want := RuntimeSnapshot{SessionID: "session-1", RuntimeState: state, LastErrorCode: &lastError}
+			if err := service.deps.Runtimes.Save(context.Background(), want); err != nil {
+				t.Fatalf("Save() error = %v", err)
+			}
+			if err := service.SetRuntimeFailed(context.Background(), "session-1"); err != nil {
+				t.Fatalf("SetRuntimeFailed() error = %v", err)
+			}
+			got, err := service.GetRuntimeState(context.Background(), "session-1")
+			if err != nil {
+				t.Fatalf("GetRuntimeState() error = %v", err)
+			}
+			if got.RuntimeState != want.RuntimeState || got.LastErrorCode == nil || *got.LastErrorCode != lastError {
+				t.Fatalf("shutdown state overwritten: got %#v want %#v", got, want)
+			}
+		})
+	}
+}

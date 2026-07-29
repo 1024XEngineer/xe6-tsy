@@ -255,6 +255,11 @@ func (w *Worker) deliver(ctx context.Context, item QueueMessage, reader WorkerMe
 		ProviderIdempotencyKey: attempt.ID,
 	})
 	if sendErr != nil {
+		if errors.Is(sendErr, ErrProviderNotConfigured) {
+			// A missing adapter is known to occur before provider I/O. Release the
+			// sending lease so configuration recovery does not become delivery_unknown.
+			return w.retryBeforeProvider(ctx, item, attempt, fmt.Errorf("provider unavailable: %w", sendErr))
+		}
 		if errors.Is(sendErr, ErrDeliveryUnknown) {
 			code := deliveryUnknownErrorCode
 			if err := w.deps.Repository.CompleteAttempt(ctx, attempt.ID, message.ID, AttemptStatusFailed, MessageStatusFailed, &code); err != nil {
@@ -349,8 +354,8 @@ func (w *Worker) retry(ctx context.Context, item QueueMessage, cause error) erro
 // retryBeforeProvider releases the sending lease when an error occurs before
 // provider I/O. Without this transition, a non-idempotent redelivery would
 // conservatively become delivery_unknown even though no outbound request was
-// made. Provider errors intentionally use retry directly because acceptance is
-// then ambiguous.
+// made. Provider errors after invocation intentionally use retry directly
+// because acceptance is then ambiguous.
 func (w *Worker) retryBeforeProvider(ctx context.Context, item QueueMessage, attempt DeliveryAttempt, cause error) error {
 	if attempt.ID != "" {
 		nextAttemptAt := time.Now().UTC().Add(w.retryDelay())

@@ -15,11 +15,8 @@ func TestUnconfiguredProviderFailsClosed(t *testing.T) {
 	if !errors.Is(err, ErrProviderNotConfigured) {
 		t.Fatalf("Send() error = %v, want ErrProviderNotConfigured", err)
 	}
-	if !errors.Is(err, ErrProviderRejected) {
-		t.Fatalf("Send() error = %v, want ErrProviderRejected", err)
-	}
-	if !errors.Is(err, domain.ErrNotImplemented) {
-		t.Fatalf("Send() error = %v, want domain.ErrNotImplemented", err)
+	if errors.Is(err, ErrProviderRejected) || errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("Send() error = %v, must keep configuration failure separate", err)
 	}
 	if provider.SupportsProviderIdempotency() {
 		t.Fatal("unconfigured provider must not claim idempotency")
@@ -34,7 +31,7 @@ func TestUnconfiguredProviderHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestFakeEmailProviderIsIdempotentAndDoesNotExposeTarget(t *testing.T) {
+func TestFakeEmailProviderDeduplicatesWithinInstanceAndDoesNotExposeTarget(t *testing.T) {
 	var calls atomic.Int32
 	provider := NewFakeEmailProvider(FakeEmailProviderConfig{
 		SendFunc: func(context.Context, SendRequest) error {
@@ -63,8 +60,8 @@ func TestFakeEmailProviderIsIdempotentAndDoesNotExposeTarget(t *testing.T) {
 	if requests[0].Message.Turns[0].SourceLanguage != "zh-CN" {
 		t.Fatalf("recorded message was not isolated: source_language = %q", requests[0].Message.Turns[0].SourceLanguage)
 	}
-	if !provider.SupportsProviderIdempotency() {
-		t.Fatal("fake email provider must claim idempotency")
+	if provider.SupportsProviderIdempotency() {
+		t.Fatal("in-memory fake provider must not claim crash-safe idempotency")
 	}
 }
 
@@ -150,6 +147,33 @@ func TestFakeEmailProviderRejectsInvalidRequest(t *testing.T) {
 	}
 	if got := len(provider.Requests()); got != 0 {
 		t.Fatalf("Requests() length = %d, want 0 for invalid request", got)
+	}
+}
+
+func TestFakeEmailProviderRejectsMismatchedRequestIdentity(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*SendRequest)
+	}{
+		{name: "caller key", mutate: func(request *SendRequest) {
+			request.ProviderIdempotencyKey = "caller-key"
+		}},
+		{name: "attempt message", mutate: func(request *SendRequest) {
+			request.Attempt.MessageID = "message-2"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := NewFakeEmailProvider(FakeEmailProviderConfig{})
+			request := validFakeRequest()
+			test.mutate(&request)
+			if err := provider.Send(context.Background(), request); !errors.Is(err, domain.ErrInvalidArgument) {
+				t.Fatalf("Send() error = %v, want domain.ErrInvalidArgument", err)
+			}
+			if got := len(provider.Requests()); got != 0 {
+				t.Fatalf("Requests() length = %d, want 0", got)
+			}
+		})
 	}
 }
 

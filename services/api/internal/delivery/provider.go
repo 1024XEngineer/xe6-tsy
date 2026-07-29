@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
@@ -24,7 +25,7 @@ func (UnconfiguredProvider) Send(ctx context.Context, _ SendRequest) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return fmt.Errorf("%w: %w: %w", domain.ErrNotImplemented, ErrProviderRejected, ErrProviderNotConfigured)
+	return fmt.Errorf("%w: provider adapter is not wired", ErrProviderNotConfigured)
 }
 
 // SupportsProviderIdempotency reports that an unconfigured provider cannot
@@ -42,9 +43,11 @@ type FakeEmailProviderConfig struct {
 }
 
 // FakeEmailProvider is an explicitly injected, in-memory email provider for
-// local development and unit tests. Successful calls are idempotent by
-// ProviderIdempotencyKey. Failed calls are not marked accepted, so a later
-// attempt with the same key can model a retry after an unknown network result.
+// local development and unit tests. Successful calls are deduplicated by
+// ProviderIdempotencyKey for the lifetime of this instance only. Failed calls
+// are not marked accepted, so a later attempt with the same key can model a
+// retry after an unknown network result. This provider must not be treated as
+// crash-safe across process restarts.
 //
 // Requests returns sanitized observations: ProviderTarget is always blank.
 // The real target is passed only to SendFunc while the call is being handled.
@@ -138,9 +141,10 @@ func (p *FakeEmailProvider) Send(ctx context.Context, request SendRequest) error
 	return err
 }
 
-// SupportsProviderIdempotency allows the worker to replay an interrupted
-// attempt because successful keys are retained for the lifetime of the fake.
-func (*FakeEmailProvider) SupportsProviderIdempotency() bool { return true }
+// SupportsProviderIdempotency is false because the in-memory acceptance map is
+// lost when the provider instance or process is replaced. The method remains
+// explicit so callers cannot accidentally infer crash-safe idempotency.
+func (*FakeEmailProvider) SupportsProviderIdempotency() bool { return false }
 
 // Requests returns sanitized copies of provider calls in invocation order.
 // In particular, the verified provider target is never returned to callers.
@@ -167,7 +171,11 @@ func waitForFakeProviderCall(ctx context.Context, call *fakeProviderCall) error 
 }
 
 func validateFakeEmailRequest(request SendRequest) error {
-	if request.ProviderIdempotencyKey == "" || request.Attempt.ID == "" || request.Message.ID == "" {
+	if strings.TrimSpace(request.ProviderIdempotencyKey) == "" ||
+		strings.TrimSpace(request.Attempt.ID) == "" ||
+		strings.TrimSpace(request.Message.ID) == "" ||
+		request.ProviderIdempotencyKey != request.Attempt.ID ||
+		request.Attempt.MessageID != request.Message.ID {
 		return fmt.Errorf("%w: provider request identity is incomplete", domain.ErrInvalidArgument)
 	}
 	if request.Message.AccountID == "" || request.Destination.AccountID != request.Message.AccountID {
@@ -179,7 +187,7 @@ func validateFakeEmailRequest(request SendRequest) error {
 	if request.Message.DestinationRef == "" || request.Destination.DestinationRef != request.Message.DestinationRef {
 		return fmt.Errorf("%w: provider destination reference is invalid", domain.ErrInvalidArgument)
 	}
-	if request.Destination.ProviderTarget == "" {
+	if strings.TrimSpace(request.Destination.ProviderTarget) == "" {
 		return fmt.Errorf("%w: verified provider destination is missing", domain.ErrInvalidArgument)
 	}
 	return nil

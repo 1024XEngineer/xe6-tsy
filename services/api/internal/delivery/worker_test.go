@@ -464,6 +464,22 @@ func TestWorkerKeepsSendingLeaseAfterTransientProviderFailure(t *testing.T) {
 	}
 }
 
+func TestWorkerRequeuesWhenProviderIsNotConfigured(t *testing.T) {
+	queue, repository, _, worker := newWorkerFixture()
+	worker.deps.Provider = UnconfiguredProvider{}
+
+	err := worker.Process(t.Context(), QueueMessage{AttemptID: "attempt-1", Receipt: "receipt-1"})
+	if !errors.Is(err, ErrProviderNotConfigured) {
+		t.Fatalf("Process() error = %v, want ErrProviderNotConfigured", err)
+	}
+	if repository.requeueCall != 1 || repository.attempt.Status != AttemptStatusQueued {
+		t.Fatalf("requeues=%d status=%q, want one queued reset", repository.requeueCall, repository.attempt.Status)
+	}
+	if len(repository.completions) != 0 || len(queue.acks) != 0 || len(queue.nacks) != 1 {
+		t.Fatalf("completions=%d acks=%d nacks=%d, want 0/0/1", len(repository.completions), len(queue.acks), len(queue.nacks))
+	}
+}
+
 func TestWorkerPermanentSnapshotAndDestinationFailuresCompleteAndAcknowledge(t *testing.T) {
 	tests := []struct {
 		name string

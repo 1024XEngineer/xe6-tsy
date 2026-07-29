@@ -134,6 +134,16 @@ func TestNewRecordsHTTPDependenciesRequiresConfiguration(t *testing.T) {
 	}
 }
 
+func TestRunValidatesRecordsConfigurationBeforeDatabaseSetup(t *testing.T) {
+	t.Setenv("DATABASE_URL", "://invalid")
+	t.Setenv("JWT_SECRET", strings.Repeat("s", 31))
+
+	err := run()
+	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET must be at least 32 bytes") {
+		t.Fatalf("run() error = %v, want JWT_SECRET length error", err)
+	}
+}
+
 func newRecordsTestHandler() *recordswebapi.Server {
 	owners := mainSessionOwners{}
 	return recordswebapi.NewHandler(recordswebapi.Dependencies{

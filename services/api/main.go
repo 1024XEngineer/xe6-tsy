@@ -39,6 +39,10 @@ func main() {
 }
 
 func run() error {
+	if _, _, err := recordsHTTPConfigurationFromEnv(); err != nil {
+		return err
+	}
+
 	address := os.Getenv("API_ADDR")
 	if address == "" {
 		address = ":8080"
@@ -139,16 +143,9 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		accessTokenAudience = "lingow-client"
 	)
 
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		return nil, fmt.Errorf("initialize records HTTP: DATABASE_URL is required")
-	}
-	tokenSecret := os.Getenv("JWT_SECRET")
-	if tokenSecret == "" {
-		return nil, fmt.Errorf("initialize records HTTP: JWT_SECRET is required")
-	}
-	if len([]byte(tokenSecret)) < 32 {
-		return nil, fmt.Errorf("initialize records HTTP: JWT_SECRET must be at least 32 bytes")
+	databaseURL, tokenSecret, err := recordsHTTPConfigurationFromEnv()
+	if err != nil {
+		return nil, err
 	}
 
 	pool, err := recordstore.Open(ctx, databaseURL)
@@ -199,6 +196,21 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		tokens:   tokens,
 		cleanup:  pool.Close,
 	}, nil
+}
+
+func recordsHTTPConfigurationFromEnv() (string, string, error) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		return "", "", fmt.Errorf("initialize records HTTP: DATABASE_URL is required")
+	}
+	tokenSecret := os.Getenv("JWT_SECRET")
+	if tokenSecret == "" {
+		return "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET is required")
+	}
+	if len([]byte(tokenSecret)) < 32 {
+		return "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET must be at least 32 bytes")
+	}
+	return databaseURL, tokenSecret, nil
 }
 
 func buildMux(

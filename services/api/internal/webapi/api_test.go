@@ -304,6 +304,24 @@ func TestRetryPassesMessageResourceID(t *testing.T) {
 	}
 }
 
+func TestRetryRejectsOversizedIdempotencyKey(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", nil)
+	request = authenticate(request)
+	request.Header.Set("Idempotency-Key", strings.Repeat("k", delivery.MaxIdempotencyKeyLength+1))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.retryMessageID != "" {
+		t.Fatal("oversized retry key reached service")
+	}
+}
+
 func TestFormalRoutesReachUseCases(t *testing.T) {
 	tests := []struct {
 		name   string

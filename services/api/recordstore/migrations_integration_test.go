@@ -38,6 +38,7 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{5, "phone_digest_v2"},
 		{6, "phone_digest_cleanup"},
 		{7, "usage_pricing_consistency"},
+		{8, "delivery_retry_idempotency"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))

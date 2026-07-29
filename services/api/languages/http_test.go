@@ -17,7 +17,7 @@ func TestHTTPCreateAndGetConfig(t *testing.T) {
 	mux := http.NewServeMux()
 	NewHandler(svc, func(r *http.Request) (string, bool) {
 		return webapi.AccountIDFromContext(r.Context())
-	}).Register(mux)
+	}).Register(mux, withoutAuthentication)
 
 	body, _ := json.Marshal(CreateLanguageConfigRequest{Languages: bilingualPairs()})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_http/language-configs", bytes.NewReader(body))
@@ -52,7 +52,7 @@ func TestHTTPUnauthorized(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	svc := NewService(store, MapSessionOwner{})
 	mux := http.NewServeMux()
-	NewHandler(svc, nil).Register(mux)
+	NewHandler(svc, nil).Register(mux, withoutAuthentication)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/languages", nil)
 	rec := httptest.NewRecorder()
@@ -68,7 +68,7 @@ func TestHTTPIdempotencyKeyTooLong(t *testing.T) {
 	mux := http.NewServeMux()
 	NewHandler(svc, func(r *http.Request) (string, bool) {
 		return webapi.AccountIDFromContext(r.Context())
-	}).Register(mux)
+	}).Register(mux, withoutAuthentication)
 
 	body, _ := json.Marshal(CreateLanguageConfigRequest{Languages: bilingualPairs()})
 	longKey := make([]byte, MaxIdempotencyKeyLen+1)
@@ -100,7 +100,7 @@ func TestHTTPListLanguages(t *testing.T) {
 	mux := http.NewServeMux()
 	NewHandler(svc, func(r *http.Request) (string, bool) {
 		return "acct_http", true
-	}).Register(mux)
+	}).Register(mux, withoutAuthentication)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/languages?active=true", nil)
 	rec := httptest.NewRecorder()
@@ -108,4 +108,8 @@ func TestHTTPListLanguages(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
+}
+
+func withoutAuthentication(next http.Handler) http.Handler {
+	return next
 }

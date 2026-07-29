@@ -26,12 +26,15 @@ func NewHandler(svc *Service, accountID AccountIDFromContext) *Handler {
 	return &Handler{svc: svc, accountID: accountID}
 }
 
-// Register attaches language routes onto mux.
-func (h *Handler) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/languages", h.listLanguages)
-	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/language-config", h.getCurrentConfig)
-	mux.HandleFunc("POST /api/v1/voice-sessions/{id}/language-configs", h.createConfig)
-	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/language-configs", h.listConfigHistory)
+// Register attaches language routes behind the caller's authentication boundary.
+func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) http.Handler) {
+	if authenticate == nil {
+		panic("language authentication middleware is required")
+	}
+	mux.Handle("GET /api/v1/languages", authenticate(http.HandlerFunc(h.listLanguages)))
+	mux.Handle("GET /api/v1/voice-sessions/{id}/language-config", authenticate(http.HandlerFunc(h.getCurrentConfig)))
+	mux.Handle("POST /api/v1/voice-sessions/{id}/language-configs", authenticate(http.HandlerFunc(h.createConfig)))
+	mux.Handle("GET /api/v1/voice-sessions/{id}/language-configs", authenticate(http.HandlerFunc(h.listConfigHistory)))
 }
 
 func (h *Handler) listLanguages(w http.ResponseWriter, r *http.Request) {

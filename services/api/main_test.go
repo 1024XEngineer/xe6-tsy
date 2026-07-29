@@ -13,6 +13,7 @@ import (
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
+	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
@@ -73,23 +74,39 @@ func TestBuildMuxActivatesAuthenticatedVoiceRecordRoutes(t *testing.T) {
 	}
 }
 
-func TestBuildMuxRegistersLanguageRoutes(t *testing.T) {
+func TestBuildMuxAuthenticatesLanguageRoutes(t *testing.T) {
 	handler := buildMux(
-		languages.NewHandler(nil, func(*http.Request) (string, bool) {
-			return "acct_01", true
+		languages.NewHandler(nil, func(r *http.Request) (string, bool) {
+			return internalwebapi.AccountIDFromContext(r.Context())
 		}),
 		newRecordsTestHandler(),
 		accounts.NewUseCases(),
 		mainTokenVerifier{},
 	)
 
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/languages", nil)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
+	tests := []struct {
+		name        string
+		path        string
+		accessToken string
+		wantStatus  int
+	}{
+		{name: "missing token", path: "/api/v1/languages", wantStatus: http.StatusUnauthorized},
+		{name: "valid token", path: "/api/v1/languages", accessToken: "account-token", wantStatus: http.StatusNotImplemented},
+		{name: "unknown language route", path: "/api/v1/languages/unknown", accessToken: "account-token", wantStatus: http.StatusNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			if test.accessToken != "" {
+				request.Header.Set("Authorization", "Bearer "+test.accessToken)
+			}
+			response := httptest.NewRecorder()
 
-	// Nil service keeps language routes registered but explicitly unimplemented.
-	if response.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusNotImplemented, response.Body.String())
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d, body = %s", response.Code, test.wantStatus, response.Body.String())
+			}
+		})
 	}
 }
 

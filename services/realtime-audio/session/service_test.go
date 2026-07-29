@@ -68,6 +68,32 @@ func TestLifecycleStartIsIdempotentForRunningRuntime(t *testing.T) {
 	}
 }
 
+func TestLifecycleStartReconcilesStaleActiveRuntime(t *testing.T) {
+	pipeline := &healthPipeline{fakePipeline: &fakePipeline{}}
+	service, err := NewLifecycleService(Dependencies{
+		Sessions:    &fakeSessionReader{snapshot: SessionSnapshot{SessionID: "session-1", Status: "created"}},
+		Runtimes:    NewMemoryRuntimeRepository(),
+		Pipelines:   pipeline,
+		Connections: &fakeConnection{},
+		Now:         func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("NewLifecycleService() error = %v", err)
+	}
+	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{
+		SessionID: "session-1", RuntimeState: RuntimeListening,
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got.RuntimeState != RuntimeListening || pipeline.startCalls != 1 {
+		t.Fatalf("Start() = %#v, pipeline calls = %d; want reconciled listening and one start", got, pipeline.startCalls)
+	}
+}
+
 func TestLifecycleStartFailureCanRetry(t *testing.T) {
 	pipeline := &fakePipeline{startErrors: []error{errProvider, nil}}
 	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, pipeline, &fakeConnection{})
@@ -472,6 +498,13 @@ type fakePipeline struct {
 	stopSucceeded            bool
 	events                   *[]string
 }
+
+type healthPipeline struct {
+	*fakePipeline
+	active bool
+}
+
+func (p *healthPipeline) PipelineActive(string) bool { return p.active }
 
 func (f *fakePipeline) Start(_ context.Context, _ SessionSnapshot) error {
 	f.mu.Lock()

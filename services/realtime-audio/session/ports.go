@@ -46,6 +46,12 @@ type PipelineActivator interface {
 	Activate(ctx context.Context, sessionID string) error
 }
 
+// PipelineHealthReader lets lifecycle recovery distinguish a live worker from
+// a persisted active state left behind by a terminated manager entry.
+type PipelineHealthReader interface {
+	PipelineActive(sessionID string) bool
+}
+
 // WebRTCConnectionManager closes all connection resources for a session.
 // Close must be idempotent so lifecycle retries can finish partial cleanup.
 type WebRTCConnectionManager interface {

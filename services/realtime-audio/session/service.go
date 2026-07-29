@@ -55,7 +55,15 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 		return current, ErrRuntimeCleanupRequired
 	}
 	if err == nil && current.RuntimeState != RuntimeStopped && current.RuntimeState != RuntimeFailed {
-		return current, nil
+		processingState := current.RuntimeState == RuntimeListening ||
+			current.RuntimeState == RuntimeASRProcessing || current.RuntimeState == RuntimeTranslating ||
+			current.RuntimeState == RuntimeTTSProcessing || current.RuntimeState == RuntimePlaying
+		if !processingState {
+			return current, nil
+		}
+		if health, ok := s.deps.Pipelines.(PipelineHealthReader); !ok || health.PipelineActive(command.SessionID) {
+			return current, nil
+		}
 	}
 	if err != nil && !errors.Is(err, ErrRuntimeNotFound) {
 		return RuntimeSnapshot{}, fmt.Errorf("read runtime: %w", err)

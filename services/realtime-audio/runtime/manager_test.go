@@ -176,30 +176,27 @@ func TestManagerReportsTerminalFailureAndAllowsRetry(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for RuntimeFailed report")
 	}
+	if !manager.PipelineActive(snapshot.SessionID) {
+		t.Fatal("terminal worker was reported inactive before failure settlement")
+	}
+	retryDone := make(chan error, 1)
+	go func() { retryDone <- manager.Start(context.Background(), snapshot) }()
+	select {
+	case err := <-retryDone:
+		t.Fatalf("retry Start() returned before terminal entry settled: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
 	close(reporter.failureRelease)
 	select {
 	case <-reporter.failureReturned:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for failure report completion")
 	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		manager.mu.Lock()
-		_, exists := manager.entries[snapshot.SessionID]
-		manager.mu.Unlock()
-		if !exists {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("failed pipeline entry was not removed")
-		}
-		time.Sleep(time.Millisecond)
+	if err := <-retryDone; err != nil {
+		t.Fatalf("retry Start() error = %v", err)
 	}
 	if calls := reporter.FailureCalls(); calls != 1 {
 		t.Fatalf("failure report calls = %d, want 1", calls)
-	}
-	if err := manager.Start(context.Background(), snapshot); err != nil {
-		t.Fatalf("retry Start() error = %v", err)
 	}
 	if openCalls != 2 {
 		t.Fatalf("source open calls after retry = %d, want 2", openCalls)
@@ -234,6 +231,127 @@ func TestManagerStopCancellationDoesNotReportRuntimeFailure(t *testing.T) {
 	}
 	if calls := reporter.FailureCalls(); calls != 0 {
 		t.Fatalf("failure report calls = %d, want 0", calls)
+	}
+}
+
+func TestManagerReportsCleanEOFAsRetryableTermination(t *testing.T) {
+	reporter := &recordingRuntimeReporter{
+		failureCalled:   make(chan struct{}),
+		failureReturned: make(chan struct{}),
+	}
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "x", SourceLanguage: "zh-CN", Provider: "asr", Model: "v1"}}),
+		Translation: &translate.FakeProvider{Result: translate.Result{Text: "y", Provider: "llm", Model: "qwen3.6-flash"}},
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "tts", Model: "v1"}}),
+	}, func() Dependencies {
+		deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+		deps.Runtime = reporter
+		return deps
+	}())
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	select {
+	case <-reporter.failureCalled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for clean EOF termination report")
+	}
+	select {
+	case <-reporter.failureReturned:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for clean EOF report completion")
+	}
+	if calls := reporter.FailureCalls(); calls != 1 {
+		t.Fatalf("failure report calls = %d, want 1", calls)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		_, exists := manager.entries[snapshot.SessionID]
+		manager.mu.Unlock()
+		if !exists {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("clean EOF entry was not removed")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if manager.PipelineActive(snapshot.SessionID) {
+		t.Fatal("clean EOF left an active pipeline")
+	}
+}
+
+func TestManagerRetainsFinishedEntryWhenFailureReportFails(t *testing.T) {
+	reporter := &recordingRuntimeReporter{
+		failureErr:      errors.New("runtime repository unavailable"),
+		failureCalled:   make(chan struct{}),
+		failureReturned: make(chan struct{}),
+	}
+	first := &fakeFrameSource{frames: []audio.Frame{
+		mustFrame(t, []byte{1, 0}, time.Unix(1700000000, 0)),
+		mustFrame(t, []byte{0, 0}, time.Unix(1700000000, 100000000)),
+	}}
+	second := &fakeFrameSource{}
+	openCalls := 0
+	deps := testDependencies(first, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.Runtime = reporter
+	deps.FrameSources = FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
+		openCalls++
+		if openCalls == 1 {
+			return AudioInput{Source: first, SourceLanguage: "zh-CN"}, nil
+		}
+		return AudioInput{Source: second, SourceLanguage: "zh-CN"}, nil
+	})
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{StartErr: errors.New("ASR unavailable")}),
+		Translation: &translate.FakeProvider{Result: translate.Result{Text: "y", Provider: "llm", Model: "qwen3.6-flash"}},
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "tts", Model: "v1"}}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	select {
+	case <-reporter.failureReturned:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed report")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		item := manager.entries[snapshot.SessionID]
+		retained := item != nil && item.terminal && item.finished
+		manager.mu.Unlock()
+		if retained {
+			break
+		}
+		if item == nil || time.Now().After(deadline) {
+			t.Fatal("finished entry was removed after failure report error")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("retry Start() error = %v", err)
+	}
+	if openCalls != 2 {
+		t.Fatalf("source open calls after retry = %d, want 2", openCalls)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Stop() after retry = %v", err)
 	}
 }
 
@@ -628,6 +746,7 @@ type recordingRuntimeReporter struct {
 	mu              sync.Mutex
 	states          []session.RuntimeState
 	failureCalls    int
+	failureErr      error
 	failureCalled   chan struct{}
 	failureReturned chan struct{}
 	failureRelease  chan struct{}
@@ -661,7 +780,7 @@ func (r *recordingRuntimeReporter) SetRuntimeFailed(ctx context.Context, _ strin
 	if r.failureReturned != nil {
 		close(r.failureReturned)
 	}
-	return nil
+	return r.failureErr
 }
 
 func (r *recordingRuntimeReporter) FailureCalls() int {

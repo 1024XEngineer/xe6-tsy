@@ -24,6 +24,7 @@ var (
 	ErrAudioInputRequired = errors.New("realtime runtime audio input is required")
 	ErrPipelineNotFound   = errors.New("realtime runtime pipeline not found")
 	ErrPipelineStopping   = errors.New("realtime runtime pipeline is stopping")
+	ErrPipelineEnded      = errors.New("realtime runtime pipeline ended")
 )
 
 const failureReportTimeout = 5 * time.Second
@@ -96,6 +97,7 @@ type entry struct {
 	err      error
 	active   bool
 	stopping bool
+	terminal bool
 	finished bool
 }
 
@@ -172,11 +174,28 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	defer unlock()
 
 	m.mu.Lock()
-	if _, ok := m.entries[snapshot.SessionID]; ok {
+	item := m.entries[snapshot.SessionID]
+	if item == nil {
+		m.mu.Unlock()
+	} else if !item.terminal {
 		m.mu.Unlock()
 		return nil
+	} else {
+		// Do not replace a terminal entry while its failure state is still
+		// being published; otherwise the old report could overwrite the new run.
+		done := item.done
+		m.mu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		m.mu.Lock()
+		if m.entries[snapshot.SessionID] == item {
+			delete(m.entries, snapshot.SessionID)
+		}
+		m.mu.Unlock()
 	}
-	m.mu.Unlock()
 	input, err := m.deps.FrameSources.Open(ctx, snapshot)
 	if err != nil {
 		return fmt.Errorf("open audio input: %w", err)
@@ -201,7 +220,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	// The session outlives the start request. Use an independent context so
 	// request-scoped credentials and large values are not retained until Stop.
 	runCtx, cancel := context.WithCancel(context.Background())
-	item := &entry{
+	item = &entry{
 		cancel: cancel, source: owned, service: service,
 		ctx: runCtx,
 		request: segment.Request{
@@ -252,12 +271,24 @@ func (m *Manager) Activate(ctx context.Context, sessionID string) error {
 
 func (m *Manager) run(item *entry, ctx context.Context) {
 	err := item.service.Run(ctx, item.request)
+	reportFailure := false
+	var reportErr error
 	if err != nil && ctx.Err() == nil {
-		reportErr := m.reportFailure(ctx, item.request.SessionID)
-		if reportErr != nil {
-			if !errors.Is(reportErr, context.Canceled) {
-				err = errors.Join(err, fmt.Errorf("report runtime failure: %w", reportErr))
-			}
+		reportFailure = true
+	} else if err == nil && ctx.Err() == nil {
+		// A source EOF ends the worker without an error, but it is still a
+		// terminal media state and must not leave persisted Listening forever.
+		err = ErrPipelineEnded
+		reportFailure = true
+	}
+	if reportFailure {
+		m.mu.Lock()
+		item.terminal = true
+		item.err = err
+		m.mu.Unlock()
+		reportErr = m.reportFailure(ctx, item.request.SessionID)
+		if reportErr != nil && !errors.Is(reportErr, context.Canceled) {
+			err = errors.Join(err, fmt.Errorf("report runtime failure: %w", reportErr))
 		}
 	}
 	m.mu.Lock()
@@ -266,11 +297,25 @@ func (m *Manager) run(item *entry, ctx context.Context) {
 	}
 	item.err = err
 	item.finished = true
-	if err != nil && ctx.Err() == nil && m.entries[item.request.SessionID] == item {
+	if reportFailure && reportErr == nil && ctx.Err() == nil && m.entries[item.request.SessionID] == item {
 		delete(m.entries, item.request.SessionID)
 	}
 	close(item.done)
 	m.mu.Unlock()
+}
+
+// PipelineActive reports whether a worker is active or still settling its
+// terminal state. Lifecycle recovery waits for settlement before replacing it.
+func (m *Manager) PipelineActive(sessionID string) bool {
+	if m == nil || sessionID == "" {
+		return false
+	}
+	unlock := m.locks.lock(sessionID)
+	defer unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item := m.entries[sessionID]
+	return item != nil && !item.finished
 }
 
 func (m *Manager) reportFailure(ctx context.Context, sessionID string) error {
@@ -428,3 +473,4 @@ func (l *keyedLocker) lock(key string) func() {
 
 var _ session.PipelineManager = (*Manager)(nil)
 var _ session.PipelineActivator = (*Manager)(nil)
+var _ session.PipelineHealthReader = (*Manager)(nil)

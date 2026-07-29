@@ -102,6 +102,7 @@ func TestNewRecordsHTTPDependenciesRequiresConfiguration(t *testing.T) {
 	}{
 		{name: "database URL", tokenSecret: strings.Repeat("s", 32), wantError: "DATABASE_URL is required"},
 		{name: "token secret", databaseURL: "postgres://unused", wantError: "JWT_SECRET is required"},
+		{name: "short token secret", databaseURL: "postgres://unused", tokenSecret: strings.Repeat("s", 31), wantError: "JWT_SECRET must be at least 32 bytes"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

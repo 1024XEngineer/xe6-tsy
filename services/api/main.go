@@ -147,6 +147,9 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 	if tokenSecret == "" {
 		return nil, fmt.Errorf("initialize records HTTP: JWT_SECRET is required")
 	}
+	if len([]byte(tokenSecret)) < 32 {
+		return nil, fmt.Errorf("initialize records HTTP: JWT_SECRET must be at least 32 bytes")
+	}
 
 	pool, err := recordstore.Open(ctx, databaseURL)
 	if err != nil {

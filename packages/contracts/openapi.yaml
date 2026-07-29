@@ -122,6 +122,58 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets:
+    get:
+      operationId: listMessageTargets
+      security: [{ accountContext: [] }]
+      parameters: [{ name: channel, in: query, required: false, schema: { $ref: '#/components/schemas/Channel' } }]
+      responses:
+        '200': { description: Bound targets, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/MessageTarget' } } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/wechat/bind:
+    post:
+      operationId: bindWeChatTarget
+      security: [{ accountContext: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BindWeChatRequest' } } } }
+      responses:
+        '200': { description: Bound target, content: { application/json: { schema: { $ref: '#/components/schemas/MessageTarget' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/wechat/{destination_ref}:
+    delete:
+      operationId: unbindWeChatTarget
+      security: [{ accountContext: [] }]
+      parameters: [{ name: destination_ref, in: path, required: true, schema: { type: string } }]
+      responses:
+        '204': { description: Target revoked }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/email/bind:
+    post:
+      operationId: bindEmailTarget
+      security: [{ accountContext: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BindEmailRequest' } } } }
+      responses:
+        '200': { description: Bound target, content: { application/json: { schema: { $ref: '#/components/schemas/MessageTarget' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/email/{destination_ref}:
+    delete:
+      operationId: unbindEmailTarget
+      security: [{ accountContext: [] }]
+      parameters: [{ name: destination_ref, in: path, required: true, schema: { type: string } }]
+      responses:
+        '204': { description: Target revoked }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
 components:
   securitySchemes:
     accountContext:
@@ -185,7 +237,7 @@ components:
               audio_duration_ms: { type: integer, format: int64, minimum: 0 }
               cost_amount: { type: string }
               currency: { type: string }
-    Channel: { type: string, enum: [email] }
+    Channel: { type: string, enum: [email, wechat] }
     CreateMessageRequest:
       type: object
       additionalProperties: false
@@ -224,6 +276,27 @@ components:
       type: object
       required: [account_id, channel, enabled, verified, updated_at]
       properties: { account_id: { type: string }, channel: { $ref: '#/components/schemas/Channel' }, enabled: { type: boolean }, verified: { type: boolean }, updated_at: { type: string, format: date-time } }
+    MessageTarget:
+      type: object
+      required: [destination_ref, channel, verified, updated_at]
+      properties:
+        destination_ref: { type: string }
+        channel: { $ref: '#/components/schemas/Channel' }
+        verified: { type: boolean }
+        revoked_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: string, format: date-time }
+    BindWeChatRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code: { type: string, minLength: 1, description: WeChat OAuth login code exchanged server-side for OpenID }
+    BindEmailRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string, minLength: 1, description: One-time email verification token; dev mode accepts dev: prefixed addresses }
     Error:
       type: object
       required: [error]

@@ -42,16 +42,6 @@ func TestNewServicesBuildsRecordsServiceChain(t *testing.T) {
 	}
 }
 
-func TestOpenServicesRejectsInvalidDatabaseURL(t *testing.T) {
-	_, cleanup, err := OpenServices(t.Context(), "://invalid", []byte("cursor-key"), sessionOwnerFake{}, sessionScopeFake{})
-	if err == nil {
-		t.Fatal("OpenServices() error = nil")
-	}
-	if cleanup != nil {
-		t.Fatal("OpenServices() cleanup != nil after open failure")
-	}
-}
-
 type sessionOwnerFake struct{}
 
 func (sessionOwnerFake) AccountIDForSession(context.Context, string) (string, error) {

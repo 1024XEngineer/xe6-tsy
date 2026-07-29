@@ -199,8 +199,32 @@ func (r *PostgresRepository) ListPreferences(ctx context.Context, accountID stri
 }
 
 func (r *PostgresRepository) PutPreference(ctx context.Context, preference Preference) (Preference, error) {
-	_, err := r.pool.Exec(ctx, `INSERT INTO message_preferences (account_id,channel,enabled,verified,updated_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (account_id,channel) DO UPDATE SET enabled=EXCLUDED.enabled,verified=EXCLUDED.verified,updated_at=EXCLUDED.updated_at`, preference.AccountID, preference.Channel, preference.Enabled, preference.Verified, preference.UpdatedAt)
-	return preference, mapDeliveryError(err)
+	var stored Preference
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO message_preferences (account_id,channel,enabled,verified,updated_at)
+		VALUES (
+			$1,
+			$2,
+			$3,
+			EXISTS (
+				SELECT 1
+				FROM account_destinations d
+				WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1))
+				  AND d.channel=$2
+				  AND d.verified_at IS NOT NULL
+				  AND d.revoked_at IS NULL
+			),
+			$4
+		)
+		ON CONFLICT (account_id,channel) DO UPDATE
+		SET enabled=EXCLUDED.enabled,verified=EXCLUDED.verified,updated_at=EXCLUDED.updated_at
+		RETURNING account_id,channel,enabled,verified,updated_at`,
+		preference.AccountID, preference.Channel, preference.Enabled, preference.UpdatedAt,
+	).Scan(&stored.AccountID, &stored.Channel, &stored.Enabled, &stored.Verified, &stored.UpdatedAt)
+	if err != nil {
+		return Preference{}, mapDeliveryError(err)
+	}
+	return stored, nil
 }
 
 func (r *PostgresRepository) ClaimOutbox(ctx context.Context, limit int) ([]OutboxRecord, error) {

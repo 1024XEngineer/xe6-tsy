@@ -191,7 +191,10 @@ func (u *UseCases) PutPreference(ctx context.Context, accountID string, channel 
 	if accountID == "" || !IsSupportedChannel(channel) {
 		return Preference{}, domain.ErrInvalidArgument
 	}
-	return u.repository.PutPreference(ctx, Preference{AccountID: accountID, Channel: channel, Enabled: enabled, Verified: true, UpdatedAt: time.Now().UTC()})
+	// Verification is authoritative data owned by the destination store. The
+	// repository derives it from the currently verified, non-revoked target;
+	// the preference endpoint must not manufacture a verified state.
+	return u.repository.PutPreference(ctx, Preference{AccountID: accountID, Channel: channel, Enabled: enabled, UpdatedAt: time.Now().UTC()})
 }
 
 func isOutboxBacked(repository Repository) bool { _, ok := repository.(OutboxRepository); return ok }

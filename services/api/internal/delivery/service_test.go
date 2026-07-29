@@ -19,6 +19,7 @@ type retryRepositoryStub struct {
 	createLookup  Message
 	createErr     error
 	createCalls   int
+	preference    Preference
 }
 
 func (r *retryRepositoryStub) CreateMessage(context.Context, CreateMessageRecord) error {
@@ -69,8 +70,22 @@ func (r *retryRepositoryStub) ListPreferences(context.Context, string) ([]Prefer
 	return nil, nil
 }
 
-func (r *retryRepositoryStub) PutPreference(context.Context, Preference) (Preference, error) {
-	return Preference{}, nil
+func (r *retryRepositoryStub) PutPreference(_ context.Context, preference Preference) (Preference, error) {
+	r.preference = preference
+	return preference, nil
+}
+
+func TestPutPreferenceDoesNotClaimVerification(t *testing.T) {
+	repository := &retryRepositoryStub{}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+
+	preference, err := service.PutPreference(context.Background(), "account-1", ChannelEmail, true)
+	if err != nil {
+		t.Fatalf("PutPreference() error = %v", err)
+	}
+	if preference.Verified || repository.preference.Verified {
+		t.Fatal("PutPreference() must leave destination verification to the repository")
+	}
 }
 
 func (r *retryRepositoryStub) GetMessageByIdempotency(context.Context, string, string) (Message, error) {

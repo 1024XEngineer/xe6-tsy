@@ -353,6 +353,10 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 		m.mu.Unlock()
 		return nil
 	}
+	// A settled terminal entry keeps the worker's processing/reporting error
+	// for retry and observability. Stop is only cleaning up that entry now, so
+	// it must not replay the historical error as a cleanup failure.
+	settled := item.finished && item.terminal
 	item.stopping = true
 	active := item.active
 	item.cancel()
@@ -377,6 +381,9 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	case <-item.done:
 		m.mu.Lock()
 		err := item.err
+		if settled {
+			err = nil
+		}
 		if m.entries[sessionID] == item {
 			delete(m.entries, sessionID)
 		}

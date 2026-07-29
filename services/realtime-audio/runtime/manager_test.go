@@ -355,6 +355,66 @@ func TestManagerRetainsFinishedEntryWhenFailureReportFails(t *testing.T) {
 	}
 }
 
+func TestManagerStopIgnoresSettledWorkerError(t *testing.T) {
+	reporter := &recordingRuntimeReporter{
+		failureErr:      errors.New("runtime repository unavailable"),
+		failureCalled:   make(chan struct{}),
+		failureReturned: make(chan struct{}),
+	}
+	source := &fakeFrameSource{frames: []audio.Frame{
+		mustFrame(t, []byte{1, 0}, time.Unix(1700000000, 0)),
+		mustFrame(t, []byte{0, 0}, time.Unix(1700000000, 100000000)),
+	}}
+	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.Runtime = reporter
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{StartErr: errors.New("ASR unavailable")}),
+		Translation: &translate.FakeProvider{Result: translate.Result{Text: "y", Provider: "llm", Model: "qwen3.6-flash"}},
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "tts", Model: "v1"}}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	select {
+	case <-reporter.failureReturned:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed report")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		item := manager.entries[snapshot.SessionID]
+		settled := item != nil && item.terminal && item.finished
+		manager.mu.Unlock()
+		if settled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("finished terminal entry was not retained")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Stop() returned settled worker error: %v", err)
+	}
+	manager.mu.Lock()
+	_, retained := manager.entries[snapshot.SessionID]
+	manager.mu.Unlock()
+	if retained {
+		t.Fatal("Stop() did not remove settled entry")
+	}
+	if source.CloseCalls() != 1 {
+		t.Fatalf("source close calls = %d, want 1", source.CloseCalls())
+	}
+}
+
 func TestManagerStopCancelsBlockedFailureReport(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	source := &fakeFrameSource{frames: []audio.Frame{

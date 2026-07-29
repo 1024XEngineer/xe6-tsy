@@ -15,11 +15,12 @@ import (
 )
 
 type UseCases struct {
-	repository Repository
-	issuer     TokenIssuer
-	verifier   AccessTokenVerifier
-	sender     VerificationSender
-	digester   *CredentialDigester
+	repository         Repository
+	issuer             TokenIssuer
+	verifier           AccessTokenVerifier
+	sender             VerificationSender
+	digester           *CredentialDigester
+	verificationPolicy VerificationPolicy
 }
 
 var (
@@ -42,6 +43,14 @@ func NewPersistentUseCases(repository Repository, issuer TokenIssuer, verifier A
 	return &UseCases{repository: repository, issuer: issuer, verifier: verifier, sender: sender, digester: digester}
 }
 
+// WithVerificationPolicy configures fixed or universal verification behavior.
+func (u *UseCases) WithVerificationPolicy(policy VerificationPolicy) *UseCases {
+	if u != nil {
+		u.verificationPolicy = policy
+	}
+	return u
+}
+
 func (u *UseCases) CreateAnonymous(ctx context.Context) (AuthResult, error) {
 	if u.repository == nil || u.issuer == nil {
 		return AuthResult{}, domain.ErrNotImplemented
@@ -60,7 +69,7 @@ func (u *UseCases) CreatePhoneChallenge(ctx context.Context, phone string) (stri
 	if !canonicalPhonePattern.MatchString(phone) {
 		return "", domain.ErrInvalidArgument
 	}
-	code, err := randomDigits(6)
+	code, err := u.generateVerificationCode()
 	if err != nil {
 		return "", fmt.Errorf("generate verification code: %w", err)
 	}
@@ -96,13 +105,13 @@ func (u *UseCases) VerifyPhone(ctx context.Context, challengeID, code, anonymous
 	if u.repository == nil || u.issuer == nil || u.digester == nil {
 		return AuthResult{}, domain.ErrNotImplemented
 	}
-	if challengeID == "" || !verificationCodePattern.MatchString(code) {
+	if challengeID == "" || !verificationCodePattern.MatchString(NormalizeVerificationCode(code)) {
 		return AuthResult{}, domain.ErrInvalidArgument
 	}
 	if err := verifyAnonymousBindingOwnership(ctx, anonymousAccountID); err != nil {
 		return AuthResult{}, err
 	}
-	challenge, err := u.repository.ConsumeChallenge(ctx, challengeID, u.digester.CodeHash(challengeID, code))
+	challenge, err := u.repository.ConsumeChallenge(ctx, challengeID, u.verificationCodeHash(challengeID, code))
 	if err != nil {
 		return AuthResult{}, err
 	}
@@ -237,6 +246,24 @@ func (u *UseCases) issueSession(ctx context.Context, account Account) (AuthResul
 		return AuthResult{}, err
 	}
 	return AuthResult{Account: account, Tokens: tokens}, nil
+}
+
+func (u *UseCases) generateVerificationCode() (string, error) {
+	if u.verificationPolicy.enabled() {
+		return NormalizeVerificationCode(u.verificationPolicy.UniversalCode), nil
+	}
+	return randomDigits(6)
+}
+
+func (u *UseCases) verificationCodeHash(challengeID, code string) string {
+	normalized := NormalizeVerificationCode(code)
+	if u.verificationPolicy.enabled() {
+		universal := NormalizeVerificationCode(u.verificationPolicy.UniversalCode)
+		if normalized == universal {
+			return u.digester.CodeHash(challengeID, universal)
+		}
+	}
+	return u.digester.CodeHash(challengeID, normalized)
 }
 
 func (u *UseCases) prepareSession(ctx context.Context, account Account) (Session, Tokens, error) {

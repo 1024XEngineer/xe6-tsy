@@ -3,6 +3,7 @@ package webrtc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -30,6 +31,86 @@ func TestNewPionTransportFactoryValidatesAndMapsICEServers(t *testing.T) {
 	}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ICE servers = %#v, want %#v", got, want)
 	}
+}
+
+func TestMediaConfigDefaultsTTSOutputToQwenSampleRate(t *testing.T) {
+	config, err := (MediaConfig{}).normalized()
+	if err != nil {
+		t.Fatalf("MediaConfig.normalized() error = %v", err)
+	}
+	if config.SampleRate != 24_000 {
+		t.Fatalf("default TTS sample rate = %d, want 24000", config.SampleRate)
+	}
+}
+
+func TestValidateTTSAudioOfferRequiresConfiguredL16Codec(t *testing.T) {
+	config, err := (MediaConfig{}).normalized()
+	if err != nil {
+		t.Fatalf("MediaConfig.normalized() error = %v", err)
+	}
+	tests := []struct {
+		name string
+		sdp  string
+		want error
+	}{
+		{name: "matching L16", sdp: l16OfferSDP(24_000), want: nil},
+		{name: "opus only", sdp: opusOfferSDP(), want: ErrTTSCodecUnsupported},
+		{name: "no audio", sdp: videoOnlyOfferSDP(), want: ErrTTSCodecUnsupported},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateTTSAudioOffer(test.sdp, config)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("validateTTSAudioOffer() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestPionTransportRejectsOfferWithoutTTSCodecBeforeAddingTrack(t *testing.T) {
+	peer := &mediaPeerRecorder{fakePionPeerConnection: &fakePionPeerConnection{
+		answer: pion.SessionDescription{Type: pion.SDPTypeAnswer, SDP: "answer-sdp"}, gatherComplete: closedChannel(),
+	}}
+	factory := newFakePionTransportFactory(peer.fakePionPeerConnection)
+	factory.newPeerConnection = func(pion.Configuration) (pionPeerConnection, error) { return peer, nil }
+	transport, err := factory.Create(context.Background(), "session-1", "rtc_1", nil)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	_, err = transport.Answer(context.Background(), SessionDescription{Type: "offer", SDP: opusOfferSDP()})
+	if !errors.Is(err, ErrTTSCodecUnsupported) {
+		t.Fatalf("Answer() error = %v, want ErrTTSCodecUnsupported", err)
+	}
+	if len(peer.trackAdds) != 0 {
+		t.Fatalf("TTS track registrations = %d, want 0", len(peer.trackAdds))
+	}
+}
+
+func l16OfferSDP(sampleRate int) string {
+	return "v=0\r\n" +
+		"o=- 0 0 IN IP4 127.0.0.1\r\n" +
+		"s=-\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 9 UDP/TLS/RTP/SAVPF 118\r\n" +
+		"a=rtpmap:118 L16/" + fmt.Sprint(sampleRate) + "/1\r\n"
+}
+
+func opusOfferSDP() string {
+	return "v=0\r\n" +
+		"o=- 0 0 IN IP4 127.0.0.1\r\n" +
+		"s=-\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n" +
+		"a=rtpmap:111 opus/48000/2\r\n"
+}
+
+func videoOnlyOfferSDP() string {
+	return "v=0\r\n" +
+		"o=- 0 0 IN IP4 127.0.0.1\r\n" +
+		"s=-\r\n" +
+		"t=0 0\r\n" +
+		"m=video 9 UDP/TLS/RTP/SAVPF 96\r\n" +
+		"a=rtpmap:96 VP8/90000\r\n"
 }
 
 func TestNewPionTransportFactoryRejectsUnsafeICEServerURL(t *testing.T) {

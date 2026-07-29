@@ -21,7 +21,7 @@ type workerQueueStub struct {
 	nacks      []string
 }
 
-func (q *workerQueueStub) Enqueue(context.Context, string, string) error { return nil }
+func (q *workerQueueStub) Enqueue(context.Context, QueueItem) error { return nil }
 
 func (q *workerQueueStub) Receive(ctx context.Context) (QueueMessage, error) {
 	q.mu.Lock()

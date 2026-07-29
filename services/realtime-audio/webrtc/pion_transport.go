@@ -2,19 +2,71 @@ package webrtc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
 	pion "github.com/pion/webrtc/v4"
 )
 
 // PionTransport owns signaling operations for one Pion PeerConnection.
 type PionTransport struct {
 	mu              sync.Mutex
+	mediaSetupMu    sync.Mutex
 	peerConnection  pionPeerConnection
 	endOfCandidates bool
 	closeDone       chan struct{}
 	closeErr        error
+	audioSource     *PionAudioSource
+	ttsTrack        *PionAudioTrack
+	events          *PionEventSink
+	playback        *playback.Service
+	mediaConnection pionMediaPeerConnection
+	mediaConfig     MediaConfig
+	mediaNow        func() time.Time
+}
+
+// AudioSource returns the normalized inbound source, when media was enabled.
+func (t *PionTransport) AudioSource() segment.FrameSource {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.audioSource
+}
+
+// TTSAudioTrack returns the outbound track writer, when media was enabled.
+func (t *PionTransport) TTSAudioTrack() *PionAudioTrack {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.ttsTrack
+}
+
+// TranslationEvents returns the ordered DataChannel event sink, when enabled.
+func (t *PionTransport) TranslationEvents() *PionEventSink {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.events
+}
+
+// Playback returns the transport-bound playback state machine.
+func (t *PionTransport) Playback() *playback.Service {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.playback
 }
 
 // Answer applies an offer and returns the fully gathered local answer.
@@ -34,6 +86,12 @@ func (t *PionTransport) Answer(ctx context.Context, offer SessionDescription) (S
 	}
 	if err := connection.SetRemoteDescription(pion.SessionDescription{Type: pion.SDPTypeOffer, SDP: offer.SDP}); err != nil {
 		return SessionDescription{}, fmt.Errorf("set remote SDP offer: %w", err)
+	}
+	if err := t.validateTTSAudioOffer(offer.SDP); err != nil {
+		return SessionDescription{}, err
+	}
+	if err := configurePionTTSTrack(t); err != nil {
+		return SessionDescription{}, err
 	}
 	answer, err := connection.CreateAnswer(nil)
 	if err != nil {
@@ -60,6 +118,20 @@ func (t *PionTransport) Answer(ctx context.Context, offer SessionDescription) (S
 		return SessionDescription{}, err
 	}
 	return result, nil
+}
+
+func (t *PionTransport) validateTTSAudioOffer(rawSDP string) error {
+	if t == nil {
+		return ErrInvalidDependency
+	}
+	t.mu.Lock()
+	mediaEnabled := t.mediaConnection != nil
+	config := t.mediaConfig
+	t.mu.Unlock()
+	if !mediaEnabled {
+		return nil
+	}
+	return validateTTSAudioOffer(rawSDP, config)
 }
 
 // AddCandidate passes one remote trickle candidate into Pion.
@@ -140,7 +212,18 @@ func (t *PionTransport) Close(ctx context.Context) error {
 	connection := t.peerConnection
 	t.mu.Unlock()
 
-	closeErr := connection.Close()
+	t.mu.Lock()
+	source := t.audioSource
+	events := t.events
+	t.mu.Unlock()
+	if events != nil {
+		events.close(ErrTransportClosed)
+	}
+	var sourceErr error
+	if source != nil {
+		sourceErr = source.Close()
+	}
+	closeErr := errors.Join(sourceErr, connection.Close())
 	t.mu.Lock()
 	t.closeErr = closeErr
 	close(done)
@@ -164,3 +247,4 @@ func (t *PionTransport) openPeerConnection() (pionPeerConnection, error) {
 }
 
 var _ ConnectionTransport = (*PionTransport)(nil)
+var _ MediaTransport = (*PionTransport)(nil)

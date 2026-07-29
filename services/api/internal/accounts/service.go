@@ -27,6 +27,8 @@ var (
 	verificationCodePattern = regexp.MustCompile(`^[0-9]{6}$`)
 )
 
+const challengeRestoreTimeout = 3 * time.Second
+
 func NewUseCases() *UseCases { return &UseCases{} }
 
 // NewPersistentUseCases wires account policy to durable adapters. The empty
@@ -68,12 +70,13 @@ func (u *UseCases) CreatePhoneChallenge(ctx context.Context, phone string) (stri
 	}
 	now := time.Now().UTC()
 	id := "challenge_" + challengeID
-	legacyPhoneHash, err := u.digester.EncryptLegacyPhoneHash(hashValue(phone))
+	legacyRateLimitHash := hashValue(phone)
+	legacyPhoneHash, err := u.digester.EncryptLegacyPhoneHash(legacyRateLimitHash)
 	if err != nil {
 		return "", fmt.Errorf("protect legacy phone lookup: %w", err)
 	}
 	challenge := PhoneChallenge{
-		ID: id, PhoneHash: u.digester.PhoneHash(phone), LegacyPhoneHash: legacyPhoneHash,
+		ID: id, PhoneHash: u.digester.PhoneHash(phone), LegacyPhoneHash: legacyPhoneHash, LegacyRateLimitHash: legacyRateLimitHash,
 		CodeHash: u.digester.CodeHash(id, code), DigestVersion: 2,
 		ExpiresAt: now.Add(10 * time.Minute), CreatedAt: now, MaxAttempts: defaultPhoneChallengeMaxAttempts,
 	}
@@ -109,7 +112,10 @@ func (u *UseCases) VerifyPhone(ctx context.Context, challengeID, code, anonymous
 			// Consumption is committed separately because failed guesses must be
 			// durable. Restore only a valid consumed code when account/session
 			// work fails, otherwise a transient dependency failure burns the code.
-			if restoreErr := u.repository.RestoreChallenge(ctx, challenge.ID); restoreErr != nil {
+			restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), challengeRestoreTimeout)
+			restoreErr := u.repository.RestoreChallenge(restoreCtx, challenge.ID)
+			cancel()
+			if restoreErr != nil {
 				err = fmt.Errorf("complete phone verification: %w", errors.Join(err, fmt.Errorf("restore consumed challenge: %w", restoreErr)))
 			}
 		}
@@ -125,10 +131,16 @@ func (u *UseCases) VerifyPhone(ctx context.Context, challengeID, code, anonymous
 		return AuthResult{}, err
 	}
 	if anonymousAccountID != "" {
-		challengeAccount, err = u.repository.BindAnonymous(ctx, anonymousAccountID, challengeAccount.ID)
+		session, tokens, prepareErr := u.prepareSession(ctx, challengeAccount)
+		if prepareErr != nil {
+			return AuthResult{}, prepareErr
+		}
+		challengeAccount, err = u.repository.BindAnonymousAndCreateSession(ctx, anonymousAccountID, challengeAccount.ID, session)
 		if err != nil {
 			return AuthResult{}, err
 		}
+		completed = true
+		return AuthResult{Account: challengeAccount, Tokens: tokens}, nil
 	}
 	result, err = u.issueSession(ctx, challengeAccount)
 	if err != nil {

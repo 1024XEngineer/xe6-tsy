@@ -17,11 +17,24 @@ var (
 	errNoDeadline  = errors.New("cleanup context has no deadline")
 )
 
+func TestLifecycleStartRequiresOperationID(t *testing.T) {
+	pipeline := &fakePipeline{}
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, pipeline, &fakeConnection{})
+
+	_, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	if err == nil || err.Error() != "start operation id is required" {
+		t.Fatalf("Start() error = %v, want operation id required", err)
+	}
+	if pipeline.startCalls != 0 {
+		t.Fatalf("pipeline start calls = %d, want 0", pipeline.startCalls)
+	}
+}
+
 func TestLifecycleStartCreatedSession(t *testing.T) {
 	pipeline := &fakePipeline{}
 	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, pipeline, &fakeConnection{})
 
-	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -43,7 +56,7 @@ func TestLifecycleStartRejectsActiveSession(t *testing.T) {
 	pipeline := &fakePipeline{}
 	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "active"}, pipeline, &fakeConnection{})
 
-	_, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	_, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
 	if !errors.Is(err, ErrSessionNotCreated) {
 		t.Fatalf("Start() error = %v, want ErrSessionNotCreated", err)
 	}
@@ -55,16 +68,81 @@ func TestLifecycleStartRejectsActiveSession(t *testing.T) {
 func TestLifecycleStartIsIdempotentForRunningRuntime(t *testing.T) {
 	pipeline := &fakePipeline{}
 	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, pipeline, &fakeConnection{})
-	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{SessionID: "session-1", RuntimeState: RuntimeListening}); err != nil {
+	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{
+		SessionID: "session-1", StartOperationID: "operation-1", RuntimeState: RuntimeListening,
+	}); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if got.RuntimeState != RuntimeListening || pipeline.startCalls != 0 {
+	if got.StartOperationID != "operation-1" || got.RuntimeState != RuntimeListening || pipeline.startCalls != 0 {
 		t.Fatalf("Start() = %#v, pipeline calls = %d", got, pipeline.startCalls)
+	}
+}
+
+func TestLifecycleStartRejectsForeignOperationForRunningRuntime(t *testing.T) {
+	pipeline := &fakePipeline{}
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, pipeline, &fakeConnection{})
+	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{
+		SessionID: "session-1", StartOperationID: "operation-1", RuntimeState: RuntimeListening,
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-2"})
+	if !errors.Is(err, ErrRuntimeOperationConflict) {
+		t.Fatalf("Start() error = %v, want ErrRuntimeOperationConflict", err)
+	}
+	if got.StartOperationID != "operation-1" || pipeline.startCalls != 0 {
+		t.Fatalf("Start() = %#v, pipeline calls = %d", got, pipeline.startCalls)
+	}
+}
+
+func TestLifecycleStartAllowsNewOperationAfterSuccessfulStop(t *testing.T) {
+	pipeline := &fakePipeline{}
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, pipeline, &fakeConnection{})
+
+	if _, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"}); err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	if _, err := service.Stop(context.Background(), StopRealtimeCommand{SessionID: "session-1"}); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-2"})
+	if err != nil {
+		t.Fatalf("second Start() error = %v", err)
+	}
+	if got.StartOperationID != "operation-2" || pipeline.startCalls != 2 {
+		t.Fatalf("second Start() = %#v, pipeline calls = %d", got, pipeline.startCalls)
+	}
+}
+
+func TestLifecycleStartReconcilesStaleActiveRuntime(t *testing.T) {
+	pipeline := &healthPipeline{fakePipeline: &fakePipeline{}}
+	service, err := NewLifecycleService(Dependencies{
+		Sessions:    &fakeSessionReader{snapshot: SessionSnapshot{SessionID: "session-1", Status: "created"}},
+		Runtimes:    NewMemoryRuntimeRepository(),
+		Pipelines:   pipeline,
+		Connections: &fakeConnection{},
+		Now:         func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("NewLifecycleService() error = %v", err)
+	}
+	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{
+		SessionID: "session-1", StartOperationID: "operation-1", RuntimeState: RuntimeListening,
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got.RuntimeState != RuntimeListening || pipeline.startCalls != 1 {
+		t.Fatalf("Start() = %#v, pipeline calls = %d; want reconciled listening and one start", got, pipeline.startCalls)
 	}
 }
 
@@ -72,15 +150,15 @@ func TestLifecycleStartFailureCanRetry(t *testing.T) {
 	pipeline := &fakePipeline{startErrors: []error{errProvider, nil}}
 	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, pipeline, &fakeConnection{})
 
-	failed, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	failed, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
 	if !errors.Is(err, errProvider) {
 		t.Fatalf("first Start() error = %v, want provider error", err)
 	}
-	if failed.RuntimeState != RuntimeFailed || failed.LastErrorCode == nil || *failed.LastErrorCode != ErrorCodeStartFailed {
+	if failed.StartOperationID != "operation-1" || failed.RuntimeState != RuntimeFailed || failed.LastErrorCode == nil || *failed.LastErrorCode != ErrorCodeStartFailed {
 		t.Fatalf("failed snapshot = %#v", failed)
 	}
 
-	recovered, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	recovered, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
 	if err != nil || recovered.RuntimeState != RuntimeListening {
 		t.Fatalf("retry Start() = %#v, %v", recovered, err)
 	}
@@ -102,7 +180,7 @@ func TestLifecycleStartRejectsRetryAfterStopFailure(t *testing.T) {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
 	if !errors.Is(err, ErrRuntimeCleanupRequired) {
 		t.Fatalf("Start() error = %v, want ErrRuntimeCleanupRequired", err)
 	}
@@ -129,7 +207,7 @@ func TestLifecycleStartCompensatesWhenListeningSaveFails(t *testing.T) {
 		t.Fatalf("NewLifecycleService() error = %v", err)
 	}
 
-	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
 	if !errors.Is(err, errRuntimeSave) {
 		t.Fatalf("Start() error = %v, want runtime save error", err)
 	}
@@ -167,7 +245,7 @@ func TestLifecycleStartCompensationSurvivesRequestCancellation(t *testing.T) {
 		t.Fatalf("NewLifecycleService() error = %v", err)
 	}
 
-	got, err := service.Start(requestContext, StartRealtimeCommand{SessionID: "session-1"})
+	got, err := service.Start(requestContext, StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Start() error = %v, want context canceled", err)
 	}
@@ -309,12 +387,12 @@ func TestLifecycleConcurrentStartCreatesOnePipeline(t *testing.T) {
 	results := make(chan error, 2)
 
 	go func() {
-		_, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+		_, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
 		results <- err
 	}()
 	<-entered
 	go func() {
-		_, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1"})
+		_, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1"})
 		results <- err
 	}()
 	close(release)
@@ -472,6 +550,13 @@ type fakePipeline struct {
 	stopSucceeded            bool
 	events                   *[]string
 }
+
+type healthPipeline struct {
+	*fakePipeline
+	active bool
+}
+
+func (p *healthPipeline) PipelineActive(string) bool { return p.active }
 
 func (f *fakePipeline) Start(_ context.Context, _ SessionSnapshot) error {
 	f.mu.Lock()

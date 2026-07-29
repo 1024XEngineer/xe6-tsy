@@ -177,7 +177,7 @@ operation write. A zero activation timestamp after realtime startup enters
 owned compensation. A zero compensation-claim timestamp forbids Stop, and a
 zero terminal timestamp leaves the operation `compensating` for recovery.
 
-## End and recovery flow
+## End flow
 
 End-request idempotency belongs only to `EndIntent`; it is not repeated in
 `EndTransitionParams`.
@@ -193,20 +193,36 @@ serialize operations for session_id
 ```
 
 A `created` session skips realtime Stop and transitions directly to `ended`.
+That shortcut is safe only because `SaveEndIntent` and
+`BeginStartOperation` form an atomic repository interlock: an unresolved Start
+operation blocks End intent creation, and an incomplete End intent blocks a new
+Start operation.
+
 For an `active` session, Stop failure, timeout, or unconfirmed cleanup leaves
 the business status `active`, leaves `ended_at` unset, and preserves the
-incomplete intent. A repeated request reads the intent:
+incomplete intent. A client may repeat End with the same request identity:
 
-- same idempotency key and request hash: resume incomplete work or return the
-  completed result;
+- same idempotency key and request hash: replay the intent and run the basic End
+  flow from the current persistent Session status;
 - same key with a different request hash: return
-  `idempotency_key_conflict`;
-- no intent: return `end_intent_not_found` when a recovery lookup is requested.
+  `idempotency_key_conflict`.
 
 If Stop succeeds but the database transition fails, a retry invokes the
-idempotent Stop again and retries the transition. An unrecoverable runtime
-failure may use `TransitionToFailed` only after realtime confirms all owned
-resources were cleaned up.
+idempotent Stop again and retries the transition. This package exposes no
+background End recovery entrypoint; End uses the request Context for every
+Repository and Realtime call.
+
+Only a valid `stopped` snapshot for the requested Session ID confirms cleanup.
+`starting`, `stopping`, `failed`, missing timestamps, and dependency timeouts
+all preserve the prior business status and incomplete intent. End does not poll
+runtime state, retry Stop automatically, or convert a Stop failure to
+`StatusFailed`.
+
+An already `ended` or `failed` session remains immutable. A matching replay
+returns that stored terminal result. `CompleteEndIntent` is called only when
+the persisted intent is unfinished; an already-completed replay has no terminal
+write. End never converts `failed` to `ended` and never calls Stop for either
+terminal state.
 
 ## Query flows
 
@@ -238,18 +254,22 @@ clients.
 | --- | --- | --- |
 | Create | `Repository.Create` | session + create request result |
 | Start | `Repository.BeginStartOperation` and `TransitionToActive` | durable request identity + atomic `created -> active` and `completed` |
-| End | `Repository.SaveEndIntent` | end request identity and resumable completion state |
+| End | `Repository.SaveEndIntent` | end request identity and completion marker |
 
 ## Current slice
 
 The service currently implements Create, account-scoped Detail, State, and
-List queries, plus durable idempotent Start orchestration with repository-owned
-bounded compensation and interrupted-owner recovery.
+List queries, durable idempotent Start orchestration with repository-owned
+bounded compensation and interrupted-owner recovery, and the basic idempotent
+End flow with cleanup-confirmed terminal commits. `PostgresRepository`
+implements the persistent Session, StartOperation, compensation, EndIntent,
+and lifecycle-transition contracts against the final control-plane tables.
 Detail and State combine an owned persistent session with one validated runtime
 snapshot; List remains persistent-only.
 
-End, runtime-failure handling, HTTP handlers, route registration, OpenAPI,
-repositories, and production adapters belong to follow-up reviewable slices.
+Runtime-failure handling, HTTP handlers, route registration, OpenAPI,
+production wiring, and realtime/language/WebRTC adapters belong to follow-up
+reviewable slices.
 No stub in this package returns fabricated success data. It does not change
 `main.go`, `go.work`, shared authentication, shared error responses, or
 request-ID middleware.

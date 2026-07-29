@@ -63,25 +63,6 @@ func (u *UseCases) Record(ctx context.Context, input RecordInput) (Detail, error
 	return detail, err
 }
 
-func (u *UseCases) SessionUsage(ctx context.Context, accountID, sessionID string) (Summary, error) {
-	if u.repository == nil {
-		return Summary{}, domain.ErrNotImplemented
-	}
-	if accountID == "" || sessionID == "" {
-		return Summary{}, domain.ErrInvalidArgument
-	}
-	if u.owners != nil {
-		owner, err := u.owners.AccountIDForSession(ctx, sessionID)
-		if err != nil {
-			return Summary{}, err
-		}
-		if err := u.sameCanonicalAccount(ctx, owner, accountID); err != nil {
-			return Summary{}, err
-		}
-	}
-	return u.repository.SessionSummary(ctx, accountID, sessionID)
-}
-
 func (u *UseCases) sameCanonicalAccount(ctx context.Context, left, right string) error {
 	if left == right {
 		return nil
@@ -102,6 +83,25 @@ func (u *UseCases) sameCanonicalAccount(ctx context.Context, left, right string)
 		return domain.ErrForbidden
 	}
 	return nil
+}
+
+func (u *UseCases) SessionUsage(ctx context.Context, accountID, sessionID string) (Summary, error) {
+	if u.repository == nil {
+		return Summary{}, domain.ErrNotImplemented
+	}
+	if accountID == "" || sessionID == "" {
+		return Summary{}, domain.ErrInvalidArgument
+	}
+	if u.owners != nil {
+		owner, err := u.owners.AccountIDForSession(ctx, sessionID)
+		if err != nil {
+			return Summary{}, err
+		}
+		if err := u.sameCanonicalAccount(ctx, owner, accountID); err != nil {
+			return Summary{}, err
+		}
+	}
+	return u.repository.SessionSummary(ctx, accountID, sessionID)
 }
 
 func (u *UseCases) AccountUsage(ctx context.Context, accountID string, start, end time.Time) (Summary, error) {

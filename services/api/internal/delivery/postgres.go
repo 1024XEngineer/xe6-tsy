@@ -71,10 +71,11 @@ func (r *PostgresRepository) GetMessageByIdempotency(ctx context.Context, accoun
 }
 
 func (r *PostgresRepository) GetMessageByDeliveryIdempotency(ctx context.Context, accountID, key string) (Message, error) {
-	// Retry keys live on delivery_outbox rather than outbound_messages. Scope the
-	// lookup through the message owner and prefer the newest attempt if a legacy
-	// deployment contains more than one row for the same account/key.
-	return r.scanMessage(ctx, `SELECT m.id,m.account_id,m.channel,m.destination_ref,m.snapshot_version,m.turns,m.status,m.attempts,m.last_error_code,m.created_at,m.updated_at FROM outbound_messages m JOIN delivery_attempts a ON a.message_id=m.id JOIN delivery_outbox o ON o.attempt_id=a.id WHERE m.account_id IN (SELECT account_id FROM lingow_account_lineage($1)) AND o.idempotency_key=$2 ORDER BY a.attempt_number DESC,a.created_at DESC LIMIT 1`, accountID, key)
+	// Retry keys are persisted separately from the create-message key. The
+	// attempt-number predicate is retained as a guard for legacy rows and makes
+	// the lookup contract explicit: an initial attempt can never satisfy retry
+	// idempotency.
+	return r.scanMessage(ctx, `SELECT m.id,m.account_id,m.channel,m.destination_ref,m.snapshot_version,m.turns,m.status,m.attempts,m.last_error_code,m.created_at,m.updated_at FROM outbound_messages m JOIN delivery_retry_requests r ON r.message_id=m.id JOIN delivery_attempts a ON a.id=r.attempt_id AND a.attempt_number > 1 WHERE r.account_id IN (SELECT account_id FROM lingow_account_lineage($1)) AND r.idempotency_key=$2 LIMIT 1`, accountID, key)
 }
 
 func (r *PostgresRepository) CreateRetry(ctx context.Context, record CreateRetryRecord) (Message, error) {
@@ -83,6 +84,18 @@ func (r *PostgresRepository) CreateRetry(ctx context.Context, record CreateRetry
 		return Message{}, err
 	}
 	defer tx.Rollback(ctx)
+	var existingMessageID string
+	if err := tx.QueryRow(ctx, `SELECT message_id FROM delivery_retry_requests WHERE account_id=$1 AND idempotency_key=$2`, record.AccountID, record.IdempotencyKey).Scan(&existingMessageID); err == nil {
+		if existingMessageID != record.MessageID {
+			return Message{}, domain.ErrConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Message{}, err
+		}
+		return r.GetMessage(ctx, record.AccountID, record.MessageID)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return Message{}, mapDeliveryError(err)
+	}
 	var status MessageStatus
 	var attempts int
 	var lastErrorCode *string
@@ -93,6 +106,23 @@ func (r *PostgresRepository) CreateRetry(ctx context.Context, record CreateRetry
 		return Message{}, domain.ErrConflict
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO delivery_attempts (id,message_id,attempt_number,status,created_at) VALUES ($1,$2,$3,$4,$5)`, record.Attempt.ID, record.MessageID, record.Attempt.AttemptNumber, record.Attempt.Status, record.Attempt.CreatedAt); err != nil {
+		return Message{}, mapDeliveryError(err)
+	}
+	// The attempt must exist before the retry request can reference it. If
+	// another instance wins the account-level key, this transaction rolls back
+	// its provisional attempt and returns the committed idempotent result.
+	if err := tx.QueryRow(ctx, `INSERT INTO delivery_retry_requests (account_id,idempotency_key,message_id,attempt_id,created_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (account_id,idempotency_key) DO NOTHING RETURNING message_id`, record.AccountID, record.IdempotencyKey, record.MessageID, record.Attempt.ID, record.Attempt.CreatedAt).Scan(&existingMessageID); errors.Is(err, pgx.ErrNoRows) {
+		if err := tx.QueryRow(ctx, `SELECT message_id FROM delivery_retry_requests WHERE account_id=$1 AND idempotency_key=$2`, record.AccountID, record.IdempotencyKey).Scan(&existingMessageID); err != nil {
+			return Message{}, mapDeliveryError(err)
+		}
+		if existingMessageID != record.MessageID {
+			return Message{}, domain.ErrConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Message{}, err
+		}
+		return r.GetMessage(ctx, record.AccountID, record.MessageID)
+	} else if err != nil {
 		return Message{}, mapDeliveryError(err)
 	}
 	if err := insertDeliveryOutbox(ctx, tx, record.Attempt, record.IdempotencyKey); err != nil {
@@ -261,7 +291,7 @@ func (r *PostgresRepository) ClaimOutbox(ctx context.Context, limit int) ([]Outb
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT id,attempt_id,idempotency_key,attempts FROM delivery_outbox WHERE published_at IS NULL AND available_at <= CURRENT_TIMESTAMP ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
+	rows, err := tx.Query(ctx, `SELECT o.id,m.account_id,o.attempt_id,o.idempotency_key,o.attempts FROM delivery_outbox o JOIN delivery_attempts a ON a.id=o.attempt_id JOIN outbound_messages m ON m.id=a.message_id WHERE o.published_at IS NULL AND o.available_at <= CURRENT_TIMESTAMP ORDER BY o.created_at FOR UPDATE OF o SKIP LOCKED LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +299,7 @@ func (r *PostgresRepository) ClaimOutbox(ctx context.Context, limit int) ([]Outb
 	result := make([]OutboxRecord, 0, limit)
 	for rows.Next() {
 		var record OutboxRecord
-		if err := rows.Scan(&record.ID, &record.AttemptID, &record.Key, &record.Attempts); err != nil {
+		if err := rows.Scan(&record.ID, &record.AccountID, &record.AttemptID, &record.Key, &record.Attempts); err != nil {
 			return nil, err
 		}
 		result = append(result, record)

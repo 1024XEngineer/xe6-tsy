@@ -127,7 +127,7 @@ func TestValkeyQueueEnqueueUsesStableAttemptIdentity(t *testing.T) {
 	queue := NewValkeyQueue(fake, ValkeyQueueConfig{Stream: "delivery", Group: "workers", Consumer: "worker-1"})
 
 	for range 2 {
-		if err := queue.Enqueue(context.Background(), "attempt-1", "request-1"); err != nil {
+		if err := queue.Enqueue(context.Background(), QueueItem{AttemptID: "attempt-1", IdempotencyKey: "request-1"}); err != nil {
 			t.Fatalf("Enqueue() error = %v", err)
 		}
 	}
@@ -153,7 +153,7 @@ func TestValkeyQueueReceiveClaimsStaleBeforeReadingNew(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Receive() error = %v", err)
 	}
-	if got != (QueueMessage{AttemptID: "attempt-7", Receipt: "7-0"}) {
+	if got != (QueueMessage{AttemptID: "attempt-7", IdempotencyKey: "key-7", Receipt: "7-0"}) {
 		t.Fatalf("Receive() = %#v, want claimed receipt", got)
 	}
 	if fake.autoCalls != 1 {

@@ -27,6 +27,26 @@ func TestPostgresChallengeRateAndAttemptGuards(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	digester := integrationCredentialDigester(t)
 
+	legacyPhone := "+8613800000009"
+	legacyHash := hashValue(legacyPhone)
+	legacyCreatedAt := now.Add(-10 * time.Second)
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO lingow_phone_challenges
+			(id, phone_hash, legacy_phone_hash, code_hash, digest_version, expires_at, created_at, attempts, max_attempts)
+		VALUES ('challenge_legacy_cooldown', $1, $1, $2, 1, $3, $4, 0, 5)`,
+		legacyHash, hashValue("123456"), legacyCreatedAt.Add(10*time.Minute), legacyCreatedAt); err != nil {
+		t.Fatalf("insert legacy cooldown challenge: %v", err)
+	}
+	legacyReplacement := PhoneChallenge{
+		ID: "challenge_legacy_replacement", PhoneHash: digester.PhoneHash(legacyPhone),
+		LegacyPhoneHash: "encrypted-legacy-lookup", LegacyRateLimitHash: legacyHash,
+		CodeHash: digester.CodeHash("challenge_legacy_replacement", "123456"), DigestVersion: 2,
+		ExpiresAt: now.Add(10 * time.Minute), CreatedAt: now, MaxAttempts: 5,
+	}
+	if err := repository.CreateChallenge(t.Context(), legacyReplacement); !errorsIsRateLimited(err) {
+		t.Fatalf("legacy cooldown challenge error = %v, want rate limited", err)
+	}
+
 	phone := "+8613800000001"
 	phoneHash := digester.PhoneHash(phone)
 	first := PhoneChallenge{

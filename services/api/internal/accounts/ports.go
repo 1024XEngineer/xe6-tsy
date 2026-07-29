@@ -22,7 +22,13 @@ type Repository interface {
 	// HMAC digest and a legacy SHA-256 lookup digest for lazy migration.
 	FindOrCreateByPhoneHashes(context.Context, string, string) (Account, error)
 	// BindAnonymous transfers an anonymous account into the registered account boundary.
+	// Login flows must use BindAnonymousAndCreateSession so the merge and first
+	// registered session are committed atomically.
 	BindAnonymous(context.Context, string, string) (Account, error)
+	// BindAnonymousAndCreateSession atomically transfers an anonymous account and
+	// persists the first registered-account session. Implementations must roll
+	// back the merge when session persistence fails.
+	BindAnonymousAndCreateSession(context.Context, string, string, Session) (Account, error)
 	// CreateSession persists a refreshable login session.
 	CreateSession(context.Context, Session) error
 	// GetSessionByRefreshHash resolves an active session without storing plaintext credentials.

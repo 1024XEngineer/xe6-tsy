@@ -15,6 +15,8 @@ var (
 	ErrInvalidDependency = errors.New("invalid lifecycle dependency")
 	// ErrSessionIDRequired prevents repository entries without an ownership key.
 	ErrSessionIDRequired = errors.New("session id is required")
+	// ErrStartOperationIDRequired prevents creating an unowned runtime.
+	ErrStartOperationIDRequired = errors.New("start operation id is required")
 	// ErrRuntimeCleanupRequired prevents startup while a previous stop remains incomplete.
 	ErrRuntimeCleanupRequired = errors.New("runtime cleanup must complete before restart")
 	// ErrInvalidRuntimeUpdate rejects incomplete processing-state fields.
@@ -23,6 +25,8 @@ var (
 	ErrInvalidRuntimeTransition = errors.New("invalid runtime state transition")
 	// ErrRuntimeIdentityConflict rejects stale Turn or playback updates.
 	ErrRuntimeIdentityConflict = errors.New("runtime identity conflict")
+	// ErrRuntimeOperationConflict rejects takeover by another Start operation.
+	ErrRuntimeOperationConflict = errors.New("runtime is owned by another start operation")
 )
 
 const (

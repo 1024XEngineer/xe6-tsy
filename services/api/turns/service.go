@@ -8,6 +8,7 @@ import (
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
 var (
@@ -132,6 +133,9 @@ func (s *Service) requireOwner(ctx context.Context, accountID, sessionID string)
 	}
 	ownerID, err := s.sessions.AccountIDForSession(ctx, sessionID)
 	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return ErrSessionNotFound
+		}
 		return fmt.Errorf("read session owner: %w", err)
 	}
 	if ownerID != accountID {

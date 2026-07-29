@@ -24,6 +24,11 @@ const insertSessionSQL = `INSERT INTO lingow_auth_sessions (id, account_id, refr
 const revokeActiveSessionSQL = `UPDATE lingow_auth_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE id=$1 AND revoked_at IS NULL`
 const rotateActiveSessionSQL = `UPDATE lingow_auth_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE id=$1 AND account_id=$2 AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP`
 const challengeAdvisoryLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
+const challengeRateQuerySQL = `
+	SELECT MAX(created_at), COUNT(*) FILTER (WHERE created_at > $2)
+	FROM lingow_phone_challenges
+	WHERE phone_hash = $1
+	   OR (digest_version = 1 AND phone_hash = $3)`
 
 const (
 	phoneChallengeCooldown                 = time.Minute
@@ -70,10 +75,9 @@ func (r *PostgresRepository) CreateChallenge(ctx context.Context, challenge Phon
 
 		var latest *time.Time
 		var sends int64
-		if err := tx.QueryRow(ctx, `
-			SELECT MAX(created_at), COUNT(*) FILTER (WHERE created_at > $2)
-			FROM lingow_phone_challenges
-			WHERE phone_hash = $1`, challenge.PhoneHash, challenge.CreatedAt.Add(-phoneChallengeWindow)).Scan(&latest, &sends); err != nil {
+		if err := tx.QueryRow(ctx, challengeRateQuerySQL,
+			challenge.PhoneHash, challenge.CreatedAt.Add(-phoneChallengeWindow), challenge.LegacyRateLimitHash,
+		).Scan(&latest, &sends); err != nil {
 			return err
 		}
 		if latest != nil && challenge.CreatedAt.Before(latest.Add(phoneChallengeCooldown)) {
@@ -251,6 +255,54 @@ func (r *PostgresRepository) BindAnonymous(ctx context.Context, anonymousID, reg
 	return r.GetAccount(ctx, registeredID)
 }
 
+// BindAnonymousAndCreateSession is the login-path variant of BindAnonymous.
+// All ownership changes and the first registered session are committed by one
+// transaction, so a session insert failure rolls the merge back.
+func (r *PostgresRepository) BindAnonymousAndCreateSession(ctx context.Context, anonymousID, registeredID string, session Session) (Account, error) {
+	if anonymousID == "" || registeredID == "" || anonymousID == registeredID || session.ID == "" || session.AccountID != registeredID {
+		return Account{}, domain.ErrConflict
+	}
+	var account Account
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var anonymousKind string
+		var mergedInto *string
+		if err := tx.QueryRow(ctx, `SELECT kind, merged_into FROM lingow_accounts WHERE id=$1 FOR UPDATE`, anonymousID).Scan(&anonymousKind, &mergedInto); err != nil {
+			return mapError(err)
+		}
+		if mergedInto != nil && *mergedInto != registeredID {
+			return domain.ErrConflict
+		}
+		if mergedInto == nil && anonymousKind != string(AccountKindAnonymous) {
+			return domain.ErrConflict
+		}
+		var registeredKind string
+		var createdAt time.Time
+		if err := tx.QueryRow(ctx, `SELECT kind, created_at FROM lingow_accounts WHERE id=$1 AND merged_into IS NULL FOR UPDATE`, registeredID).Scan(&registeredKind, &createdAt); err != nil {
+			return mapError(err)
+		}
+		if registeredKind != string(AccountKindRegistered) {
+			return domain.ErrConflict
+		}
+		if mergedInto == nil {
+			if _, err := tx.Exec(ctx, `UPDATE lingow_auth_sessions SET account_id=$2 WHERE account_id=$1`, anonymousID, registeredID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE lingow_accounts SET merged_into=$2 WHERE id=$1`, anonymousID, registeredID); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, insertSessionSQL, session.ID, session.AccountID, session.RefreshHash, session.ExpiresAt, session.CreatedAt); err != nil {
+			return err
+		}
+		account = Account{ID: registeredID, Kind: AccountKindRegistered, CreatedAt: createdAt}
+		return nil
+	})
+	if err != nil {
+		return Account{}, mapError(err)
+	}
+	return account, nil
+}
+
 func (r *PostgresRepository) CreateSession(ctx context.Context, session Session) error {
 	_, err := r.pool.Exec(ctx, insertSessionSQL, session.ID, session.AccountID, session.RefreshHash, session.ExpiresAt, session.CreatedAt)
 	return mapError(err)
@@ -314,7 +366,7 @@ func (r *PostgresRepository) SessionActiveForAccount(ctx context.Context, sessio
 	return active, mapError(err)
 }
 
-// AccountIDForSession is shared by usage, language, turns, and delivery ownership adapters.
+// AccountIDForSession returns the immutable owner stored on the voice session.
 func (r *PostgresRepository) AccountIDForSession(ctx context.Context, sessionID string) (string, error) {
 	var accountID string
 	err := r.pool.QueryRow(ctx, `SELECT account_id FROM voice_sessions WHERE id=$1`, sessionID).Scan(&accountID)

@@ -13,13 +13,22 @@ type endRepository struct {
 
 	endMu sync.Mutex
 
-	intent           *EndIntent
-	completeErr      error
-	transitionErr    error
-	completeCalls    int
-	transitionCalls  int
-	transitionParams []EndTransitionParams
-	transitionHook   func()
+	intent          *EndIntent
+	transitionCalls int
+	transitionHook  func()
+}
+
+func (r *endRepository) BeginStartOperation(
+	ctx context.Context,
+	params BeginStartOperationParams,
+) (BeginStartOperationResult, error) {
+	r.endMu.Lock()
+	endInProgress := r.intent != nil && !r.intent.Completed()
+	r.endMu.Unlock()
+	if endInProgress {
+		return BeginStartOperationResult{}, ErrConcurrentTransition
+	}
+	return r.startRepository.BeginStartOperation(ctx, params)
 }
 
 func (r *endRepository) SaveEndIntent(
@@ -82,10 +91,6 @@ func (r *endRepository) CompleteEndIntent(
 	}
 	r.endMu.Lock()
 	defer r.endMu.Unlock()
-	r.completeCalls++
-	if r.completeErr != nil {
-		return r.completeErr
-	}
 	if r.intent == nil ||
 		r.intent.AccountID != accountID ||
 		r.intent.SessionID != sessionID {
@@ -106,15 +111,10 @@ func (r *endRepository) TransitionToEnded(
 	}
 	r.endMu.Lock()
 	r.transitionCalls++
-	r.transitionParams = append(r.transitionParams, params)
-	err := r.transitionErr
 	hook := r.transitionHook
 	r.endMu.Unlock()
 	if hook != nil {
 		hook()
-	}
-	if err != nil {
-		return VoiceSession{}, err
 	}
 
 	r.mu.Lock()
@@ -334,6 +334,19 @@ func TestServiceEndCreatedHonorsStartOperationInterlock(t *testing.T) {
 				t.Fatalf("Stop() calls = %d, want 0", fixture.realtime.stopCalls)
 			}
 		})
+	}
+}
+
+func TestEndRepositoryUnfinishedIntentBlocksStartOperation(t *testing.T) {
+	fixture := newEndFixture(t, StatusCreated)
+	fixture.repository.intent = &EndIntent{}
+
+	_, err := fixture.repository.BeginStartOperation(
+		context.Background(),
+		BeginStartOperationParams{},
+	)
+	if !errors.Is(err, ErrConcurrentTransition) {
+		t.Fatalf("BeginStartOperation() error = %v, want ErrConcurrentTransition", err)
 	}
 }
 

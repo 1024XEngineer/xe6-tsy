@@ -14,6 +14,8 @@ type endRepository struct {
 	endMu sync.Mutex
 
 	intent          *EndIntent
+	completeErr     error
+	completeCalls   int
 	transitionCalls int
 	transitionHook  func()
 }
@@ -91,6 +93,10 @@ func (r *endRepository) CompleteEndIntent(
 	}
 	r.endMu.Lock()
 	defer r.endMu.Unlock()
+	r.completeCalls++
+	if r.completeErr != nil {
+		return r.completeErr
+	}
 	if r.intent == nil ||
 		r.intent.AccountID != accountID ||
 		r.intent.SessionID != sessionID {
@@ -491,11 +497,26 @@ func TestServiceEndPreservesTerminalSession(t *testing.T) {
 					fixture.realtime.stopCalls, fixture.repository.transitionCalls)
 			}
 			assertEndCompleted(t, fixture)
+
+			fixture.repository.completeErr = errDependency
+			replayed, err := fixture.service.End(context.Background(), validEndInput())
+			if err != nil {
+				t.Fatalf("replayed End() error = %v", err)
+			}
+			if replayed.Status != status || replayed.EndedAt == nil ||
+				!replayed.EndedAt.Equal(originalEndedAt) {
+				t.Fatalf("replayed End() = %#v, want immutable %q terminal session",
+					replayed, status)
+			}
+			if fixture.repository.completeCalls != 1 || fixture.realtime.stopCalls != 0 {
+				t.Fatalf("replay calls = CompleteEndIntent %d, Stop %d; want 1, 0",
+					fixture.repository.completeCalls, fixture.realtime.stopCalls)
+			}
 		})
 	}
 }
 
-func TestServiceEndSuccessfulReplayDoesNotStopAgain(t *testing.T) {
+func TestServiceEndCompletedTerminalReplaySkipsIntentCompletion(t *testing.T) {
 	fixture := newEndFixture(t, StatusActive)
 	input := validEndInput()
 
@@ -503,12 +524,47 @@ func TestServiceEndSuccessfulReplayDoesNotStopAgain(t *testing.T) {
 	if err != nil || first.Status != StatusEnded {
 		t.Fatalf("first End() = %#v, %v", first, err)
 	}
+	if fixture.repository.completeCalls != 1 || fixture.realtime.stopCalls != 1 {
+		t.Fatalf("first calls = CompleteEndIntent %d, Stop %d; want 1, 1",
+			fixture.repository.completeCalls, fixture.realtime.stopCalls)
+	}
+	assertEndCompleted(t, fixture)
+	originalEndedAt := *first.EndedAt
+	completeCallsBeforeReplay := fixture.repository.completeCalls
+	stopCallsBeforeReplay := fixture.realtime.stopCalls
+	fixture.repository.completeErr = errDependency
+
 	replayed, err := fixture.service.End(context.Background(), input)
 	if err != nil || replayed.Status != StatusEnded {
 		t.Fatalf("replayed End() = %#v, %v", replayed, err)
 	}
-	if fixture.realtime.stopCalls != 1 {
-		t.Fatalf("Stop() calls = %d, want 1", fixture.realtime.stopCalls)
+	if replayed.EndedAt == nil || !replayed.EndedAt.Equal(originalEndedAt) {
+		t.Fatalf("replayed ended_at = %v, want %v", replayed.EndedAt, originalEndedAt)
+	}
+	if fixture.repository.completeCalls != completeCallsBeforeReplay {
+		t.Fatalf("CompleteEndIntent() calls = %d, want %d",
+			fixture.repository.completeCalls, completeCallsBeforeReplay)
+	}
+	if fixture.realtime.stopCalls != stopCallsBeforeReplay {
+		t.Fatalf("Stop() calls = %d, want %d",
+			fixture.realtime.stopCalls, stopCallsBeforeReplay)
+	}
+}
+
+func TestServiceEndIncompleteTerminalIntentCompletionError(t *testing.T) {
+	fixture := newEndFixture(t, StatusEnded)
+	fixture.repository.completeErr = errDependency
+
+	got, err := fixture.service.End(context.Background(), validEndInput())
+	if !errors.Is(err, errDependency) {
+		t.Fatalf("End() error = %v, want completion error", err)
+	}
+	if got.Status != StatusEnded || fixture.repository.completeCalls != 1 {
+		t.Fatalf("End() = %#v, CompleteEndIntent calls = %d; want ended, 1",
+			got, fixture.repository.completeCalls)
+	}
+	if fixture.realtime.stopCalls != 0 {
+		t.Fatalf("Stop() calls = %d, want 0", fixture.realtime.stopCalls)
 	}
 }
 

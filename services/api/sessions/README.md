@@ -219,8 +219,9 @@ runtime state, retry Stop automatically, or convert a Stop failure to
 `StatusFailed`.
 
 An already `ended` or `failed` session remains immutable. A matching replay
-returns that stored terminal result and idempotently completes an unfinished
-intent; End never converts `failed` to `ended` and never calls Stop for either
+returns that stored terminal result. `CompleteEndIntent` is called only when
+the persisted intent is unfinished; an already-completed replay has no terminal
+write. End never converts `failed` to `ended` and never calls Stop for either
 terminal state.
 
 ## Query flows

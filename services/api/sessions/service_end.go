@@ -50,6 +50,9 @@ func (s *Service) End(ctx context.Context, input EndInput) (VoiceSession, error)
 
 	switch session.Status {
 	case StatusEnded, StatusFailed:
+		if intent.Completed() {
+			return session, nil
+		}
 		return session, s.completeEndIntent(ctx, session)
 	case StatusCreated:
 		return s.endCreated(ctx, session, intent)

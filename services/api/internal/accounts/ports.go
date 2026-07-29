@@ -12,6 +12,8 @@ type Repository interface {
 	CreateChallenge(context.Context, PhoneChallenge) error
 	// ConsumeChallenge atomically validates and marks a challenge as used.
 	ConsumeChallenge(context.Context, string, string) error
+	// GetChallenge reads the non-secret phone hash before a challenge is consumed.
+	GetChallenge(context.Context, string) (PhoneChallenge, error)
 	// FindOrCreateByPhoneHash resolves the registered account for a normalized phone hash.
 	FindOrCreateByPhoneHash(context.Context, string) (Account, error)
 	// BindAnonymous transfers an anonymous account into the registered account boundary.

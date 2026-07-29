@@ -66,7 +66,7 @@ func (p *pionPeerConnectionAdapter) CreateDataChannel(label string, options *pio
 
 func (p *pionPeerConnectionAdapter) OnTrack(handler func(pionRemoteTrack)) {
 	p.PeerConnection.OnTrack(func(track *pion.TrackRemote, _ *pion.RTPReceiver) {
-		if handler != nil && track.Kind() == pion.RTPCodecTypeAudio {
+		if handler != nil && track.Kind() == pion.RTPCodecTypeAudio && track.Codec().MimeType == pion.MimeTypeOpus {
 			handler(&pionRemoteTrackAdapter{track: track})
 		}
 	})

@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 6 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 6", len(migrations))
+	if len(migrations) != 7 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 7", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -74,6 +74,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 		4: {"lingow_account_lineage", "WITH RECURSIVE lineage"},
 		5: {"phone_hash_v2", "lingow_accounts_phone_hash_v2_key"},
 		6: {"SET phone_hash = NULL", "phone_hash_v2 IS NOT NULL"},
+		7: {"SET cost_amount = NULL", "lingow_usage_records_pricing_pair_valid"},
 	} {
 		item, ok := byVersion[version]
 		if !ok {

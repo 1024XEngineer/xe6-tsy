@@ -94,14 +94,6 @@ func (r *PostgresRepository) CreateChallenge(ctx context.Context, challenge Phon
 	return mapError(err)
 }
 
-func (r *PostgresRepository) AbandonChallenge(ctx context.Context, id string) error {
-	// A concurrent successful verification wins over a sender failure. In that
-	// case this conditional delete becomes a harmless no-op rather than erasing
-	// a consumed challenge.
-	_, err := r.pool.Exec(ctx, `DELETE FROM lingow_phone_challenges WHERE id=$1 AND used_at IS NULL`, id)
-	return mapError(err)
-}
-
 func (r *PostgresRepository) ConsumeChallenge(ctx context.Context, id, code string) (PhoneChallenge, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

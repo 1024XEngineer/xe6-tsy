@@ -77,7 +77,7 @@ func TestPhoneVerificationRequiresCredentialDigester(t *testing.T) {
 	}
 }
 
-func TestPhoneChallengeSendFailureAbandonsOnlyTheNewChallenge(t *testing.T) {
+func TestPhoneChallengeSendFailureKeepsChallengeForRateLimiting(t *testing.T) {
 	digester, err := NewCredentialDigester("01234567890123456789012345678901")
 	if err != nil {
 		t.Fatalf("NewCredentialDigester() error = %v", err)
@@ -91,9 +91,6 @@ func TestPhoneChallengeSendFailureAbandonsOnlyTheNewChallenge(t *testing.T) {
 	}
 	if repository.created.ID == "" {
 		t.Fatal("CreatePhoneChallenge() did not persist a challenge before send")
-	}
-	if repository.abandonedID != repository.created.ID {
-		t.Fatalf("abandoned challenge = %q, want %q", repository.abandonedID, repository.created.ID)
 	}
 }
 
@@ -226,7 +223,6 @@ type refreshTestRepository struct {
 type challengeTestRepository struct {
 	refreshTestRepository
 	created          PhoneChallenge
-	abandonedID      string
 	consumed         PhoneChallenge
 	restoredID       string
 	phoneAccount     Account
@@ -235,13 +231,6 @@ type challengeTestRepository struct {
 
 func (r *challengeTestRepository) CreateChallenge(_ context.Context, challenge PhoneChallenge) error {
 	r.created = challenge
-	return nil
-}
-
-func (r *challengeTestRepository) AbandonChallenge(_ context.Context, id string) error {
-	if id == r.created.ID {
-		r.abandonedID = id
-	}
 	return nil
 }
 
@@ -290,10 +279,6 @@ func (r *refreshTestRepository) GetAccount(_ context.Context, accountID string) 
 }
 
 func (r *refreshTestRepository) CreateChallenge(context.Context, PhoneChallenge) error {
-	return domain.ErrNotImplemented
-}
-
-func (r *refreshTestRepository) AbandonChallenge(context.Context, string) error {
 	return domain.ErrNotImplemented
 }
 

@@ -81,9 +81,9 @@ func (u *UseCases) CreatePhoneChallenge(ctx context.Context, phone string) (stri
 		return "", err
 	}
 	if err := u.sender.SendCode(ctx, phone, code); err != nil {
-		if abandonErr := u.repository.AbandonChallenge(ctx, challenge.ID); abandonErr != nil {
-			return "", fmt.Errorf("send verification code: %w", errors.Join(err, fmt.Errorf("abandon undelivered challenge: %w", abandonErr)))
-		}
+		// Delivery failures can be ambiguous: the provider may have accepted the
+		// message before the request timed out. Keep the challenge so every send
+		// attempt remains covered by the cooldown and rolling quota.
 		return "", err
 	}
 	return challenge.ID, nil

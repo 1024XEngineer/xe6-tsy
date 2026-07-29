@@ -11,10 +11,6 @@ type Repository interface {
 	// CreateChallenge persists a time-limited challenge after atomically enforcing
 	// the per-phone cooldown and rolling send limit.
 	CreateChallenge(context.Context, PhoneChallenge) error
-	// AbandonChallenge removes a challenge only when it has not been consumed.
-	// It is used if the verification provider rejects the outbound code, so a
-	// failed send does not consume the caller's cooldown or send quota.
-	AbandonChallenge(context.Context, string) error
 	// ConsumeChallenge atomically validates a pre-derived challenge-code digest and returns its private
 	// phone binding only after a successful one-time use. Failed code attempts
 	// must be durably counted before returning unauthorized.

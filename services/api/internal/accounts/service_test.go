@@ -92,6 +92,12 @@ func TestPhoneChallengeSendFailureKeepsChallengeForRateLimiting(t *testing.T) {
 	if repository.created.ID == "" {
 		t.Fatal("CreatePhoneChallenge() did not persist a challenge before send")
 	}
+	if got, want := repository.created.LegacyRateLimitHash, hashValue("+8613800000000"); got != want {
+		t.Fatalf("legacy rate-limit hash = %q, want %q", got, want)
+	}
+	if repository.created.LegacyPhoneHash == repository.created.LegacyRateLimitHash {
+		t.Fatal("persisted legacy lookup value was not encrypted")
+	}
 }
 
 func TestPhoneVerificationRestoresChallengeWhenSessionPersistenceFails(t *testing.T) {
@@ -119,6 +125,38 @@ func TestPhoneVerificationRestoresChallengeWhenSessionPersistenceFails(t *testin
 	}
 	if repository.restoredID != "challenge_test" {
 		t.Fatalf("restored challenge = %q, want %q", repository.restoredID, "challenge_test")
+	}
+}
+
+func TestPhoneVerificationRestoreSurvivesRequestCancellation(t *testing.T) {
+	digester, err := NewCredentialDigester("01234567890123456789012345678901")
+	if err != nil {
+		t.Fatalf("NewCredentialDigester() error = %v", err)
+	}
+	legacyHash, err := digester.EncryptLegacyPhoneHash(hashValue("+8613800000000"))
+	if err != nil {
+		t.Fatalf("EncryptLegacyPhoneHash() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	repository := &challengeTestRepository{
+		refreshTestRepository: *newRefreshTestRepository(),
+		consumed: PhoneChallenge{
+			ID: "challenge_cancelled", PhoneHash: digester.PhoneHash("+8613800000000"), LegacyPhoneHash: legacyHash,
+		},
+		phoneAccount:      Account{ID: "acct-phone", Kind: AccountKindRegistered, CreatedAt: time.Unix(1, 0).UTC()},
+		createSessionErr:  context.Canceled,
+		createSessionHook: cancel,
+	}
+	service := NewPersistentUseCases(repository, &refreshTestIssuer{}, nil, verificationSenderStub{}, digester)
+
+	if _, err := service.VerifyPhone(ctx, "challenge_cancelled", "123456", ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("VerifyPhone() error = %v, want canceled", err)
+	}
+	if repository.restoreContextErr != nil {
+		t.Fatalf("RestoreChallenge() context error = %v, want nil", repository.restoreContextErr)
+	}
+	if !repository.restoreHasDeadline {
+		t.Fatal("RestoreChallenge() context has no deadline")
 	}
 }
 
@@ -222,11 +260,14 @@ type refreshTestRepository struct {
 
 type challengeTestRepository struct {
 	refreshTestRepository
-	created          PhoneChallenge
-	consumed         PhoneChallenge
-	restoredID       string
-	phoneAccount     Account
-	createSessionErr error
+	created            PhoneChallenge
+	consumed           PhoneChallenge
+	restoredID         string
+	restoreContextErr  error
+	restoreHasDeadline bool
+	phoneAccount       Account
+	createSessionErr   error
+	createSessionHook  func()
 }
 
 func (r *challengeTestRepository) CreateChallenge(_ context.Context, challenge PhoneChallenge) error {
@@ -241,8 +282,10 @@ func (r *challengeTestRepository) ConsumeChallenge(_ context.Context, id, _ stri
 	return r.consumed, nil
 }
 
-func (r *challengeTestRepository) RestoreChallenge(_ context.Context, id string) error {
+func (r *challengeTestRepository) RestoreChallenge(ctx context.Context, id string) error {
 	r.restoredID = id
+	r.restoreContextErr = ctx.Err()
+	_, r.restoreHasDeadline = ctx.Deadline()
 	return nil
 }
 
@@ -252,6 +295,9 @@ func (r *challengeTestRepository) FindOrCreateByPhoneHashes(context.Context, str
 
 func (r *challengeTestRepository) CreateSession(ctx context.Context, session Session) error {
 	if r.createSessionErr != nil {
+		if r.createSessionHook != nil {
+			r.createSessionHook()
+		}
 		return r.createSessionErr
 	}
 	return r.refreshTestRepository.CreateSession(ctx, session)

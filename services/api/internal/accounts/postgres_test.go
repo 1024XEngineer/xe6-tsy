@@ -18,6 +18,14 @@ func TestRegisteredAccountInsertStoresOnlyPepperedDigest(t *testing.T) {
 	}
 }
 
+func TestChallengeRateQueryIncludesLegacyUpgradeWindow(t *testing.T) {
+	for _, predicate := range []string{"phone_hash = $1", "digest_version = 1", "phone_hash = $3"} {
+		if !strings.Contains(challengeRateQuerySQL, predicate) {
+			t.Fatalf("challenge rate query is missing %q: %s", predicate, challengeRateQuerySQL)
+		}
+	}
+}
+
 func TestRevokeSessionIsConditionalOnActiveState(t *testing.T) {
 	if !strings.Contains(revokeActiveSessionSQL, "revoked_at IS NULL") {
 		t.Fatalf("revoke SQL can update an already-revoked session: %s", revokeActiveSessionSQL)

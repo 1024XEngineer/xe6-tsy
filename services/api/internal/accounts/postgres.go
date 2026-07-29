@@ -24,6 +24,11 @@ const insertSessionSQL = `INSERT INTO lingow_auth_sessions (id, account_id, refr
 const revokeActiveSessionSQL = `UPDATE lingow_auth_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE id=$1 AND revoked_at IS NULL`
 const rotateActiveSessionSQL = `UPDATE lingow_auth_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE id=$1 AND account_id=$2 AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP`
 const challengeAdvisoryLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
+const challengeRateQuerySQL = `
+	SELECT MAX(created_at), COUNT(*) FILTER (WHERE created_at > $2)
+	FROM lingow_phone_challenges
+	WHERE phone_hash = $1
+	   OR (digest_version = 1 AND phone_hash = $3)`
 
 const (
 	phoneChallengeCooldown                 = time.Minute
@@ -70,10 +75,9 @@ func (r *PostgresRepository) CreateChallenge(ctx context.Context, challenge Phon
 
 		var latest *time.Time
 		var sends int64
-		if err := tx.QueryRow(ctx, `
-			SELECT MAX(created_at), COUNT(*) FILTER (WHERE created_at > $2)
-			FROM lingow_phone_challenges
-			WHERE phone_hash = $1`, challenge.PhoneHash, challenge.CreatedAt.Add(-phoneChallengeWindow)).Scan(&latest, &sends); err != nil {
+		if err := tx.QueryRow(ctx, challengeRateQuerySQL,
+			challenge.PhoneHash, challenge.CreatedAt.Add(-phoneChallengeWindow), challenge.LegacyRateLimitHash,
+		).Scan(&latest, &sends); err != nil {
 			return err
 		}
 		if latest != nil && challenge.CreatedAt.Before(latest.Add(phoneChallengeCooldown)) {

@@ -9,6 +9,16 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
+func TestHMACIssuerRequiresSessionLifecycleValidation(t *testing.T) {
+	secret := strings.Repeat("s", 32)
+	if _, err := NewHMACIssuer(secret, "lingow-api", "lingow-client", nil); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("NewHMACIssuer() error = %v, want invalid argument", err)
+	}
+	if _, err := NewHMACIssuerWithAccount(secret, "lingow-api", "lingow-client", nil); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("NewHMACIssuerWithAccount() error = %v, want invalid argument", err)
+	}
+}
+
 func TestHMACIssuerWithAccountBindsSessionToSubject(t *testing.T) {
 	var gotSessionID, gotAccountID string
 	issuer, err := NewHMACIssuerWithAccount(strings.Repeat("s", 32), "lingow-api", "lingow-client", func(_ context.Context, sessionID, accountID string) (bool, error) {

@@ -15,4 +15,6 @@ var (
 	ErrUnauthorized = errors.New("unauthorized")
 	// ErrForbidden reports authenticated access outside the caller's ownership boundary.
 	ErrForbidden = errors.New("forbidden")
+	// ErrRateLimited reports a caller that must wait before retrying a bounded operation.
+	ErrRateLimited = errors.New("rate_limited")
 )

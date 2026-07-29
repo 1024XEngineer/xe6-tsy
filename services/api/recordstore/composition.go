@@ -12,9 +12,10 @@ import (
 // ServiceComposition contains the records services and the validated final-turn reader used by
 // downstream delivery. The database pool and session adapters remain owned by the composition root.
 type ServiceComposition struct {
-	Participants *participants.Service
-	Turns        *turns.Service
-	FinalTurns   *turns.FinalTurnReader
+	Participants    *participants.Service
+	Turns           *turns.Service
+	FinalTurns      *turns.FinalTurnReader
+	FinalTurnWorker *turns.FinalTurnWorker
 }
 
 // NewServices composes records domain services over the PostgreSQL read/write adapters.
@@ -58,9 +59,12 @@ func NewServices(
 		return nil, fmt.Errorf("create records services: %w", err)
 	}
 
+	turnService := turns.NewService(turnRepository, sessionOwner, nil)
+	finalTurnOutbox := NewFinalTurnOutbox(pool)
 	return &ServiceComposition{
-		Participants: participants.NewService(participantRepository, sessionOwner, nil),
-		Turns:        turns.NewService(turnRepository, sessionOwner, nil),
-		FinalTurns:   turns.NewFinalTurnReader(turnReader),
+		Participants:    participants.NewService(participantRepository, sessionOwner, nil),
+		Turns:           turnService,
+		FinalTurns:      turns.NewFinalTurnReader(turnReader),
+		FinalTurnWorker: turns.NewFinalTurnWorker(finalTurnOutbox, turns.NewFinalTurnHandler(turnService)),
 	}, nil
 }

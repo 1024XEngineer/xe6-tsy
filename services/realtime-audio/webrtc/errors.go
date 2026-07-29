@@ -33,6 +33,8 @@ var (
 	ErrICEConfigurationInvalid = errors.New("invalid ICE server configuration")
 	// ErrTransportClosed rejects signaling operations after transport shutdown starts.
 	ErrTransportClosed = errors.New("WebRTC transport is closed")
+	// ErrTTSCodecUnsupported rejects offers that cannot receive the configured TTS track.
+	ErrTTSCodecUnsupported = errors.New("TTS codec is not supported by remote offer")
 	// ErrConnectionNotFound reports a missing or already closed session connection.
 	ErrConnectionNotFound = errors.New("WebRTC connection not found")
 	// ErrConnectionClosing rejects offers while the session's current transport generation is closing.

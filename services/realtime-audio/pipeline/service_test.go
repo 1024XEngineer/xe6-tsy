@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -431,6 +432,43 @@ func TestPipelineCancellationClosesBlockedTTSStream(t *testing.T) {
 	}
 }
 
+func TestPipelineCompletesPlaybackAfterTTSFinishes(t *testing.T) {
+	audioSink := &recordingPlaybackSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
+			Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
+			Result: tts.Result{Provider: "mock-tts", Model: "v1"},
+		}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: audioSink, Runtime: &recordingRuntimeReporter{},
+	})
+	if err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	if !reflect.DeepEqual(audioSink.completed, []string{"playback_turn-1"}) || len(audioSink.cancelled) != 0 {
+		t.Fatalf("completed = %#v, cancelled = %#v", audioSink.completed, audioSink.cancelled)
+	}
+}
+
+func TestPipelineCancelsPlaybackAfterTTSError(t *testing.T) {
+	wantErr := errors.New("TTS finish failed")
+	audioSink := &recordingPlaybackSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
+			Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}}, FinishErr: wantErr,
+		}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: audioSink, Runtime: &recordingRuntimeReporter{},
+	})
+	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	if len(audioSink.completed) != 0 || !reflect.DeepEqual(audioSink.cancelled, []string{"playback_turn-1"}) {
+		t.Fatalf("completed = %#v, cancelled = %#v", audioSink.completed, audioSink.cancelled)
+	}
+}
+
 func TestPipelineIgnoresPartialASREvents(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "unused"}}
 	service := NewPipelineService(PipelineDependencies{Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}), FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{}})
@@ -473,6 +511,22 @@ func (s *recordingUsageSink) Publish(_ context.Context, fact UsageFact) error {
 type recordingAudioSink struct {
 	chunks []AudioChunk
 	err    error
+}
+
+type recordingPlaybackSink struct {
+	recordingAudioSink
+	completed []string
+	cancelled []string
+}
+
+func (s *recordingPlaybackSink) Complete(_ context.Context, _, playbackID string) error {
+	s.completed = append(s.completed, playbackID)
+	return nil
+}
+
+func (s *recordingPlaybackSink) Cancel(_ context.Context, _, playbackID, _ string) error {
+	s.cancelled = append(s.cancelled, playbackID)
+	return nil
 }
 
 func (s *recordingAudioSink) Publish(_ context.Context, chunk AudioChunk) error {

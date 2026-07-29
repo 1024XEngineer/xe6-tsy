@@ -30,7 +30,7 @@ type HMACIssuer struct {
 // callback. New production callers should prefer NewHMACIssuerWithAccount so
 // a token's subject is checked against the session owner as well.
 func NewHMACIssuer(secret, issuer, audience string, active func(context.Context, string) (bool, error)) (*HMACIssuer, error) {
-	if len([]byte(secret)) < 32 || issuer == "" || audience == "" {
+	if len([]byte(secret)) < 32 || issuer == "" || audience == "" || active == nil {
 		return nil, fmt.Errorf("%w: token configuration is incomplete", domain.ErrInvalidArgument)
 	}
 	return &HMACIssuer{secret: []byte(secret), issuer: issuer, audience: audience, accessTTL: time.Hour, active: active}, nil
@@ -41,7 +41,7 @@ func NewHMACIssuer(secret, issuer, audience string, active func(context.Context,
 // session that has been moved to another account from continuing to authorize
 // requests with an old token subject.
 func NewHMACIssuerWithAccount(secret, issuer, audience string, active func(context.Context, string, string) (bool, error)) (*HMACIssuer, error) {
-	if len([]byte(secret)) < 32 || issuer == "" || audience == "" {
+	if len([]byte(secret)) < 32 || issuer == "" || audience == "" || active == nil {
 		return nil, fmt.Errorf("%w: token configuration is incomplete", domain.ErrInvalidArgument)
 	}
 	return &HMACIssuer{secret: []byte(secret), issuer: issuer, audience: audience, accessTTL: time.Hour, activeForAccount: active}, nil

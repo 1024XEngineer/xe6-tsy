@@ -18,6 +18,7 @@ var (
 )
 
 // FrameSource emits normalized mono PCM frames for one session-bound audio track.
+// Close implementations must be safe to retry after returning an error.
 type FrameSource interface {
 	ReadFrame(ctx context.Context) (audio.Frame, error)
 	Close() error

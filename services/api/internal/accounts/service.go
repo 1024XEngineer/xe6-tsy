@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
+	"regexp"
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/authcontext"
@@ -19,15 +19,27 @@ type UseCases struct {
 	issuer     TokenIssuer
 	verifier   AccessTokenVerifier
 	sender     VerificationSender
+	digester   *CredentialDigester
 }
+
+var (
+	canonicalPhonePattern   = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
+	verificationCodePattern = regexp.MustCompile(`^[0-9]{6}$`)
+)
+
+const challengeRestoreTimeout = 3 * time.Second
 
 func NewUseCases() *UseCases { return &UseCases{} }
 
 // NewPersistentUseCases wires account policy to durable adapters. The empty
 // NewUseCases constructor intentionally remains fail-closed for tests and
 // deployments that have not supplied database-backed dependencies.
-func NewPersistentUseCases(repository Repository, issuer TokenIssuer, verifier AccessTokenVerifier, sender VerificationSender) *UseCases {
-	return &UseCases{repository: repository, issuer: issuer, verifier: verifier, sender: sender}
+func NewPersistentUseCases(repository Repository, issuer TokenIssuer, verifier AccessTokenVerifier, sender VerificationSender, digesters ...*CredentialDigester) *UseCases {
+	var digester *CredentialDigester
+	if len(digesters) > 0 {
+		digester = digesters[0]
+	}
+	return &UseCases{repository: repository, issuer: issuer, verifier: verifier, sender: sender, digester: digester}
 }
 
 func (u *UseCases) CreateAnonymous(ctx context.Context) (AuthResult, error) {
@@ -42,61 +54,100 @@ func (u *UseCases) CreateAnonymous(ctx context.Context) (AuthResult, error) {
 }
 
 func (u *UseCases) CreatePhoneChallenge(ctx context.Context, phone string) (string, error) {
-	if u.repository == nil || u.sender == nil {
+	if u.repository == nil || u.sender == nil || u.digester == nil {
 		return "", domain.ErrNotImplemented
 	}
-	phone = strings.TrimSpace(phone)
-	if !strings.HasPrefix(phone, "+") || len(phone) < 8 || len(phone) > 20 {
+	if !canonicalPhonePattern.MatchString(phone) {
 		return "", domain.ErrInvalidArgument
 	}
 	code, err := randomDigits(6)
 	if err != nil {
 		return "", fmt.Errorf("generate verification code: %w", err)
 	}
+	challengeID, err := randomID()
+	if err != nil {
+		return "", fmt.Errorf("generate challenge ID: %w", err)
+	}
 	now := time.Now().UTC()
+	id := "challenge_" + challengeID
+	legacyRateLimitHash := hashValue(phone)
+	legacyPhoneHash, err := u.digester.EncryptLegacyPhoneHash(legacyRateLimitHash)
+	if err != nil {
+		return "", fmt.Errorf("protect legacy phone lookup: %w", err)
+	}
 	challenge := PhoneChallenge{
-		ID: "challenge_" + randomID(), PhoneHash: hashValue(phone), CodeHash: hashValue(code),
-		ExpiresAt: now.Add(10 * time.Minute), CreatedAt: now,
+		ID: id, PhoneHash: u.digester.PhoneHash(phone), LegacyPhoneHash: legacyPhoneHash, LegacyRateLimitHash: legacyRateLimitHash,
+		CodeHash: u.digester.CodeHash(id, code), DigestVersion: 2,
+		ExpiresAt: now.Add(10 * time.Minute), CreatedAt: now, MaxAttempts: defaultPhoneChallengeMaxAttempts,
 	}
 	if err := u.repository.CreateChallenge(ctx, challenge); err != nil {
 		return "", err
 	}
 	if err := u.sender.SendCode(ctx, phone, code); err != nil {
+		// Delivery failures can be ambiguous: the provider may have accepted the
+		// message before the request timed out. Keep the challenge so every send
+		// attempt remains covered by the cooldown and rolling quota.
 		return "", err
 	}
 	return challenge.ID, nil
 }
 
-func (u *UseCases) VerifyPhone(ctx context.Context, challengeID, code, anonymousAccountID string) (AuthResult, error) {
-	if u.repository == nil || u.issuer == nil {
+func (u *UseCases) VerifyPhone(ctx context.Context, challengeID, code, anonymousAccountID string) (result AuthResult, err error) {
+	if u.repository == nil || u.issuer == nil || u.digester == nil {
 		return AuthResult{}, domain.ErrNotImplemented
 	}
-	if challengeID == "" || len(code) != 6 {
+	if challengeID == "" || !verificationCodePattern.MatchString(code) {
 		return AuthResult{}, domain.ErrInvalidArgument
 	}
 	if err := verifyAnonymousBindingOwnership(ctx, anonymousAccountID); err != nil {
 		return AuthResult{}, err
 	}
-	challenge, err := u.repository.GetChallenge(ctx, challengeID)
+	challenge, err := u.repository.ConsumeChallenge(ctx, challengeID, u.digester.CodeHash(challengeID, code))
 	if err != nil {
 		return AuthResult{}, err
 	}
-	if err := u.repository.ConsumeChallenge(ctx, challengeID, code); err != nil {
-		return AuthResult{}, err
-	}
+	completed := false
+	defer func() {
+		if !completed {
+			// Consumption is committed separately because failed guesses must be
+			// durable. Restore only a valid consumed code when account/session
+			// work fails, otherwise a transient dependency failure burns the code.
+			restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), challengeRestoreTimeout)
+			restoreErr := u.repository.RestoreChallenge(restoreCtx, challenge.ID)
+			cancel()
+			if restoreErr != nil {
+				err = fmt.Errorf("complete phone verification: %w", errors.Join(err, fmt.Errorf("restore consumed challenge: %w", restoreErr)))
+			}
+		}
+	}()
 	// The repository returns the phone-bound account while keeping the phone hash
 	// itself out of the public model and logs.
-	challengeAccount, err := u.repository.FindOrCreateByPhoneHash(ctx, challenge.PhoneHash)
+	legacyPhoneHash, err := u.digester.DecryptLegacyPhoneHash(challenge.LegacyPhoneHash)
+	if err != nil {
+		return AuthResult{}, domain.ErrUnauthorized
+	}
+	challengeAccount, err := u.repository.FindOrCreateByPhoneHashes(ctx, challenge.PhoneHash, legacyPhoneHash)
 	if err != nil {
 		return AuthResult{}, err
 	}
 	if anonymousAccountID != "" {
-		challengeAccount, err = u.repository.BindAnonymous(ctx, anonymousAccountID, challengeAccount.ID)
+		session, tokens, prepareErr := u.prepareSession(ctx, challengeAccount)
+		if prepareErr != nil {
+			return AuthResult{}, prepareErr
+		}
+		challengeAccount, err = u.repository.BindAnonymousAndCreateSession(ctx, anonymousAccountID, challengeAccount.ID, session)
 		if err != nil {
 			return AuthResult{}, err
 		}
+		completed = true
+		return AuthResult{Account: challengeAccount, Tokens: tokens}, nil
 	}
-	return u.issueSession(ctx, challengeAccount)
+	result, err = u.issueSession(ctx, challengeAccount)
+	if err != nil {
+		return AuthResult{}, err
+	}
+	completed = true
+	return result, nil
 }
 
 // verifyAnonymousBindingOwnership makes the optional account merge an
@@ -130,18 +181,18 @@ func (u *UseCases) Refresh(ctx context.Context, refreshToken string) (Tokens, er
 	if err != nil {
 		return Tokens{}, mapCredentialLookupError(err)
 	}
-	if err := u.repository.RevokeSession(ctx, session.ID); err != nil {
-		return Tokens{}, err
-	}
 	account, err := u.repository.GetAccount(ctx, session.AccountID)
 	if err != nil {
 		return Tokens{}, err
 	}
-	result, err := u.issueSession(ctx, account)
+	successor, tokens, err := u.prepareSession(ctx, account)
 	if err != nil {
 		return Tokens{}, err
 	}
-	return result.Tokens, nil
+	if err := u.repository.RotateSession(ctx, session.ID, successor); err != nil {
+		return Tokens{}, mapCredentialLookupError(err)
+	}
+	return tokens, nil
 }
 
 func (u *UseCases) Logout(ctx context.Context, refreshToken string) error {
@@ -155,7 +206,7 @@ func (u *UseCases) Logout(ctx context.Context, refreshToken string) error {
 	if err != nil {
 		return mapCredentialLookupError(err)
 	}
-	return u.repository.RevokeSession(ctx, session.ID)
+	return mapCredentialLookupError(u.repository.RevokeSession(ctx, session.ID))
 }
 
 func (u *UseCases) Me(ctx context.Context, accountID string) (Account, error) {
@@ -178,35 +229,60 @@ func (u *UseCases) VerifyAccessToken(ctx context.Context, token string) (AccessT
 }
 
 func (u *UseCases) issueSession(ctx context.Context, account Account) (AuthResult, error) {
-	session := Session{ID: "auths_" + randomID(), AccountID: account.ID, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour)}
-	tokens, err := u.issuer.Issue(ctx, account, session)
+	session, tokens, err := u.prepareSession(ctx, account)
 	if err != nil {
 		return AuthResult{}, err
 	}
-	session.RefreshHash = u.issuer.HashRefreshToken(tokens.RefreshToken)
 	if err := u.repository.CreateSession(ctx, session); err != nil {
 		return AuthResult{}, err
 	}
 	return AuthResult{Account: account, Tokens: tokens}, nil
 }
 
-func randomID() string {
-	value := make([]byte, 16)
-	if _, err := rand.Read(value); err != nil {
-		return hex.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
+func (u *UseCases) prepareSession(ctx context.Context, account Account) (Session, Tokens, error) {
+	now := time.Now().UTC()
+	sessionID, err := randomID()
+	if err != nil {
+		return Session{}, Tokens{}, fmt.Errorf("generate session ID: %w", err)
 	}
-	return hex.EncodeToString(value)
+	session := Session{ID: "auths_" + sessionID, AccountID: account.ID, CreatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)}
+	tokens, err := u.issuer.Issue(ctx, account, session)
+	if err != nil {
+		return Session{}, Tokens{}, err
+	}
+	session.RefreshHash = u.issuer.HashRefreshToken(tokens.RefreshToken)
+	return session, tokens, nil
 }
 
-func randomDigits(length int) (string, error) {
-	value := make([]byte, length)
+func randomID() (string, error) {
+	value := make([]byte, 16)
 	if _, err := rand.Read(value); err != nil {
 		return "", err
 	}
-	for i := range value {
-		value[i] = '0' + value[i]%10
+	return hex.EncodeToString(value), nil
+}
+
+func randomDigits(length int) (string, error) {
+	digits := make([]byte, length)
+	random := make([]byte, length)
+	for written := 0; written < length; {
+		if _, err := rand.Read(random); err != nil {
+			return "", err
+		}
+		// 250 is the largest multiple of ten below 256. Discarding the tail
+		// keeps every decimal digit equally likely.
+		for _, value := range random {
+			if value >= 250 {
+				continue
+			}
+			digits[written] = '0' + value%10
+			written++
+			if written == length {
+				break
+			}
+		}
 	}
-	return string(value), nil
+	return string(digits), nil
 }
 
 func hashValue(value string) string {

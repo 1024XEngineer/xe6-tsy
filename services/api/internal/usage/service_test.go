@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,16 +25,12 @@ func validRecordInput() RecordInput {
 	}
 }
 
-func TestValidateAllowsMissingPricingIndependently(t *testing.T) {
+func TestValidateAllowsCompleteOrUnavailablePricing(t *testing.T) {
 	for name, input := range map[string]RecordInput{
 		"both missing": validRecordInput(),
-		"cost only": func() RecordInput {
+		"both present": func() RecordInput {
 			input := validRecordInput()
 			input.CostAmount = "0.25"
-			return input
-		}(),
-		"currency only": func() RecordInput {
-			input := validRecordInput()
 			input.Currency = "CNY"
 			return input
 		}(),
@@ -46,25 +43,79 @@ func TestValidateAllowsMissingPricingIndependently(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsIncompletePricing(t *testing.T) {
+	for name, input := range map[string]RecordInput{
+		"cost only": func() RecordInput {
+			input := validRecordInput()
+			input.CostAmount = "0.25"
+			return input
+		}(),
+		"currency only": func() RecordInput {
+			input := validRecordInput()
+			input.Currency = "CNY"
+			return input
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validate(input); err != domain.ErrInvalidArgument {
+				t.Fatalf("validate() error = %v, want %v", err, domain.ErrInvalidArgument)
+			}
+		})
+	}
+}
+
+func TestValidateEnforcesIdempotencyKeyContractLimit(t *testing.T) {
+	input := validRecordInput()
+	input.IdempotencyKey = strings.Repeat("a", maxIdempotencyKeyLength)
+	if err := validate(input); err != nil {
+		t.Fatalf("validate() exact limit error = %v", err)
+	}
+
+	input.IdempotencyKey += "a"
+	if err := validate(input); err != domain.ErrInvalidArgument {
+		t.Fatalf("validate() over limit error = %v, want %v", err, domain.ErrInvalidArgument)
+	}
+}
+
+func TestValidateRejectsCostsPostgresCannotRepresentExactly(t *testing.T) {
+	for name, amount := range map[string]string{
+		"more than eight fractional digits": "0.000000001",
+		"more than twelve integer digits":   "1234567890123",
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := validRecordInput()
+			input.CostAmount = amount
+			input.Currency = "CNY"
+			if err := validate(input); err != domain.ErrInvalidArgument {
+				t.Fatalf("validate() error = %v, want %v", err, domain.ErrInvalidArgument)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsMalformedPricing(t *testing.T) {
 	for name, input := range map[string]RecordInput{
 		"negative cost": func() RecordInput {
 			input := validRecordInput()
 			input.CostAmount = "-1"
+			input.Currency = "CNY"
 			return input
 		}(),
 		"leading zero": func() RecordInput {
 			input := validRecordInput()
 			input.CostAmount = "00.1"
+			input.Currency = "CNY"
 			return input
 		}(),
 		"exponent": func() RecordInput {
 			input := validRecordInput()
 			input.CostAmount = "1e-3"
+			input.Currency = "CNY"
 			return input
 		}(),
 		"lowercase currency": func() RecordInput {
 			input := validRecordInput()
+			input.CostAmount = "1"
 			input.Currency = "cny"
 			return input
 		}(),
@@ -95,6 +146,106 @@ func TestMemorySummaryHandlesUnknownCost(t *testing.T) {
 	}
 	if got := summary.Totals[0].Currency; got != "" {
 		t.Fatalf("Currency = %q, want empty", got)
+	}
+}
+
+func TestMemoryRepositoryRejectsIdempotencyKeyPayloadConflict(t *testing.T) {
+	repository := NewMemoryRepository()
+	input := validRecordInput()
+	first, created, err := repository.Record(t.Context(), input)
+	if err != nil {
+		t.Fatalf("first Record() error = %v", err)
+	}
+	if !created {
+		t.Fatal("first Record() created = false, want true")
+	}
+
+	replayed, created, err := repository.Record(t.Context(), input)
+	if err != nil {
+		t.Fatalf("replayed Record() error = %v", err)
+	}
+	if created {
+		t.Fatal("replayed Record() created = true, want false")
+	}
+	if replayed != first {
+		t.Fatalf("replayed Record() = %#v, want %#v", replayed, first)
+	}
+
+	conflicting := input
+	conflicting.ID = "usage-conflict"
+	if _, _, err := repository.Record(t.Context(), conflicting); err != domain.ErrConflict {
+		t.Fatalf("conflicting Record() error = %v, want %v", err, domain.ErrConflict)
+	}
+}
+
+func TestMemorySummaryUsesPostgresCostScale(t *testing.T) {
+	repository := NewMemoryRepository()
+	first := validRecordInput()
+	first.CostAmount, first.Currency = "0.00000001", "CNY"
+	second := first
+	second.ID = "usage-2"
+	second.IdempotencyKey = "usage-key-2"
+	second.CostAmount = "0.00000002"
+	for _, input := range []RecordInput{first, second} {
+		if _, _, err := repository.Record(t.Context(), input); err != nil {
+			t.Fatalf("Record() error = %v", err)
+		}
+	}
+
+	summary, err := repository.AccountSummary(t.Context(), first.AccountID, first.OccurredAt.Add(-time.Hour), first.OccurredAt.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("AccountSummary() error = %v", err)
+	}
+	if got := summary.Totals[0].CostAmount; got != "0.00000003" {
+		t.Fatalf("CostAmount = %q, want %q", got, "0.00000003")
+	}
+}
+
+func TestMemorySummaryRejectsPartiallyMissingCost(t *testing.T) {
+	repository := NewMemoryRepository()
+	first := validRecordInput()
+	first.CostAmount, first.Currency = "0.25", "CNY"
+	second := first
+	second.ID = "usage-2"
+	second.IdempotencyKey = "usage-key-2"
+	second.CostAmount = ""
+	for _, input := range []RecordInput{first, second} {
+		if _, _, err := repository.Record(t.Context(), input); err != nil {
+			t.Fatalf("Record() error = %v", err)
+		}
+	}
+
+	if _, err := repository.AccountSummary(t.Context(), first.AccountID, first.OccurredAt.Add(-time.Hour), first.OccurredAt.Add(time.Hour)); err != domain.ErrConflict {
+		t.Fatalf("AccountSummary() error = %v, want %v", err, domain.ErrConflict)
+	}
+}
+
+func TestAggregateCostRejectsIncompletePricing(t *testing.T) {
+	for name, test := range map[string]struct {
+		amount    string
+		currency  string
+		rowCount  int64
+		costCount int64
+	}{
+		"some rows missing cost": {amount: "0.25000000", currency: "CNY", rowCount: 2, costCount: 1},
+		"currency without cost":  {amount: "0", currency: "CNY", rowCount: 1, costCount: 0},
+		"cost without currency":  {amount: "0.25000000", rowCount: 1, costCount: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := aggregateCost(test.amount, test.currency, test.rowCount, test.costCount); err != domain.ErrConflict {
+				t.Fatalf("aggregateCost() error = %v, want %v", err, domain.ErrConflict)
+			}
+		})
+	}
+}
+
+func TestAggregateCostNormalizesPostgresAmount(t *testing.T) {
+	amount, err := aggregateCost("0.3", "CNY", 2, 2)
+	if err != nil {
+		t.Fatalf("aggregateCost() error = %v", err)
+	}
+	if amount != "0.30000000" {
+		t.Fatalf("aggregateCost() = %q, want %q", amount, "0.30000000")
 	}
 }
 

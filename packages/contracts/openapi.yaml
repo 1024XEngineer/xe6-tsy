@@ -18,6 +18,7 @@ paths:
       responses:
         '202': { description: Accepted, content: { application/json: { schema: { type: object, required: [challenge_id], properties: { challenge_id: { type: string } } } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /auth/phone/login:
     post:
@@ -145,6 +146,7 @@ components:
     BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     Unauthorized: { description: Missing or invalid account context, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     Forbidden: { description: Authenticated account does not own the requested resource, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    TooManyRequests: { description: Phone verification requests are temporarily rate limited, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotImplemented: { description: Business implementation is intentionally pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
     RealtimeRuntimeState:
@@ -156,9 +158,10 @@ components:
     RealtimeRuntimeSnapshot:
       type: object
       additionalProperties: false
-      required: [session_id, runtime_state, current_turn_id, current_playback_id, last_error_code, updated_at]
+      required: [session_id, start_operation_id, runtime_state, current_turn_id, current_playback_id, last_error_code, updated_at]
       properties:
         session_id: { type: string }
+        start_operation_id: { type: string }
         runtime_state: { $ref: '#/components/schemas/RealtimeRuntimeState' }
         current_turn_id: { type: [string, 'null'] }
         current_playback_id: { type: [string, 'null'] }

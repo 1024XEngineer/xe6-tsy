@@ -31,7 +31,9 @@ func (s RuntimeState) Valid() bool {
 
 // RuntimeSnapshot is the authoritative media-plane state read by the control plane.
 type RuntimeSnapshot struct {
-	SessionID         string       `json:"session_id"`
+	SessionID string `json:"session_id"`
+	// StartOperationID identifies the durable Start operation that owns this runtime.
+	StartOperationID  string       `json:"start_operation_id"`
 	RuntimeState      RuntimeState `json:"runtime_state"`
 	CurrentTurnID     *string      `json:"current_turn_id"`
 	CurrentPlaybackID *string      `json:"current_playback_id"`

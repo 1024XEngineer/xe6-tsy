@@ -410,3 +410,5 @@ func mapError(err error) (int, string) {
 }
 
 var _ http.Handler = (*Handler)(nil)
+var _ Lifecycle = (*session.LifecycleService)(nil)
+var _ Signaling = (*webrtc.SignalingService)(nil)

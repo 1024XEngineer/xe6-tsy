@@ -121,6 +121,23 @@ func TestHandlerMapsLifecycleAndTicketErrors(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsWrongSessionTicketAndAcceptsRepeatedCandidate(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.tickets.ticket.SessionID = "another-session"
+	wrongSession := fixture.request(http.MethodGet, "/realtime/v1/sessions/session-1/runtime", "", "")
+	if wrongSession.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong-session ticket status = %d, want 401", wrongSession.Code)
+	}
+
+	fixture.tickets.ticket.SessionID = "session-1"
+	body := `{"connection_id":"connection-1","candidates":[],"end_of_candidates":true}`
+	first := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/ice-candidates", body, "")
+	second := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/ice-candidates", body, "")
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("repeated candidate statuses = %d, %d", first.Code, second.Code)
+	}
+}
+
 type fixture struct {
 	handler   http.Handler
 	lifecycle *lifecycleFake

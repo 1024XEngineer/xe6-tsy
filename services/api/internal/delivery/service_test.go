@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
@@ -52,6 +53,10 @@ func (r *retryRepositoryStub) GetAttempt(context.Context, string) (DeliveryAttem
 
 func (r *retryRepositoryStub) ClaimAttempt(context.Context, string) (DeliveryAttempt, error) {
 	return DeliveryAttempt{}, domain.ErrNotFound
+}
+
+func (r *retryRepositoryStub) RequeueAttempt(context.Context, string, time.Time) error {
+	return nil
 }
 
 func (r *retryRepositoryStub) CompleteAttempt(context.Context, string, string, DeliveryAttemptStatus, MessageStatus, *string) error {

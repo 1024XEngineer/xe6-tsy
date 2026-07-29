@@ -121,7 +121,7 @@ func (r *PostgresRepository) ClaimAttempt(ctx context.Context, id string) (Deliv
 	now := time.Now().UTC()
 	err := r.pool.QueryRow(ctx, `
 		UPDATE delivery_attempts
-		SET status=$2,error_code=NULL,started_at=$3,finished_at=NULL
+		SET status=$2,error_code=NULL,next_attempt_at=NULL,started_at=$3,finished_at=NULL
 		WHERE id=$1 AND status='queued'
 		RETURNING id,message_id,attempt_number,status,error_code,next_attempt_at,started_at,finished_at,created_at`,
 		id, AttemptStatusSending, now,
@@ -133,25 +133,50 @@ func (r *PostgresRepository) ClaimAttempt(ctx context.Context, id string) (Deliv
 	return attempt, mapDeliveryError(err)
 }
 
+// RequeueAttempt releases a claim only when the attempt is still owned by a
+// sending worker. This is used for failures before provider invocation; a
+// provider failure must keep the sending state because its acceptance may be
+// unknown and cannot be safely converted back to queued.
+func (r *PostgresRepository) RequeueAttempt(ctx context.Context, id string, nextAttemptAt time.Time) error {
+	if nextAttemptAt.IsZero() {
+		nextAttemptAt = time.Now().UTC()
+	}
+	result, err := r.pool.Exec(ctx, `
+		UPDATE delivery_attempts
+		SET status='queued',error_code=NULL,next_attempt_at=$2,started_at=NULL,finished_at=NULL
+		WHERE id=$1 AND status='sending'`, id, nextAttemptAt.UTC())
+	if err != nil {
+		return mapDeliveryError(err)
+	}
+	if result.RowsAffected() == 0 {
+		return domain.ErrConflict
+	}
+	return nil
+}
+
 func (r *PostgresRepository) CompleteAttempt(ctx context.Context, attemptID, messageID string, attemptStatus DeliveryAttemptStatus, messageStatus MessageStatus, code *string) error {
 	if (attemptStatus != AttemptStatusSucceeded && attemptStatus != AttemptStatusFailed) || (messageStatus != MessageStatusSent && messageStatus != MessageStatusFailed) {
 		return domain.ErrInvalidArgument
 	}
 	now := time.Now().UTC()
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		result, err := tx.Exec(ctx, `UPDATE delivery_attempts SET status=$3,error_code=$4,finished_at=$5 WHERE id=$1 AND message_id=$2 AND status='sending'`, attemptID, messageID, attemptStatus, code, now)
+		result, err := tx.Exec(ctx, `UPDATE delivery_attempts SET status=$3,error_code=$4,next_attempt_at=NULL,finished_at=$5 WHERE id=$1 AND message_id=$2 AND status='sending'`, attemptID, messageID, attemptStatus, code, now)
 		if err != nil {
 			return err
 		}
 		if result.RowsAffected() != 1 {
 			return domain.ErrConflict
 		}
-		result, err = tx.Exec(ctx, `UPDATE outbound_messages SET status=$2,last_error_code=$3,updated_at=$4 WHERE id=$1`, messageID, messageStatus, code, now)
+		// Never overwrite a terminal message chosen by another worker or by a
+		// cancellation path. If the row is no longer eligible, roll back the
+		// attempt transition; the next broker delivery will reconcile the stale
+		// attempt with the authoritative message state.
+		result, err = tx.Exec(ctx, `UPDATE outbound_messages SET status=$2,last_error_code=$3,updated_at=$4 WHERE id=$1 AND status IN ('queued','sending','retrying')`, messageID, messageStatus, code, now)
 		if err != nil {
 			return err
 		}
 		if result.RowsAffected() != 1 {
-			return domain.ErrNotFound
+			return domain.ErrConflict
 		}
 		return nil
 	})

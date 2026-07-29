@@ -8,7 +8,9 @@ import (
 
 func TestLifecycleReportsPipelineRuntimeProgress(t *testing.T) {
 	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
-	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{SessionID: "session-1", RuntimeState: RuntimeListening}); err != nil {
+	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{
+		SessionID: "session-1", StartOperationID: "operation-1", RuntimeState: RuntimeListening,
+	}); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
 
@@ -28,7 +30,7 @@ func TestLifecycleReportsPipelineRuntimeProgress(t *testing.T) {
 	}
 
 	got, err := service.GetRuntimeState(context.Background(), "session-1")
-	if err != nil || got.RuntimeState != RuntimeListening || got.CurrentTurnID != nil || got.CurrentPlaybackID != nil {
+	if err != nil || got.StartOperationID != "operation-1" || got.RuntimeState != RuntimeListening || got.CurrentTurnID != nil || got.CurrentPlaybackID != nil {
 		t.Fatalf("runtime = %#v, %v", got, err)
 	}
 }
@@ -74,6 +76,7 @@ func TestLifecycleSetRuntimeFailedPersistsTerminalState(t *testing.T) {
 	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
 	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{
 		SessionID:         "session-1",
+		StartOperationID:  "operation-1",
 		RuntimeState:      RuntimePlaying,
 		CurrentTurnID:     stringPointer("turn-1"),
 		CurrentPlaybackID: stringPointer("playback-1"),
@@ -87,7 +90,7 @@ func TestLifecycleSetRuntimeFailedPersistsTerminalState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRuntimeState() error = %v", err)
 	}
-	if got.RuntimeState != RuntimeFailed || got.CurrentTurnID != nil || got.CurrentPlaybackID != nil || got.LastErrorCode != nil {
+	if got.StartOperationID != "operation-1" || got.RuntimeState != RuntimeFailed || got.CurrentTurnID != nil || got.CurrentPlaybackID != nil || got.LastErrorCode != nil {
 		t.Fatalf("failed runtime = %#v", got)
 	}
 	if err := service.SetRuntimeFailed(context.Background(), "session-1"); err != nil {

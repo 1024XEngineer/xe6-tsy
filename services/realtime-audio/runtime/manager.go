@@ -88,17 +88,18 @@ type Manager struct {
 }
 
 type entry struct {
-	cancel   context.CancelFunc
-	source   *closeOnceSource
-	service  *segment.Service
-	request  segment.Request
-	ctx      context.Context
-	done     chan struct{}
-	err      error
-	active   bool
-	stopping bool
-	terminal bool
-	finished bool
+	cancel      context.CancelFunc
+	source      *closeOnceSource
+	service     *segment.Service
+	request     segment.Request
+	ctx         context.Context
+	done        chan struct{}
+	operationID string
+	err         error
+	active      bool
+	stopping    bool
+	terminal    bool
+	finished    bool
 }
 
 // NewManager builds configured providers and assembles the reusable pipeline.
@@ -167,6 +168,9 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	if snapshot.AccountID == "" {
 		return ErrAccountIDRequired
 	}
+	if snapshot.StartOperationID == "" {
+		return session.ErrStartOperationIDRequired
+	}
 	if snapshot.TraceID == "" {
 		return ErrTraceIDRequired
 	}
@@ -178,6 +182,10 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	if item == nil {
 		m.mu.Unlock()
 	} else if !item.terminal {
+		if item.operationID != snapshot.StartOperationID {
+			m.mu.Unlock()
+			return session.ErrRuntimeOperationConflict
+		}
 		m.mu.Unlock()
 		return nil
 	} else {
@@ -225,7 +233,8 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	runCtx, cancel := context.WithCancel(context.Background())
 	item = &entry{
 		cancel: cancel, source: owned, service: service,
-		ctx: runCtx,
+		ctx:         runCtx,
+		operationID: snapshot.StartOperationID,
 		request: segment.Request{
 			SessionID: snapshot.SessionID, AccountID: snapshot.AccountID,
 			TraceID: snapshot.TraceID, SourceLanguage: input.SourceLanguage,
@@ -239,7 +248,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 }
 
 // Activate starts the media loop for a prepared session.
-func (m *Manager) Activate(ctx context.Context, sessionID string) error {
+func (m *Manager) Activate(ctx context.Context, sessionID string, operationID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -249,6 +258,9 @@ func (m *Manager) Activate(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		return ErrSessionIDRequired
 	}
+	if operationID == "" {
+		return session.ErrStartOperationIDRequired
+	}
 	unlock := m.locks.lock(sessionID)
 	defer unlock()
 	m.mu.Lock()
@@ -256,6 +268,10 @@ func (m *Manager) Activate(ctx context.Context, sessionID string) error {
 	if item == nil {
 		m.mu.Unlock()
 		return ErrPipelineNotFound
+	}
+	if item.operationID != operationID {
+		m.mu.Unlock()
+		return session.ErrRuntimeOperationConflict
 	}
 	if item.stopping {
 		m.mu.Unlock()

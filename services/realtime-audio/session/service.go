@@ -46,6 +46,9 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 	if command.SessionID == "" {
 		return RuntimeSnapshot{}, ErrSessionIDRequired
 	}
+	if command.OperationID == "" {
+		return RuntimeSnapshot{}, ErrStartOperationIDRequired
+	}
 
 	unlock := s.locks.lock(command.SessionID)
 	defer unlock()
@@ -55,6 +58,9 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 		return current, ErrRuntimeCleanupRequired
 	}
 	if err == nil && current.RuntimeState != RuntimeStopped && current.RuntimeState != RuntimeFailed {
+		if current.StartOperationID != command.OperationID {
+			return current, ErrRuntimeOperationConflict
+		}
 		processingState := current.RuntimeState == RuntimeListening ||
 			current.RuntimeState == RuntimeASRProcessing || current.RuntimeState == RuntimeTranslating ||
 			current.RuntimeState == RuntimeTTSProcessing || current.RuntimeState == RuntimePlaying
@@ -78,19 +84,21 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 	}
 	// Carry request tracing into the media graph without persisting it as
 	// business session state.
+	business.StartOperationID = command.OperationID
 	business.TraceID = command.TraceID
 
 	starting := RuntimeSnapshot{
-		SessionID:    command.SessionID,
-		RuntimeState: RuntimeStarting,
-		UpdatedAt:    s.deps.Now(),
+		SessionID:        command.SessionID,
+		StartOperationID: command.OperationID,
+		RuntimeState:     RuntimeStarting,
+		UpdatedAt:        s.deps.Now(),
 	}
 	if err := s.deps.Runtimes.Save(ctx, starting); err != nil {
 		return RuntimeSnapshot{}, fmt.Errorf("save starting runtime: %w", err)
 	}
 
 	if err := s.deps.Pipelines.Start(ctx, business); err != nil {
-		failed := failureSnapshot(command.SessionID, ErrorCodeStartFailed, s.deps.Now())
+		failed := failureSnapshot(command.SessionID, command.OperationID, ErrorCodeStartFailed, s.deps.Now())
 		if saveErr := s.saveRuntimeForCleanup(ctx, failed); saveErr != nil {
 			return failed, errors.Join(fmt.Errorf("start pipeline: %w", err), fmt.Errorf("save failed runtime: %w", saveErr))
 		}
@@ -98,14 +106,15 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 	}
 
 	listening := RuntimeSnapshot{
-		SessionID:    command.SessionID,
-		RuntimeState: RuntimeListening,
-		UpdatedAt:    s.deps.Now(),
+		SessionID:        command.SessionID,
+		StartOperationID: command.OperationID,
+		RuntimeState:     RuntimeListening,
+		UpdatedAt:        s.deps.Now(),
 	}
 	if err := s.deps.Runtimes.Save(ctx, listening); err != nil {
 		// Start owns the pipeline but not the pre-existing WebRTC connection, so compensation stops only the pipeline.
 		pipelineErr := s.stopPipelineForCleanup(ctx, command.SessionID)
-		failed := failureSnapshot(command.SessionID, ErrorCodeStartFailed, s.deps.Now())
+		failed := failureSnapshot(command.SessionID, command.OperationID, ErrorCodeStartFailed, s.deps.Now())
 		saveErr := s.saveRuntimeForCleanup(ctx, failed)
 		return failed, errors.Join(
 			fmt.Errorf("save listening runtime: %w", err),
@@ -114,9 +123,9 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 		)
 	}
 	if activator, ok := s.deps.Pipelines.(PipelineActivator); ok {
-		if err := activator.Activate(ctx, command.SessionID); err != nil {
+		if err := activator.Activate(ctx, command.SessionID, command.OperationID); err != nil {
 			pipelineErr := s.stopPipelineForCleanup(ctx, command.SessionID)
-			failed := failureSnapshot(command.SessionID, ErrorCodeStartFailed, s.deps.Now())
+			failed := failureSnapshot(command.SessionID, command.OperationID, ErrorCodeStartFailed, s.deps.Now())
 			saveErr := s.saveRuntimeForCleanup(ctx, failed)
 			return failed, errors.Join(
 				fmt.Errorf("activate pipeline: %w", err),
@@ -167,7 +176,7 @@ func (s *LifecycleService) Stop(ctx context.Context, command StopRealtimeCommand
 	pipelineErr := s.stopPipelineForCleanup(ctx, command.SessionID)
 	connectionErr := s.closeConnectionForCleanup(ctx, command.SessionID)
 	if pipelineErr != nil || connectionErr != nil {
-		failed := failureSnapshot(command.SessionID, ErrorCodeStopFailed, s.deps.Now())
+		failed := failureSnapshot(command.SessionID, current.StartOperationID, ErrorCodeStopFailed, s.deps.Now())
 		cleanupErr := errors.Join(
 			wrapCleanupError("stop pipeline", pipelineErr),
 			wrapCleanupError("close WebRTC connection", connectionErr),
@@ -195,12 +204,13 @@ func (s *LifecycleService) GetRuntimeState(ctx context.Context, sessionID string
 	return s.deps.Runtimes.Get(ctx, sessionID)
 }
 
-func failureSnapshot(sessionID string, errorCode string, now time.Time) RuntimeSnapshot {
+func failureSnapshot(sessionID string, operationID string, errorCode string, now time.Time) RuntimeSnapshot {
 	return RuntimeSnapshot{
-		SessionID:     sessionID,
-		RuntimeState:  RuntimeFailed,
-		LastErrorCode: &errorCode,
-		UpdatedAt:     now,
+		SessionID:        sessionID,
+		StartOperationID: operationID,
+		RuntimeState:     RuntimeFailed,
+		LastErrorCode:    &errorCode,
+		UpdatedAt:        now,
 	}
 }
 

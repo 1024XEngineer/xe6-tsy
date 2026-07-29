@@ -41,9 +41,10 @@ type PipelineManager interface {
 
 // PipelineActivator is an optional second phase for managers that must wait
 // until LifecycleService has persisted RuntimeListening before reading media.
+// The operation ID prevents a stale activation from starting a replacement worker.
 // Existing PipelineManager implementations remain valid without this hook.
 type PipelineActivator interface {
-	Activate(ctx context.Context, sessionID string) error
+	Activate(ctx context.Context, sessionID string, operationID string) error
 }
 
 // PipelineHealthReader lets lifecycle recovery distinguish a live worker from

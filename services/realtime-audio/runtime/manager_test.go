@@ -59,7 +59,7 @@ func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", Status: "created"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1", Status: "created"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -69,10 +69,10 @@ func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 	if openCalls != 1 {
 		t.Fatalf("source open calls = %d, want 1", openCalls)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("idempotent Activate() error = %v", err)
 	}
 	select {
@@ -107,6 +107,59 @@ func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 	}
 }
 
+func TestManagerStartRequiresOperationID(t *testing.T) {
+	manager, _ := newOwnershipTestManager(t)
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+
+	if err := manager.Start(context.Background(), snapshot); !errors.Is(err, session.ErrStartOperationIDRequired) {
+		t.Fatalf("Start() error = %v, want ErrStartOperationIDRequired", err)
+	}
+}
+
+func TestManagerRejectsForeignOperationWhilePipelineOwned(t *testing.T) {
+	manager, opens := newOwnershipTestManager(t)
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1",
+	}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	foreign := snapshot
+	foreign.StartOperationID = "operation-2"
+	if err := manager.Start(context.Background(), foreign); !errors.Is(err, session.ErrRuntimeOperationConflict) {
+		t.Fatalf("foreign Start() error = %v, want ErrRuntimeOperationConflict", err)
+	}
+	if *opens != 1 {
+		t.Fatalf("source open calls = %d, want 1", *opens)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+func TestManagerAllowsNewOperationAfterSuccessfulStop(t *testing.T) {
+	manager, opens := newOwnershipTestManager(t)
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1",
+	}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("first Start() error = %v", err)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	snapshot.StartOperationID = "operation-2"
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("second Start() error = %v", err)
+	}
+	if *opens != 2 {
+		t.Fatalf("source open calls = %d, want 2", *opens)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("second Stop() error = %v", err)
+	}
+}
+
 func TestManagerClosesPreparedInputWhenActivationIsCanceled(t *testing.T) {
 	source := &fakeFrameSource{waitForClose: true}
 	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
@@ -117,13 +170,13 @@ func TestManagerClosesPreparedInputWhenActivationIsCanceled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := manager.Activate(ctx, snapshot.SessionID); !errors.Is(err, context.Canceled) {
+	if err := manager.Activate(ctx, snapshot.SessionID, snapshot.StartOperationID); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Activate() error = %v, want context canceled", err)
 	}
 	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
@@ -165,11 +218,11 @@ func TestManagerReportsTerminalFailureAndAllowsRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("first Start() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
 	select {
@@ -237,11 +290,11 @@ func TestManagerStopCancellationDoesNotReportRuntimeFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
 	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
@@ -269,11 +322,11 @@ func TestManagerReportsCleanEOFAsRetryableTermination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
 	select {
@@ -336,11 +389,11 @@ func TestManagerRetainsFinishedEntryWhenFailureReportFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("first Start() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
 	select {
@@ -405,11 +458,11 @@ func TestManagerStartRetriesRetainedTerminalSourceClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("first Start() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
 	select {
@@ -468,11 +521,11 @@ func TestManagerStopIgnoresSettledWorkerError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
 	select {
@@ -531,11 +584,11 @@ func TestManagerStopRetriesSettledSourceCloseError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
 	select {
@@ -604,11 +657,11 @@ func TestManagerStopCancelsBlockedFailureReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
 	select {
@@ -654,7 +707,7 @@ func TestManagerDoesNotBlockOtherSessionsWhileOpeningInput(t *testing.T) {
 	startA := make(chan error, 1)
 	go func() {
 		startA <- manager.Start(context.Background(), session.SessionSnapshot{
-			SessionID: "session-a", AccountID: "account-a", TraceID: "trace-a",
+			SessionID: "session-a", AccountID: "account-a", StartOperationID: "operation-a", TraceID: "trace-a",
 		})
 	}()
 	select {
@@ -664,7 +717,7 @@ func TestManagerDoesNotBlockOtherSessionsWhileOpeningInput(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := manager.Start(ctx, session.SessionSnapshot{SessionID: "session-b", AccountID: "account-b", TraceID: "trace-b"}); err != nil {
+	if err := manager.Start(ctx, session.SessionSnapshot{SessionID: "session-b", AccountID: "account-b", StartOperationID: "operation-b", TraceID: "trace-b"}); err != nil {
 		t.Fatalf("session-b Start() blocked behind session-a: %v", err)
 	}
 	close(release)
@@ -689,11 +742,11 @@ func TestManagerStopTimeoutCanBeRetriedAfterSourceUnblocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
 	select {
@@ -727,11 +780,11 @@ func TestManagerStopTimeoutBoundsBlockingSourceClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
-	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if err := manager.Activate(context.Background(), snapshot.SessionID); err != nil {
+	if err := manager.Activate(context.Background(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
 		t.Fatalf("Activate() error = %v", err)
 	}
 	select {
@@ -769,6 +822,25 @@ func testDependencies(source segment.FrameSource, languages session.LanguageConf
 		Languages: languages, FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{},
 		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	}
+}
+
+func newOwnershipTestManager(t *testing.T) (*Manager, *int) {
+	t.Helper()
+	opens := 0
+	deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.FrameSources = FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
+		opens++
+		return AudioInput{Source: &fakeFrameSource{}, SourceLanguage: "zh-CN"}, nil
+	})
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Translation: &translate.FakeProvider{},
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	return manager, &opens
 }
 
 func activeConfig(sessionID string) session.LanguageConfigSnapshot {

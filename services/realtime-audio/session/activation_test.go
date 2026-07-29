@@ -20,7 +20,7 @@ func TestLifecycleActivatesPreparedPipelineAfterListeningSave(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLifecycleService() error = %v", err)
 	}
-	if _, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", TraceID: "trace-1"}); err != nil {
+	if _, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1", TraceID: "trace-1"}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	if !pipeline.activatedAfterListening {
@@ -28,6 +28,12 @@ func TestLifecycleActivatesPreparedPipelineAfterListeningSave(t *testing.T) {
 	}
 	if pipeline.traceID != "trace-1" {
 		t.Fatalf("pipeline trace id = %q, want trace-1", pipeline.traceID)
+	}
+	if pipeline.operationID != "operation-1" {
+		t.Fatalf("pipeline operation id = %q, want operation-1", pipeline.operationID)
+	}
+	if err := pipeline.Activate(context.Background(), "session-1", "operation-2"); !errors.Is(err, ErrRuntimeOperationConflict) {
+		t.Fatalf("foreign Activate() error = %v, want ErrRuntimeOperationConflict", err)
 	}
 }
 
@@ -45,7 +51,7 @@ func TestLifecycleCompensatesActivationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLifecycleService() error = %v", err)
 	}
-	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", TraceID: "trace-1"})
+	got, err := service.Start(context.Background(), StartRealtimeCommand{SessionID: "session-1", OperationID: "operation-1", TraceID: "trace-1"})
 	if !errors.Is(err, activateErr) {
 		t.Fatalf("Start() error = %v, want activation error", err)
 	}
@@ -63,18 +69,23 @@ type activatingPipeline struct {
 	runtimes                RuntimeRepository
 	activatedAfterListening bool
 	traceID                 string
+	operationID             string
 	activateErr             error
 }
 
 func (p *activatingPipeline) Start(ctx context.Context, snapshot SessionSnapshot) error {
 	p.traceID = snapshot.TraceID
+	p.operationID = snapshot.StartOperationID
 	return p.fakePipeline.Start(ctx, snapshot)
 }
 
-func (p *activatingPipeline) Activate(ctx context.Context, sessionID string) error {
+func (p *activatingPipeline) Activate(ctx context.Context, sessionID string, operationID string) error {
 	snapshot, err := p.runtimes.Get(ctx, sessionID)
 	if err != nil {
 		return err
+	}
+	if snapshot.StartOperationID != operationID {
+		return ErrRuntimeOperationConflict
 	}
 	p.activatedAfterListening = snapshot.RuntimeState == RuntimeListening
 	return p.activateErr

@@ -108,6 +108,71 @@ func TestServiceCancelStopsActivePlaybackAndAllowsNextPlayback(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsLateChunkForSettledPlayback(t *testing.T) {
+	tests := []struct {
+		name      string
+		state     State
+		eventType EventType
+		settle    func(context.Context, *Service) error
+	}{
+		{
+			name:      "finished",
+			state:     StateFinished,
+			eventType: EventFinished,
+			settle: func(ctx context.Context, service *Service) error {
+				return service.Complete(ctx, "session-1", "playback-1")
+			},
+		},
+		{
+			name:      "interrupted",
+			state:     StateInterrupted,
+			eventType: EventInterrupted,
+			settle: func(ctx context.Context, service *Service) error {
+				return service.Interrupt(ctx, "session-1", "playback-1", "user_speaking")
+			},
+		},
+		{
+			name:      "cancelled",
+			state:     StateCancelled,
+			eventType: EventCancelled,
+			settle: func(ctx context.Context, service *Service) error {
+				return service.Cancel(ctx, "session-1", "playback-1", "turn_cancelled")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			track := &recordingTrack{}
+			events := &recordingEvents{}
+			service, err := NewService(Dependencies{Track: track, Events: events, Now: fixedClock})
+			if err != nil {
+				t.Fatalf("NewService() error = %v", err)
+			}
+			first := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+			if err := service.Publish(context.Background(), first); err != nil {
+				t.Fatalf("Publish(first) error = %v", err)
+			}
+			if err := tt.settle(context.Background(), service); err != nil {
+				t.Fatalf("settle playback error = %v", err)
+			}
+			late := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 2, Data: []byte{3, 4}}
+			if err := service.Publish(context.Background(), late); !errors.Is(err, ErrPlaybackNotActive) {
+				t.Fatalf("Publish(late) error = %v, want ErrPlaybackNotActive", err)
+			}
+			if got := service.Snapshot("session-1"); got.State != tt.state || got.LastSequence != 1 {
+				t.Fatalf("snapshot = %#v, want state %q and sequence 1", got, tt.state)
+			}
+			if got := track.Chunks(); !reflect.DeepEqual(got, []pipeline.AudioChunk{first}) {
+				t.Fatalf("track chunks = %#v, want only the first chunk", got)
+			}
+			if got := events.Types(); !reflect.DeepEqual(got, []EventType{EventStarted, tt.eventType}) {
+				t.Fatalf("event types = %#v", got)
+			}
+		})
+	}
+}
+
 func TestServiceRetriesSettlementWhenEventPublishFails(t *testing.T) {
 	track := &recordingTrack{}
 	events := &recordingEvents{}

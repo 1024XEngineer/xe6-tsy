@@ -131,9 +131,16 @@ func (s *Service) Publish(ctx context.Context, chunk pipeline.AudioChunk) error 
 
 	s.mu.Lock()
 	current := s.current[chunk.SessionID]
-	if current != nil && current.snapshot.State == StatePlaying && current.snapshot.PlaybackID != chunk.PlaybackID {
-		s.mu.Unlock()
-		return ErrPlaybackNotActive
+	if current != nil {
+		if current.snapshot.PlaybackID == chunk.PlaybackID {
+			if current.snapshot.State != StatePlaying {
+				s.mu.Unlock()
+				return ErrPlaybackNotActive
+			}
+		} else if current.snapshot.State == StatePlaying {
+			s.mu.Unlock()
+			return ErrPlaybackNotActive
+		}
 	}
 	if current == nil || current.snapshot.State != StatePlaying {
 		current = &playback{snapshot: Snapshot{SessionID: chunk.SessionID, TurnID: chunk.TurnID, PlaybackID: chunk.PlaybackID, State: StatePlaying}}

@@ -18,7 +18,7 @@ import (
 
 func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
 	fixture := newFixture(t)
-	startBody := `{"trace_id":"trace-start","started_by":"browser"}`
+	startBody := `{"operation_id":"operation-1","trace_id":"trace-start","started_by":"browser"}`
 
 	first := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", startBody, "start-key")
 	if first.Code != http.StatusOK {
@@ -30,6 +30,11 @@ func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
 	}
 	if fixture.lifecycle.starts != 1 {
 		t.Fatalf("lifecycle starts = %d, want 1", fixture.lifecycle.starts)
+	}
+	if fixture.lifecycle.startCommand.OperationID != "operation-1" ||
+		fixture.lifecycle.startCommand.TraceID != "trace-start" ||
+		fixture.lifecycle.startCommand.StartedBy != "browser" {
+		t.Fatalf("start command = %#v, want complete request mapping", fixture.lifecycle.startCommand)
 	}
 
 	stopBody := `{"trace_id":"trace-stop","reason":"user_requested"}`
@@ -101,6 +106,14 @@ func TestHandlerRejectsMalformedAndMissingIdentity(t *testing.T) {
 		t.Fatalf("unknown field status = %d, want 400", unknown.Code)
 	}
 
+	missingOperation := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{}`, "start-key")
+	if missingOperation.Code != http.StatusBadRequest {
+		t.Fatalf("missing operation status = %d, want 400", missingOperation.Code)
+	}
+	if fixture.lifecycle.starts != 0 {
+		t.Fatalf("lifecycle starts = %d, want 0", fixture.lifecycle.starts)
+	}
+
 	missingKey := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/webrtc/offer", `{"sdp":"offer-sdp","type":"offer"}`, "")
 	if missingKey.Code != http.StatusBadRequest {
 		t.Fatalf("missing idempotency status = %d, want 400", missingKey.Code)
@@ -110,7 +123,7 @@ func TestHandlerRejectsMalformedAndMissingIdentity(t *testing.T) {
 func TestHandlerMapsLifecycleAndTicketErrors(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.lifecycle.startErr = session.ErrRuntimeCleanupRequired
-	conflict := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{}`, "start-key")
+	conflict := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{"operation_id":"operation-1"}`, "start-key")
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("lifecycle conflict status = %d, body=%s", conflict.Code, conflict.Body.String())
 	}
@@ -132,11 +145,11 @@ func TestHandlerReservesReplayBeforeRunningLifecycle(t *testing.T) {
 	handler := newReplayHandler(t, lifecycle, func() time.Time { return now }, time.Minute, 8)
 	firstDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		firstDone <- replayRequest(handler, `{"trace_id":"trace-start","started_by":"browser"}`, "start-key")
+		firstDone <- replayRequest(handler, `{"operation_id":"operation-1","trace_id":"trace-start","started_by":"browser"}`, "start-key")
 	}()
 	<-lifecycle.entered
 
-	conflict := replayRequest(handler, `{"trace_id":"different","started_by":"browser"}`, "start-key")
+	conflict := replayRequest(handler, `{"operation_id":"operation-1","trace_id":"different","started_by":"browser"}`, "start-key")
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("in-flight payload conflict status = %d, body=%s", conflict.Code, conflict.Body.String())
 	}
@@ -153,7 +166,7 @@ func TestHandlerExpiresReplayRecords(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
 	lifecycle := &lifecycleFake{runtime: session.RuntimeSnapshot{SessionID: "session-1", RuntimeState: session.RuntimeListening, UpdatedAt: now}}
 	handler := newReplayHandler(t, lifecycle, func() time.Time { return now }, time.Minute, 8)
-	body := `{"trace_id":"trace-start","started_by":"browser"}`
+	body := `{"operation_id":"operation-1","trace_id":"trace-start","started_by":"browser"}`
 	if response := replayRequest(handler, body, "start-key"); response.Code != http.StatusOK {
 		t.Fatalf("first start status = %d, body=%s", response.Code, response.Body.String())
 	}
@@ -170,7 +183,7 @@ func TestHandlerRejectsReplayWhenCapacityIsExhausted(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
 	lifecycle := &lifecycleFake{runtime: session.RuntimeSnapshot{SessionID: "session-1", RuntimeState: session.RuntimeListening, UpdatedAt: now}}
 	handler := newReplayHandler(t, lifecycle, func() time.Time { return now }, time.Minute, 1)
-	body := `{"trace_id":"trace-start","started_by":"browser"}`
+	body := `{"operation_id":"operation-1","trace_id":"trace-start","started_by":"browser"}`
 	if response := replayRequest(handler, body, "start-key-1"); response.Code != http.StatusOK {
 		t.Fatalf("first start status = %d, body=%s", response.Code, response.Body.String())
 	}
@@ -188,7 +201,7 @@ func TestHandlerIsolatesReplayCapacityPerSession(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
 	lifecycle := &multiSessionLifecycleFake{runtime: session.RuntimeSnapshot{RuntimeState: session.RuntimeListening, UpdatedAt: now}}
 	handler := newReplayHandlerWithLimits(t, lifecycle, func() time.Time { return now }, time.Minute, 2, 1)
-	body := `{}`
+	body := `{"operation_id":"operation-1"}`
 	if response := replayRequestForSession(handler, "session-1", body, "session-1-key"); response.Code != http.StatusOK {
 		t.Fatalf("first session start status = %d, body=%s", response.Code, response.Body.String())
 	}
@@ -238,12 +251,12 @@ func TestHandlerMapsMissingConnectionIDToBadRequest(t *testing.T) {
 func TestHandlerDoesNotCacheFailedReplay(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.lifecycle.startErr = errors.New("temporary lifecycle failure")
-	failed := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{}`, "start-key")
+	failed := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{"operation_id":"operation-1"}`, "start-key")
 	if failed.Code != http.StatusInternalServerError {
 		t.Fatalf("failed start status = %d, body=%s", failed.Code, failed.Body.String())
 	}
 	fixture.lifecycle.startErr = nil
-	recovered := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{}`, "start-key")
+	recovered := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{"operation_id":"operation-1"}`, "start-key")
 	if recovered.Code != http.StatusOK {
 		t.Fatalf("recovered start status = %d, body=%s", recovered.Code, recovered.Body.String())
 	}
@@ -281,7 +294,10 @@ func newFixture(t *testing.T) fixture {
 	t.Helper()
 	now := time.Unix(1700000000, 0).UTC()
 	lifecycle := &lifecycleFake{
-		runtime: session.RuntimeSnapshot{SessionID: "session-1", RuntimeState: session.RuntimeListening, UpdatedAt: now},
+		runtime: session.RuntimeSnapshot{
+			SessionID: "session-1", StartOperationID: "operation-1",
+			RuntimeState: session.RuntimeListening, UpdatedAt: now,
+		},
 		stopped: session.RuntimeSnapshot{SessionID: "session-1", RuntimeState: session.RuntimeStopped, UpdatedAt: now},
 	}
 	tickets := &ticketFake{ticket: webrtc.ConnectionTicket{SessionID: "session-1", AccountID: "account-1", ExpiresAt: now.Add(time.Hour)}}
@@ -337,12 +353,13 @@ func (f fixture) request(method, path, body, idempotencyKey string) *httptest.Re
 }
 
 type lifecycleFake struct {
-	runtime  session.RuntimeSnapshot
-	stopped  session.RuntimeSnapshot
-	startErr error
-	stopErr  error
-	starts   int
-	stops    int
+	runtime      session.RuntimeSnapshot
+	stopped      session.RuntimeSnapshot
+	startErr     error
+	stopErr      error
+	starts       int
+	stops        int
+	startCommand session.StartRealtimeCommand
 }
 
 type blockingLifecycleFake struct {
@@ -374,6 +391,7 @@ func (f *blockingLifecycleFake) GetRuntimeState(context.Context, string) (sessio
 
 func (f *lifecycleFake) Start(_ context.Context, command session.StartRealtimeCommand) (session.RuntimeSnapshot, error) {
 	f.starts++
+	f.startCommand = command
 	if f.startErr != nil {
 		return session.RuntimeSnapshot{}, f.startErr
 	}

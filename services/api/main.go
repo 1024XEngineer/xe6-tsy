@@ -253,13 +253,18 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		pool.Close()
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
 	}
+	policy, err := accounts.VerificationPolicyFromEnv()
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+	}
 	accountUseCases := accounts.NewPersistentUseCases(
 		accountRepository,
 		tokens,
 		tokens,
 		accounts.VerificationSenderFromEnv(),
 		digester,
-	).WithVerificationPolicy(accounts.VerificationPolicyFromEnv())
+	).WithVerificationPolicy(policy)
 	return &recordsHTTPDependencies{
 		handler: recordswebapi.NewHandler(recordswebapi.Dependencies{
 			Participants: services.Participants,

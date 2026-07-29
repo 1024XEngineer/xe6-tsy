@@ -56,7 +56,7 @@ func (d *OutboxDispatcher) DispatchOnce(ctx context.Context) error {
 		return err
 	}
 	for _, record := range records {
-		if err := d.queue.Enqueue(ctx, record.AttemptID, record.Key); err != nil {
+		if err := d.queue.Enqueue(ctx, QueueItem{AccountID: record.AccountID, AttemptID: record.AttemptID, IdempotencyKey: record.Key}); err != nil {
 			if markErr := d.repository.MarkOutboxFailed(ctx, record.ID, err.Error()); markErr != nil {
 				return markErr
 			}

@@ -67,7 +67,7 @@ func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, erro
 	u.createKeys[scopedIdempotencyKey(input.AccountID, input.IdempotencyKey)] = message.ID
 	u.keys.Unlock()
 	if !isOutboxBacked(u.repository) && u.queue != nil {
-		if err := u.queue.Enqueue(ctx, attempt.ID, input.IdempotencyKey); err != nil {
+		if err := u.queue.Enqueue(ctx, QueueItem{AccountID: input.AccountID, AttemptID: attempt.ID, IdempotencyKey: input.IdempotencyKey}); err != nil {
 			return Message{}, err
 		}
 	}
@@ -145,7 +145,7 @@ func (u *UseCases) Retry(ctx context.Context, accountID, messageID, key string) 
 	u.retryKeys[scopedIdempotencyKey(accountID, key)] = messageID
 	u.keys.Unlock()
 	if !isOutboxBacked(u.repository) && u.queue != nil {
-		if err := u.queue.Enqueue(ctx, attempt.ID, key); err != nil {
+		if err := u.queue.Enqueue(ctx, QueueItem{AccountID: accountID, AttemptID: attempt.ID, IdempotencyKey: key}); err != nil {
 			return Message{}, err
 		}
 	}

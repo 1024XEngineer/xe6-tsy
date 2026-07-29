@@ -27,20 +27,27 @@ func (r *outboxRepositoryStub) MarkOutboxFailed(context.Context, string, string)
 	return r.markError
 }
 
-type outboxQueueStub struct{ enqueueError error }
+type outboxQueueStub struct {
+	enqueueError error
+	item         QueueItem
+}
 
-func (q outboxQueueStub) Enqueue(context.Context, string, string) error { return q.enqueueError }
-func (outboxQueueStub) Receive(context.Context) (QueueMessage, error)   { return QueueMessage{}, nil }
-func (outboxQueueStub) Ack(context.Context, string) error               { return nil }
-func (outboxQueueStub) Nack(context.Context, string, time.Time) error   { return nil }
+func (q *outboxQueueStub) Enqueue(_ context.Context, item QueueItem) error {
+	q.item = item
+	return q.enqueueError
+}
+func (outboxQueueStub) Receive(context.Context) (QueueMessage, error) { return QueueMessage{}, nil }
+func (outboxQueueStub) Ack(context.Context, string) error             { return nil }
+func (outboxQueueStub) Nack(context.Context, string, time.Time) error { return nil }
 
 func TestDispatchOnceReturnsOutboxFailure(t *testing.T) {
 	markError := errors.New("database unavailable")
 	repository := &outboxRepositoryStub{
-		records:   []OutboxRecord{{ID: "outbox-1", AttemptID: "attempt-1", Key: "key-1"}},
+		records:   []OutboxRecord{{ID: "outbox-1", AccountID: "account-1", AttemptID: "attempt-1", Key: "key-1"}},
 		markError: markError,
 	}
-	dispatcher := NewOutboxDispatcher(repository, outboxQueueStub{enqueueError: errors.New("queue unavailable")}, time.Second)
+	queue := &outboxQueueStub{enqueueError: errors.New("queue unavailable")}
+	dispatcher := NewOutboxDispatcher(repository, queue, time.Second)
 
 	if err := dispatcher.DispatchOnce(context.Background()); !errors.Is(err, markError) {
 		t.Fatalf("DispatchOnce() error = %v, want %v", err, markError)
@@ -49,15 +56,19 @@ func TestDispatchOnceReturnsOutboxFailure(t *testing.T) {
 
 func TestDispatchOnceMarksPublishedAfterQueueAccepts(t *testing.T) {
 	repository := &outboxRepositoryStub{
-		records: []OutboxRecord{{ID: "outbox-1", AttemptID: "attempt-1", Key: "key-1"}},
+		records: []OutboxRecord{{ID: "outbox-1", AccountID: "account-1", AttemptID: "attempt-1", Key: "key-1"}},
 	}
-	dispatcher := NewOutboxDispatcher(repository, outboxQueueStub{}, time.Second)
+	queue := &outboxQueueStub{}
+	dispatcher := NewOutboxDispatcher(repository, queue, time.Second)
 
 	if err := dispatcher.DispatchOnce(context.Background()); err != nil {
 		t.Fatalf("DispatchOnce() error = %v", err)
 	}
 	if !repository.marked {
 		t.Fatal("DispatchOnce() did not mark the accepted outbox record")
+	}
+	if queue.item.AccountID != "account-1" || queue.item.AttemptID != "attempt-1" || queue.item.IdempotencyKey != "key-1" {
+		t.Fatalf("DispatchOnce() enqueued %#v, want account/attempt/key", queue.item)
 	}
 }
 
@@ -95,7 +106,7 @@ func TestRunRetriesAfterTransientDispatchFailure(t *testing.T) {
 		secondCall:   make(chan struct{}),
 		transientErr: errors.New("database unavailable"),
 	}
-	dispatcher := NewOutboxDispatcher(repository, outboxQueueStub{}, time.Millisecond)
+	dispatcher := NewOutboxDispatcher(repository, &outboxQueueStub{}, time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- dispatcher.Run(ctx) }()

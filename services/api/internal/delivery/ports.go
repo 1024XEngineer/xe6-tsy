@@ -54,6 +54,8 @@ type OutboxRecord struct {
 }
 
 type IdempotencyReader interface {
+	// GetMessageByIdempotency must enforce the supplied account's ownership or
+	// account-lineage scope before returning a message.
 	GetMessageByIdempotency(context.Context, string, string) (Message, error)
 }
 

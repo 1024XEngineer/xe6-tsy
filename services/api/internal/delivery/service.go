@@ -86,7 +86,9 @@ func (u *UseCases) resolveCreateIdempotency(ctx context.Context, input CreateInp
 	if err != nil {
 		return Message{}, true, err
 	}
-	if existing.AccountID != input.AccountID || existing.Channel != input.Channel || existing.DestinationRef != input.DestinationRef || !sameTurnSelection(existing.Turns, input.TurnIDs) {
+	// The repository applies the current account's lineage scope. A replay may
+	// therefore return a message created under a merged historical account.
+	if existing.Channel != input.Channel || existing.DestinationRef != input.DestinationRef || !sameTurnSelection(existing.Turns, input.TurnIDs) {
 		return Message{}, true, domain.ErrConflict
 	}
 	return existing, true, nil
@@ -221,23 +223,12 @@ func sameTurnSelection(turns []FinalTurnSnapshot, turnIDs []string) bool {
 	if len(turns) != len(turnIDs) {
 		return false
 	}
-	want := make(map[string]struct{}, len(turnIDs))
-	for _, turnID := range turnIDs {
-		if turnID == "" {
+	for index, turn := range turns {
+		if turn.TurnID == "" || turn.TurnID != turnIDs[index] {
 			return false
 		}
-		want[turnID] = struct{}{}
 	}
-	if len(want) != len(turnIDs) {
-		return false
-	}
-	for _, turn := range turns {
-		if _, exists := want[turn.TurnID]; !exists {
-			return false
-		}
-		delete(want, turn.TurnID)
-	}
-	return len(want) == 0
+	return true
 }
 
 func cloneTurns(source []FinalTurnSnapshot) []FinalTurnSnapshot {

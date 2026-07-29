@@ -112,7 +112,7 @@ func TestCreateReplayRequiresSameRequest(t *testing.T) {
 	service := NewPersistentUseCases(repository, nil, nil, nil)
 	input := CreateInput{
 		AccountID: "account-1", IdempotencyKey: "create-key", Channel: ChannelEmail,
-		DestinationRef: "primary", TurnIDs: []string{"turn-2", "turn-1"},
+		DestinationRef: "primary", TurnIDs: []string{"turn-1", "turn-2"},
 	}
 
 	message, err := service.Create(t.Context(), input)
@@ -123,6 +123,11 @@ func TestCreateReplayRequiresSameRequest(t *testing.T) {
 		t.Fatalf("CreateMessage calls = %d, want 0", repository.createCalls)
 	}
 
+	input.TurnIDs = []string{"turn-2", "turn-1"}
+	if _, err := service.Create(t.Context(), input); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("Create() reordered turns error = %v, want conflict", err)
+	}
+	input.TurnIDs = []string{"turn-1", "turn-2"}
 	input.DestinationRef = "other"
 	if _, err := service.Create(t.Context(), input); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("Create() mismatch error = %v, want conflict", err)
@@ -131,6 +136,22 @@ func TestCreateReplayRequiresSameRequest(t *testing.T) {
 	input.TurnIDs = []string{"turn-1", "turn-3"}
 	if _, err := service.Create(t.Context(), input); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("Create() turn mismatch error = %v, want conflict", err)
+	}
+}
+
+func TestCreateReplayAcceptsMessageFromMergedAccountLineage(t *testing.T) {
+	repository := &retryRepositoryStub{createLookup: Message{
+		ID: "message-1", AccountID: "anonymous-1", Channel: ChannelEmail,
+		DestinationRef: "primary", Turns: []FinalTurnSnapshot{{TurnID: "turn-1"}},
+	}}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+
+	message, err := service.Create(t.Context(), CreateInput{
+		AccountID: "registered-1", IdempotencyKey: "create-key", Channel: ChannelEmail,
+		DestinationRef: "primary", TurnIDs: []string{"turn-1"},
+	})
+	if err != nil || message.ID != "message-1" {
+		t.Fatalf("Create() = (%#v, %v), want historical message replay", message, err)
 	}
 }
 

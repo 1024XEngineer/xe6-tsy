@@ -26,9 +26,14 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 	tickets := &ticketFake{ticket: webrtc.ConnectionTicket{SessionID: "session-1", AccountID: "account-1", ExpiresAt: now.Add(time.Hour)}}
 	signaling := &deliverySignaling{outbox: durable}
 	handler, err := New(Dependencies{
-		Lifecycle: lifecycle, Signaling: signaling, Tickets: tickets,
-		Config: &configFake{value: WebRTCConfig{SessionID: "session-1", ExpiresAt: now.Add(time.Hour)}},
-		Now:    func() time.Time { return now },
+		Lifecycle: lifecycle, Signaling: signaling,
+		Connections: &connectionFake{value: realtimev1.ConnectionSnapshot{
+			SessionID: "session-1", ConnectionID: "connection-1",
+			State: realtimev1.ConnectionConnected, UpdatedAt: now,
+		}},
+		Tickets: tickets,
+		Config:  &configFake{value: WebRTCConfig{SessionID: "session-1", ExpiresAt: now.Add(time.Hour)}},
+		Now:     func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -45,7 +50,7 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 		return recorder
 	}
 
-	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{}`, "start-key"); response.Code != http.StatusOK {
+	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/start", `{"operation_id":"operation-1"}`, "start-key"); response.Code != http.StatusOK {
 		t.Fatalf("start status = %d, body=%s", response.Code, response.Body.String())
 	}
 	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/webrtc/offer", `{"sdp":"offer-sdp","type":"offer"}`, "offer-key"); response.Code != http.StatusOK {

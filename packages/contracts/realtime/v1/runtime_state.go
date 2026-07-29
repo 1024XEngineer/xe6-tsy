@@ -48,3 +48,8 @@ const (
 	RuntimeErrorStartFailed RuntimeErrorCode = "realtime_start_failed"
 	RuntimeErrorStopFailed  RuntimeErrorCode = "realtime_stop_failed"
 )
+
+const (
+	ErrorRuntimeNotFound          ErrorCode = "runtime_not_found"
+	ErrorRuntimeOperationConflict ErrorCode = "runtime_operation_conflict"
+)

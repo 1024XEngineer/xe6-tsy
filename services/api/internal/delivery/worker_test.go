@@ -8,7 +8,7 @@ import (
 
 type queueStub struct{}
 
-func (queueStub) Enqueue(context.Context, string, string) error { return nil }
+func (queueStub) Enqueue(context.Context, QueueItem) error      { return nil }
 func (queueStub) Receive(context.Context) (QueueMessage, error) { return QueueMessage{}, nil }
 func (queueStub) Ack(context.Context, string) error             { return nil }
 func (queueStub) Nack(context.Context, string, time.Time) error { return nil }

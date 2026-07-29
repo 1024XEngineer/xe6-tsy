@@ -19,8 +19,23 @@ import (
 // token plus the active-session lookup below.
 type PostgresRepository struct{ pool *pgxpool.Pool }
 
-const insertRegisteredAccountSQL = `INSERT INTO lingow_accounts (id, kind, phone_hash, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (phone_hash) WHERE phone_hash IS NOT NULL DO NOTHING`
+const insertRegisteredAccountSQL = `INSERT INTO lingow_accounts (id, kind, phone_hash_v2, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`
+const insertSessionSQL = `INSERT INTO lingow_auth_sessions (id, account_id, refresh_hash, expires_at, created_at) VALUES ($1,$2,$3,$4,$5)`
 const revokeActiveSessionSQL = `UPDATE lingow_auth_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE id=$1 AND revoked_at IS NULL`
+const rotateActiveSessionSQL = `UPDATE lingow_auth_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE id=$1 AND account_id=$2 AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP`
+const challengeAdvisoryLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
+const challengeRateQuerySQL = `
+	SELECT MAX(created_at), COUNT(*) FILTER (WHERE created_at > $2)
+	FROM lingow_phone_challenges
+	WHERE phone_hash = $1
+	   OR (digest_version = 1 AND phone_hash = $3)`
+
+const (
+	phoneChallengeCooldown                 = time.Minute
+	phoneChallengeWindow                   = time.Hour
+	phoneChallengeWindowMaxSends           = 5
+	defaultPhoneChallengeMaxAttempts int16 = 5
+)
 
 func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
@@ -45,49 +60,114 @@ func (r *PostgresRepository) GetAccount(ctx context.Context, id string) (Account
 }
 
 func (r *PostgresRepository) CreateChallenge(ctx context.Context, challenge PhoneChallenge) error {
-	_, err := r.pool.Exec(ctx, `INSERT INTO lingow_phone_challenges (id, phone_hash, code_hash, expires_at, created_at) VALUES ($1,$2,$3,$4,$5)`, challenge.ID, challenge.PhoneHash, challenge.CodeHash, challenge.ExpiresAt, challenge.CreatedAt)
+	if challenge.MaxAttempts == 0 {
+		challenge.MaxAttempts = defaultPhoneChallengeMaxAttempts
+	}
+	if challenge.CreatedAt.IsZero() {
+		challenge.CreatedAt = time.Now().UTC()
+	}
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		// Advisory locking serializes requests for the same private phone hash
+		// across API instances, including when no challenge row exists yet.
+		if _, err := tx.Exec(ctx, challengeAdvisoryLockSQL, challenge.PhoneHash); err != nil {
+			return err
+		}
+
+		var latest *time.Time
+		var sends int64
+		if err := tx.QueryRow(ctx, challengeRateQuerySQL,
+			challenge.PhoneHash, challenge.CreatedAt.Add(-phoneChallengeWindow), challenge.LegacyRateLimitHash,
+		).Scan(&latest, &sends); err != nil {
+			return err
+		}
+		if latest != nil && challenge.CreatedAt.Before(latest.Add(phoneChallengeCooldown)) {
+			return domain.ErrRateLimited
+		}
+		if sends >= phoneChallengeWindowMaxSends {
+			return domain.ErrRateLimited
+		}
+
+		_, err := tx.Exec(ctx, `
+			INSERT INTO lingow_phone_challenges
+				(id, phone_hash, legacy_phone_hash, code_hash, digest_version, expires_at, created_at, attempts, max_attempts)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			challenge.ID, challenge.PhoneHash, challenge.LegacyPhoneHash, challenge.CodeHash, challenge.DigestVersion,
+			challenge.ExpiresAt, challenge.CreatedAt, challenge.Attempts, challenge.MaxAttempts)
+		return err
+	})
 	return mapError(err)
 }
 
-func (r *PostgresRepository) GetChallenge(ctx context.Context, id string) (PhoneChallenge, error) {
-	var challenge PhoneChallenge
-	err := r.pool.QueryRow(ctx, `SELECT id, phone_hash, code_hash, expires_at, used_at, created_at FROM lingow_phone_challenges WHERE id=$1`, id).Scan(&challenge.ID, &challenge.PhoneHash, &challenge.CodeHash, &challenge.ExpiresAt, &challenge.UsedAt, &challenge.CreatedAt)
-	return challenge, mapError(err)
-}
-
-func (r *PostgresRepository) ConsumeChallenge(ctx context.Context, id, code string) error {
+func (r *PostgresRepository) ConsumeChallenge(ctx context.Context, id, code string) (PhoneChallenge, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return PhoneChallenge{}, err
 	}
 	defer tx.Rollback(ctx)
-	var codeHash string
-	var expires time.Time
-	var usedAt *time.Time
-	if err := tx.QueryRow(ctx, `SELECT code_hash, expires_at, used_at FROM lingow_phone_challenges WHERE id=$1 FOR UPDATE`, id).Scan(&codeHash, &expires, &usedAt); err != nil {
-		return mapError(err)
+
+	var challenge PhoneChallenge
+	err = tx.QueryRow(ctx, `
+		SELECT id, phone_hash, legacy_phone_hash, code_hash, digest_version, expires_at, used_at, created_at,
+			attempts, max_attempts, last_attempt_at
+		FROM lingow_phone_challenges
+		WHERE id = $1
+		FOR UPDATE`, id).Scan(
+		&challenge.ID, &challenge.PhoneHash, &challenge.LegacyPhoneHash, &challenge.CodeHash, &challenge.DigestVersion, &challenge.ExpiresAt,
+		&challenge.UsedAt, &challenge.CreatedAt, &challenge.Attempts,
+		&challenge.MaxAttempts, &challenge.LastAttemptAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return PhoneChallenge{}, domain.ErrUnauthorized
+		}
+		return PhoneChallenge{}, mapError(err)
 	}
-	if usedAt != nil || !time.Now().UTC().Before(expires) {
-		return domain.ErrUnauthorized
-	}
-	provided := hashValue(code)
-	if subtle.ConstantTimeCompare([]byte(provided), []byte(codeHash)) != 1 {
-		return domain.ErrUnauthorized
-	}
+
 	now := time.Now().UTC()
-	if _, err := tx.Exec(ctx, `UPDATE lingow_phone_challenges SET used_at=$2 WHERE id=$1`, id, now); err != nil {
-		return err
+	if challenge.UsedAt != nil || !now.Before(challenge.ExpiresAt) || challenge.Attempts >= challenge.MaxAttempts {
+		return PhoneChallenge{}, domain.ErrUnauthorized
 	}
+	if challenge.DigestVersion != 2 || subtle.ConstantTimeCompare([]byte(code), []byte(challenge.CodeHash)) != 1 {
+		// This branch intentionally commits before returning. A rollback here
+		// would make unlimited guesses possible against the same challenge.
+		if _, err := tx.Exec(ctx, `
+			UPDATE lingow_phone_challenges
+			SET attempts = attempts + 1, last_attempt_at = $2
+			WHERE id = $1`, id, now); err != nil {
+			return PhoneChallenge{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return PhoneChallenge{}, err
+		}
+		return PhoneChallenge{}, domain.ErrUnauthorized
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE lingow_phone_challenges
+		SET used_at = $2, last_attempt_at = $2
+		WHERE id = $1`, id, now); err != nil {
+		return PhoneChallenge{}, err
+	}
+	challenge.UsedAt = &now
+	challenge.LastAttemptAt = &now
 	if err := tx.Commit(ctx); err != nil {
-		return err
+		return PhoneChallenge{}, err
 	}
-	return nil
+	return challenge, nil
 }
 
-func (r *PostgresRepository) FindOrCreateByPhoneHash(ctx context.Context, phoneHash string) (Account, error) {
+func (r *PostgresRepository) RestoreChallenge(ctx context.Context, id string) error {
+	// A consumed row cannot be claimed by another verifier. Clearing only used
+	// rows therefore compensates a later persistence failure without turning an
+	// incorrect-code attempt into a reusable challenge.
+	_, err := r.pool.Exec(ctx, `UPDATE lingow_phone_challenges SET used_at=NULL WHERE id=$1 AND used_at IS NOT NULL`, id)
+	return mapError(err)
+}
+
+func (r *PostgresRepository) FindOrCreateByPhoneHashes(ctx context.Context, phoneHash, legacyPhoneHash string) (Account, error) {
 	var account Account
 	var kind string
-	err := r.pool.QueryRow(ctx, `SELECT id, kind, created_at FROM lingow_accounts WHERE phone_hash=$1 AND merged_into IS NULL`, phoneHash).Scan(&account.ID, &kind, &account.CreatedAt)
+	err := r.pool.QueryRow(ctx, `SELECT id, kind, created_at FROM lingow_accounts WHERE phone_hash_v2=$1 AND merged_into IS NULL`, phoneHash).Scan(&account.ID, &kind, &account.CreatedAt)
 	if err == nil {
 		account.Kind = AccountKind(kind)
 		return account, nil
@@ -95,21 +175,34 @@ func (r *PostgresRepository) FindOrCreateByPhoneHash(ctx context.Context, phoneH
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Account{}, mapError(err)
 	}
+	// Existing accounts are located through their historical SHA-256 digest and
+	// upgraded in place. Once the keyed digest exists, remove the legacy value so
+	// the weak deterministic identifier is retained only until that first login.
+	err = r.pool.QueryRow(ctx, `SELECT id, kind, created_at FROM lingow_accounts WHERE phone_hash=$1 AND merged_into IS NULL`, legacyPhoneHash).Scan(&account.ID, &kind, &account.CreatedAt)
+	if err == nil {
+		account.Kind = AccountKind(kind)
+		if _, err := r.pool.Exec(ctx, `UPDATE lingow_accounts SET phone_hash_v2=$2, phone_hash=NULL WHERE id=$1 AND phone_hash_v2 IS NULL`, account.ID, phoneHash); err != nil {
+			return Account{}, mapError(err)
+		}
+		return account, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Account{}, mapError(err)
+	}
 	account = Account{ID: "acct_" + ulid.Make().String(), Kind: AccountKindRegistered, CreatedAt: time.Now().UTC()}
-	// phone_hash is protected by a partial unique index (anonymous rows have a
-	// NULL phone_hash), so the conflict target must carry the same predicate for
-	// PostgreSQL to infer that index.
+	// New accounts never persist the weak deterministic SHA-256 value. The legacy
+	// hash is used only to locate and upgrade pre-v2 accounts above.
 	_, err = r.pool.Exec(ctx, insertRegisteredAccountSQL, account.ID, string(account.Kind), phoneHash, account.CreatedAt)
 	if err != nil {
 		return Account{}, mapError(err)
 	}
-	return r.GetAccountByPhoneOrID(ctx, phoneHash, account.ID)
+	return r.GetAccountByPhoneHashesOrID(ctx, phoneHash, legacyPhoneHash, account.ID)
 }
 
-func (r *PostgresRepository) GetAccountByPhoneOrID(ctx context.Context, phoneHash, fallbackID string) (Account, error) {
+func (r *PostgresRepository) GetAccountByPhoneHashesOrID(ctx context.Context, phoneHash, legacyPhoneHash, fallbackID string) (Account, error) {
 	var account Account
 	var kind string
-	err := r.pool.QueryRow(ctx, `SELECT id, kind, created_at FROM lingow_accounts WHERE (phone_hash=$1 OR id=$2) AND merged_into IS NULL ORDER BY CASE WHEN phone_hash=$1 THEN 0 ELSE 1 END LIMIT 1`, phoneHash, fallbackID).Scan(&account.ID, &kind, &account.CreatedAt)
+	err := r.pool.QueryRow(ctx, `SELECT id, kind, created_at FROM lingow_accounts WHERE (phone_hash_v2=$1 OR phone_hash=$2 OR id=$3) AND merged_into IS NULL ORDER BY CASE WHEN phone_hash_v2=$1 THEN 0 WHEN phone_hash=$2 THEN 1 ELSE 2 END LIMIT 1`, phoneHash, legacyPhoneHash, fallbackID).Scan(&account.ID, &kind, &account.CreatedAt)
 	if err != nil {
 		return Account{}, mapError(err)
 	}
@@ -118,16 +211,36 @@ func (r *PostgresRepository) GetAccountByPhoneOrID(ctx context.Context, phoneHas
 }
 
 func (r *PostgresRepository) BindAnonymous(ctx context.Context, anonymousID, registeredID string) (Account, error) {
+	if anonymousID == "" || registeredID == "" || anonymousID == registeredID {
+		return Account{}, domain.ErrConflict
+	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return Account{}, err
 	}
 	defer tx.Rollback(ctx)
-	var kind string
-	if err := tx.QueryRow(ctx, `SELECT kind FROM lingow_accounts WHERE id=$1 AND merged_into IS NULL FOR UPDATE`, anonymousID).Scan(&kind); err != nil {
+	var anonymousKind string
+	var mergedInto *string
+	if err := tx.QueryRow(ctx, `SELECT kind, merged_into FROM lingow_accounts WHERE id=$1 FOR UPDATE`, anonymousID).Scan(&anonymousKind, &mergedInto); err != nil {
 		return Account{}, mapError(err)
 	}
-	if kind != string(AccountKindAnonymous) {
+	if mergedInto != nil {
+		if *mergedInto == registeredID {
+			if err := tx.Commit(ctx); err != nil {
+				return Account{}, mapError(err)
+			}
+			return r.GetAccount(ctx, registeredID)
+		}
+		return Account{}, domain.ErrConflict
+	}
+	if anonymousKind != string(AccountKindAnonymous) {
+		return Account{}, domain.ErrConflict
+	}
+	var registeredKind string
+	if err := tx.QueryRow(ctx, `SELECT kind FROM lingow_accounts WHERE id=$1 AND merged_into IS NULL FOR UPDATE`, registeredID).Scan(&registeredKind); err != nil {
+		return Account{}, mapError(err)
+	}
+	if registeredKind != string(AccountKindRegistered) {
 		return Account{}, domain.ErrConflict
 	}
 	if _, err := tx.Exec(ctx, `UPDATE lingow_auth_sessions SET account_id=$2 WHERE account_id=$1`, anonymousID, registeredID); err != nil {
@@ -142,8 +255,56 @@ func (r *PostgresRepository) BindAnonymous(ctx context.Context, anonymousID, reg
 	return r.GetAccount(ctx, registeredID)
 }
 
+// BindAnonymousAndCreateSession is the login-path variant of BindAnonymous.
+// All ownership changes and the first registered session are committed by one
+// transaction, so a session insert failure rolls the merge back.
+func (r *PostgresRepository) BindAnonymousAndCreateSession(ctx context.Context, anonymousID, registeredID string, session Session) (Account, error) {
+	if anonymousID == "" || registeredID == "" || anonymousID == registeredID || session.ID == "" || session.AccountID != registeredID {
+		return Account{}, domain.ErrConflict
+	}
+	var account Account
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var anonymousKind string
+		var mergedInto *string
+		if err := tx.QueryRow(ctx, `SELECT kind, merged_into FROM lingow_accounts WHERE id=$1 FOR UPDATE`, anonymousID).Scan(&anonymousKind, &mergedInto); err != nil {
+			return mapError(err)
+		}
+		if mergedInto != nil && *mergedInto != registeredID {
+			return domain.ErrConflict
+		}
+		if mergedInto == nil && anonymousKind != string(AccountKindAnonymous) {
+			return domain.ErrConflict
+		}
+		var registeredKind string
+		var createdAt time.Time
+		if err := tx.QueryRow(ctx, `SELECT kind, created_at FROM lingow_accounts WHERE id=$1 AND merged_into IS NULL FOR UPDATE`, registeredID).Scan(&registeredKind, &createdAt); err != nil {
+			return mapError(err)
+		}
+		if registeredKind != string(AccountKindRegistered) {
+			return domain.ErrConflict
+		}
+		if mergedInto == nil {
+			if _, err := tx.Exec(ctx, `UPDATE lingow_auth_sessions SET account_id=$2 WHERE account_id=$1`, anonymousID, registeredID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE lingow_accounts SET merged_into=$2 WHERE id=$1`, anonymousID, registeredID); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, insertSessionSQL, session.ID, session.AccountID, session.RefreshHash, session.ExpiresAt, session.CreatedAt); err != nil {
+			return err
+		}
+		account = Account{ID: registeredID, Kind: AccountKindRegistered, CreatedAt: createdAt}
+		return nil
+	})
+	if err != nil {
+		return Account{}, mapError(err)
+	}
+	return account, nil
+}
+
 func (r *PostgresRepository) CreateSession(ctx context.Context, session Session) error {
-	_, err := r.pool.Exec(ctx, `INSERT INTO lingow_auth_sessions (id, account_id, refresh_hash, expires_at, created_at) VALUES ($1,$2,$3,$4,$5)`, session.ID, session.AccountID, session.RefreshHash, session.ExpiresAt, session.CreatedAt)
+	_, err := r.pool.Exec(ctx, insertSessionSQL, session.ID, session.AccountID, session.RefreshHash, session.ExpiresAt, session.CreatedAt)
 	return mapError(err)
 }
 
@@ -153,10 +314,28 @@ func (r *PostgresRepository) GetSessionByRefreshHash(ctx context.Context, hash s
 	return session, mapError(err)
 }
 
+func (r *PostgresRepository) RotateSession(ctx context.Context, currentSessionID string, successor Session) error {
+	// Revocation and successor insertion share one transaction so an insert
+	// failure rolls both changes back and a commit publishes them together.
+	// The conditional update also serializes concurrent refresh attempts: only
+	// the transaction that changes the active row may persist a successor.
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		result, err := tx.Exec(ctx, rotateActiveSessionSQL, currentSessionID, successor.AccountID)
+		if err != nil {
+			return err
+		}
+		if err := revokeSessionResult(result.RowsAffected()); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, insertSessionSQL, successor.ID, successor.AccountID, successor.RefreshHash, successor.ExpiresAt, successor.CreatedAt)
+		return err
+	})
+	return mapError(err)
+}
+
 func (r *PostgresRepository) RevokeSession(ctx context.Context, id string) error {
-	// Conditional revocation makes refresh-token rotation single-winner under
-	// concurrent requests: once one caller revokes the session, a replay cannot
-	// mint a second successor token.
+	// Conditional revocation reports a stale logout or replay instead of
+	// silently treating an already-revoked session as active.
 	result, err := r.pool.Exec(ctx, revokeActiveSessionSQL, id)
 	if err != nil {
 		return mapError(err)
@@ -195,7 +374,7 @@ func (r *PostgresRepository) AccountIDForSession(ctx context.Context, sessionID 
 }
 
 // CanonicalAccountID follows an account's merge chain to its active owner.
-// The visited set prevents malformed historical cycles from looping forever.
+// The visited set prevents a malformed historical cycle from looping forever.
 func (r *PostgresRepository) CanonicalAccountID(ctx context.Context, accountID string) (string, error) {
 	var canonicalID string
 	err := r.pool.QueryRow(ctx, `

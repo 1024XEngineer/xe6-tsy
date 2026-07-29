@@ -31,12 +31,18 @@ type Session struct {
 
 // PhoneChallenge stores non-plaintext verification state for a single login attempt.
 type PhoneChallenge struct {
-	ID        string
-	PhoneHash string
-	CodeHash  string
-	ExpiresAt time.Time
-	UsedAt    *time.Time
-	CreatedAt time.Time
+	ID                  string
+	PhoneHash           string
+	LegacyPhoneHash     string
+	LegacyRateLimitHash string // Transient compatibility key; never persisted for new challenges.
+	CodeHash            string
+	DigestVersion       int16
+	ExpiresAt           time.Time
+	UsedAt              *time.Time
+	CreatedAt           time.Time
+	Attempts            int16
+	MaxAttempts         int16
+	LastAttemptAt       *time.Time
 }
 
 // Tokens is the credential pair returned after authentication or refresh.

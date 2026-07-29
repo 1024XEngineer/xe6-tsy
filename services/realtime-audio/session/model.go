@@ -24,8 +24,14 @@ const (
 
 // SessionSnapshot is the read-only business session view supplied by member 1.
 type SessionSnapshot struct {
-	SessionID    string
-	AccountID    string
+	SessionID string
+	AccountID string
+	// StartOperationID is runtime ownership metadata copied from StartRealtimeCommand.
+	// It is not business session state and is never persisted by member 3 there.
+	StartOperationID string
+	// TraceID is runtime request metadata copied from StartRealtimeCommand.
+	// It is not business session state and is never persisted by member 3.
+	TraceID      string
 	Status       string
 	AudioConfig  json.RawMessage
 	Capabilities json.RawMessage
@@ -59,11 +65,12 @@ type ProcessingStateUpdate struct {
 	CurrentPlaybackID *string
 }
 
-// StartRealtimeCommand carries control-plane tracing data into startup.
+// StartRealtimeCommand binds one durable control-plane operation to startup.
 type StartRealtimeCommand struct {
-	SessionID string
-	TraceID   string
-	StartedBy string
+	SessionID   string
+	OperationID string
+	TraceID     string
+	StartedBy   string
 }
 
 // StopRealtimeCommand carries the requested shutdown reason and timestamp.

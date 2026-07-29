@@ -2,13 +2,22 @@ package delivery
 
 import "time"
 
+// MaxIdempotencyKeyLength is the public contract limit for create and retry keys.
+const MaxIdempotencyKeyLength = 200
+
 // Channel identifies a supported outbound delivery mechanism.
 type Channel string
 
 const (
-	// ChannelEmail is the only channel admitted by the first delivery contract.
+	// ChannelEmail sends a message to a verified email destination.
 	ChannelEmail Channel = "email"
 )
+
+// IsSupportedChannel reports whether a channel is accepted by the public
+// delivery contract. Keep this central so HTTP and use cases cannot drift.
+func IsSupportedChannel(channel Channel) bool {
+	return channel == ChannelEmail
+}
 
 // MessageStatus describes the user-visible lifecycle of an outbound message.
 type MessageStatus string
@@ -26,6 +35,11 @@ const (
 	MessageStatusRetrying MessageStatus = "retrying"
 	// MessageStatusCancelled means no further delivery attempts are allowed.
 	MessageStatusCancelled MessageStatus = "cancelled"
+
+	// deliveryUnknownErrorCode means a non-idempotent provider may have accepted
+	// the request before the worker lost its durable completion result. A normal
+	// retry must not replay such a message.
+	deliveryUnknownErrorCode = "delivery_unknown"
 )
 
 // DeliveryAttemptStatus describes one provider invocation independently of its message.
@@ -111,10 +125,14 @@ type VerifiedDestination struct {
 }
 
 // SendRequest contains the immutable message snapshot and verified provider target.
+// ProviderIdempotencyKey is a durable attempt identifier, not a caller supplied
+// request key. Provider adapters must pass it to the external provider's
+// idempotency mechanism so crash recovery cannot create a second delivery.
 type SendRequest struct {
-	Message     Message
-	Attempt     DeliveryAttempt
-	Destination VerifiedDestination
+	Message                Message
+	Attempt                DeliveryAttempt
+	Destination            VerifiedDestination
+	ProviderIdempotencyKey string
 }
 
 // CreateInput combines trusted account context, idempotency metadata, and client fields.

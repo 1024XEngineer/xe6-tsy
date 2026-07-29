@@ -38,12 +38,16 @@ type accountFake struct {
 	verifyPhoneCalled bool
 	verifyPhoneCtx    context.Context
 	verifyPhoneAnon   string
+	phoneChallengeErr error
 }
 
 func (f *accountFake) CreateAnonymous(context.Context) (accounts.AuthResult, error) {
 	return accounts.AuthResult{}, domain.ErrNotImplemented
 }
 func (f *accountFake) CreatePhoneChallenge(context.Context, string) (string, error) {
+	if f.phoneChallengeErr != nil {
+		return "", f.phoneChallengeErr
+	}
 	return "", domain.ErrNotImplemented
 }
 func (f *accountFake) VerifyPhone(ctx context.Context, _, _, anonymousAccountID string) (accounts.AuthResult, error) {
@@ -120,6 +124,30 @@ func TestInvalidMessageDoesNotReachService(t *testing.T) {
 	}
 	if fake.created.AccountID != "" {
 		t.Fatal("service was called for an invalid request")
+	}
+}
+
+func TestPhoneChallengeRateLimitUsesRetryableHTTPStatus(t *testing.T) {
+	fake := &accountFake{phoneChallengeErr: domain.ErrRateLimited}
+	handler := webapi.New(fake, usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verification-codes", strings.NewReader(`{"phone":"+8613800000000"}`))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusTooManyRequests)
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error.Code != "rate_limited" {
+		t.Fatalf("error code = %q, want rate_limited", payload.Error.Code)
 	}
 }
 
@@ -273,6 +301,24 @@ func TestRetryPassesMessageResourceID(t *testing.T) {
 	}
 	if fake.retryAccountID != "account-1" || fake.retryMessageID != "message-1" || fake.retryIdempotency != "retry-message-1" {
 		t.Fatalf("unexpected retry input: account=%q message=%q key=%q", fake.retryAccountID, fake.retryMessageID, fake.retryIdempotency)
+	}
+}
+
+func TestRetryRejectsOversizedIdempotencyKey(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", nil)
+	request = authenticate(request)
+	request.Header.Set("Idempotency-Key", strings.Repeat("k", delivery.MaxIdempotencyKeyLength+1))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.retryMessageID != "" {
+		t.Fatal("oversized retry key reached service")
 	}
 }
 

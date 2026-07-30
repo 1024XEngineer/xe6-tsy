@@ -48,6 +48,13 @@ services/api/
 
 语言配置能力与本地接线说明见 [`languages/README.md`](./languages/README.md)。
 
+会话生命周期 HTTP 在有 `DATABASE_URL` 时与语言配置共用同一 PostgreSQL pool：  
+`sessions` 通过 `realtimeaccess.NewLanguageConfigReader` 读取真实 `languages.Service`，
+用于 Start 前双语配置校验。未设置 `REALTIME_BASE_URL` 时，Create/List/Get 可用；
+Start 返回 `501 not_implemented`。End 对仍为 `created` 的会话可直接成功（无需
+Realtime.Stop）；对 `active` 会话因清理依赖 Stop 仍返回 `501`，直到 realtime
+control-plane 客户端接入。
+
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
 

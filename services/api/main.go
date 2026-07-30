@@ -31,6 +31,7 @@ type recordsHTTPDependencies struct {
 	tokens     accounts.AccessTokenVerifier
 	worker     finalTurnWorker
 	maintainer backgroundWorker
+	pool       *pgxpool.Pool
 	cleanup    func()
 }
 
@@ -68,21 +69,22 @@ func run() error {
 		address = ":8080"
 	}
 
-	langHandler, cleanup, err := newLanguageHandler(context.Background())
-	if err != nil {
-		return err
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-
 	records, err := newRecordsHTTPDependencies(context.Background())
 	if err != nil {
 		return err
 	}
 	defer records.cleanup()
 
-	sessionHandler := newSessionHandler(nil)
+	langHandler, langService, err := newLanguageHandlerWithPool(context.Background(), records.pool)
+	if err != nil {
+		return err
+	}
+
+	tokenSecret := os.Getenv("JWT_SECRET")
+	sessionHandler, err := newSessionHandlerFromPool(records.pool, langService, tokenSecret)
+	if err != nil {
+		return err
+	}
 	mux := buildMux(langHandler, sessionHandler, records.handler, records.accounts, records.tokens)
 
 	server := &http.Server{
@@ -167,50 +169,25 @@ func runHTTPAndFinalTurnWorker(ctx context.Context, server *http.Server, worker 
 	return errors.Join(runErr, shutdownErr)
 }
 
-func newLanguageHandler(ctx context.Context) (*languages.Handler, func(), error) {
-	accountID := func(r *http.Request) (string, bool) {
-		return internalwebapi.AccountIDFromContext(r.Context())
-	}
-
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		slog.Warn("DATABASE_URL unset; language HTTP routes return not_implemented until wired")
-		return languages.NewHandler(nil, accountID), nil, nil
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, nil, err
-	}
-	handler, err := newLanguageHandlerWithPool(ctx, pool)
-	if err != nil {
-		pool.Close()
-		return nil, nil, err
-	}
-	return handler, pool.Close, nil
-}
-
-func newLanguageHandlerWithPool(ctx context.Context, pool *pgxpool.Pool) (*languages.Handler, error) {
+// newLanguageHandlerWithPool migrates language schema and returns one shared
+// Service used by HTTP and by sessions start readiness.
+func newLanguageHandlerWithPool(ctx context.Context, pool *pgxpool.Pool) (*languages.Handler, *languages.Service, error) {
 	if pool == nil {
-		return nil, errors.New("language handler requires PostgreSQL pool")
+		return nil, nil, errors.New("language handler requires PostgreSQL pool")
 	}
 	if err := languages.ApplyMigrations(ctx, pool); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	sessions := sessionOwnerFromEnv()
-	svc := languages.NewService(languages.NewPostgresStore(pool, nil), sessions)
+	owner := languageSessionOwner(pool)
+	svc := languages.NewService(languages.NewPostgresStore(pool, nil), owner)
 	slog.Info("language configuration service enabled")
 	accountID := func(r *http.Request) (string, bool) {
 		return internalwebapi.AccountIDFromContext(r.Context())
 	}
-	return languages.NewHandler(svc, accountID), nil
+	return languages.NewHandler(svc, accountID), svc, nil
 }
 
-func sessionOwnerFromEnv() languages.SessionOwnerReader {
+func languageSessionOwner(pool *pgxpool.Pool) languages.SessionOwnerReader {
 	switch os.Getenv("LANGUAGE_SESSION_OWNER") {
 	case "trust-auth":
 		slog.Warn("LANGUAGE_SESSION_OWNER=trust-auth enabled; sessions are not ownership-checked")
@@ -218,7 +195,9 @@ func sessionOwnerFromEnv() languages.SessionOwnerReader {
 			AccountIDFromCtx: internalwebapi.AccountIDFromContext,
 		}
 	default:
-		return languages.NotImplementedSessionOwner{}
+		return languages.NewRecordsSessionOwner(
+			recordstore.NewCanonicalSessionOwner(accounts.NewPostgresRepository(pool)),
+		)
 	}
 }
 
@@ -247,6 +226,7 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		pool.Close()
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
 	}
+	dependencies.pool = pool
 	dependencies.cleanup = pool.Close
 	return dependencies, nil
 }

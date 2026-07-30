@@ -8,8 +8,9 @@ type SessionOwnerReader interface {
 	GetOwnerAccountID(ctx context.Context, sessionID string) (accountID string, err error)
 }
 
-// NotImplementedSessionOwner is the default adapter until session management
-// provides a production implementation.
+// NotImplementedSessionOwner is an explicit fail-closed adapter used when
+// ownership wiring is unavailable. Production composition should prefer
+// NewRecordsSessionOwner over this type.
 type NotImplementedSessionOwner struct{}
 
 func (NotImplementedSessionOwner) GetOwnerAccountID(context.Context, string) (string, error) {

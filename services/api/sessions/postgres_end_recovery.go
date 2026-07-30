@@ -75,21 +75,21 @@ func (r *PostgresRepository) RetryClaimedEndIntent(
 	}
 	if params.SessionID == "" || params.AccountID == "" ||
 		params.WorkerID == "" || params.LastError == "" ||
-		!validTimestamp(params.NextAttemptAt) {
+		params.RetryAfter < 0 {
 		return ErrInvalidRequest
 	}
 	result, err := r.pool.Exec(ctx, `
 		UPDATE voice_session_end_intents
 		SET retry_count = retry_count + 1,
 			last_error = $1,
-			next_attempt_at = $2,
+			next_attempt_at = clock_timestamp() + ($2::double precision * interval '1 second'),
 			recovery_owner = NULL,
 			recovery_lease_expires_at = NULL
 		WHERE session_id = $3 AND account_id = $4
 		  AND recovery_owner = $5
 		  AND recovery_lease_expires_at > clock_timestamp()
 		  AND completed_at IS NULL`,
-		params.LastError, params.NextAttemptAt.UTC(), params.SessionID,
+		params.LastError, params.RetryAfter.Seconds(), params.SessionID,
 		params.AccountID, params.WorkerID)
 	if err != nil {
 		return postgresError("record end recovery retry", err)

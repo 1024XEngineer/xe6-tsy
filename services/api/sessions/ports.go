@@ -136,6 +136,8 @@ type EndIntent struct {
 	LastError      *string
 	NextAttemptAt  time.Time
 	RecoveryOwner  *string
+	// LeaseExpiresAt is a storage-clock deadline used for repository fencing.
+	// Callers must budget attempts from local elapsed time, not this timestamp.
 	LeaseExpiresAt *time.Time
 }
 
@@ -152,11 +154,11 @@ type ClaimEndIntentParams struct {
 // RetryEndIntentParams releases a claimed intent after a failed recovery step
 // and persists the bounded-backoff schedule.
 type RetryEndIntentParams struct {
-	SessionID     string
-	AccountID     string
-	WorkerID      string
-	LastError     string
-	NextAttemptAt time.Time
+	SessionID  string
+	AccountID  string
+	WorkerID   string
+	LastError  string
+	RetryAfter time.Duration
 }
 
 // CompleteClaimedEndIntentParams completes an intent only for its current

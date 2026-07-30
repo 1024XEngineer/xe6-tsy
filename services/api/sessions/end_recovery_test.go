@@ -74,6 +74,7 @@ func TestEndRecoveryWorkerRetriesWithoutEndingOnInvalidStop(t *testing.T) {
 	intent := fixture.repository.intent
 	if intent.RetryCount != 1 || intent.LastError == nil ||
 		!intent.NextAttemptAt.Equal(fixture.now.Add(time.Second)) ||
+		fixture.repository.retryAfter != time.Second ||
 		intent.RecoveryOwner != nil || intent.LeaseExpiresAt != nil {
 		t.Fatalf("retry intent = %#v", intent)
 	}
@@ -278,7 +279,7 @@ func TestEndRecoveryWorkerRejectsInvalidClaim(t *testing.T) {
 	}
 }
 
-func TestEndRecoveryWorkerRejectsExpiredClaim(t *testing.T) {
+func TestEndRecoveryWorkerDoesNotCompareLeaseAcrossClocks(t *testing.T) {
 	fixture := newEndRecoveryFixture(t, StatusActive)
 	fixture.worker.service.deps.Clock = &fakeClock{times: []time.Time{
 		fixture.now,
@@ -286,11 +287,16 @@ func TestEndRecoveryWorkerRejectsExpiredClaim(t *testing.T) {
 	}}
 
 	processed, err := fixture.worker.ProcessNext(t.Context())
-	if !processed || !errors.Is(err, ErrConcurrentTransition) {
-		t.Fatalf("ProcessNext() = %t, %v, want expired claim", processed, err)
+	if err != nil || !processed {
+		t.Fatalf("ProcessNext() = %t, %v, want successful recovery", processed, err)
 	}
-	if fixture.realtime.stopCalls != 0 {
-		t.Fatalf("Stop() calls = %d, want 0", fixture.realtime.stopCalls)
+	if fixture.realtime.stopCalls != 1 ||
+		fixture.repository.session.Status != StatusEnded {
+		t.Fatalf(
+			"Stop calls = %d, session = %#v",
+			fixture.realtime.stopCalls,
+			fixture.repository.session,
+		)
 	}
 }
 
@@ -347,49 +353,13 @@ func TestEndRecoveryWorkerRejectsUnknownSessionStatus(t *testing.T) {
 	}
 }
 
-func TestEndRecoveryWorkerRejectsClockFailures(t *testing.T) {
-	tests := []struct {
-		name          string
-		times         func(time.Time) []time.Time
-		prepare       func(*endRecoveryFixture)
-		wantProcessed bool
-	}{
-		{
-			name:  "claim time",
-			times: func(time.Time) []time.Time { return []time.Time{{}} },
-		},
-		{
-			name: "attempt time",
-			times: func(now time.Time) []time.Time {
-				return []time.Time{now, {}}
-			},
-			wantProcessed: true,
-		},
-		{
-			name: "retry time",
-			times: func(now time.Time) []time.Time {
-				return []time.Time{now, now, {}}
-			},
-			prepare: func(fixture *endRecoveryFixture) {
-				fixture.repository.startRepository.getErr = errDependency
-			},
-			wantProcessed: true,
-		},
-	}
+func TestEndRecoveryWorkerRejectsInvalidClaimTime(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	fixture.worker.service.deps.Clock = &fakeClock{times: []time.Time{{}}}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			fixture := newEndRecoveryFixture(t, StatusActive)
-			fixture.worker.service.deps.Clock = &fakeClock{times: test.times(fixture.now)}
-			if test.prepare != nil {
-				test.prepare(fixture)
-			}
-
-			processed, err := fixture.worker.ProcessNext(t.Context())
-			if processed != test.wantProcessed || !errors.Is(err, ErrInvalidDependency) {
-				t.Fatalf("ProcessNext() = %t, %v, want clock failure", processed, err)
-			}
-		})
+	processed, err := fixture.worker.ProcessNext(t.Context())
+	if processed || !errors.Is(err, ErrInvalidDependency) {
+		t.Fatalf("ProcessNext() = %t, %v, want clock failure", processed, err)
 	}
 }
 
@@ -409,14 +379,6 @@ func TestEndRecoveryWorkerRecoverClaimedRejectsInvalidState(t *testing.T) {
 			want: context.Canceled,
 		},
 		{
-			name: "zero lease check time",
-			prepare: func(fixture *endRecoveryFixture, _ *EndIntent) context.Context {
-				fixture.worker.service.deps.Clock = &fakeClock{}
-				return t.Context()
-			},
-			want: ErrInvalidDependency,
-		},
-		{
 			name: "invalid intent",
 			prepare: func(_ *endRecoveryFixture, intent *EndIntent) context.Context {
 				intent.TraceID = ""
@@ -427,10 +389,7 @@ func TestEndRecoveryWorkerRecoverClaimedRejectsInvalidState(t *testing.T) {
 		{
 			name: "zero end time",
 			prepare: func(fixture *endRecoveryFixture, _ *EndIntent) context.Context {
-				fixture.worker.service.deps.Clock = &fakeClock{times: []time.Time{
-					fixture.now,
-					{},
-				}}
+				fixture.worker.service.deps.Clock = &fakeClock{}
 				return t.Context()
 			},
 			want: ErrInvalidDependency,
@@ -580,6 +539,7 @@ func newEndRecoveryFixture(t *testing.T, status Status) *endRecoveryFixture {
 			RequestedAt:    now.Add(-time.Minute),
 			NextAttemptAt:  now,
 		},
+		storageNow: now,
 	}
 	realtime := &startRealtime{stopResult: RuntimeSnapshot{
 		SessionID: session.ID, RuntimeState: RuntimeStopped, UpdatedAt: now,
@@ -618,6 +578,8 @@ type endRecoveryRepository struct {
 	claimHook       func(int)
 	claimResultHook func(*EndIntent)
 	retryErr        error
+	retryAfter      time.Duration
+	storageNow      time.Time
 }
 
 type cancelWriter struct {
@@ -678,7 +640,8 @@ func (r *endRecoveryRepository) RetryClaimedEndIntent(
 	r.intent.RetryCount++
 	lastError := params.LastError
 	r.intent.LastError = &lastError
-	r.intent.NextAttemptAt = params.NextAttemptAt
+	r.retryAfter = params.RetryAfter
+	r.intent.NextAttemptAt = r.storageNow.Add(params.RetryAfter)
 	r.intent.RecoveryOwner = nil
 	r.intent.LeaseExpiresAt = nil
 	return nil

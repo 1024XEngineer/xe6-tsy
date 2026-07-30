@@ -83,6 +83,7 @@ func (w *EndRecoveryWorker) ProcessNext(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	leaseStartedAt := time.Now()
 	intent, claimed, err := w.service.deps.Repository.ClaimPendingEndIntent(
 		ctx,
 		ClaimEndIntentParams{
@@ -98,15 +99,11 @@ func (w *EndRecoveryWorker) ProcessNext(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	attemptStartedAt, clockErr := w.service.nowUTC("end recovery attempt")
-	if clockErr != nil {
-		return true, clockErr
-	}
 	if intent.RecoveryOwner == nil || *intent.RecoveryOwner != w.config.WorkerID ||
 		intent.LeaseExpiresAt == nil {
 		return true, fmt.Errorf("%w: invalid end recovery claim", ErrInvalidDependency)
 	}
-	leaseRemaining := intent.LeaseExpiresAt.Sub(attemptStartedAt)
+	leaseRemaining := w.config.LeaseDuration - time.Since(leaseStartedAt)
 	if leaseRemaining <= 0 {
 		return true, ErrConcurrentTransition
 	}
@@ -119,34 +116,30 @@ func (w *EndRecoveryWorker) ProcessNext(ctx context.Context) (bool, error) {
 	if err == nil {
 		return true, nil
 	}
-	retryAt, clockErr := w.service.nowUTC("end recovery retry")
-	if clockErr != nil {
-		return true, errors.Join(err, clockErr)
-	}
-	nextAttemptAt := retryAt.Add(endRecoveryBackoff(
+	retryAfter := endRecoveryBackoff(
 		w.config.InitialBackoff,
 		w.config.MaxBackoff,
 		intent.RetryCount,
-	))
+	)
 	retryErr := w.service.deps.Repository.RetryClaimedEndIntent(
 		ctx,
 		RetryEndIntentParams{
-			SessionID:     intent.SessionID,
-			AccountID:     intent.AccountID,
-			WorkerID:      w.config.WorkerID,
-			LastError:     err.Error(),
-			NextAttemptAt: nextAttemptAt,
+			SessionID:  intent.SessionID,
+			AccountID:  intent.AccountID,
+			WorkerID:   w.config.WorkerID,
+			LastError:  err.Error(),
+			RetryAfter: retryAfter,
 		},
 	)
 	if retryErr != nil {
 		return true, errors.Join(err, fmt.Errorf("persist end recovery retry: %w", retryErr))
 	}
 	return true, fmt.Errorf(
-		"recover end intent session=%q trace=%q retry=%d next_attempt_at=%s: %w",
+		"recover end intent session=%q trace=%q retry=%d retry_after=%s: %w",
 		intent.SessionID,
 		intent.TraceID,
 		intent.RetryCount+1,
-		nextAttemptAt.Format(time.RFC3339Nano),
+		retryAfter,
 		err,
 	)
 }
@@ -167,12 +160,8 @@ func (w *EndRecoveryWorker) recoverClaimed(
 	if err != nil {
 		return fmt.Errorf("read voice session for end recovery: %w", err)
 	}
-	leaseCheckedAt, err := w.service.nowUTC("end recovery lease check")
-	if err != nil {
-		return err
-	}
 	if err := validateRecoveryEndIntent(
-		intent, session, w.config.WorkerID, leaseCheckedAt,
+		intent, session, w.config.WorkerID,
 	); err != nil {
 		return err
 	}
@@ -204,7 +193,6 @@ func validateRecoveryEndIntent(
 	intent EndIntent,
 	session VoiceSession,
 	workerID string,
-	checkedAt time.Time,
 ) error {
 	if intent.SessionID != session.ID || intent.AccountID != session.AccountID ||
 		intent.TraceID == "" || intent.IdempotencyKey == "" ||
@@ -212,7 +200,7 @@ func validateRecoveryEndIntent(
 		intent.RequestedAt.IsZero() || intent.NextAttemptAt.IsZero() ||
 		intent.RetryCount < 0 || intent.Completed() ||
 		intent.RecoveryOwner == nil || *intent.RecoveryOwner != workerID ||
-		intent.LeaseExpiresAt == nil || !intent.LeaseExpiresAt.After(checkedAt) {
+		intent.LeaseExpiresAt == nil {
 		return fmt.Errorf("%w: invalid claimed end intent", ErrInvalidDependency)
 	}
 	return nil

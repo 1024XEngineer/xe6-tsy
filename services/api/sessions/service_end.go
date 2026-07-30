@@ -36,6 +36,7 @@ func (s *Service) End(
 	}
 	requestOwner := "request:" + input.TraceID
 	leaseExpiresAt := requestedAt.Add(s.deps.EndRecoveryLeaseDuration)
+	leaseStartedAt := time.Now()
 	intent, _, err := s.deps.Repository.SaveEndIntent(ctx, EndIntent{
 		SessionID:      input.SessionID,
 		AccountID:      input.AccountID,
@@ -63,11 +64,7 @@ func (s *Service) End(
 		intent.LeaseExpiresAt == nil {
 		return VoiceSession{}, ErrConcurrentTransition
 	}
-	attemptStartedAt, err := s.nowUTC("end request attempt")
-	if err != nil {
-		return VoiceSession{}, err
-	}
-	leaseRemaining := intent.LeaseExpiresAt.Sub(attemptStartedAt)
+	leaseRemaining := s.deps.EndRecoveryLeaseDuration - time.Since(leaseStartedAt)
 	if leaseRemaining <= 0 {
 		return VoiceSession{}, ErrConcurrentTransition
 	}
@@ -77,19 +74,16 @@ func (s *Service) End(
 		}
 		persistCtx, cancel := s.endPersistenceContext(ctx)
 		defer cancel()
-		retryAt, err := s.nowUTC("end request retry")
-		if err == nil {
-			err = s.deps.Repository.RetryClaimedEndIntent(
-				persistCtx,
-				RetryEndIntentParams{
-					SessionID:     intent.SessionID,
-					AccountID:     intent.AccountID,
-					WorkerID:      requestOwner,
-					LastError:     resultErr.Error(),
-					NextAttemptAt: retryAt,
-				},
-			)
-		}
+		err := s.deps.Repository.RetryClaimedEndIntent(
+			persistCtx,
+			RetryEndIntentParams{
+				SessionID:  intent.SessionID,
+				AccountID:  intent.AccountID,
+				WorkerID:   requestOwner,
+				LastError:  resultErr.Error(),
+				RetryAfter: 0,
+			},
+		)
 		if err != nil && !errors.Is(err, ErrConcurrentTransition) {
 			resultErr = errors.Join(
 				resultErr,

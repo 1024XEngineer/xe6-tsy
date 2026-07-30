@@ -19,6 +19,8 @@ type endRepository struct {
 	transitionCalls int
 	transitionHook  func()
 	saveResultHook  func(*EndIntent)
+	retryCalls      int
+	retryAfter      time.Duration
 }
 
 func (r *endRepository) BeginStartOperation(
@@ -138,9 +140,10 @@ func (r *endRepository) RetryClaimedEndIntent(
 		return ErrConcurrentTransition
 	}
 	r.intent.RetryCount++
+	r.retryCalls++
 	lastError := params.LastError
 	r.intent.LastError = &lastError
-	r.intent.NextAttemptAt = params.NextAttemptAt
+	r.retryAfter = params.RetryAfter
 	r.intent.RecoveryOwner = nil
 	r.intent.LeaseExpiresAt = nil
 	return nil
@@ -336,20 +339,6 @@ func TestServiceEndRejectsInvalidPersistedIntentLease(t *testing.T) {
 			name: "missing lease owner",
 			mutate: func(intent *EndIntent) {
 				intent.RecoveryOwner = nil
-			},
-			want: ErrConcurrentTransition,
-		},
-		{
-			name: "zero attempt time",
-			clockTimes: func(now time.Time) []time.Time {
-				return []time.Time{now, {}}
-			},
-			want: ErrInvalidDependency,
-		},
-		{
-			name: "expired returned lease",
-			clockTimes: func(now time.Time) []time.Time {
-				return []time.Time{now, now.Add(defaultEndRecoveryLeaseDuration)}
 			},
 			want: ErrConcurrentTransition,
 		},
@@ -554,6 +543,13 @@ func TestServiceEndActiveStopErrorPreservesSession(t *testing.T) {
 		t.Fatalf("End() error = %v, want realtime and dependency errors", err)
 	}
 	assertActiveEndIncomplete(t, fixture)
+	if fixture.repository.retryCalls != 1 || fixture.repository.retryAfter != 0 {
+		t.Fatalf(
+			"RetryClaimedEndIntent() calls = %d, retry after = %v; want 1, 0",
+			fixture.repository.retryCalls,
+			fixture.repository.retryAfter,
+		)
+	}
 }
 
 func TestServiceEndActiveStopTimeoutPreservesSession(t *testing.T) {

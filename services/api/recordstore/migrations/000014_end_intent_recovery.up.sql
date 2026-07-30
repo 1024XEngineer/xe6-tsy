@@ -8,14 +8,13 @@ ALTER TABLE voice_session_end_intents
 
 UPDATE voice_session_end_intents
 SET trace_id = 'end-recovery-' || idempotency_key,
-    next_attempt_at = requested_at;
+    next_attempt_at = LEAST(requested_at, clock_timestamp());
 
 ALTER TABLE voice_session_end_intents
     ALTER COLUMN trace_id SET NOT NULL,
     ALTER COLUMN next_attempt_at SET NOT NULL,
     ADD CONSTRAINT voice_session_end_intents_trace_not_empty CHECK (trace_id <> ''),
     ADD CONSTRAINT voice_session_end_intents_retry_count_valid CHECK (retry_count >= 0),
-    ADD CONSTRAINT voice_session_end_intents_next_attempt_valid CHECK (next_attempt_at >= requested_at),
     ADD CONSTRAINT voice_session_end_intents_recovery_lease_valid CHECK (
         (recovery_owner IS NULL AND recovery_lease_expires_at IS NULL)
         OR (

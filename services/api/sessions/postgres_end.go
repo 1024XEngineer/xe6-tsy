@@ -99,7 +99,7 @@ func (r *PostgresRepository) SaveEndIntent(
 			trace_id, requested_at, next_attempt_at, recovery_owner,
 			recovery_lease_expires_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $7, $8,
+			$1, $2, $3, $4, $5, $6, $7, clock_timestamp(), $8,
 			clock_timestamp() + ($9::double precision * interval '1 second')
 		)
 		RETURNING `+endIntentColumns,

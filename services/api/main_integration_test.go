@@ -25,6 +25,9 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
 	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
+	controlplane "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
+	rtsession "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
+	rtwebrtc "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -368,7 +371,6 @@ type sessionRuntimeControlPlane struct {
 	stopCalls    atomic.Int32
 	runtimeCalls atomic.Int32
 	operationID  atomic.Value
-	codec        *realtimev1.HMACTicketCodec
 }
 
 func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRuntimeControlPlane {
@@ -380,104 +382,88 @@ func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRu
 	if err != nil {
 		t.Fatalf("NewHMACTicketCodec() error = %v", err)
 	}
-	realtime := &sessionRuntimeControlPlane{codec: codec}
+	ticketValidator, err := rtwebrtc.NewHMACTicketValidator(codec)
+	if err != nil {
+		t.Fatalf("NewHMACTicketValidator() error = %v", err)
+	}
+	realtime := &sessionRuntimeControlPlane{}
 	realtime.operationID.Store("")
-	realtime.server = httptest.NewServer(http.HandlerFunc(realtime.handle))
+	handler, err := controlplane.New(controlplane.Dependencies{
+		Lifecycle:   realtime,
+		Signaling:   sessionRuntimeSignaling{},
+		Connections: realtime,
+		Tickets:     ticketValidator,
+		Config:      realtime,
+		Now:         func() time.Time { return time.Now().UTC() },
+	})
+	if err != nil {
+		t.Fatalf("controlplane.New() error = %v", err)
+	}
+	realtime.server = httptest.NewServer(handler)
 	return realtime
 }
 
-func (p *sessionRuntimeControlPlane) handle(w http.ResponseWriter, r *http.Request) {
-	sessionID, action, ok := parseRealtimePath(r.URL.Path)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	claims, err := p.codec.Validate(token, sessionID)
-	if err != nil || claims.AccountID == "" {
-		writeRealtimeTestError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
+func (p *sessionRuntimeControlPlane) Start(_ context.Context, command rtsession.StartRealtimeCommand) (rtsession.RuntimeSnapshot, error) {
 	now := time.Now().UTC()
-	switch {
-	case r.Method == http.MethodGet && action == "connection":
-		writeRealtimeTestJSON(w, http.StatusOK, realtimev1.ConnectionSnapshot{
-			SessionID:    sessionID,
-			ConnectionID: "conn_" + sessionID,
-			State:        realtimev1.ConnectionConnected,
-			Version:      1,
-			UpdatedAt:    now,
-		})
-	case r.Method == http.MethodPost && action == "start":
-		var request realtimev1.StartRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.OperationID == "" {
-			writeRealtimeTestError(w, http.StatusBadRequest, "invalid_request")
-			return
-		}
-		p.startCalls.Add(1)
-		p.operationID.Store(request.OperationID)
-		writeRealtimeTestJSON(w, http.StatusOK, realtimev1.RuntimeSnapshot{
-			SessionID:        sessionID,
-			StartOperationID: request.OperationID,
-			RuntimeState:     realtimev1.RuntimeListening,
-			UpdatedAt:        now,
-		})
-	case r.Method == http.MethodGet && action == "runtime":
-		p.runtimeCalls.Add(1)
-		operationID, _ := p.operationID.Load().(string)
-		writeRealtimeTestJSON(w, http.StatusOK, realtimev1.RuntimeSnapshot{
-			SessionID:        sessionID,
-			StartOperationID: operationID,
-			RuntimeState:     realtimev1.RuntimeListening,
-			UpdatedAt:        now,
-		})
-	case r.Method == http.MethodPost && action == "stop":
-		var request realtimev1.StopRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Reason == "" || request.EndedAt.IsZero() {
-			writeRealtimeTestError(w, http.StatusBadRequest, "invalid_request")
-			return
-		}
-		p.stopCalls.Add(1)
-		operationID, _ := p.operationID.Load().(string)
-		writeRealtimeTestJSON(w, http.StatusOK, realtimev1.RuntimeSnapshot{
-			SessionID:        sessionID,
-			StartOperationID: operationID,
-			RuntimeState:     realtimev1.RuntimeStopped,
-			UpdatedAt:        now,
-		})
-	default:
-		http.NotFound(w, r)
-	}
+	p.startCalls.Add(1)
+	p.operationID.Store(command.OperationID)
+	return realtimev1.RuntimeSnapshot{
+		SessionID:        command.SessionID,
+		StartOperationID: command.OperationID,
+		RuntimeState:     realtimev1.RuntimeListening,
+		UpdatedAt:        now,
+	}, nil
 }
 
-func parseRealtimePath(path string) (sessionID string, action string, ok bool) {
-	rest := strings.TrimPrefix(path, "/realtime/v1/sessions/")
-	if rest == path {
-		return "", "", false
-	}
-	parts := strings.Split(rest, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
+func (p *sessionRuntimeControlPlane) Stop(_ context.Context, command rtsession.StopRealtimeCommand) (rtsession.RuntimeSnapshot, error) {
+	now := time.Now().UTC()
+	p.stopCalls.Add(1)
+	operationID, _ := p.operationID.Load().(string)
+	return realtimev1.RuntimeSnapshot{
+		SessionID:        command.SessionID,
+		StartOperationID: operationID,
+		RuntimeState:     realtimev1.RuntimeStopped,
+		UpdatedAt:        now,
+	}, nil
 }
 
-func writeRealtimeTestError(w http.ResponseWriter, status int, code string) {
-	writeRealtimeTestJSON(w, status, struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}{
-		Error: struct {
-			Code string `json:"code"`
-		}{Code: code},
-	})
+func (p *sessionRuntimeControlPlane) GetRuntimeState(_ context.Context, sessionID string) (rtsession.RuntimeSnapshot, error) {
+	now := time.Now().UTC()
+	p.runtimeCalls.Add(1)
+	operationID, _ := p.operationID.Load().(string)
+	return realtimev1.RuntimeSnapshot{
+		SessionID:        sessionID,
+		StartOperationID: operationID,
+		RuntimeState:     realtimev1.RuntimeListening,
+		UpdatedAt:        now,
+	}, nil
 }
 
-func writeRealtimeTestJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+func (p *sessionRuntimeControlPlane) GetCurrent(_ context.Context, sessionID string) (realtimev1.ConnectionSnapshot, error) {
+	return realtimev1.ConnectionSnapshot{
+		SessionID:    sessionID,
+		ConnectionID: "conn_" + sessionID,
+		State:        realtimev1.ConnectionConnected,
+		Version:      1,
+		UpdatedAt:    time.Now().UTC(),
+	}, nil
+}
+
+func (p *sessionRuntimeControlPlane) GetConfig(_ context.Context, sessionID string) (controlplane.WebRTCConfig, error) {
+	return controlplane.WebRTCConfig{
+		SessionID: sessionID,
+		ExpiresAt: time.Now().UTC().Add(time.Minute),
+	}, nil
+}
+
+type sessionRuntimeSignaling struct{}
+
+func (sessionRuntimeSignaling) Offer(context.Context, string, string, rtwebrtc.OfferRequest) (rtwebrtc.OfferResponse, error) {
+	return rtwebrtc.OfferResponse{}, nil
+}
+
+func (sessionRuntimeSignaling) AddCandidates(context.Context, string, string, rtwebrtc.CandidateRequest) (rtwebrtc.CandidateResponse, error) {
+	return rtwebrtc.CandidateResponse{}, nil
 }
 
 func recordsHTTPTestDatabaseURL(t *testing.T) string {

@@ -29,6 +29,7 @@ func TestLoadDefaultsToDisabledFailClosedMode(t *testing.T) {
 func TestLoadDisabledSessionRuntimeDoesNotRequireRealtimeConfig(t *testing.T) {
 	config, err := LoadFrom(mapCoreEnv(map[string]string{
 		"LINGOW_SESSION_RUNTIME": "disabled",
+		"REALTIME_HTTP_TIMEOUT":  "not-a-duration",
 	}))
 	if err != nil {
 		t.Fatalf("LoadFrom() error = %v", err)
@@ -132,15 +133,21 @@ func TestLoadValidatesRealtimeHTTPTimeout(t *testing.T) {
 
 func TestConfigFormattingRedactsSecrets(t *testing.T) {
 	config := Config{
+		DatabaseURL:          "postgres://user:password@localhost/lingow",
+		RedisURL:             "redis://:redis-password@localhost:6379/0",
 		JWTSecret:            "01234567890123456789012345678901",
 		RealtimeTicketSecret: "realtime-ticket-secret-123456789012",
+		DestinationKey:       "delivery-destination-key",
 		SMTPPassword:         "smtp-secret",
 		WeComCorpSecret:      "wecom-secret",
 	}
 	formatted := fmt.Sprintf("%#v %v", config, config)
 	for _, secret := range []string{
+		"postgres://user:password@localhost/lingow",
+		"redis://:redis-password@localhost:6379/0",
 		"01234567890123456789012345678901",
 		"realtime-ticket-secret-123456789012",
+		"delivery-destination-key",
 		"smtp-secret",
 		"wecom-secret",
 	} {

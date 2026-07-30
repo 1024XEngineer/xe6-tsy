@@ -89,6 +89,7 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		SessionRuntimeEnabled: false,
 		RealtimeBaseURL:       value("REALTIME_BASE_URL", ""),
 		RealtimeTicketSecret:  value("REALTIME_TICKET_SECRET", ""),
+		RealtimeHTTPTimeout:   defaultRealtimeHTTPTimeout,
 		DestinationKey:        value("LINGOW_DELIVERY_DESTINATION_KEY", ""),
 		DeliveryProvider:      value("LINGOW_DELIVERY_PROVIDER", providerUnconfigured),
 		DeliveryConsumer:      value("LINGOW_DELIVERY_CONSUMER", ""),
@@ -109,11 +110,6 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		WeComCorpSecret:       value("LINGOW_WECOM_CORP_SECRET", ""),
 		WeComAgentID:          value("LINGOW_WECOM_AGENT_ID", ""),
 	}
-	realtimeHTTPTimeout, err := parseDuration(value("REALTIME_HTTP_TIMEOUT", defaultRealtimeHTTPTimeout.String()))
-	if err != nil {
-		return Config{}, fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be a valid duration", domain.ErrInvalidArgument)
-	}
-	config.RealtimeHTTPTimeout = realtimeHTTPTimeout
 	sessionRuntimeMode := strings.ToLower(value("LINGOW_SESSION_RUNTIME", "disabled"))
 	switch sessionRuntimeMode {
 	case "disabled", "false", "0", "":
@@ -136,6 +132,11 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		return Config{}, err
 	}
 	if config.SessionRuntimeEnabled {
+		realtimeHTTPTimeout, err := parseDuration(value("REALTIME_HTTP_TIMEOUT", defaultRealtimeHTTPTimeout.String()))
+		if err != nil {
+			return Config{}, fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be a valid duration", domain.ErrInvalidArgument)
+		}
+		config.RealtimeHTTPTimeout = realtimeHTTPTimeout
 		if err := validateSessionRuntime(config); err != nil {
 			return Config{}, err
 		}
@@ -321,11 +322,20 @@ func (c Config) LogValue() slog.Value {
 }
 
 func (c Config) redacted() Config {
+	if c.DatabaseURL != "" {
+		c.DatabaseURL = "[redacted]"
+	}
+	if c.RedisURL != "" {
+		c.RedisURL = "[redacted]"
+	}
 	if c.JWTSecret != "" {
 		c.JWTSecret = "[redacted]"
 	}
 	if c.RealtimeTicketSecret != "" {
 		c.RealtimeTicketSecret = "[redacted]"
+	}
+	if c.DestinationKey != "" {
+		c.DestinationKey = "[redacted]"
 	}
 	if c.SMTPPassword != "" {
 		c.SMTPPassword = "[redacted]"

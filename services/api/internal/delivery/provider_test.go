@@ -150,6 +150,32 @@ func TestFakeEmailProviderRejectsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestFakeEmailProviderReturnsConfiguredFailureWithoutAccepting(t *testing.T) {
+	expected := errors.New("provider unavailable")
+	provider := NewFakeEmailProvider(FakeEmailProviderConfig{SendErr: expected})
+	request := validFakeRequest()
+
+	if err := provider.Send(context.Background(), request); !errors.Is(err, expected) {
+		t.Fatalf("Send() error = %v, want configured failure", err)
+	}
+	if err := provider.Send(context.Background(), request); !errors.Is(err, expected) {
+		t.Fatalf("retry Send() error = %v, want configured failure", err)
+	}
+	if got := len(provider.Requests()); got != 2 {
+		t.Fatalf("Requests() length = %d, want 2 failed attempts", got)
+	}
+}
+
+func TestNilFakeEmailProviderFailsClosed(t *testing.T) {
+	var provider *FakeEmailProvider
+	if err := provider.Send(context.Background(), validFakeRequest()); !errors.Is(err, ErrProviderNotConfigured) {
+		t.Fatalf("Send() error = %v, want ErrProviderNotConfigured", err)
+	}
+	if requests := provider.Requests(); requests != nil {
+		t.Fatalf("Requests() = %#v, want nil", requests)
+	}
+}
+
 func TestFakeEmailProviderRejectsMismatchedRequestIdentity(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -160,6 +186,15 @@ func TestFakeEmailProviderRejectsMismatchedRequestIdentity(t *testing.T) {
 		}},
 		{name: "attempt message", mutate: func(request *SendRequest) {
 			request.Attempt.MessageID = "message-2"
+		}},
+		{name: "missing account", mutate: func(request *SendRequest) {
+			request.Message.AccountID = ""
+		}},
+		{name: "wrong channel", mutate: func(request *SendRequest) {
+			request.Message.Channel = ChannelWeChat
+		}},
+		{name: "destination ref", mutate: func(request *SendRequest) {
+			request.Destination.DestinationRef = "destination-2"
 		}},
 	}
 	for _, test := range tests {

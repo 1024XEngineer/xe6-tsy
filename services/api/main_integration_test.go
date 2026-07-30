@@ -535,6 +535,9 @@ func TestSessionProductionCompositionRecoversFailedEndIntent(t *testing.T) {
 		http.NoBody,
 	)
 	assertSessionError(t, end, http.StatusServiceUnavailable, sessions.CodeRealtimeStopFailed)
+	if got := realtime.stopCalls.Load(); got != 1 {
+		t.Fatalf("Stop calls after failed End = %d, want 1", got)
+	}
 	active, err := sessionRepository.GetOwned(t.Context(), account.Account.ID, created.ID)
 	if err != nil {
 		t.Fatalf("read active session after failed End: %v", err)
@@ -547,6 +550,9 @@ func TestSessionProductionCompositionRecoversFailedEndIntent(t *testing.T) {
 	processed, err := recovery.ProcessNext(t.Context())
 	if err != nil || !processed {
 		t.Fatalf("ProcessNext() = %t, %v, want recovered intent", processed, err)
+	}
+	if got := realtime.stopCalls.Load(); got != 2 {
+		t.Fatalf("Stop calls after recovery = %d, want 2", got)
 	}
 	ended, err := sessionRepository.GetOwned(t.Context(), account.Account.ID, created.ID)
 	if err != nil {

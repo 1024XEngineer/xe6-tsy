@@ -88,7 +88,6 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	if err != nil {
 		return nil, nil, err
 	}
-	_ = languageService
 
 	records, err := newRecordsHTTPDependenciesFromPool(
 		startupCtx,
@@ -100,6 +99,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	if err != nil {
 		return nil, nil, fmt.Errorf("initialize configured records HTTP: %w", err)
 	}
+	records.pool = pool
 
 	redisOptions, err := redis.ParseURL(processConfig.RedisURL)
 	if err != nil {
@@ -168,6 +168,11 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		redisClient.Close()
 		return nil, nil, err
 	}
+	sessionHandler, err := newSessionHandlerFromPool(pool, languageService, processConfig.JWTSecret)
+	if err != nil {
+		redisClient.Close()
+		return nil, nil, fmt.Errorf("initialize session handler: %w", err)
+	}
 	runtime := &configuredRuntime{
 		pool:       pool,
 		redis:      redisClient,
@@ -182,7 +187,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		usageService:    usageService,
 		deliveryService: deliveryService,
 		tokenVerifier:   records.tokens,
-		sessionHandler:  newSessionHandler(nil),
+		sessionHandler:  sessionHandler,
 		recordsHandler:  records.handler,
 		finalTurnWorker: records.worker,
 		authMaintainer:  records.maintainer,

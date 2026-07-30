@@ -31,6 +31,7 @@ type recordsHTTPDependencies struct {
 	tokens     accounts.AccessTokenVerifier
 	worker     finalTurnWorker
 	maintainer backgroundWorker
+	pool       *pgxpool.Pool
 	cleanup    func()
 }
 
@@ -68,21 +69,22 @@ func run() error {
 		address = ":8080"
 	}
 
-	langHandler, _, cleanup, err := newLanguageHandler(context.Background())
-	if err != nil {
-		return err
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-
 	records, err := newRecordsHTTPDependencies(context.Background())
 	if err != nil {
 		return err
 	}
 	defer records.cleanup()
 
-	sessionHandler := newSessionHandler(nil)
+	langHandler, langService, err := newLanguageHandlerWithPool(context.Background(), records.pool)
+	if err != nil {
+		return err
+	}
+
+	tokenSecret := os.Getenv("JWT_SECRET")
+	sessionHandler, err := newSessionHandlerFromPool(records.pool, langService, tokenSecret)
+	if err != nil {
+		return err
+	}
 	mux := buildMux(langHandler, sessionHandler, records.handler, records.accounts, records.tokens)
 
 	server := &http.Server{
@@ -167,33 +169,6 @@ func runHTTPAndFinalTurnWorker(ctx context.Context, server *http.Server, worker 
 	return errors.Join(runErr, shutdownErr)
 }
 
-func newLanguageHandler(ctx context.Context) (*languages.Handler, *languages.Service, func(), error) {
-	accountID := func(r *http.Request) (string, bool) {
-		return internalwebapi.AccountIDFromContext(r.Context())
-	}
-
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		slog.Warn("DATABASE_URL unset; language HTTP routes return not_implemented until wired")
-		return languages.NewHandler(nil, accountID), nil, nil, nil
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, nil, nil, err
-	}
-	handler, service, err := newLanguageHandlerWithPool(ctx, pool)
-	if err != nil {
-		pool.Close()
-		return nil, nil, nil, err
-	}
-	return handler, service, pool.Close, nil
-}
-
 // newLanguageHandlerWithPool migrates language schema and returns one shared
 // Service used by HTTP and by sessions start readiness.
 func newLanguageHandlerWithPool(ctx context.Context, pool *pgxpool.Pool) (*languages.Handler, *languages.Service, error) {
@@ -251,6 +226,7 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		pool.Close()
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
 	}
+	dependencies.pool = pool
 	dependencies.cleanup = pool.Close
 	return dependencies, nil
 }

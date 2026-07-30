@@ -684,6 +684,21 @@ func TestUnbindEmailTargetPassesDestinationRef(t *testing.T) {
 	}
 }
 
+func TestBindWeChatTargetInvalidOAuthCodeReturnsBadRequest(t *testing.T) {
+	fake := &deliveryFake{bindEmailErr: domain.ErrInvalidArgument}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/wechat/bind", strings.NewReader(`{"code":"expired-code"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+}
+
 func TestBindWeChatTargetPassesCodeToService(t *testing.T) {
 	fake := &deliveryFake{}
 	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})

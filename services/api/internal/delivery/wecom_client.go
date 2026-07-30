@@ -76,7 +76,7 @@ func (c *WeComClient) UserIDFromOAuthCode(ctx context.Context, code string) (str
 		return "", err
 	}
 	if response.ErrCode != 0 {
-		return "", fmt.Errorf("wecom getuserinfo: %s (code %d)", response.ErrMsg, response.ErrCode)
+		return "", mapWeComOAuthError(response.ErrCode, response.ErrMsg)
 	}
 	userid, err := validateWeComUserID(response.UserID)
 	if err != nil {
@@ -119,7 +119,10 @@ func (c *WeComClient) SendTextMessage(ctx context.Context, userid, content strin
 		return err
 	}
 	if response.ErrCode != 0 {
-		return fmt.Errorf("wecom message send: %s (code %d)", response.ErrMsg, response.ErrCode)
+		if isWeComTokenRefreshError(response.ErrCode) {
+			c.invalidateToken()
+		}
+		return mapWeComSendError(response.ErrCode, response.ErrMsg)
 	}
 	return nil
 }
@@ -141,6 +144,10 @@ func (c *WeComClient) accessToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if response.ErrCode != 0 || response.AccessToken == "" {
+		if isWeComTokenRefreshError(response.ErrCode) {
+			c.token = ""
+			c.tokenUntil = time.Time{}
+		}
 		return "", fmt.Errorf("wecom gettoken: %s (code %d)", response.ErrMsg, response.ErrCode)
 	}
 	c.token = response.AccessToken
@@ -152,6 +159,13 @@ func (c *WeComClient) accessToken(ctx context.Context) (string, error) {
 	return c.token, nil
 }
 
+func (c *WeComClient) invalidateToken() {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	c.token = ""
+	c.tokenUntil = time.Time{}
+}
+
 func (c *WeComClient) getJSON(ctx context.Context, endpoint string, target any) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -159,7 +173,7 @@ func (c *WeComClient) getJSON(ctx context.Context, endpoint string, target any) 
 	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("wecom request: %w", err)
+		return sanitizeWeComTransportError(err)
 	}
 	defer response.Body.Close()
 	return decodeWeComResponse(response.Body, target)
@@ -173,7 +187,7 @@ func (c *WeComClient) postJSON(ctx context.Context, endpoint string, payload []b
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("wecom request: %w", err)
+		return sanitizeWeComTransportError(err)
 	}
 	defer response.Body.Close()
 	return decodeWeComResponse(response.Body, target)

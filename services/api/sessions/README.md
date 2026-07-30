@@ -216,9 +216,9 @@ incomplete intent. A client may repeat End with the same request identity:
   `idempotency_key_conflict`.
 
 If Stop succeeds but the database transition fails, a retry invokes the
-idempotent Stop again and retries the transition. This package exposes no
-background End recovery entrypoint; End uses the request Context for every
-Repository and Realtime call.
+idempotent Stop again and retries the transition. The End recovery worker also
+claims unfinished intents after request cancellation or process restart and
+resumes this same sequence.
 
 Only a valid `stopped` snapshot for the requested Session ID confirms cleanup.
 `starting`, `stopping`, `failed`, missing timestamps, and dependency timeouts
@@ -231,6 +231,39 @@ returns that stored terminal result. `CompleteEndIntent` is called only when
 the persisted intent is unfinished; an already-completed replay has no terminal
 write. End never converts `failed` to `ended` and never calls Stop for either
 terminal state.
+
+## End recovery
+
+`EndRecoveryWorker` scans one due unfinished intent at a time. PostgreSQL uses
+`FOR UPDATE SKIP LOCKED` and a bounded lease so multiple API instances do not
+process the same intent concurrently. An expired lease makes work from a
+terminated instance eligible again.
+
+The request End path owns the initial durable lease before it calls realtime.
+A replay cannot call Stop while a request or Worker lease is active. Request
+and Worker attempt timeouts must remain shorter than their leases, so a
+context-aware dependency returns before another instance may reclaim the row.
+Failed requests persist the error and release their lease using a fresh bounded
+context, allowing recovery without waiting for lease expiry.
+
+Recovery uses the same in-process per-session lock as Start and request End.
+It handles all durable interruption points:
+
+- an intent saved before Stop resumes the idempotent Stop;
+- a confirmed Stop followed by a failed business transition retries Stop and
+  the `active -> ended` transition;
+- an already terminal session with an unfinished intent completes the intent
+  without calling Stop.
+
+Only a valid `RuntimeStopped` snapshot permits `active -> ended`. Every failed
+attempt leaves the business state unchanged, increments `retry_count`, records
+`last_error`, releases the lease, and schedules `next_attempt_at` with bounded
+exponential backoff. A stale worker cannot retry or complete an intent after a
+different worker has acquired its lease.
+
+The package exposes the worker lifecycle and deterministic one-step processing
+entrypoint. Starting it from the API process belongs to the production
+composition slice together with sessions service wiring.
 
 ## Query flows
 
@@ -268,8 +301,9 @@ clients.
 
 The service currently implements Create, account-scoped Detail, State, and
 List queries, durable idempotent Start orchestration with repository-owned
-bounded compensation and interrupted-owner recovery, and the basic idempotent
-End flow with cleanup-confirmed terminal commits. `PostgresRepository`
+bounded compensation and interrupted-owner recovery, and idempotent End with
+cleanup-confirmed terminal commits and durable background recovery.
+`PostgresRepository`
 implements the persistent Session, StartOperation, compensation, EndIntent,
 and lifecycle-transition contracts against the final control-plane tables.
 Detail and State combine an owned persistent session with one validated runtime

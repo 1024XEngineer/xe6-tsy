@@ -37,6 +37,15 @@ func TestMember5DeliveryAcceptanceFromHTTPToProvider(t *testing.T) {
 	if err := json.Unmarshal(authResponse.Body.Bytes(), &auth); err != nil {
 		t.Fatalf("decode anonymous auth: %v", err)
 	}
+	seedDeliveryTurnFixture(
+		t,
+		fixture.pool,
+		auth.Account.ID,
+		fixture.destinationKey,
+		fixture.targetEmail,
+		"session_delivery_e2e",
+		"turn_delivery_e2e",
+	)
 
 	createRequest := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(
 		`{"channel":"email","destination_ref":"primary-email","turn_ids":["turn_delivery_e2e"]}`,
@@ -168,13 +177,15 @@ func TestConfiguredRuntimeCompositionExposesDeliveryAndRecordsRoutes(t *testing.
 }
 
 type member5DeliveryE2EFixture struct {
-	handler     http.Handler
-	dispatcher  *delivery.OutboxDispatcher
-	queue       delivery.Queue
-	worker      *delivery.Worker
-	repository  *delivery.PostgresRepository
-	provider    *delivery.FakeEmailProvider
-	targetEmail string
+	handler        http.Handler
+	dispatcher     *delivery.OutboxDispatcher
+	queue          delivery.Queue
+	worker         *delivery.Worker
+	repository     *delivery.PostgresRepository
+	provider       *delivery.FakeEmailProvider
+	pool           *pgxpool.Pool
+	destinationKey []byte
+	targetEmail    string
 }
 
 func newMember5DeliveryE2EFixture(t *testing.T) *member5DeliveryE2EFixture {
@@ -233,12 +244,6 @@ func newMember5DeliveryE2EFixture(t *testing.T) *member5DeliveryE2EFixture {
 	accountService := accounts.NewPersistentUseCases(accountRepository, tokens, tokens, accounts.VerificationSenderFromEnv(), digester)
 	usageService := usage.NewPersistentUseCases(usage.NewPostgresRepository(pool), accountRepository)
 
-	auth, err := accountService.CreateAnonymous(t.Context())
-	if err != nil {
-		t.Fatalf("CreateAnonymous() error = %v", err)
-	}
-	seedDeliveryTurnFixture(t, pool, auth.Account.ID, destinationKey, targetEmail, "session_delivery_e2e", "turn_delivery_e2e")
-
 	provider := delivery.NewFakeEmailProvider(delivery.FakeEmailProviderConfig{})
 	worker := delivery.NewConfiguredWorker(queue, delivery.WorkerDependencies{
 		Repository:   repository,
@@ -257,13 +262,15 @@ func newMember5DeliveryE2EFixture(t *testing.T) *member5DeliveryE2EFixture {
 	)
 
 	return &member5DeliveryE2EFixture{
-		handler:     handler,
-		dispatcher:  dispatcher,
-		queue:       queue,
-		worker:      worker,
-		repository:  repository,
-		provider:    provider,
-		targetEmail: targetEmail,
+		handler:        handler,
+		dispatcher:     dispatcher,
+		queue:          queue,
+		worker:         worker,
+		repository:     repository,
+		provider:       provider,
+		pool:           pool,
+		destinationKey: destinationKey,
+		targetEmail:    targetEmail,
 	}
 }
 

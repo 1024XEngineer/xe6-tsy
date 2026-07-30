@@ -45,6 +45,11 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	mux.Handle("POST /api/v1/outbound-deliveries/{message_id}/retry", a.authenticate(http.HandlerFunc(a.retryMessage)))
 	mux.Handle("GET /api/v1/account/message-preferences", a.authenticate(http.HandlerFunc(a.preferences)))
 	mux.Handle("PUT /api/v1/account/message-preferences/{channel}", a.authenticate(http.HandlerFunc(a.putPreference)))
+	mux.Handle("GET /api/v1/account/message-targets", a.authenticate(http.HandlerFunc(a.listMessageTargets)))
+	mux.Handle("POST /api/v1/account/message-targets/email/bind", a.authenticate(http.HandlerFunc(a.bindEmailTarget)))
+	mux.Handle("DELETE /api/v1/account/message-targets/email/{destination_ref}", a.authenticate(http.HandlerFunc(a.unbindEmailTarget)))
+	mux.Handle("POST /api/v1/account/message-targets/wechat/bind", a.authenticate(http.HandlerFunc(a.bindWeChatTarget)))
+	mux.Handle("DELETE /api/v1/account/message-targets/wechat/{destination_ref}", a.authenticate(http.HandlerFunc(a.unbindWeChatTarget)))
 	return mux
 }
 
@@ -395,6 +400,97 @@ func (a *API) putPreference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) listMessageTargets(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var channel *delivery.Channel
+	if raw := strings.TrimSpace(r.URL.Query().Get("channel")); raw != "" {
+		value := delivery.Channel(raw)
+		if !delivery.IsSupportedChannel(value) {
+			writeError(w, r, domain.ErrInvalidArgument)
+			return
+		}
+		channel = &value
+	}
+	result, err := a.delivery.ListMessageTargets(r.Context(), id, channel)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": result})
+}
+
+func (a *API) bindEmailTarget(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var request struct {
+		Token string `json:"token"`
+	}
+	if decodeJSON(r, &request) != nil || strings.TrimSpace(request.Token) == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	result, err := a.delivery.BindEmailTarget(r.Context(), id, request.Token)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) unbindEmailTarget(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	destinationRef := strings.TrimSpace(r.PathValue("destination_ref"))
+	if destinationRef == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	if err := a.delivery.RevokeMessageTarget(r.Context(), id, delivery.ChannelEmail, destinationRef); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) bindWeChatTarget(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var request struct {
+		Code string `json:"code"`
+	}
+	if decodeJSON(r, &request) != nil || strings.TrimSpace(request.Code) == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	result, err := a.delivery.BindWeChatTarget(r.Context(), id, request.Code)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) unbindWeChatTarget(w http.ResponseWriter, r *http.Request) {
+	if _, err := accountID(r); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeError(w, r, domain.ErrNotImplemented)
 }
 
 // hasDuplicates also rejects empty identifiers so Turn selection stays unambiguous.

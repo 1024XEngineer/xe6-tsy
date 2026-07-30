@@ -23,6 +23,17 @@ type deliveryFake struct {
 	retryAccountID   string
 	retryMessageID   string
 	retryIdempotency string
+	targets          []delivery.MessageTarget
+	listAccountID    string
+	listChannel      *delivery.Channel
+	bindAccountID    string
+	bindToken        string
+	revokeAccountID  string
+	revokeChannel    delivery.Channel
+	revokeRef        string
+	bindEmailErr     error
+	listTargetsErr   error
+	revokeErr        error
 }
 
 type tokenVerifierFake struct{}
@@ -87,6 +98,31 @@ func (*deliveryFake) Preferences(context.Context, string) ([]delivery.Preference
 }
 func (*deliveryFake) PutPreference(context.Context, string, delivery.Channel, bool) (delivery.Preference, error) {
 	return delivery.Preference{}, domain.ErrNotImplemented
+}
+func (f *deliveryFake) ListMessageTargets(_ context.Context, accountID string, channel *delivery.Channel) ([]delivery.MessageTarget, error) {
+	f.listAccountID = accountID
+	f.listChannel = channel
+	if f.listTargetsErr != nil {
+		return nil, f.listTargetsErr
+	}
+	return f.targets, nil
+}
+func (f *deliveryFake) BindEmailTarget(_ context.Context, accountID, token string) (delivery.MessageTarget, error) {
+	f.bindAccountID = accountID
+	f.bindToken = token
+	if f.bindEmailErr != nil {
+		return delivery.MessageTarget{}, f.bindEmailErr
+	}
+	return delivery.MessageTarget{DestinationRef: "primary-email", Channel: delivery.ChannelEmail, Verified: true}, nil
+}
+func (f *deliveryFake) BindWeChatTarget(context.Context, string, string) (delivery.MessageTarget, error) {
+	return delivery.MessageTarget{}, domain.ErrNotImplemented
+}
+func (f *deliveryFake) RevokeMessageTarget(_ context.Context, accountID string, channel delivery.Channel, destinationRef string) error {
+	f.revokeAccountID = accountID
+	f.revokeChannel = channel
+	f.revokeRef = destinationRef
+	return f.revokeErr
 }
 
 func TestCreateMessagePassesAuthenticatedAccount(t *testing.T) {
@@ -344,6 +380,11 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 		{"retry outbound delivery", http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", "", true, true},
 		{"get message preferences", http.MethodGet, "/api/v1/account/message-preferences", "", true, false},
 		{"update message preference", http.MethodPut, "/api/v1/account/message-preferences/email", `{"enabled":true}`, true, false},
+		{"list message targets", http.MethodGet, "/api/v1/account/message-targets", "", true, false},
+		{"bind email target", http.MethodPost, "/api/v1/account/message-targets/email/bind", `{"token":"dev:user@example.test"}`, true, false},
+		{"unbind email target", http.MethodDelete, "/api/v1/account/message-targets/email/primary-email", "", true, false},
+		{"bind wechat target", http.MethodPost, "/api/v1/account/message-targets/wechat/bind", `{"code":"oauth-code"}`, true, false},
+		{"unbind wechat target", http.MethodDelete, "/api/v1/account/message-targets/wechat/primary-wechat", "", true, false},
 	}
 
 	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
@@ -476,5 +517,119 @@ func TestPhoneLoginWithoutAnonymousBindingRemainsPublic(t *testing.T) {
 	}
 	if !fake.verifyPhoneCalled {
 		t.Fatal("public phone login did not reach account service")
+	}
+}
+
+func TestListMessageTargetsPassesAuthenticatedAccountAndChannelFilter(t *testing.T) {
+	fake := &deliveryFake{targets: []delivery.MessageTarget{{DestinationRef: "primary-email", Channel: delivery.ChannelEmail, Verified: true}}}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/account/message-targets?channel=email", nil)
+	request = authenticate(request)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.listAccountID != "account-1" || fake.listChannel == nil || *fake.listChannel != delivery.ChannelEmail {
+		t.Fatalf("list input = (%q, %v)", fake.listAccountID, fake.listChannel)
+	}
+}
+
+func TestListMessageTargetsRejectsUnsupportedChannel(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/account/message-targets?channel=sms", nil)
+	request = authenticate(request)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.listAccountID != "" {
+		t.Fatal("unsupported channel reached service")
+	}
+}
+
+func TestBindEmailTargetPassesTokenToService(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/email/bind", strings.NewReader(`{"token":"dev:user@example.test"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.bindAccountID != "account-1" || fake.bindToken != "dev:user@example.test" {
+		t.Fatalf("bind input = (%q, %q)", fake.bindAccountID, fake.bindToken)
+	}
+}
+
+func TestBindEmailTargetRejectsMissingToken(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/email/bind", strings.NewReader(`{"token":" "}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.bindAccountID != "" {
+		t.Fatal("invalid bind request reached service")
+	}
+}
+
+func TestUnbindEmailTargetPassesDestinationRef(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/account/message-targets/email/primary-email", nil)
+	request = authenticate(request)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNoContent, response.Body.String())
+	}
+	if fake.revokeAccountID != "account-1" || fake.revokeChannel != delivery.ChannelEmail || fake.revokeRef != "primary-email" {
+		t.Fatalf("revoke input = (%q, %q, %q)", fake.revokeAccountID, fake.revokeChannel, fake.revokeRef)
+	}
+}
+
+func TestBindWeChatTargetReturnsNotImplemented(t *testing.T) {
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/wechat/bind", strings.NewReader(`{"code":"oauth-code"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNotImplemented, response.Body.String())
+	}
+}
+
+func TestUnbindWeChatTargetReturnsNotImplemented(t *testing.T) {
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/account/message-targets/wechat/primary-wechat", nil)
+	request = authenticate(request)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNotImplemented, response.Body.String())
 	}
 }

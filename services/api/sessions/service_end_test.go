@@ -314,6 +314,50 @@ func TestServiceEndRejectsCanceledContextBeforeDependencies(t *testing.T) {
 	}
 }
 
+func TestServiceEndReturnsDependencyFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(*endFixture)
+		want    error
+	}{
+		{
+			name: "read session",
+			prepare: func(fixture *endFixture) {
+				fixture.repository.startRepository.getErr = errDependency
+			},
+			want: errDependency,
+		},
+		{
+			name: "end intent time",
+			prepare: func(fixture *endFixture) {
+				fixture.clock.now = time.Time{}
+			},
+			want: ErrInvalidDependency,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEndFixture(t, StatusActive)
+			test.prepare(fixture)
+
+			_, err := fixture.service.End(t.Context(), validEndInput())
+			if !errors.Is(err, test.want) {
+				t.Fatalf("End() error = %v, want %v", err, test.want)
+			}
+			if fixture.realtime.stopCalls != 0 {
+				t.Fatalf("Stop() calls = %d, want 0", fixture.realtime.stopCalls)
+			}
+			fixture.repository.endMu.Lock()
+			intent := fixture.repository.intent
+			fixture.repository.endMu.Unlock()
+			if intent != nil {
+				t.Fatalf("EndIntent = %#v, want no persisted intent", intent)
+			}
+		})
+	}
+}
+
 func TestServiceEndRejectsInvalidPersistedIntentLease(t *testing.T) {
 	tests := []struct {
 		name       string

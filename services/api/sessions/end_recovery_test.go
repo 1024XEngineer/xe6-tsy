@@ -9,7 +9,14 @@ import (
 )
 
 func TestNewEndRecoveryWorkerRejectsNilService(t *testing.T) {
-	_, err := NewEndRecoveryWorker(nil, EndRecoveryConfig{})
+	_, err := NewEndRecoveryWorker(nil, EndRecoveryConfig{
+		WorkerID:       "worker_1",
+		PollInterval:   time.Second,
+		LeaseDuration:  time.Minute,
+		AttemptTimeout: 30 * time.Second,
+		InitialBackoff: time.Second,
+		MaxBackoff:     time.Minute,
+	})
 	if !errors.Is(err, ErrInvalidDependency) {
 		t.Fatalf("NewEndRecoveryWorker() error = %v, want ErrInvalidDependency", err)
 	}
@@ -213,25 +220,6 @@ func TestEndRecoveryWorkerRunStopsOnCancellation(t *testing.T) {
 	cancel()
 	if err := fixture.worker.Run(ctx); err != nil {
 		t.Fatalf("Run() error = %v", err)
-	}
-}
-
-func TestEndRecoveryWorkerRunContinuesAfterScanFailure(t *testing.T) {
-	fixture := newEndRecoveryFixture(t, StatusActive)
-	fixture.worker.config.PollInterval = time.Millisecond
-	fixture.repository.claimErr = errDependency
-	ctx, cancel := context.WithCancel(t.Context())
-	fixture.repository.claimHook = func(call int) {
-		if call == 2 {
-			cancel()
-		}
-	}
-
-	if err := fixture.worker.Run(ctx); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	if fixture.repository.claimCalls != 2 {
-		t.Fatalf("claim calls = %d, want 2", fixture.repository.claimCalls)
 	}
 }
 

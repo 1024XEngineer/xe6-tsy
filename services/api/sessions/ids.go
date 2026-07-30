@@ -16,7 +16,9 @@ type ULIDGenerator struct {
 // NewULIDGenerator returns a concurrency-safe production ID generator.
 func NewULIDGenerator() *ULIDGenerator {
 	return &ULIDGenerator{
-		entropy: &ulid.LockedMonotonicReader{Reader: rand.Reader},
+		entropy: &ulid.LockedMonotonicReader{
+			MonotonicReader: ulid.Monotonic(rand.Reader, 0),
+		},
 	}
 }
 

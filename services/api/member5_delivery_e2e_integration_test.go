@@ -142,6 +142,7 @@ func TestConfiguredRuntimeCompositionExposesDeliveryAndRecordsRoutes(t *testing.
 
 	handler := buildMuxWithServices(
 		languageHandler,
+		runtime.sessionHandler,
 		accountService,
 		runtime.usageService,
 		runtime.deliveryService,
@@ -255,6 +256,7 @@ func newMember5DeliveryE2EFixture(t *testing.T) *member5DeliveryE2EFixture {
 
 	handler := buildMuxWithServices(
 		languages.NewHandler(nil, nil),
+		nil,
 		accountService,
 		usageService,
 		deliveryService,

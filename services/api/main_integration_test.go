@@ -77,6 +77,7 @@ func TestRecordsHTTPProductionCompositionReadsOnlyOwnedTurns(t *testing.T) {
 
 	handler := buildMux(
 		languages.NewHandler(nil, nil),
+		nil,
 		dependencies.handler,
 		dependencies.accounts,
 		dependencies.tokens,

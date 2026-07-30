@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
@@ -18,6 +19,7 @@ import (
 	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
+	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
@@ -46,6 +48,7 @@ func TestBuildMuxActivatesAuthenticatedVoiceRecordRoutes(t *testing.T) {
 
 	handler := buildMux(
 		languages.NewHandler(nil, nil),
+		nil,
 		newRecordsTestHandler(),
 		accounts.NewUseCases(),
 		mainTokenVerifier{},
@@ -81,6 +84,7 @@ func TestBuildMuxAuthenticatesLanguageRoutes(t *testing.T) {
 		languages.NewHandler(nil, func(r *http.Request) (string, bool) {
 			return internalwebapi.AccountIDFromContext(r.Context())
 		}),
+		nil,
 		newRecordsTestHandler(),
 		accounts.NewUseCases(),
 		mainTokenVerifier{},
@@ -107,6 +111,64 @@ func TestBuildMuxAuthenticatesLanguageRoutes(t *testing.T) {
 			handler.ServeHTTP(response, request)
 			if response.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d, body = %s", response.Code, test.wantStatus, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestBuildMuxMountsVoiceSessionRoutes(t *testing.T) {
+	sessionHandler := sessions.NewHandler(
+		mainSessionUseCases{now: time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)},
+		func(r *http.Request) (string, bool) {
+			return internalwebapi.AccountIDFromContext(r.Context())
+		},
+	)
+	handler := buildMuxWithServices(
+		languages.NewHandler(nil, nil),
+		sessionHandler,
+		accounts.NewUseCases(),
+		usage.NewUseCases(),
+		delivery.NewUseCases(),
+		mainTokenVerifier{},
+		newRecordsTestHandler(),
+	)
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		key    string
+	}{
+		{
+			name:   "create",
+			method: http.MethodPost,
+			path:   "/api/v1/voice-sessions",
+			body:   `{"capabilities":{"webrtc":true,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
+			key:    "create-key",
+		},
+		{name: "start", method: http.MethodPost, path: "/api/v1/voice-sessions/vs_1/start", key: "start-key"},
+		{name: "end", method: http.MethodPost, path: "/api/v1/voice-sessions/vs_1/end", key: "end-key"},
+		{name: "detail", method: http.MethodGet, path: "/api/v1/voice-sessions/vs_1"},
+		{name: "state", method: http.MethodGet, path: "/api/v1/voice-sessions/vs_1/state"},
+		{name: "list", method: http.MethodGet, path: "/api/v1/voice-sessions"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer account-token")
+			if test.key != "" {
+				request.Header.Set("Idempotency-Key", test.key)
+			}
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code == http.StatusNotFound {
+				t.Fatalf("%s %s returned 404; route is not mounted", test.method, test.path)
+			}
+			if response.Code >= http.StatusInternalServerError {
+				t.Fatalf("status = %d, want mounted non-5xx route; body = %s", response.Code, response.Body.String())
 			}
 		})
 	}
@@ -171,6 +233,7 @@ func TestRunRejectsInvalidDeliveryRuntimeMode(t *testing.T) {
 func TestBuildMuxWithServicesUsesNotImplementedRecordsWhenNil(t *testing.T) {
 	handler := buildMuxWithServices(
 		languages.NewHandler(nil, nil),
+		nil,
 		accounts.NewUseCases(),
 		usage.NewUseCases(),
 		delivery.NewUseCases(),
@@ -255,4 +318,66 @@ func (mainTurnRepository) ListHistory(context.Context, string, recordsv1.ListTur
 
 func (mainTurnRepository) CorrectAttribution(context.Context, turns.AttributionUpdate) (recordsv1.VoiceTurn, error) {
 	return recordsv1.VoiceTurn{}, nil
+}
+
+type mainSessionUseCases struct {
+	now time.Time
+}
+
+func (u mainSessionUseCases) Create(_ context.Context, input sessions.CreateInput) (sessions.VoiceSession, error) {
+	return sessions.VoiceSession{
+		ID:        "vs_created",
+		AccountID: input.AccountID,
+		Status:    sessions.StatusCreated,
+		CreatedAt: u.now,
+	}, nil
+}
+
+func (u mainSessionUseCases) Start(_ context.Context, input sessions.StartInput) (sessions.VoiceSession, error) {
+	return sessions.VoiceSession{
+		ID:        input.SessionID,
+		AccountID: input.AccountID,
+		Status:    sessions.StatusActive,
+		CreatedAt: u.now,
+	}, nil
+}
+
+func (u mainSessionUseCases) End(_ context.Context, input sessions.EndInput) (sessions.VoiceSession, error) {
+	return sessions.VoiceSession{
+		ID:        input.SessionID,
+		AccountID: input.AccountID,
+		Status:    sessions.StatusEnded,
+		CreatedAt: u.now,
+	}, nil
+}
+
+func (u mainSessionUseCases) GetDetail(_ context.Context, input sessions.DetailInput) (sessions.VoiceSessionDetail, error) {
+	return sessions.VoiceSessionDetail{
+		VoiceSession: sessions.VoiceSession{
+			ID:        input.SessionID,
+			AccountID: input.AccountID,
+			Status:    sessions.StatusActive,
+			CreatedAt: u.now,
+		},
+		RuntimeState:     sessions.RuntimeListening,
+		RuntimeUpdatedAt: u.now,
+	}, nil
+}
+
+func (u mainSessionUseCases) GetState(_ context.Context, input sessions.DetailInput) (sessions.StateSnapshot, error) {
+	return sessions.StateSnapshot{
+		SessionID:        input.SessionID,
+		Status:           sessions.StatusActive,
+		RuntimeState:     sessions.RuntimeListening,
+		RuntimeUpdatedAt: u.now,
+	}, nil
+}
+
+func (u mainSessionUseCases) List(_ context.Context, input sessions.ListInput) (sessions.ListPage, error) {
+	return sessions.ListPage{Sessions: []sessions.VoiceSessionListItem{{
+		ID:        "vs_1",
+		AccountID: input.AccountID,
+		Status:    sessions.StatusActive,
+		CreatedAt: u.now,
+	}}}, nil
 }

@@ -141,6 +141,12 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		return nil, nil, err
 	}
 	deliveryService.ConfigureEmailVerification(deliveryRepository, newEmailBindSender(processConfig, smtpMailer))
+	wecomClient, err := newConfiguredWeComClient(processConfig)
+	if err != nil {
+		redisClient.Close()
+		return nil, nil, err
+	}
+	deliveryService.ConfigureWeChatBinding(wecomClient)
 
 	usageConsumerName := processConfig.UsageConsumer
 	if usageConsumerName == "" {
@@ -153,7 +159,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	}
 	usageConsumer := usage.NewConsumer(usageStream, usageService)
 
-	provider, err := configuredProvider(processConfig, smtpMailer)
+	provider, err := configuredProvider(processConfig, smtpMailer, wecomClient)
 	if err != nil {
 		redisClient.Close()
 		return nil, nil, err
@@ -180,7 +186,19 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	return runtime, languageHandler, nil
 }
 
-func configuredProvider(processConfig config.Config, smtpMailer *delivery.SMTPMailer) (delivery.Provider, error) {
+func configuredProvider(processConfig config.Config, smtpMailer *delivery.SMTPMailer, wecomClient *delivery.WeComClient) (delivery.Provider, error) {
+	emailProvider, err := configuredEmailProvider(processConfig, smtpMailer)
+	if err != nil {
+		return nil, err
+	}
+	wechatProvider, err := configuredWeChatProvider(wecomClient)
+	if err != nil {
+		return nil, err
+	}
+	return delivery.NewChannelRouter(emailProvider, wechatProvider), nil
+}
+
+func configuredEmailProvider(processConfig config.Config, smtpMailer *delivery.SMTPMailer) (delivery.Provider, error) {
 	switch processConfig.DeliveryProvider {
 	case "unconfigured", "":
 		return delivery.UnconfiguredProvider{}, nil
@@ -194,6 +212,24 @@ func configuredProvider(processConfig config.Config, smtpMailer *delivery.SMTPMa
 	default:
 		return nil, fmt.Errorf("unsupported delivery provider %q", processConfig.DeliveryProvider)
 	}
+}
+
+func configuredWeChatProvider(wecomClient *delivery.WeComClient) (delivery.Provider, error) {
+	if wecomClient == nil {
+		return delivery.UnconfiguredProvider{}, nil
+	}
+	return delivery.NewWeComProvider(wecomClient)
+}
+
+func newConfiguredWeComClient(processConfig config.Config) (*delivery.WeComClient, error) {
+	if processConfig.WeComCorpID == "" {
+		return nil, nil
+	}
+	return delivery.NewWeComClient(delivery.WeComConfig{
+		CorpID:     processConfig.WeComCorpID,
+		CorpSecret: processConfig.WeComCorpSecret,
+		AgentID:    processConfig.WeComAgentIDInt(),
+	})
 }
 
 func newConfiguredSMTPMailer(processConfig config.Config) (*delivery.SMTPMailer, error) {

@@ -44,6 +44,9 @@ type Config struct {
 	SMTPPassword        string
 	SMTPFrom            string
 	SMTPTLS             bool
+	WeComCorpID         string
+	WeComCorpSecret     string
+	WeComAgentID        string
 }
 
 // Load reads the process environment and validates only the configuration
@@ -89,6 +92,9 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		SMTPPassword:        value("LINGOW_SMTP_PASSWORD", ""),
 		SMTPFrom:            value("LINGOW_SMTP_FROM", ""),
 		SMTPTLS:             parseBoolDefault(value("LINGOW_SMTP_TLS", "true"), true),
+		WeComCorpID:         value("LINGOW_WECOM_CORP_ID", ""),
+		WeComCorpSecret:     value("LINGOW_WECOM_CORP_SECRET", ""),
+		WeComAgentID:        value("LINGOW_WECOM_AGENT_ID", ""),
 	}
 	runtimeMode := strings.ToLower(value("LINGOW_DELIVERY_RUNTIME", "disabled"))
 	switch runtimeMode {
@@ -137,6 +143,9 @@ func validateEnabled(config Config) error {
 	default:
 		return fmt.Errorf("%w: unsupported delivery provider %q", domain.ErrInvalidArgument, config.DeliveryProvider)
 	}
+	if err := validateWeComConfig(config); err != nil {
+		return err
+	}
 	if strings.EqualFold(config.AppEnv, "production") && config.DeliveryConsumer == "" {
 		return fmt.Errorf("%w: LINGOW_DELIVERY_CONSUMER is required in production", domain.ErrInvalidArgument)
 	}
@@ -161,4 +170,33 @@ func (c Config) SMTPPortInt(defaultPort int) int {
 		return defaultPort
 	}
 	return port
+}
+
+func validateWeComConfig(config Config) error {
+	values := []string{config.WeComCorpID, config.WeComCorpSecret, config.WeComAgentID}
+	set := 0
+	for _, value := range values {
+		if value != "" {
+			set++
+		}
+	}
+	if set == 0 {
+		return nil
+	}
+	if set != len(values) {
+		return fmt.Errorf("%w: LINGOW_WECOM_CORP_ID, LINGOW_WECOM_CORP_SECRET, and LINGOW_WECOM_AGENT_ID must be configured together", domain.ErrInvalidArgument)
+	}
+	if config.WeComAgentIDInt() <= 0 {
+		return fmt.Errorf("%w: LINGOW_WECOM_AGENT_ID must be a positive integer", domain.ErrInvalidArgument)
+	}
+	return nil
+}
+
+// WeComAgentIDInt returns the configured WeCom agent id or zero when invalid.
+func (c Config) WeComAgentIDInt() int {
+	agentID, err := strconv.Atoi(strings.TrimSpace(c.WeComAgentID))
+	if err != nil || agentID <= 0 {
+		return 0
+	}
+	return agentID
 }

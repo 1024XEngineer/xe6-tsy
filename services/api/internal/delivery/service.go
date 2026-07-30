@@ -23,6 +23,7 @@ type UseCases struct {
 	appEnv              string
 	emailBindChallenges EmailBindChallengeRepository
 	emailBindSender     EmailBindSender
+	wecomIdentity       WeComIdentityClient
 }
 
 func NewUseCases() *UseCases { return &UseCases{} }
@@ -44,6 +45,11 @@ func (u *UseCases) ConfigureTargetBinding(destinationKey []byte, appEnv string) 
 func (u *UseCases) ConfigureEmailVerification(challenges EmailBindChallengeRepository, sender EmailBindSender) {
 	u.emailBindChallenges = challenges
 	u.emailBindSender = sender
+}
+
+// ConfigureWeChatBinding wires the WeCom OAuth client used to resolve bind codes.
+func (u *UseCases) ConfigureWeChatBinding(client WeComIdentityClient) {
+	u.wecomIdentity = client
 }
 
 func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, error) {
@@ -288,8 +294,28 @@ func (u *UseCases) BindEmailTarget(ctx context.Context, accountID, token string)
 	return target, nil
 }
 
-func (u *UseCases) BindWeChatTarget(context.Context, string, string) (MessageTarget, error) {
-	return MessageTarget{}, domain.ErrNotImplemented
+func (u *UseCases) BindWeChatTarget(ctx context.Context, accountID, code string) (MessageTarget, error) {
+	repository := targetRepository(u.repository)
+	if repository == nil || accountID == "" || len(u.destinationKey) != 32 {
+		return MessageTarget{}, domain.ErrNotImplemented
+	}
+	destinationRef, userid, err := resolveWeChatBindCode(ctx, u.appEnv, code, u.wecomIdentity)
+	if err != nil {
+		return MessageTarget{}, err
+	}
+	ciphertext, err := EncryptProviderTarget(u.destinationKey, userid)
+	if err != nil {
+		return MessageTarget{}, err
+	}
+	now := time.Now().UTC()
+	return repository.BindWeChatTarget(ctx, BindWeChatTargetRecord{
+		ID:             "dest_" + ulid.Make().String(),
+		AccountID:      accountID,
+		DestinationRef: destinationRef,
+		Ciphertext:     ciphertext,
+		KeyVersion:     destinationKeyVersion,
+		VerifiedAt:     now,
+	})
 }
 
 func (u *UseCases) RevokeMessageTarget(ctx context.Context, accountID string, channel Channel, destinationRef string) error {

@@ -11,12 +11,19 @@ type Channel string
 const (
 	// ChannelEmail sends a message to a verified email destination.
 	ChannelEmail Channel = "email"
+	// ChannelWeChat sends a message to a verified WeChat Work userid.
+	ChannelWeChat Channel = "wechat"
 )
 
 // IsSupportedChannel reports whether a channel is accepted by the public
 // delivery contract. Keep this central so HTTP and use cases cannot drift.
 func IsSupportedChannel(channel Channel) bool {
-	return channel == ChannelEmail
+	switch channel {
+	case ChannelEmail, ChannelWeChat:
+		return true
+	default:
+		return false
+	}
 }
 
 // MessageStatus describes the user-visible lifecycle of an outbound message.

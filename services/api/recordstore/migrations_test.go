@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 11 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 11", len(migrations))
+	if len(migrations) != 12 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 12", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -132,5 +132,13 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if !strings.Contains(emailBind.SQL, "CREATE TABLE email_bind_challenges") {
 		t.Fatal("email bind migration does not create email_bind_challenges")
+	}
+
+	wechatChannel := migrations[11]
+	if wechatChannel.Version != 12 || wechatChannel.Name != "enable_wechat_channel" {
+		t.Fatalf("migration = %#v, want version 12 named enable_wechat_channel", wechatChannel)
+	}
+	if !strings.Contains(wechatChannel.SQL, "channel IN ('email', 'wechat')") {
+		t.Fatal("wechat channel migration does not allow wechat channel")
 	}
 }

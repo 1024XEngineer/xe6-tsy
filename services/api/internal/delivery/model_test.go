@@ -11,6 +11,9 @@ func TestIsSupportedChannelMatchesCurrentSchema(t *testing.T) {
 	if !IsSupportedChannel(ChannelEmail) {
 		t.Fatal("email channel should be supported")
 	}
+	if !IsSupportedChannel(ChannelWeChat) {
+		t.Fatal("wechat channel should be supported")
+	}
 	if IsSupportedChannel(Channel("wecom_bot")) {
 		t.Fatal("wecom_bot must remain unsupported until its schema migration")
 	}

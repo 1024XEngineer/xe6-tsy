@@ -79,15 +79,16 @@ func TestBindEmailTargetRequiresConfiguredKey(t *testing.T) {
 }
 
 type targetRepositoryStub struct {
-	targets       []MessageTarget
-	listAccountID string
-	listChannel   *Channel
-	bindRecord    BindEmailTargetRecord
-	bindErr       error
-	revokeAccount string
-	revokeChannel Channel
-	revokeRef     string
-	revokeErr     error
+	targets          []MessageTarget
+	listAccountID    string
+	listChannel      *Channel
+	bindRecord       BindEmailTargetRecord
+	bindWeChatRecord BindWeChatTargetRecord
+	bindErr          error
+	revokeAccount    string
+	revokeChannel    Channel
+	revokeRef        string
+	revokeErr        error
 }
 
 func (targetRepositoryStub) CreateMessage(context.Context, CreateMessageRecord) error {
@@ -136,6 +137,19 @@ func (s *targetRepositoryStub) BindEmailTarget(_ context.Context, record BindEma
 	return MessageTarget{
 		DestinationRef: record.DestinationRef,
 		Channel:        ChannelEmail,
+		Verified:       true,
+		UpdatedAt:      record.VerifiedAt,
+	}, nil
+}
+
+func (s *targetRepositoryStub) BindWeChatTarget(_ context.Context, record BindWeChatTargetRecord) (MessageTarget, error) {
+	if s.bindErr != nil {
+		return MessageTarget{}, s.bindErr
+	}
+	s.bindWeChatRecord = record
+	return MessageTarget{
+		DestinationRef: record.DestinationRef,
+		Channel:        ChannelWeChat,
 		Verified:       true,
 		UpdatedAt:      record.VerifiedAt,
 	}, nil
@@ -199,9 +213,28 @@ func TestListMessageTargetsFailsClosedWithoutTargetRepository(t *testing.T) {
 	}
 }
 
-func TestBindWeChatTargetReturnsNotImplemented(t *testing.T) {
+func TestBindWeChatTargetUsesDevShortcutInLocal(t *testing.T) {
+	repository := &targetRepositoryStub{}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	service.ConfigureTargetBinding(testDestinationKey(t), "local")
+
+	target, err := service.BindWeChatTarget(t.Context(), "account-1", "dev:work-wechat:userid-1")
+	if err != nil {
+		t.Fatalf("BindWeChatTarget() error = %v", err)
+	}
+	if target.Channel != ChannelWeChat || target.DestinationRef != "work-wechat" {
+		t.Fatalf("BindWeChatTarget() = %#v", target)
+	}
+	if repository.bindWeChatRecord.DestinationRef != "work-wechat" || repository.bindWeChatRecord.AccountID != "account-1" {
+		t.Fatalf("bind record = %#v", repository.bindWeChatRecord)
+	}
+}
+
+func TestBindWeChatTargetRequiresWeComClientOutsideLocal(t *testing.T) {
 	service := NewPersistentUseCases(&targetRepositoryStub{}, nil, nil, nil)
-	if _, err := service.BindWeChatTarget(t.Context(), "account-1", "oauth-code"); !errors.Is(err, domain.ErrNotImplemented) {
+	service.ConfigureTargetBinding(testDestinationKey(t), "production")
+	_, err := service.BindWeChatTarget(t.Context(), "account-1", "oauth-code")
+	if !errors.Is(err, domain.ErrNotImplemented) {
 		t.Fatalf("BindWeChatTarget() error = %v, want not implemented", err)
 	}
 }

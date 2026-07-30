@@ -11,6 +11,7 @@ import (
 type TargetRepository interface {
 	ListMessageTargets(context.Context, string, *Channel) ([]MessageTarget, error)
 	BindEmailTarget(context.Context, BindEmailTargetRecord) (MessageTarget, error)
+	BindWeChatTarget(context.Context, BindWeChatTargetRecord) (MessageTarget, error)
 	RevokeMessageTarget(context.Context, string, Channel, string, time.Time) error
 }
 
@@ -65,6 +66,31 @@ func (r *PostgresRepository) BindEmailTarget(ctx context.Context, record BindEma
 			id, account_id, channel, destination_ref, provider_target_ciphertext,
 			key_version, verified_at, revoked_at, created_at, updated_at
 		) VALUES ($1, $2, 'email', $3, $4, $5, $6, NULL, $6, $6)
+		ON CONFLICT (account_id, channel, destination_ref) DO UPDATE
+		SET provider_target_ciphertext = EXCLUDED.provider_target_ciphertext,
+		    key_version = EXCLUDED.key_version,
+		    verified_at = EXCLUDED.verified_at,
+		    revoked_at = NULL,
+		    updated_at = EXCLUDED.updated_at
+		RETURNING destination_ref, channel, (verified_at IS NOT NULL AND revoked_at IS NULL), revoked_at, updated_at`,
+		record.ID, record.AccountID, record.DestinationRef, record.Ciphertext, record.KeyVersion, record.VerifiedAt,
+	).Scan(&target.DestinationRef, &target.Channel, &target.Verified, &target.RevokedAt, &target.UpdatedAt)
+	if err != nil {
+		return MessageTarget{}, mapDeliveryError(err)
+	}
+	return target, nil
+}
+
+func (r *PostgresRepository) BindWeChatTarget(ctx context.Context, record BindWeChatTargetRecord) (MessageTarget, error) {
+	if record.AccountID == "" || record.DestinationRef == "" || len(record.Ciphertext) == 0 || record.KeyVersion == "" {
+		return MessageTarget{}, domain.ErrInvalidArgument
+	}
+	var target MessageTarget
+	err := r.pool.QueryRow(ctx, `
+		INSERT INTO account_destinations (
+			id, account_id, channel, destination_ref, provider_target_ciphertext,
+			key_version, verified_at, revoked_at, created_at, updated_at
+		) VALUES ($1, $2, 'wechat', $3, $4, $5, $6, NULL, $6, $6)
 		ON CONFLICT (account_id, channel, destination_ref) DO UPDATE
 		SET provider_target_ciphertext = EXCLUDED.provider_target_ciphertext,
 		    key_version = EXCLUDED.key_version,

@@ -27,6 +27,14 @@ func TestPostgresBindEmailTargetRejectsInvalidRecord(t *testing.T) {
 	}
 }
 
+func TestPostgresBindWeChatTargetRejectsInvalidRecord(t *testing.T) {
+	repository := &PostgresRepository{}
+	_, err := repository.BindWeChatTarget(t.Context(), BindWeChatTargetRecord{})
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("BindWeChatTarget() error = %v, want invalid argument", err)
+	}
+}
+
 func TestPostgresRevokeMessageTargetRejectsInvalidInput(t *testing.T) {
 	repository := &PostgresRepository{}
 	if err := repository.RevokeMessageTarget(t.Context(), "", ChannelEmail, "primary-email", testRevokeTime()); !errors.Is(err, domain.ErrInvalidArgument) {

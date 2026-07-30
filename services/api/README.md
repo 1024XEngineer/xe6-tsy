@@ -70,7 +70,9 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 非 local 环境通过 `POST /api/v1/account/message-targets/email/verification-codes` 发送一次性
 验证 token，再调用 bind）。`LINGOW_DELIVERY_PROVIDER` 默认是
 `unconfigured`；`fake_email` 只允许本地或测试环境显式选择；生产环境使用 `smtp`
-并配置 `LINGOW_SMTP_*`。
+并配置 `LINGOW_SMTP_*`。WeChat Work 通道通过 `POST /api/v1/account/message-targets/wechat/bind`
+绑定 OAuth code（local/test 支持 `dev:<userid>` 或 `dev:<destination_ref>:<userid>`），
+出站投递在配置 `LINGOW_WECOM_*` 后由 `WeComProvider` 发送应用消息。
 
 ## 语音记录 HTTP 装配
 

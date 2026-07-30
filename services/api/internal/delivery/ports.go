@@ -139,7 +139,7 @@ type Service interface {
 	BindEmailTarget(context.Context, string, string) (MessageTarget, error)
 	// RequestEmailBindVerification sends a one-time bind token to the supplied inbox.
 	RequestEmailBindVerification(context.Context, string, string, string) error
-	// BindWeChatTarget remains unimplemented until a WeCom adapter exists.
+	// BindWeChatTarget verifies and stores one WeChat Work destination for the account.
 	BindWeChatTarget(context.Context, string, string) (MessageTarget, error)
 	// RevokeMessageTarget marks one verified destination as revoked.
 	RevokeMessageTarget(context.Context, string, Channel, string) error

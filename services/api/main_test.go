@@ -12,7 +12,9 @@ import (
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
@@ -141,6 +143,35 @@ func TestRunValidatesRecordsConfigurationBeforeDatabaseSetup(t *testing.T) {
 	err := run()
 	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET must be at least 32 bytes") {
 		t.Fatalf("run() error = %v, want JWT_SECRET length error", err)
+	}
+}
+
+func TestRunRejectsInvalidDeliveryRuntimeMode(t *testing.T) {
+	t.Setenv("LINGOW_DELIVERY_RUNTIME", "maybe")
+
+	err := run()
+	if err == nil || !strings.Contains(err.Error(), "LINGOW_DELIVERY_RUNTIME must be enabled or disabled") {
+		t.Fatalf("run() error = %v, want delivery runtime validation error", err)
+	}
+}
+
+func TestBuildMuxWithServicesUsesNotImplementedRecordsWhenNil(t *testing.T) {
+	handler := buildMuxWithServices(
+		languages.NewHandler(nil, nil),
+		accounts.NewUseCases(),
+		usage.NewUseCases(),
+		delivery.NewUseCases(),
+		mainTokenVerifier{},
+		nil,
+	)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_01/participants", nil)
+	request.Header.Set("Authorization", "Bearer account-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusNotImplemented, response.Body.String())
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/1024XEngineer/xe6-tsy/services/api/config"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
@@ -49,6 +50,14 @@ func main() {
 }
 
 func run() error {
+	processConfig, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if processConfig.DeliveryEnabled {
+		return runConfigured(processConfig)
+	}
+
 	if _, _, err := recordsHTTPConfigurationFromEnv(); err != nil {
 		return err
 	}
@@ -175,15 +184,28 @@ func newLanguageHandler(ctx context.Context) (*languages.Handler, func(), error)
 		pool.Close()
 		return nil, nil, err
 	}
-	if err := languages.ApplyMigrations(ctx, pool); err != nil {
+	handler, err := newLanguageHandlerWithPool(ctx, pool)
+	if err != nil {
 		pool.Close()
 		return nil, nil, err
 	}
+	return handler, pool.Close, nil
+}
 
+func newLanguageHandlerWithPool(ctx context.Context, pool *pgxpool.Pool) (*languages.Handler, error) {
+	if pool == nil {
+		return nil, errors.New("language handler requires PostgreSQL pool")
+	}
+	if err := languages.ApplyMigrations(ctx, pool); err != nil {
+		return nil, err
+	}
 	sessions := sessionOwnerFromEnv()
 	svc := languages.NewService(languages.NewPostgresStore(pool, nil), sessions)
 	slog.Info("language configuration service enabled")
-	return languages.NewHandler(svc, accountID), pool.Close, nil
+	accountID := func(r *http.Request) (string, bool) {
+		return internalwebapi.AccountIDFromContext(r.Context())
+	}
+	return languages.NewHandler(svc, accountID), nil
 }
 
 func sessionOwnerFromEnv() languages.SessionOwnerReader {
@@ -311,12 +333,29 @@ func buildMux(
 	accountUseCases accounts.Service,
 	tokens accounts.AccessTokenVerifier,
 ) *http.ServeMux {
-	mux := internalwebapi.New(accountUseCases, usage.NewUseCases(), delivery.NewUseCases(), tokens)
+	return buildMuxWithServices(lang, accountUseCases, usage.NewUseCases(), delivery.NewUseCases(), tokens, records)
+}
+
+func buildMuxWithServices(
+	lang *languages.Handler,
+	accountService accounts.Service,
+	usageService usage.Service,
+	deliveryService delivery.Service,
+	tokens accounts.AccessTokenVerifier,
+	records *recordswebapi.Server,
+) *http.ServeMux {
+	mux := internalwebapi.New(accountService, usageService, deliveryService, tokens)
 	lang.Register(mux, func(next http.Handler) http.Handler {
 		return internalwebapi.Authenticate(tokens, next)
 	})
-	records.Register(mux, func(next http.Handler) http.Handler {
-		return records.Authenticate(tokens, next)
+	if records != nil {
+		records.Register(mux, func(next http.Handler) http.Handler {
+			return records.Authenticate(tokens, next)
+		})
+		return mux
+	}
+	recordswebapi.NewNotImplementedHandler(slog.Default()).Register(mux, func(next http.Handler) http.Handler {
+		return internalwebapi.Authenticate(tokens, next)
 	})
 	return mux
 }

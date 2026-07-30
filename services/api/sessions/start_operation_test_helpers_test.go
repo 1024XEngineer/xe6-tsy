@@ -40,6 +40,26 @@ func (r *startOperationRepository) GetOwned(
 	return r.session, nil
 }
 
+func (r *startOperationRepository) GetSession(
+	ctx context.Context,
+	sessionID string,
+) (SessionSnapshot, error) {
+	r.mu.Lock()
+	accountID := r.session.AccountID
+	r.mu.Unlock()
+	session, err := r.GetOwned(ctx, accountID, sessionID)
+	if err != nil {
+		return SessionSnapshot{}, err
+	}
+	return SessionSnapshot{
+		SessionID: session.ID,
+		AccountID: session.AccountID,
+		Status:    session.Status,
+		StartedAt: session.StartedAt,
+		EndedAt:   session.EndedAt,
+	}, nil
+}
+
 func (*startOperationRepository) List(context.Context, ListFilter) (ListPage, error) {
 	return ListPage{}, ErrNotImplemented
 }

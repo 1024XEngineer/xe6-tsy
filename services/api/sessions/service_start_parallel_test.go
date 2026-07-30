@@ -241,6 +241,17 @@ func (r *multiSessionStartRepository) GetOwned(
 	return state.GetOwned(ctx, accountID, sessionID)
 }
 
+func (r *multiSessionStartRepository) GetSession(
+	ctx context.Context,
+	sessionID string,
+) (SessionSnapshot, error) {
+	state, err := r.state(sessionID)
+	if err != nil {
+		return SessionSnapshot{}, err
+	}
+	return state.GetSession(ctx, sessionID)
+}
+
 func (*multiSessionStartRepository) List(context.Context, ListFilter) (ListPage, error) {
 	return ListPage{}, ErrNotImplemented
 }

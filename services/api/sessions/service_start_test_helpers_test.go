@@ -230,6 +230,26 @@ func (r *startRepository) GetOwned(
 	return session, nil
 }
 
+func (r *startRepository) GetSession(
+	ctx context.Context,
+	sessionID string,
+) (SessionSnapshot, error) {
+	r.mu.Lock()
+	accountID := r.session.AccountID
+	r.mu.Unlock()
+	session, err := r.GetOwned(ctx, accountID, sessionID)
+	if err != nil {
+		return SessionSnapshot{}, err
+	}
+	return SessionSnapshot{
+		SessionID: session.ID,
+		AccountID: session.AccountID,
+		Status:    session.Status,
+		StartedAt: session.StartedAt,
+		EndedAt:   session.EndedAt,
+	}, nil
+}
+
 func (r *startRepository) BeginStartOperation(
 	_ context.Context,
 	params BeginStartOperationParams,

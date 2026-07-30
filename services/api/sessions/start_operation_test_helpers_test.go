@@ -244,6 +244,27 @@ func (*startOperationRepository) GetEndIntent(
 	return EndIntent{}, ErrNotImplemented
 }
 
+func (*startOperationRepository) ClaimPendingEndIntent(
+	context.Context,
+	ClaimEndIntentParams,
+) (EndIntent, bool, error) {
+	return EndIntent{}, false, ErrNotImplemented
+}
+
+func (*startOperationRepository) RetryClaimedEndIntent(
+	context.Context,
+	RetryEndIntentParams,
+) error {
+	return ErrNotImplemented
+}
+
+func (*startOperationRepository) CompleteClaimedEndIntent(
+	context.Context,
+	CompleteClaimedEndIntentParams,
+) error {
+	return ErrNotImplemented
+}
+
 func (*startOperationRepository) CompleteEndIntent(
 	context.Context,
 	string,

@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // End persists request identity before attempting cleanup. Every failure after
 // SaveEndIntent therefore remains recoverable by an idempotent replay.
-func (s *Service) End(ctx context.Context, input EndInput) (VoiceSession, error) {
+func (s *Service) End(
+	ctx context.Context,
+	input EndInput,
+) (result VoiceSession, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return VoiceSession{}, err
 	}
@@ -30,13 +34,19 @@ func (s *Service) End(ctx context.Context, input EndInput) (VoiceSession, error)
 	if err != nil {
 		return VoiceSession{}, err
 	}
+	requestOwner := "request:" + input.TraceID
+	leaseExpiresAt := requestedAt.Add(s.deps.EndRecoveryLeaseDuration)
+	leaseStartedAt := time.Now()
 	intent, _, err := s.deps.Repository.SaveEndIntent(ctx, EndIntent{
 		SessionID:      input.SessionID,
 		AccountID:      input.AccountID,
 		Reason:         input.Reason,
 		IdempotencyKey: input.IdempotencyKey,
 		RequestHash:    input.RequestHash,
+		TraceID:        input.TraceID,
 		RequestedAt:    requestedAt,
+		RecoveryOwner:  &requestOwner,
+		LeaseExpiresAt: &leaseExpiresAt,
 	})
 	if err != nil {
 		return VoiceSession{}, fmt.Errorf("save voice session end intent: %w", err)
@@ -47,17 +57,51 @@ func (s *Service) End(ctx context.Context, input EndInput) (VoiceSession, error)
 	if err := validateEndIntent(intent, session, input.Reason); err != nil {
 		return VoiceSession{}, err
 	}
+	if intent.Completed() {
+		return session, nil
+	}
+	if intent.RecoveryOwner == nil || *intent.RecoveryOwner != requestOwner ||
+		intent.LeaseExpiresAt == nil {
+		return VoiceSession{}, ErrConcurrentTransition
+	}
+	leaseRemaining := s.deps.EndRecoveryLeaseDuration - time.Since(leaseStartedAt)
+	if leaseRemaining <= 0 {
+		return VoiceSession{}, ErrConcurrentTransition
+	}
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		persistCtx, cancel := s.endPersistenceContext(ctx)
+		defer cancel()
+		err := s.deps.Repository.RetryClaimedEndIntent(
+			persistCtx,
+			RetryEndIntentParams{
+				SessionID:  intent.SessionID,
+				AccountID:  intent.AccountID,
+				WorkerID:   requestOwner,
+				LastError:  resultErr.Error(),
+				RetryAfter: 0,
+			},
+		)
+		if err != nil && !errors.Is(err, ErrConcurrentTransition) {
+			resultErr = errors.Join(
+				resultErr,
+				fmt.Errorf("persist failed end request for recovery: %w", err),
+			)
+		}
+	}()
+
+	attemptCtx, cancel := s.endAttemptContext(ctx, leaseRemaining)
+	defer cancel()
 
 	switch session.Status {
 	case StatusEnded, StatusFailed:
-		if intent.Completed() {
-			return session, nil
-		}
-		return session, s.completeEndIntent(ctx, session)
+		return session, s.completeEndIntent(attemptCtx, session)
 	case StatusCreated:
-		return s.endCreated(ctx, session, intent)
+		return s.endCreated(attemptCtx, session, intent)
 	case StatusActive:
-		return s.stopAndEndActive(ctx, session, intent, input.TraceID)
+		return s.stopAndEndActive(attemptCtx, session, intent, input.TraceID)
 	default:
 		return VoiceSession{}, ErrSessionStateConflict
 	}
@@ -81,6 +125,7 @@ func validateEndIntent(intent EndIntent, session VoiceSession, reason EndReason)
 		intent.AccountID != session.AccountID ||
 		intent.IdempotencyKey == "" ||
 		intent.RequestHash == "" ||
+		intent.TraceID == "" ||
 		intent.RequestedAt.IsZero() ||
 		!intent.Reason.Valid() ||
 		intent.Reason != reason ||
@@ -99,6 +144,19 @@ func (s *Service) endCreated(
 	if err != nil {
 		return VoiceSession{}, err
 	}
+	ended, err := s.transitionCreatedToEnded(ctx, session, intent, endedAt)
+	if err != nil {
+		return VoiceSession{}, err
+	}
+	return ended, s.completeEndIntent(ctx, ended)
+}
+
+func (s *Service) transitionCreatedToEnded(
+	ctx context.Context,
+	session VoiceSession,
+	intent EndIntent,
+	endedAt time.Time,
+) (VoiceSession, error) {
 	ended, err := s.deps.Repository.TransitionToEnded(ctx, EndTransitionParams{
 		SessionID: session.ID,
 		AccountID: session.AccountID,
@@ -109,7 +167,7 @@ func (s *Service) endCreated(
 	if err != nil {
 		return VoiceSession{}, fmt.Errorf("end created voice session: %w", err)
 	}
-	return ended, s.completeEndIntent(ctx, ended)
+	return ended, nil
 }
 
 func (s *Service) stopAndEndActive(
@@ -122,6 +180,20 @@ func (s *Service) stopAndEndActive(
 	if err != nil {
 		return VoiceSession{}, err
 	}
+	ended, err := s.stopAndTransitionActive(ctx, session, intent, traceID, endedAt)
+	if err != nil {
+		return VoiceSession{}, err
+	}
+	return ended, s.completeEndIntent(ctx, ended)
+}
+
+func (s *Service) stopAndTransitionActive(
+	ctx context.Context,
+	session VoiceSession,
+	intent EndIntent,
+	traceID string,
+	endedAt time.Time,
+) (VoiceSession, error) {
 	runtime, err := s.deps.Realtime.Stop(ctx, StopRealtimeCommand{
 		SessionID: session.ID,
 		TraceID:   traceID,
@@ -145,7 +217,7 @@ func (s *Service) stopAndEndActive(
 	if err != nil {
 		return VoiceSession{}, fmt.Errorf("transition active voice session to ended: %w", err)
 	}
-	return ended, s.completeEndIntent(ctx, ended)
+	return ended, nil
 }
 
 func validateStoppedRuntime(runtime RuntimeSnapshot, sessionID string) error {

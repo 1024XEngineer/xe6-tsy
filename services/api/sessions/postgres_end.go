@@ -18,10 +18,16 @@ func (r *PostgresRepository) SaveEndIntent(
 	}
 	if intent.SessionID == "" || intent.AccountID == "" ||
 		intent.IdempotencyKey == "" || intent.RequestHash == "" ||
-		!intent.Reason.Valid() || !validTimestamp(intent.RequestedAt) ||
-		intent.CompletedAt != nil {
+		intent.TraceID == "" || !intent.Reason.Valid() ||
+		!validTimestamp(intent.RequestedAt) ||
+		intent.CompletedAt != nil || intent.RetryCount != 0 ||
+		intent.LastError != nil || !intent.NextAttemptAt.IsZero() ||
+		intent.RecoveryOwner == nil || *intent.RecoveryOwner == "" ||
+		intent.LeaseExpiresAt == nil ||
+		!intent.LeaseExpiresAt.After(intent.RequestedAt) {
 		return EndIntent{}, false, ErrInvalidRequest
 	}
+	leaseDuration := intent.LeaseExpiresAt.Sub(intent.RequestedAt)
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return EndIntent{}, false, postgresError("begin end intent", err)
@@ -51,7 +57,7 @@ func (r *PostgresRepository) SaveEndIntent(
 	}
 
 	existing, found, err := endIntentBySession(
-		ctx, tx, intent.AccountID, intent.SessionID, false,
+		ctx, tx, intent.AccountID, intent.SessionID, true,
 	)
 	if err != nil {
 		return EndIntent{}, false, postgresError("read end intent", err)
@@ -60,16 +66,46 @@ func (r *PostgresRepository) SaveEndIntent(
 		if !existing.MatchesRequest(intent.IdempotencyKey, intent.RequestHash) {
 			return EndIntent{}, false, ErrIdempotencyKeyConflict
 		}
-		return existing, true, nil
+		if existing.Completed() {
+			return existing, true, nil
+		}
+		updated, err := scanEndIntent(tx.QueryRow(ctx, `
+			UPDATE voice_session_end_intents
+			SET recovery_owner = $1,
+				recovery_lease_expires_at = clock_timestamp() + ($2::double precision * interval '1 second')
+			WHERE session_id = $3 AND account_id = $4
+			  AND (
+				recovery_lease_expires_at IS NULL
+				OR recovery_lease_expires_at <= clock_timestamp()
+			  )
+			RETURNING `+endIntentColumns,
+			*intent.RecoveryOwner, leaseDuration.Seconds(),
+			intent.SessionID, intent.AccountID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return EndIntent{}, false, ErrConcurrentTransition
+		}
+		if err != nil {
+			return EndIntent{}, false, postgresError("claim replayed end intent", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return EndIntent{}, false, postgresError("commit replayed end intent claim", err)
+		}
+		return updated, true, nil
 	}
 
 	saved, err := scanEndIntent(tx.QueryRow(ctx, `
 		INSERT INTO voice_session_end_intents (
-			session_id, account_id, reason, idempotency_key, request_hash, requested_at
-		) VALUES ($1, $2, $3, $4, $5, $6)
+			session_id, account_id, reason, idempotency_key, request_hash,
+			trace_id, requested_at, next_attempt_at, recovery_owner,
+			recovery_lease_expires_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, clock_timestamp(), $8,
+			clock_timestamp() + ($9::double precision * interval '1 second')
+		)
 		RETURNING `+endIntentColumns,
 		intent.SessionID, intent.AccountID, intent.Reason, intent.IdempotencyKey,
-		intent.RequestHash, intent.RequestedAt.UTC()))
+		intent.RequestHash, intent.TraceID, intent.RequestedAt.UTC(),
+		*intent.RecoveryOwner, leaseDuration.Seconds()))
 	if err != nil {
 		if constraintName(err) == "voice_session_end_intents_key_unique" {
 			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
@@ -91,16 +127,11 @@ func (r *PostgresRepository) resolveEndIntentRace(
 	ctx context.Context,
 	intent EndIntent,
 ) (EndIntent, bool, error) {
-	var stored EndIntent
-	var reason string
-	err := r.pool.QueryRow(ctx, `
+	stored, err := scanEndIntent(r.pool.QueryRow(ctx, `
 		SELECT `+endIntentColumns+`
 		FROM voice_session_end_intents
 		WHERE account_id = $1 AND idempotency_key = $2`,
-		intent.AccountID, intent.IdempotencyKey).Scan(
-		&stored.SessionID, &stored.AccountID, &reason, &stored.IdempotencyKey,
-		&stored.RequestHash, &stored.RequestedAt, &stored.CompletedAt,
-	)
+		intent.AccountID, intent.IdempotencyKey))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return EndIntent{}, false, fmt.Errorf(
 			"sessions postgres resolve end intent race: %w", ErrConcurrentTransition,
@@ -109,7 +140,6 @@ func (r *PostgresRepository) resolveEndIntentRace(
 	if err != nil {
 		return EndIntent{}, false, postgresError("resolve end intent race", err)
 	}
-	stored.Reason = EndReason(reason)
 	if stored.SessionID != intent.SessionID ||
 		stored.RequestHash != intent.RequestHash ||
 		!stored.Reason.Valid() {
@@ -177,6 +207,9 @@ func (r *PostgresRepository) CompleteEndIntent(
 		return postgresError("lock session for end intent completion", err)
 	}
 	ownerAccountID := session.AccountID
+	if session.Status != StatusEnded && session.Status != StatusFailed {
+		return ErrConcurrentTransition
+	}
 	intent, found, err := endIntentBySession(
 		ctx, tx, ownerAccountID, sessionID, true,
 	)
@@ -192,7 +225,9 @@ func (r *PostgresRepository) CompleteEndIntent(
 	if intent.CompletedAt == nil {
 		if _, err := tx.Exec(ctx, `
 			UPDATE voice_session_end_intents
-			SET completed_at = $1
+			SET completed_at = $1,
+				recovery_owner = NULL,
+				recovery_lease_expires_at = NULL
 			WHERE account_id = $2 AND session_id = $3`,
 			completedAt.UTC(), ownerAccountID, sessionID); err != nil {
 			return postgresError("complete end intent", err)

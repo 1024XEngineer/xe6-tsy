@@ -20,7 +20,8 @@ const (
 		idempotency_key, request_hash, status, compensation_claim_id,
 		created_at, updated_at`
 	endIntentColumns = `session_id, account_id, reason, idempotency_key,
-		request_hash, requested_at, completed_at`
+		request_hash, trace_id, requested_at, completed_at, retry_count,
+		last_error, next_attempt_at, recovery_owner, recovery_lease_expires_at`
 )
 
 // PostgresRepository persists the business session and its durable operation
@@ -395,7 +396,9 @@ func scanEndIntent(row pgx.Row) (EndIntent, error) {
 	var reason string
 	err := row.Scan(
 		&intent.SessionID, &intent.AccountID, &reason, &intent.IdempotencyKey,
-		&intent.RequestHash, &intent.RequestedAt, &intent.CompletedAt,
+		&intent.RequestHash, &intent.TraceID, &intent.RequestedAt,
+		&intent.CompletedAt, &intent.RetryCount, &intent.LastError,
+		&intent.NextAttemptAt, &intent.RecoveryOwner, &intent.LeaseExpiresAt,
 	)
 	if err != nil {
 		return EndIntent{}, err

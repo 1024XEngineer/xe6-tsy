@@ -25,13 +25,14 @@ func TestMigrateLegacySessionStartSchema(t *testing.T) {
 	}
 
 	assertSessionStartCompatibilitySchema(t, pool)
+	assertEndIntentRecoverySchema(t, pool)
 	statuses, err := AppliedMigrations(t.Context(), pool)
 	if err != nil {
 		t.Fatalf("AppliedMigrations() error = %v", err)
 	}
-	if len(statuses) != 10 ||
-		statuses[9].Version != 10 ||
-		statuses[9].Name != "session_start_operation_compatibility" {
+	if len(statuses) != 14 ||
+		statuses[13].Version != 14 ||
+		statuses[13].Name != "end_intent_recovery" {
 		t.Fatalf("AppliedMigrations() = %#v", statuses)
 	}
 

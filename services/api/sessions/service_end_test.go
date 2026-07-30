@@ -18,6 +18,9 @@ type endRepository struct {
 	completeCalls   int
 	transitionCalls int
 	transitionHook  func()
+	saveResultHook  func(*EndIntent)
+	retryCalls      int
+	retryAfter      time.Duration
 }
 
 func (r *endRepository) BeginStartOperation(
@@ -60,10 +63,23 @@ func (r *endRepository) SaveEndIntent(
 		if !r.intent.MatchesRequest(intent.IdempotencyKey, intent.RequestHash) {
 			return EndIntent{}, false, ErrIdempotencyKeyConflict
 		}
+		if r.intent.Completed() {
+			return *r.intent, true, nil
+		}
+		if r.intent.LeaseExpiresAt != nil &&
+			r.intent.LeaseExpiresAt.After(intent.RequestedAt) {
+			return EndIntent{}, false, ErrConcurrentTransition
+		}
+		r.intent.RecoveryOwner = intent.RecoveryOwner
+		r.intent.LeaseExpiresAt = intent.LeaseExpiresAt
 		return *r.intent, true, nil
 	}
 	saved := intent
+	saved.NextAttemptAt = saved.RequestedAt
 	r.intent = &saved
+	if r.saveResultHook != nil {
+		r.saveResultHook(&saved)
+	}
 	return saved, false, nil
 }
 
@@ -104,7 +120,32 @@ func (r *endRepository) CompleteEndIntent(
 	}
 	if r.intent.CompletedAt == nil {
 		r.intent.CompletedAt = &completedAt
+		r.intent.RecoveryOwner = nil
+		r.intent.LeaseExpiresAt = nil
 	}
+	return nil
+}
+
+func (r *endRepository) RetryClaimedEndIntent(
+	ctx context.Context,
+	params RetryEndIntentParams,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.endMu.Lock()
+	defer r.endMu.Unlock()
+	if r.intent == nil || r.intent.RecoveryOwner == nil ||
+		*r.intent.RecoveryOwner != params.WorkerID {
+		return ErrConcurrentTransition
+	}
+	r.intent.RetryCount++
+	r.retryCalls++
+	lastError := params.LastError
+	r.intent.LastError = &lastError
+	r.retryAfter = params.RetryAfter
+	r.intent.RecoveryOwner = nil
+	r.intent.LeaseExpiresAt = nil
 	return nil
 }
 
@@ -273,6 +314,103 @@ func TestServiceEndRejectsCanceledContextBeforeDependencies(t *testing.T) {
 	}
 }
 
+func TestServiceEndReturnsDependencyFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(*endFixture)
+		want    error
+	}{
+		{
+			name: "read session",
+			prepare: func(fixture *endFixture) {
+				fixture.repository.startRepository.getErr = errDependency
+			},
+			want: errDependency,
+		},
+		{
+			name: "end intent time",
+			prepare: func(fixture *endFixture) {
+				fixture.clock.now = time.Time{}
+			},
+			want: ErrInvalidDependency,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEndFixture(t, StatusActive)
+			test.prepare(fixture)
+
+			_, err := fixture.service.End(t.Context(), validEndInput())
+			if !errors.Is(err, test.want) {
+				t.Fatalf("End() error = %v, want %v", err, test.want)
+			}
+			if fixture.realtime.stopCalls != 0 {
+				t.Fatalf("Stop() calls = %d, want 0", fixture.realtime.stopCalls)
+			}
+			fixture.repository.endMu.Lock()
+			intent := fixture.repository.intent
+			fixture.repository.endMu.Unlock()
+			if intent != nil {
+				t.Fatalf("EndIntent = %#v, want no persisted intent", intent)
+			}
+		})
+	}
+}
+
+func TestServiceEndRejectsInvalidPersistedIntentLease(t *testing.T) {
+	tests := []struct {
+		name       string
+		clockTimes func(time.Time) []time.Time
+		mutate     func(*EndIntent)
+		want       error
+	}{
+		{
+			name: "mismatched request",
+			mutate: func(intent *EndIntent) {
+				intent.RequestHash = "other"
+			},
+			want: ErrIdempotencyKeyConflict,
+		},
+		{
+			name: "invalid persisted intent",
+			mutate: func(intent *EndIntent) {
+				intent.TraceID = ""
+			},
+			want: ErrInvalidDependency,
+		},
+		{
+			name: "missing lease owner",
+			mutate: func(intent *EndIntent) {
+				intent.RecoveryOwner = nil
+			},
+			want: ErrConcurrentTransition,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEndFixture(t, StatusActive)
+			fixture.repository.saveResultHook = test.mutate
+			if test.clockTimes != nil {
+				fixture.clock.times = test.clockTimes(fixture.clock.now)
+			}
+
+			_, err := fixture.service.End(t.Context(), validEndInput())
+			if !errors.Is(err, test.want) {
+				t.Fatalf("End() error = %v, want %v", err, test.want)
+			}
+			if fixture.realtime.stopCalls != 0 || fixture.repository.transitionCalls != 0 {
+				t.Fatalf(
+					"calls = Stop %d TransitionToEnded %d, want 0, 0",
+					fixture.realtime.stopCalls,
+					fixture.repository.transitionCalls,
+				)
+			}
+		})
+	}
+}
+
 func TestServiceEndCreatedTransitionsWithoutRealtime(t *testing.T) {
 	fixture := newEndFixture(t, StatusCreated)
 
@@ -388,6 +526,58 @@ func TestServiceEndActiveStopsBeforeTransition(t *testing.T) {
 	assertEndCompleted(t, fixture)
 }
 
+func TestServiceEndDoesNotCompeteWithActiveRecoveryLease(t *testing.T) {
+	fixture := newEndFixture(t, StatusActive)
+	now := fixture.clock.now
+	workerOwner := "worker_1"
+	leaseExpiresAt := now.Add(time.Minute)
+	fixture.repository.intent = &EndIntent{
+		SessionID: "vs_1", AccountID: "acct_1",
+		Reason: EndReasonUserRequested, IdempotencyKey: "end_1",
+		RequestHash: "hash_1", TraceID: "req_1",
+		RequestedAt: now.Add(-time.Minute), NextAttemptAt: now.Add(-time.Minute),
+		RecoveryOwner: &workerOwner, LeaseExpiresAt: &leaseExpiresAt,
+	}
+
+	_, err := fixture.service.End(t.Context(), validEndInput())
+	if !errors.Is(err, ErrConcurrentTransition) {
+		t.Fatalf("End() error = %v, want ErrConcurrentTransition", err)
+	}
+	if fixture.realtime.stopCalls != 0 || fixture.repository.transitionCalls != 0 {
+		t.Fatalf(
+			"calls = Stop %d TransitionToEnded %d, want 0, 0",
+			fixture.realtime.stopCalls,
+			fixture.repository.transitionCalls,
+		)
+	}
+}
+
+func TestServiceEndReplayDoesNotReuseActiveRequestLease(t *testing.T) {
+	fixture := newEndFixture(t, StatusActive)
+	now := fixture.clock.now
+	requestOwner := "request:req_1"
+	leaseExpiresAt := now.Add(time.Minute)
+	fixture.repository.intent = &EndIntent{
+		SessionID: "vs_1", AccountID: "acct_1",
+		Reason: EndReasonUserRequested, IdempotencyKey: "end_1",
+		RequestHash: "hash_1", TraceID: "req_1",
+		RequestedAt: now.Add(-time.Minute), NextAttemptAt: now.Add(-time.Minute),
+		RecoveryOwner: &requestOwner, LeaseExpiresAt: &leaseExpiresAt,
+	}
+
+	_, err := fixture.service.End(t.Context(), validEndInput())
+	if !errors.Is(err, ErrConcurrentTransition) {
+		t.Fatalf("End() error = %v, want ErrConcurrentTransition", err)
+	}
+	if fixture.realtime.stopCalls != 0 || fixture.repository.transitionCalls != 0 {
+		t.Fatalf(
+			"calls = Stop %d TransitionToEnded %d, want 0, 0",
+			fixture.realtime.stopCalls,
+			fixture.repository.transitionCalls,
+		)
+	}
+}
+
 func TestServiceEndActiveStopErrorPreservesSession(t *testing.T) {
 	fixture := newEndFixture(t, StatusActive)
 	fixture.realtime.stopErr = errDependency
@@ -397,6 +587,13 @@ func TestServiceEndActiveStopErrorPreservesSession(t *testing.T) {
 		t.Fatalf("End() error = %v, want realtime and dependency errors", err)
 	}
 	assertActiveEndIncomplete(t, fixture)
+	if fixture.repository.retryCalls != 1 || fixture.repository.retryAfter != 0 {
+		t.Fatalf(
+			"RetryClaimedEndIntent() calls = %d, retry after = %v; want 1, 0",
+			fixture.repository.retryCalls,
+			fixture.repository.retryAfter,
+		)
+	}
 }
 
 func TestServiceEndActiveStopTimeoutPreservesSession(t *testing.T) {

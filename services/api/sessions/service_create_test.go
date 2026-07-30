@@ -31,6 +31,14 @@ func TestNewServiceDependencies(t *testing.T) {
 		{name: "missing realtime", edit: func(deps *Dependencies) { deps.Realtime = nil }, wantErr: true, wantContext: "realtime"},
 		{name: "missing ID generator", edit: func(deps *Dependencies) { deps.IDs = nil }, wantErr: true, wantContext: "ID generator"},
 		{name: "missing clock", edit: func(deps *Dependencies) { deps.Clock = nil }, wantErr: true, wantContext: "clock"},
+		{
+			name: "end attempt reaches lease",
+			edit: func(deps *Dependencies) {
+				deps.EndAttemptTimeout = time.Second
+				deps.EndRecoveryLeaseDuration = time.Second
+			},
+			wantErr: true, wantContext: "end attempt timeout",
+		},
 	}
 
 	for _, test := range tests {
@@ -76,6 +84,15 @@ func TestNewServiceDefaultsStartInfrastructure(t *testing.T) {
 		t.Fatalf("StartReconciliationTimeout = %v, want %v",
 			service.deps.StartReconciliationTimeout,
 			defaultStartReconciliationTimeout)
+	}
+	if service.deps.EndAttemptTimeout != defaultEndAttemptTimeout {
+		t.Fatalf("EndAttemptTimeout = %v, want %v",
+			service.deps.EndAttemptTimeout, defaultEndAttemptTimeout)
+	}
+	if service.deps.EndRecoveryLeaseDuration != defaultEndRecoveryLeaseDuration {
+		t.Fatalf("EndRecoveryLeaseDuration = %v, want %v",
+			service.deps.EndRecoveryLeaseDuration,
+			defaultEndRecoveryLeaseDuration)
 	}
 	if service.locks.locks == nil {
 		t.Fatal("keyed locker is not initialized")

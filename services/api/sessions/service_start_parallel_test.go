@@ -328,6 +328,27 @@ func (*multiSessionStartRepository) GetEndIntent(
 	return EndIntent{}, ErrNotImplemented
 }
 
+func (*multiSessionStartRepository) ClaimPendingEndIntent(
+	context.Context,
+	ClaimEndIntentParams,
+) (EndIntent, bool, error) {
+	return EndIntent{}, false, ErrNotImplemented
+}
+
+func (*multiSessionStartRepository) RetryClaimedEndIntent(
+	context.Context,
+	RetryEndIntentParams,
+) error {
+	return ErrNotImplemented
+}
+
+func (*multiSessionStartRepository) CompleteClaimedEndIntent(
+	context.Context,
+	CompleteClaimedEndIntentParams,
+) error {
+	return ErrNotImplemented
+}
+
 func (*multiSessionStartRepository) CompleteEndIntent(
 	context.Context,
 	string,

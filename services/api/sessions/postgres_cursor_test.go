@@ -46,6 +46,45 @@ func TestPostgresRepositoryRejectsNilPool(t *testing.T) {
 	if _, err := repository.GetOwned(t.Context(), "acct_1", "vs_1"); !errors.Is(err, ErrInvalidDependency) {
 		t.Fatalf("GetOwned() error = %v, want ErrInvalidDependency", err)
 	}
+	if _, _, err := repository.SaveEndIntent(
+		t.Context(),
+		EndIntent{},
+	); !errors.Is(err, ErrInvalidDependency) {
+		t.Fatalf("SaveEndIntent() error = %v, want ErrInvalidDependency", err)
+	}
+	if _, err := repository.GetEndIntent(
+		t.Context(),
+		"acct_1",
+		"vs_1",
+	); !errors.Is(err, ErrInvalidDependency) {
+		t.Fatalf("GetEndIntent() error = %v, want ErrInvalidDependency", err)
+	}
+	if err := repository.CompleteEndIntent(
+		t.Context(),
+		"acct_1",
+		"vs_1",
+		time.Time{},
+	); !errors.Is(err, ErrInvalidDependency) {
+		t.Fatalf("CompleteEndIntent() error = %v, want ErrInvalidDependency", err)
+	}
+	if _, _, err := repository.ClaimPendingEndIntent(
+		t.Context(),
+		ClaimEndIntentParams{},
+	); !errors.Is(err, ErrInvalidDependency) {
+		t.Fatalf("ClaimPendingEndIntent() error = %v, want ErrInvalidDependency", err)
+	}
+	if err := repository.RetryClaimedEndIntent(
+		t.Context(),
+		RetryEndIntentParams{},
+	); !errors.Is(err, ErrInvalidDependency) {
+		t.Fatalf("RetryClaimedEndIntent() error = %v, want ErrInvalidDependency", err)
+	}
+	if err := repository.CompleteClaimedEndIntent(
+		t.Context(),
+		CompleteClaimedEndIntentParams{},
+	); !errors.Is(err, ErrInvalidDependency) {
+		t.Fatalf("CompleteClaimedEndIntent() error = %v, want ErrInvalidDependency", err)
+	}
 }
 
 func TestPostgresConstraintName(t *testing.T) {

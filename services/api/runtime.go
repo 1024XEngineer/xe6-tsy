@@ -84,10 +84,11 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	if err := recordstore.Migrate(startupCtx, pool); err != nil {
 		return nil, nil, err
 	}
-	languageHandler, err := newLanguageHandlerWithPool(startupCtx, pool)
+	languageHandler, languageService, err := newLanguageHandlerWithPool(startupCtx, pool)
 	if err != nil {
 		return nil, nil, err
 	}
+	_ = languageService
 
 	records, err := newRecordsHTTPDependenciesFromPool(
 		startupCtx,

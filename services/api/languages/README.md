@@ -16,12 +16,14 @@
 # 必填才启用真实语言服务
 DATABASE_URL=postgres://postgres:123456@localhost:5432/lingow?sslmode=disable
 
-# 会话归属适配器尚未就绪时，本地可用（勿用于生产）
+# 仅本地演示：跳过 voice_sessions 归属校验（勿用于生产）
 LANGUAGE_SESSION_OWNER=trust-auth
 ```
 
 未设置 `DATABASE_URL` 时，语言路由返回 `501 not_implemented`。  
-默认 `SessionOwnerReader` 为 `NotImplementedSessionOwner`（带 session 的接口 `501`），直到会话管理提供生产实现。
+有 PostgreSQL 时，默认通过 `NewRecordsSessionOwner(CanonicalSessionOwner)` 校验
+`voice_sessions.account_id`（含账户 merge 后的 canonical owner）。非所有者返回 `403`，
+会话不存在返回 `404`。
 
 ## 测试
 

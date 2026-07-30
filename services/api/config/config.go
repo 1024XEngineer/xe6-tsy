@@ -89,6 +89,7 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		SessionRuntimeEnabled: false,
 		RealtimeBaseURL:       value("REALTIME_BASE_URL", ""),
 		RealtimeTicketSecret:  value("REALTIME_TICKET_SECRET", ""),
+		RealtimeHTTPTimeout:   defaultRealtimeHTTPTimeout,
 		DestinationKey:        value("LINGOW_DELIVERY_DESTINATION_KEY", ""),
 		DeliveryProvider:      value("LINGOW_DELIVERY_PROVIDER", providerUnconfigured),
 		DeliveryConsumer:      value("LINGOW_DELIVERY_CONSUMER", ""),
@@ -108,7 +109,6 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		WeComCorpID:           value("LINGOW_WECOM_CORP_ID", ""),
 		WeComCorpSecret:       value("LINGOW_WECOM_CORP_SECRET", ""),
 		WeComAgentID:          value("LINGOW_WECOM_AGENT_ID", ""),
-		RealtimeHTTPTimeout:   defaultRealtimeHTTPTimeout,
 	}
 	sessionRuntimeMode := strings.ToLower(value("LINGOW_SESSION_RUNTIME", "disabled"))
 	switch sessionRuntimeMode {
@@ -322,6 +322,12 @@ func (c Config) LogValue() slog.Value {
 }
 
 func (c Config) redacted() Config {
+	if c.DatabaseURL != "" {
+		c.DatabaseURL = "[redacted]"
+	}
+	if c.RedisURL != "" {
+		c.RedisURL = "[redacted]"
+	}
 	if c.JWTSecret != "" {
 		c.JWTSecret = "[redacted]"
 	}

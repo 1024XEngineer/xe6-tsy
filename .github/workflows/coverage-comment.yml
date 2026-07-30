@@ -26,18 +26,22 @@ jobs:
             let pullRequest =
               (run.pull_requests && run.pull_requests[0]) || null;
             if (!pullRequest || !pullRequest.base || !pullRequest.base.ref) {
-              const candidates = await github.paginate(
-                github.rest.repos.listPullRequestsAssociatedWithCommit,
-                {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  commit_sha: run.head_sha,
-                  per_page: 100,
-                },
-              );
-              pullRequest = candidates.find(
-                (candidate) => candidate.state === "open",
-              ) || pullRequest;
+              const headOwner = run.head_repository?.owner?.login;
+              if (headOwner && run.head_branch) {
+                const candidates = await github.paginate(
+                  github.rest.pulls.list,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    state: "open",
+                    head: headOwner + ":" + run.head_branch,
+                    per_page: 100,
+                  },
+                );
+                pullRequest = candidates.find(
+                  (candidate) => candidate.head.sha === run.head_sha,
+                ) || null;
+              }
             }
             if (!pullRequest || !pullRequest.base || !pullRequest.base.ref) {
               core.warning(
@@ -110,6 +114,7 @@ jobs:
 
             core.setOutput("run_id", String(baseline.id));
             core.setOutput("branch", pullRequest.base.ref);
+            core.setOutput("pull_request_number", String(pullRequest.number));
             core.setOutput("available", "true");
 
       - name: Download current coverage reports
@@ -280,25 +285,7 @@ jobs:
             );
 
             const run = context.payload.workflow_run;
-            let pullRequest =
-              (run.pull_requests && run.pull_requests[0]) || null;
-            if (!pullRequest) {
-              const candidates = await github.paginate(
-                github.rest.repos.listPullRequestsAssociatedWithCommit,
-                {
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  commit_sha: run.head_sha,
-                  per_page: 100,
-                },
-              );
-              pullRequest = candidates.find(
-                (candidate) => candidate.state === "open",
-              );
-            }
-            if (!pullRequest) {
-              throw new Error("No pull request found for " + run.head_sha);
-            }
+            const pullRequestNumber = Number(process.env.PULL_REQUEST_NUMBER);
 
             const bodyLines = [
               marker,
@@ -357,7 +344,7 @@ jobs:
               {
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: pullRequest.number,
+                issue_number: pullRequestNumber,
                 per_page: 100,
               },
             );
@@ -380,8 +367,9 @@ jobs:
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: pullRequest.number,
+              issue_number: pullRequestNumber,
               body,
             });
         env:
           BASE_BRANCH: ${{ steps.baseline.outputs.branch }}
+          PULL_REQUEST_NUMBER: ${{ steps.baseline.outputs.pull_request_number }}

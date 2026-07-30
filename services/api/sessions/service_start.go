@@ -40,7 +40,15 @@ func (s *Service) startCreatedSession(
 	input StartInput,
 	session VoiceSession,
 ) (VoiceSession, error) {
-	operation, found, err := s.findStartOperation(ctx, input)
+	if session.AccountID == "" {
+		return VoiceSession{}, fmt.Errorf(
+			"%w: repository returned session without owner",
+			ErrInvalidDependency,
+		)
+	}
+	operation, found, err := s.findStartOperation(
+		ctx, input, session.AccountID,
+	)
 	if err != nil {
 		return VoiceSession{}, err
 	}
@@ -50,7 +58,7 @@ func (s *Service) startCreatedSession(
 	if err := s.validateStartReadiness(ctx, input, session); err != nil {
 		return VoiceSession{}, err
 	}
-	operation, err = s.beginStartOperation(ctx, input)
+	operation, err = s.beginStartOperation(ctx, input, session.AccountID)
 	if err != nil {
 		return VoiceSession{}, err
 	}
@@ -60,7 +68,14 @@ func (s *Service) startCreatedSession(
 func (s *Service) findStartOperation(
 	ctx context.Context,
 	input StartInput,
+	ownerAccountID string,
 ) (StartOperation, bool, error) {
+	if ownerAccountID == "" {
+		return StartOperation{}, false, fmt.Errorf(
+			"%w: session owner is required",
+			ErrInvalidDependency,
+		)
+	}
 	operation, err := s.deps.Repository.GetStartOperation(
 		ctx,
 		input.AccountID,
@@ -75,7 +90,7 @@ func (s *Service) findStartOperation(
 	}
 	if operation.ID == "" ||
 		operation.SessionID != input.SessionID ||
-		operation.AccountID != input.AccountID ||
+		operation.AccountID != ownerAccountID ||
 		operation.IdempotencyKey != input.IdempotencyKey ||
 		!operation.Status.Valid() {
 		return StartOperation{}, false, fmt.Errorf(
@@ -159,7 +174,14 @@ func (s *Service) validateStartReadiness(
 func (s *Service) beginStartOperation(
 	ctx context.Context,
 	input StartInput,
+	ownerAccountID string,
 ) (StartOperation, error) {
+	if ownerAccountID == "" {
+		return StartOperation{}, fmt.Errorf(
+			"%w: session owner is required",
+			ErrInvalidDependency,
+		)
+	}
 	operationID := s.deps.IDs.NewStartOperationID()
 	if operationID == "" {
 		return StartOperation{}, fmt.Errorf(
@@ -185,7 +207,7 @@ func (s *Service) beginStartOperation(
 	operation := begin.Operation
 	if operation.ID == "" ||
 		operation.SessionID != input.SessionID ||
-		operation.AccountID != input.AccountID ||
+		operation.AccountID != ownerAccountID ||
 		!operation.MatchesRequest(input.IdempotencyKey, input.RequestHash) ||
 		!operation.Status.Valid() {
 		return StartOperation{}, fmt.Errorf(
@@ -201,7 +223,7 @@ func (s *Service) replayCompletedStart(
 	input StartInput,
 	current VoiceSession,
 ) (VoiceSession, error) {
-	operation, err := s.beginStartOperation(ctx, input)
+	operation, err := s.beginStartOperation(ctx, input, current.AccountID)
 	if err != nil {
 		return VoiceSession{}, err
 	}

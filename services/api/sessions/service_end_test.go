@@ -60,12 +60,12 @@ func (r *endRepository) SaveEndIntent(
 		if !r.intent.MatchesRequest(intent.IdempotencyKey, intent.RequestHash) {
 			return EndIntent{}, false, ErrIdempotencyKeyConflict
 		}
-		if r.intent.Completed() ||
-			(r.intent.RecoveryOwner != nil &&
-				r.intent.LeaseExpiresAt != nil &&
-				r.intent.LeaseExpiresAt.After(intent.RequestedAt) &&
-				*r.intent.RecoveryOwner != *intent.RecoveryOwner) {
+		if r.intent.Completed() {
 			return *r.intent, true, nil
+		}
+		if r.intent.LeaseExpiresAt != nil &&
+			r.intent.LeaseExpiresAt.After(intent.RequestedAt) {
+			return EndIntent{}, false, ErrConcurrentTransition
 		}
 		r.intent.RecoveryOwner = intent.RecoveryOwner
 		r.intent.LeaseExpiresAt = intent.LeaseExpiresAt
@@ -433,6 +433,32 @@ func TestServiceEndDoesNotCompeteWithActiveRecoveryLease(t *testing.T) {
 		RequestHash: "hash_1", TraceID: "req_1",
 		RequestedAt: now.Add(-time.Minute), NextAttemptAt: now.Add(-time.Minute),
 		RecoveryOwner: &workerOwner, LeaseExpiresAt: &leaseExpiresAt,
+	}
+
+	_, err := fixture.service.End(t.Context(), validEndInput())
+	if !errors.Is(err, ErrConcurrentTransition) {
+		t.Fatalf("End() error = %v, want ErrConcurrentTransition", err)
+	}
+	if fixture.realtime.stopCalls != 0 || fixture.repository.transitionCalls != 0 {
+		t.Fatalf(
+			"calls = Stop %d TransitionToEnded %d, want 0, 0",
+			fixture.realtime.stopCalls,
+			fixture.repository.transitionCalls,
+		)
+	}
+}
+
+func TestServiceEndReplayDoesNotReuseActiveRequestLease(t *testing.T) {
+	fixture := newEndFixture(t, StatusActive)
+	now := fixture.clock.now
+	requestOwner := "request:req_1"
+	leaseExpiresAt := now.Add(time.Minute)
+	fixture.repository.intent = &EndIntent{
+		SessionID: "vs_1", AccountID: "acct_1",
+		Reason: EndReasonUserRequested, IdempotencyKey: "end_1",
+		RequestHash: "hash_1", TraceID: "req_1",
+		RequestedAt: now.Add(-time.Minute), NextAttemptAt: now.Add(-time.Minute),
+		RecoveryOwner: &requestOwner, LeaseExpiresAt: &leaseExpiresAt,
 	}
 
 	_, err := fixture.service.End(t.Context(), validEndInput())

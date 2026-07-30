@@ -65,12 +65,12 @@ func (r *PostgresRepository) SaveEndIntent(
 		if !existing.MatchesRequest(intent.IdempotencyKey, intent.RequestHash) {
 			return EndIntent{}, false, ErrIdempotencyKeyConflict
 		}
-		if existing.Completed() ||
-			(existing.RecoveryOwner != nil &&
-				existing.LeaseExpiresAt != nil &&
-				existing.LeaseExpiresAt.After(intent.RequestedAt) &&
-				*existing.RecoveryOwner != *intent.RecoveryOwner) {
+		if existing.Completed() {
 			return existing, true, nil
+		}
+		if existing.LeaseExpiresAt != nil &&
+			existing.LeaseExpiresAt.After(intent.RequestedAt) {
+			return EndIntent{}, false, ErrConcurrentTransition
 		}
 		updated, err := scanEndIntent(tx.QueryRow(ctx, `
 			UPDATE voice_session_end_intents

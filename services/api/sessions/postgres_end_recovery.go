@@ -86,7 +86,9 @@ func (r *PostgresRepository) RetryClaimedEndIntent(
 			recovery_owner = NULL,
 			recovery_lease_expires_at = NULL
 		WHERE session_id = $3 AND account_id = $4
-		  AND recovery_owner = $5 AND completed_at IS NULL`,
+		  AND recovery_owner = $5
+		  AND recovery_lease_expires_at > clock_timestamp()
+		  AND completed_at IS NULL`,
 		params.LastError, params.NextAttemptAt.UTC(), params.SessionID,
 		params.AccountID, params.WorkerID)
 	if err != nil {
@@ -146,14 +148,22 @@ func (r *PostgresRepository) CompleteClaimedEndIntent(
 	if params.CompletedAt.Before(intent.RequestedAt) {
 		return ErrInvalidRequest
 	}
-	if _, err := tx.Exec(ctx, `
+	result, err := tx.Exec(ctx, `
 		UPDATE voice_session_end_intents
 		SET completed_at = $1,
 			recovery_owner = NULL,
 			recovery_lease_expires_at = NULL
-		WHERE session_id = $2 AND account_id = $3`,
-		params.CompletedAt.UTC(), params.SessionID, params.AccountID); err != nil {
+		WHERE session_id = $2 AND account_id = $3
+		  AND recovery_owner = $4
+		  AND recovery_lease_expires_at > clock_timestamp()
+		  AND completed_at IS NULL`,
+		params.CompletedAt.UTC(), params.SessionID, params.AccountID,
+		params.WorkerID)
+	if err != nil {
 		return postgresError("complete claimed end intent", err)
+	}
+	if result.RowsAffected() != 1 {
+		return ErrConcurrentTransition
 	}
 	return postgresError("commit claimed end completion", tx.Commit(ctx))
 }

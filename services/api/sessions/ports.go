@@ -210,8 +210,9 @@ type Repository interface {
 	CompleteStartCompensation(ctx context.Context, params CompleteStartCompensationParams) error
 	FailStartCompensation(ctx context.Context, params FailStartCompensationParams) error
 	// SaveEndIntent atomically creates or replays the session's EndIntent. A
-	// different request identity conflicts. An unfinished StartOperation returns
-	// ErrSessionStartInProgress so created -> ended cannot orphan a runtime.
+	// different request identity or an unexpired execution lease conflicts. An
+	// unfinished StartOperation returns ErrSessionStartInProgress so
+	// created -> ended cannot orphan a runtime.
 	SaveEndIntent(ctx context.Context, intent EndIntent) (saved EndIntent, replayed bool, err error)
 	GetEndIntent(ctx context.Context, accountID string, sessionID string) (EndIntent, error)
 	ClaimPendingEndIntent(ctx context.Context, params ClaimEndIntentParams) (intent EndIntent, claimed bool, err error)

@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 12 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 12", len(migrations))
+	if len(migrations) != 13 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 13", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -140,5 +140,24 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if !strings.Contains(wechatChannel.SQL, "channel IN ('email', 'wechat')") {
 		t.Fatal("wechat channel migration does not allow wechat channel")
+	}
+
+	failedTerminalTimestamp := migrations[12]
+	if failedTerminalTimestamp.Version != 13 ||
+		failedTerminalTimestamp.Name != "session_failed_terminal_timestamp" {
+		t.Fatalf(
+			"migration = %#v, want version 13 named session_failed_terminal_timestamp",
+			failedTerminalTimestamp,
+		)
+	}
+	for _, expected := range []string{
+		"SET ended_at = started_at",
+		"status = 'failed'",
+		"ended_at IS NOT NULL",
+		"ended_at >= started_at",
+	} {
+		if !strings.Contains(failedTerminalTimestamp.SQL, expected) {
+			t.Fatalf("failed-terminal migration does not contain %q", expected)
+		}
 	}
 }

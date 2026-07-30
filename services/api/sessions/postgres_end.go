@@ -393,9 +393,9 @@ func (r *PostgresRepository) TransitionToFailed(
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE voice_sessions
-		SET status = 'failed', failure_error_code = $1, ended_at = NULL
-		WHERE id = $2 AND account_id = $3`,
-		params.ErrorCode, params.SessionID, ownerAccountID); err != nil {
+		SET status = 'failed', failure_error_code = $1, ended_at = $2
+		WHERE id = $3 AND account_id = $4`,
+		params.ErrorCode, params.FailedAt.UTC(), params.SessionID, ownerAccountID); err != nil {
 		return VoiceSession{}, postgresError("fail session", err)
 	}
 	session, err = getSessionByOwner(

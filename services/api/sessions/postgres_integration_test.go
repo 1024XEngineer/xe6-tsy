@@ -433,7 +433,8 @@ func TestPostgresRepositoryStartCompensationAndTransitions(t *testing.T) {
 		SessionID: "vs_start", AccountID: "acct_start", Expected: sessions.StatusActive,
 		FailedAt: startedAt.Add(time.Second), ErrorCode: "runtime_failed",
 	})
-	if err != nil || failed.Status != sessions.StatusFailed || failed.EndedAt != nil {
+	if err != nil || failed.Status != sessions.StatusFailed ||
+		failed.EndedAt == nil || !failed.EndedAt.Equal(startedAt.Add(time.Second)) {
 		t.Fatalf("TransitionToFailed() = %#v, %v", failed, err)
 	}
 }

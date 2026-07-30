@@ -126,6 +126,7 @@ func newRuntimeServeFixture(t *testing.T) *configuredRuntime {
 			Provider:     delivery.UnconfiguredProvider{},
 		}),
 		sessionHandler:  sessions.NewHandler(nil, nil),
+		sessionRecovery: stubFinalTurnWorker{},
 		recordsHandler:  recordswebapi.NewNotImplementedHandler(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		finalTurnWorker: stubFinalTurnWorker{},
 	}
@@ -146,6 +147,7 @@ func newRuntimeBlockingServeFixture(t *testing.T) *configuredRuntime {
 			Provider:     delivery.UnconfiguredProvider{},
 		}),
 		sessionHandler:  sessions.NewHandler(nil, nil),
+		sessionRecovery: stubFinalTurnWorker{},
 		recordsHandler:  recordswebapi.NewNotImplementedHandler(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		finalTurnWorker: stubFinalTurnWorker{},
 	}
@@ -154,13 +156,16 @@ func newRuntimeBlockingServeFixture(t *testing.T) *configuredRuntime {
 func testRuntimeConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{
-		APIAddr:        "127.0.0.1:0",
-		DatabaseURL:    "",
-		RedisURL:       "redis://127.0.0.1:6379/0",
-		JWTSecret:      strings.Repeat("x", 32),
-		JWTIssuer:      "lingow-api",
-		JWTAudience:    "lingow-client",
-		DestinationKey: base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
+		APIAddr:              "127.0.0.1:0",
+		DatabaseURL:          "",
+		RedisURL:             "redis://127.0.0.1:6379/0",
+		JWTSecret:            strings.Repeat("x", 32),
+		JWTIssuer:            "lingow-api",
+		JWTAudience:          "lingow-client",
+		RealtimeBaseURL:      "http://127.0.0.1:8090",
+		RealtimeTicketSecret: strings.Repeat("r", 32),
+		RealtimeHTTPTimeout:  5 * time.Second,
+		DestinationKey:       base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
 	}
 }
 
@@ -317,6 +322,42 @@ func TestConfiguredRuntimeServeRejectsIncompleteRuntime(t *testing.T) {
 				t.Fatal("Serve() succeeded for incomplete runtime")
 			}
 		})
+	}
+}
+
+func TestConfiguredRuntimeServeAllowsDisabledSessionRuntimeWithoutRecovery(t *testing.T) {
+	runtime := newRuntimeServeFixture(t)
+	runtime.sessionRuntimeEnabled = false
+	runtime.sessionRecovery = nil
+
+	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	if err == nil || !errors.Is(err, delivery.ErrWorkerNotConfigured) {
+		t.Fatalf("Serve() error = %v, want delivery ErrWorkerNotConfigured after passing session recovery completeness", err)
+	}
+}
+
+func TestConfiguredRuntimeServeRejectsEnabledSessionRuntimeWithoutRecovery(t *testing.T) {
+	runtime := newRuntimeServeFixture(t)
+	runtime.sessionRuntimeEnabled = true
+	runtime.sessionRecovery = nil
+
+	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	if err == nil {
+		t.Fatal("Serve() succeeded with enabled session runtime and nil recovery worker")
+	}
+	if errors.Is(err, delivery.ErrWorkerNotConfigured) {
+		t.Fatalf("Serve() error = %v, want incomplete runtime before delivery worker starts", err)
+	}
+}
+
+func TestConfiguredRuntimeServeSupervisesSessionRecoveryWorker(t *testing.T) {
+	runtime := newRuntimeBlockingServeFixture(t)
+	runtime.sessionRuntimeEnabled = true
+	runtime.sessionRecovery = failFastFinalTurnWorker{err: sessions.ErrInvalidDependency}
+
+	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	if err == nil || !errors.Is(err, sessions.ErrInvalidDependency) {
+		t.Fatalf("Serve() error = %v, want session recovery failure", err)
 	}
 }
 

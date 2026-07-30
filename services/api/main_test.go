@@ -174,6 +174,43 @@ func TestBuildMuxMountsVoiceSessionRoutes(t *testing.T) {
 	}
 }
 
+func TestBuildMuxSessionRoutesFailClosedWhenRuntimeDisabled(t *testing.T) {
+	handler := buildMux(
+		languages.NewHandler(nil, nil),
+		newSessionHandler(nil),
+		newRecordsTestHandler(),
+		accounts.NewUseCases(),
+		mainTokenVerifier{},
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions", strings.NewReader(
+		`{"capabilities":{"webrtc":true,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
+	))
+	request.Header.Set("Authorization", "Bearer account-token")
+	request.Header.Set("Idempotency-Key", "create-disabled")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusNotImplemented, response.Body.String())
+	}
+}
+
+func TestAPIServerTimeoutBudgetConstants(t *testing.T) {
+	if apiReadHeaderTimeout != 5*time.Second ||
+		apiReadTimeout != 15*time.Second ||
+		apiWriteTimeout != 45*time.Second ||
+		apiIdleTimeout != 60*time.Second {
+		t.Fatalf("API timeout budget = (%v, %v, %v, %v), want (5s, 15s, 45s, 60s)",
+			apiReadHeaderTimeout,
+			apiReadTimeout,
+			apiWriteTimeout,
+			apiIdleTimeout,
+		)
+	}
+}
+
 func TestNewRecordsHTTPDependenciesFromPoolRequiresPool(t *testing.T) {
 	_, err := newRecordsHTTPDependenciesFromPool(
 		context.Background(),
@@ -214,9 +251,11 @@ func TestNewRecordsHTTPDependenciesRequiresConfiguration(t *testing.T) {
 func TestRunValidatesRecordsConfigurationBeforeDatabaseSetup(t *testing.T) {
 	t.Setenv("DATABASE_URL", "://invalid")
 	t.Setenv("JWT_SECRET", strings.Repeat("s", 31))
+	t.Setenv("REALTIME_BASE_URL", "http://127.0.0.1:8090")
+	t.Setenv("REALTIME_TICKET_SECRET", strings.Repeat("r", 32))
 
 	err := run()
-	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET must be at least 32 bytes") {
+	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET must contain at least 32 bytes") {
 		t.Fatalf("run() error = %v, want JWT_SECRET length error", err)
 	}
 }

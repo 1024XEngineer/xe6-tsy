@@ -30,19 +30,21 @@ const (
 )
 
 type configuredRuntime struct {
-	pool            *pgxpool.Pool
-	redis           *redis.Client
-	dispatcher      *delivery.OutboxDispatcher
-	worker          *delivery.Worker
-	usageConsumer   *usage.Consumer
-	accountService  accounts.Service
-	usageService    usage.Service
-	deliveryService delivery.Service
-	tokenVerifier   accounts.AccessTokenVerifier
-	sessionHandler  *sessions.Handler
-	recordsHandler  *recordswebapi.Server
-	finalTurnWorker finalTurnWorker
-	authMaintainer  backgroundWorker
+	pool                  *pgxpool.Pool
+	redis                 *redis.Client
+	dispatcher            *delivery.OutboxDispatcher
+	worker                *delivery.Worker
+	usageConsumer         *usage.Consumer
+	accountService        accounts.Service
+	usageService          usage.Service
+	deliveryService       delivery.Service
+	tokenVerifier         accounts.AccessTokenVerifier
+	sessionRuntimeEnabled bool
+	sessionHandler        *sessions.Handler
+	sessionRecovery       backgroundWorker
+	recordsHandler        *recordswebapi.Server
+	finalTurnWorker       finalTurnWorker
+	authMaintainer        backgroundWorker
 }
 
 func runConfigured(config config.Config) error {
@@ -84,7 +86,12 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	if err := recordstore.Migrate(startupCtx, pool); err != nil {
 		return nil, nil, err
 	}
-	languageHandler, languageService, err := newLanguageHandlerWithPool(startupCtx, pool)
+	sessionRepository := sessions.NewPostgresRepository(pool)
+	languageDependencies, err := newLanguageDependenciesWithPool(
+		startupCtx,
+		pool,
+		sessionOwnerReader{reader: sessionRepository},
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -100,6 +107,33 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		return nil, nil, fmt.Errorf("initialize configured records HTTP: %w", err)
 	}
 	records.pool = pool
+
+	sessionHandler := newSessionHandler(nil)
+	var sessionRecovery backgroundWorker
+	if processConfig.SessionRuntimeEnabled {
+		sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
+			Repository:     sessionRepository,
+			SessionReader:  sessionRepository,
+			LanguageReader: languageDependencies.service,
+			HTTPClient: &http.Client{
+				Timeout: realtimeHTTPTimeout(processConfig),
+			},
+			IDs:    newSessionIDGenerator(),
+			Clock:  utcClock{},
+			Config: processConfig,
+			Logger: slog.Default(),
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("initialize configured session HTTP: %w", err)
+		}
+		sessionHandler = sessionDependencies.handler
+		sessionRecovery = sessionDependencies.endRecovery
+	} else {
+		slog.Warn(
+			"voice session runtime disabled",
+			"configuration", "LINGOW_SESSION_RUNTIME",
+		)
+	}
 
 	redisOptions, err := redis.ParseURL(processConfig.RedisURL)
 	if err != nil {
@@ -168,11 +202,6 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		redisClient.Close()
 		return nil, nil, err
 	}
-	sessionHandler, err := newSessionHandlerFromPool(pool, languageService, processConfig.JWTSecret)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, fmt.Errorf("initialize session handler: %w", err)
-	}
 	runtime := &configuredRuntime{
 		pool:       pool,
 		redis:      redisClient,
@@ -182,18 +211,20 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 			Destinations: destinationReader,
 			Provider:     provider,
 		}),
-		usageConsumer:   usageConsumer,
-		accountService:  records.accounts,
-		usageService:    usageService,
-		deliveryService: deliveryService,
-		tokenVerifier:   records.tokens,
-		sessionHandler:  sessionHandler,
-		recordsHandler:  records.handler,
-		finalTurnWorker: records.worker,
-		authMaintainer:  records.maintainer,
+		usageConsumer:         usageConsumer,
+		accountService:        records.accounts,
+		usageService:          usageService,
+		deliveryService:       deliveryService,
+		tokenVerifier:         records.tokens,
+		sessionRuntimeEnabled: processConfig.SessionRuntimeEnabled,
+		sessionHandler:        sessionHandler,
+		sessionRecovery:       sessionRecovery,
+		recordsHandler:        records.handler,
+		finalTurnWorker:       records.worker,
+		authMaintainer:        records.maintainer,
 	}
 	closeOnError = false
-	return runtime, languageHandler, nil
+	return runtime, languageDependencies.handler, nil
 }
 
 func configuredProvider(processConfig config.Config, smtpMailer *delivery.SMTPMailer, wecomClient *delivery.WeComClient) (delivery.Provider, error) {
@@ -268,7 +299,11 @@ func newEmailBindSender(processConfig config.Config, smtpMailer *delivery.SMTPMa
 
 func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	if r == nil || r.pool == nil || r.redis == nil || r.dispatcher == nil || r.worker == nil ||
-		r.sessionHandler == nil || r.recordsHandler == nil || r.finalTurnWorker == nil || handler == nil {
+		r.sessionHandler == nil || r.recordsHandler == nil || r.finalTurnWorker == nil ||
+		handler == nil {
+		return errors.New("configured runtime is incomplete")
+	}
+	if r.sessionRuntimeEnabled && r.sessionRecovery == nil {
 		return errors.New("configured runtime is incomplete")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -279,12 +314,12 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	server := &http.Server{
 		Addr:              address,
 		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: apiReadHeaderTimeout,
+		ReadTimeout:       apiReadTimeout,
+		WriteTimeout:      apiWriteTimeout,
+		IdleTimeout:       apiIdleTimeout,
 	}
-	errs := make(chan error, 6)
+	errs := make(chan error, 8)
 	var components sync.WaitGroup
 	components.Add(2)
 	go runDeliveryComponent(componentCtx, "outbox dispatcher", r.dispatcher.Run, errs, &components)
@@ -299,6 +334,10 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	}
 	components.Add(1)
 	go runFailFastBackgroundWorker(componentCtx, "final turn worker", r.finalTurnWorker.Run, errs, &components)
+	if r.sessionRecovery != nil {
+		components.Add(1)
+		go runFailFastBackgroundWorker(componentCtx, "session end recovery worker", r.sessionRecovery.Run, errs, &components)
+	}
 	go func() {
 		slog.Info("Lingow API listening", "address", address, "delivery_runtime", "enabled")
 		err := server.ListenAndServe()

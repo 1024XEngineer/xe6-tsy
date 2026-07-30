@@ -176,7 +176,7 @@ func TestNewConfiguredRuntimeRejectsMissingDatabaseURL(t *testing.T) {
 }
 
 func TestConfiguredProviderDefaultsToFailClosed(t *testing.T) {
-	provider, err := configuredProvider("unconfigured")
+	provider, err := configuredProvider(config.Config{DeliveryProvider: "unconfigured"}, nil)
 	if err != nil {
 		t.Fatalf("configuredProvider() error = %v", err)
 	}
@@ -190,7 +190,7 @@ func TestConfiguredProviderDefaultsToFailClosed(t *testing.T) {
 }
 
 func TestConfiguredProviderAcceptsFakeEmail(t *testing.T) {
-	provider, err := configuredProvider("fake_email")
+	provider, err := configuredProvider(config.Config{DeliveryProvider: "fake_email"}, nil)
 	if err != nil {
 		t.Fatalf("configuredProvider() error = %v", err)
 	}
@@ -199,9 +199,64 @@ func TestConfiguredProviderAcceptsFakeEmail(t *testing.T) {
 	}
 }
 
+func TestConfiguredProviderRequiresSMTPMailer(t *testing.T) {
+	if _, err := configuredProvider(config.Config{DeliveryProvider: "smtp"}, nil); err == nil {
+		t.Fatal("configuredProvider() succeeded without smtp mailer")
+	}
+	mailer, err := delivery.NewSMTPMailer(delivery.SMTPConfig{Host: "smtp.example.test", From: "noreply@example.test"})
+	if err != nil {
+		t.Fatalf("NewSMTPMailer() error = %v", err)
+	}
+	if _, err := configuredProvider(config.Config{DeliveryProvider: "smtp"}, mailer); err != nil {
+		t.Fatalf("configuredProvider() error = %v", err)
+	}
+}
+
 func TestConfiguredProviderRejectsUnknownName(t *testing.T) {
-	if _, err := configuredProvider("smtp"); err == nil {
+	if _, err := configuredProvider(config.Config{DeliveryProvider: "sms"}, nil); err == nil {
 		t.Fatal("configuredProvider() succeeded for unknown provider")
+	}
+}
+
+func TestNewConfiguredSMTPMailerReturnsNilWithoutHost(t *testing.T) {
+	mailer, err := newConfiguredSMTPMailer(config.Config{})
+	if err != nil || mailer != nil {
+		t.Fatalf("newConfiguredSMTPMailer() = (%v, %v), want (nil, nil)", mailer, err)
+	}
+}
+
+func TestNewConfiguredSMTPMailerBuildsMailerFromConfig(t *testing.T) {
+	mailer, err := newConfiguredSMTPMailer(config.Config{
+		SMTPHost: "smtp.example.test",
+		SMTPPort: "2525",
+		SMTPFrom: "noreply@example.test",
+	})
+	if err != nil || mailer == nil {
+		t.Fatalf("newConfiguredSMTPMailer() = (%v, %v)", mailer, err)
+	}
+}
+
+func TestNewEmailBindSenderPrefersSMTPOverLogSender(t *testing.T) {
+	mailer, err := delivery.NewSMTPMailer(delivery.SMTPConfig{Host: "smtp.example.test", From: "noreply@example.test"})
+	if err != nil {
+		t.Fatalf("NewSMTPMailer() error = %v", err)
+	}
+	sender := newEmailBindSender(config.Config{AppEnv: "local"}, mailer)
+	if _, ok := sender.(*delivery.SMTPEmailBindSender); !ok {
+		t.Fatalf("sender = %T, want *SMTPEmailBindSender", sender)
+	}
+}
+
+func TestNewEmailBindSenderUsesLogSenderInLocalWithoutSMTP(t *testing.T) {
+	sender := newEmailBindSender(config.Config{AppEnv: "local"}, nil)
+	if _, ok := sender.(delivery.LogEmailBindSender); !ok {
+		t.Fatalf("sender = %T, want LogEmailBindSender", sender)
+	}
+}
+
+func TestNewEmailBindSenderReturnsNilOutsideLocalWithoutSMTP(t *testing.T) {
+	if sender := newEmailBindSender(config.Config{AppEnv: "production"}, nil); sender != nil {
+		t.Fatalf("sender = %T, want nil", sender)
 	}
 }
 

@@ -46,6 +46,7 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	mux.Handle("GET /api/v1/account/message-preferences", a.authenticate(http.HandlerFunc(a.preferences)))
 	mux.Handle("PUT /api/v1/account/message-preferences/{channel}", a.authenticate(http.HandlerFunc(a.putPreference)))
 	mux.Handle("GET /api/v1/account/message-targets", a.authenticate(http.HandlerFunc(a.listMessageTargets)))
+	mux.Handle("POST /api/v1/account/message-targets/email/verification-codes", a.authenticate(http.HandlerFunc(a.requestEmailBindVerification)))
 	mux.Handle("POST /api/v1/account/message-targets/email/bind", a.authenticate(http.HandlerFunc(a.bindEmailTarget)))
 	mux.Handle("DELETE /api/v1/account/message-targets/email/{destination_ref}", a.authenticate(http.HandlerFunc(a.unbindEmailTarget)))
 	mux.Handle("POST /api/v1/account/message-targets/wechat/bind", a.authenticate(http.HandlerFunc(a.bindWeChatTarget)))
@@ -423,6 +424,27 @@ func (a *API) listMessageTargets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": result})
+}
+
+func (a *API) requestEmailBindVerification(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var request struct {
+		Email          string `json:"email"`
+		DestinationRef string `json:"destination_ref"`
+	}
+	if decodeJSON(r, &request) != nil || strings.TrimSpace(request.Email) == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	if err := a.delivery.RequestEmailBindVerification(r.Context(), id, request.Email, request.DestinationRef); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (a *API) bindEmailTarget(w http.ResponseWriter, r *http.Request) {

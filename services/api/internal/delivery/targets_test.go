@@ -83,6 +83,7 @@ type targetRepositoryStub struct {
 	listAccountID string
 	listChannel   *Channel
 	bindRecord    BindEmailTargetRecord
+	bindErr       error
 	revokeAccount string
 	revokeChannel Channel
 	revokeRef     string
@@ -128,6 +129,9 @@ func (s *targetRepositoryStub) ListMessageTargets(_ context.Context, accountID s
 }
 
 func (s *targetRepositoryStub) BindEmailTarget(_ context.Context, record BindEmailTargetRecord) (MessageTarget, error) {
+	if s.bindErr != nil {
+		return MessageTarget{}, s.bindErr
+	}
 	s.bindRecord = record
 	return MessageTarget{
 		DestinationRef: record.DestinationRef,
@@ -222,6 +226,7 @@ func TestParseDevEmailBindTokenRejectsInvalidPayload(t *testing.T) {
 		{name: "empty token", token: "", want: domain.ErrInvalidArgument},
 		{name: "missing email", token: "dev:", want: domain.ErrInvalidArgument},
 		{name: "invalid email", token: "dev:not-an-email", want: domain.ErrInvalidArgument},
+		{name: "header injection", token: "dev:user@example.test\r\nBcc attacker@evil.test", want: domain.ErrInvalidArgument},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

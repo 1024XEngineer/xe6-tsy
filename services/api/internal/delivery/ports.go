@@ -137,6 +137,8 @@ type Service interface {
 	ListMessageTargets(context.Context, string, *Channel) ([]MessageTarget, error)
 	// BindEmailTarget verifies and stores one email destination for the account.
 	BindEmailTarget(context.Context, string, string) (MessageTarget, error)
+	// RequestEmailBindVerification sends a one-time bind token to the supplied inbox.
+	RequestEmailBindVerification(context.Context, string, string, string) error
 	// BindWeChatTarget remains unimplemented until a WeCom adapter exists.
 	BindWeChatTarget(context.Context, string, string) (MessageTarget, error)
 	// RevokeMessageTarget marks one verified destination as revoked.

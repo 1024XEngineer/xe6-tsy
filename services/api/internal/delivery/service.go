@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -11,15 +12,17 @@ import (
 )
 
 type UseCases struct {
-	repository     Repository
-	turns          TurnReader
-	destinations   DestinationReader
-	queue          Queue
-	keys           sync.Mutex
-	createKeys     map[string]string
-	retryKeys      map[string]string
-	destinationKey []byte
-	appEnv         string
+	repository          Repository
+	turns               TurnReader
+	destinations        DestinationReader
+	queue               Queue
+	keys                sync.Mutex
+	createKeys          map[string]string
+	retryKeys           map[string]string
+	destinationKey      []byte
+	appEnv              string
+	emailBindChallenges EmailBindChallengeRepository
+	emailBindSender     EmailBindSender
 }
 
 func NewUseCases() *UseCases { return &UseCases{} }
@@ -35,6 +38,12 @@ func (u *UseCases) ConfigureTargetBinding(destinationKey []byte, appEnv string) 
 		u.destinationKey = append([]byte(nil), destinationKey...)
 	}
 	u.appEnv = appEnv
+}
+
+// ConfigureEmailVerification wires durable bind challenges and outbound token delivery.
+func (u *UseCases) ConfigureEmailVerification(challenges EmailBindChallengeRepository, sender EmailBindSender) {
+	u.emailBindChallenges = challenges
+	u.emailBindSender = sender
 }
 
 func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, error) {
@@ -216,28 +225,67 @@ func (u *UseCases) ListMessageTargets(ctx context.Context, accountID string, cha
 	return repository.ListMessageTargets(ctx, accountID, channel)
 }
 
-func (u *UseCases) BindEmailTarget(ctx context.Context, accountID, token string) (MessageTarget, error) {
+func (u *UseCases) RequestEmailBindVerification(ctx context.Context, accountID, email, destinationRef string) error {
+	if u.emailBindChallenges == nil || u.emailBindSender == nil || accountID == "" || len(u.destinationKey) != 32 {
+		return domain.ErrNotImplemented
+	}
+	normalizedEmail, err := normalizeBindEmail(email)
+	if err != nil {
+		return err
+	}
+	destinationRef = normalizeBindDestinationRef(destinationRef)
+	token, err := generateEmailBindToken()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	challenge := newEmailBindChallenge(accountID, destinationRef, normalizedEmail, hashEmailBindToken(token), now)
+	if err := u.emailBindChallenges.CreateEmailBindChallenge(ctx, challenge); err != nil {
+		return err
+	}
+	return u.emailBindSender.SendBindToken(ctx, normalizedEmail, destinationRef, token)
+}
+
+func (u *UseCases) BindEmailTarget(ctx context.Context, accountID, token string) (target MessageTarget, err error) {
 	repository := targetRepository(u.repository)
 	if repository == nil || accountID == "" || len(u.destinationKey) != 32 {
 		return MessageTarget{}, domain.ErrNotImplemented
 	}
-	destinationRef, email, err := parseDevEmailBindToken(u.appEnv, token)
+	resolved, err := resolveEmailBindToken(ctx, u.appEnv, token, accountID, u.emailBindChallenges)
 	if err != nil {
 		return MessageTarget{}, err
 	}
-	ciphertext, err := EncryptProviderTarget(u.destinationKey, email)
+	completed := false
+	if resolved.ChallengeID != "" {
+		defer func() {
+			if completed {
+				return
+			}
+			restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), emailBindChallengeRestoreTimeout)
+			defer cancel()
+			if restoreErr := u.emailBindChallenges.RestoreEmailBindChallenge(restoreCtx, resolved.ChallengeID); restoreErr != nil {
+				err = fmt.Errorf("bind email target: %w", errors.Join(err, fmt.Errorf("restore consumed challenge: %w", restoreErr)))
+			}
+		}()
+	}
+	ciphertext, err := EncryptProviderTarget(u.destinationKey, resolved.Email)
 	if err != nil {
 		return MessageTarget{}, err
 	}
 	now := time.Now().UTC()
-	return repository.BindEmailTarget(ctx, BindEmailTargetRecord{
+	target, err = repository.BindEmailTarget(ctx, BindEmailTargetRecord{
 		ID:             "dest_" + ulid.Make().String(),
 		AccountID:      accountID,
-		DestinationRef: destinationRef,
+		DestinationRef: resolved.DestinationRef,
 		Ciphertext:     ciphertext,
 		KeyVersion:     destinationKeyVersion,
 		VerifiedAt:     now,
 	})
+	if err != nil {
+		return MessageTarget{}, err
+	}
+	completed = true
+	return target, nil
 }
 
 func (u *UseCases) BindWeChatTarget(context.Context, string, string) (MessageTarget, error) {

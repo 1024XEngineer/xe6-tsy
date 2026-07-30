@@ -273,6 +273,34 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 	if created.ID == "" || created.AccountID != account.Account.ID || created.Status != sessions.StatusCreated {
 		t.Fatalf("created session = %#v", created)
 	}
+	createReplay := serveAPIRequest(t, mux, http.MethodPost, "/api/v1/voice-sessions", account.Tokens.AccessToken, "create-session", strings.NewReader(
+		`{"capabilities":{"webrtc":true,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
+	))
+	if createReplay.Code != http.StatusCreated {
+		t.Fatalf("create replay status = %d, body = %s", createReplay.Code, createReplay.Body.String())
+	}
+	var replayedCreate sessions.VoiceSession
+	if err := json.Unmarshal(createReplay.Body.Bytes(), &replayedCreate); err != nil {
+		t.Fatalf("decode create replay: %v", err)
+	}
+	if replayedCreate.ID != created.ID {
+		t.Fatalf("create replay session ID = %q, want %q", replayedCreate.ID, created.ID)
+	}
+	createConflict := serveAPIRequest(t, mux, http.MethodPost, "/api/v1/voice-sessions", account.Tokens.AccessToken, "create-session", strings.NewReader(
+		`{"capabilities":{"webrtc":false,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
+	))
+	assertSessionError(t, createConflict, http.StatusConflict, sessions.CodeIdempotencyKeyConflict)
+
+	missingLanguageStart := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/start",
+		account.Tokens.AccessToken,
+		"start-before-language",
+		http.NoBody,
+	)
+	assertSessionError(t, missingLanguageStart, http.StatusConflict, sessions.CodeLanguageConfigNotReady)
 
 	languageConfig := serveAPIRequest(
 		t,
@@ -286,6 +314,18 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 	if languageConfig.Code != http.StatusCreated {
 		t.Fatalf("language config status = %d, body = %s", languageConfig.Code, languageConfig.Body.String())
 	}
+	realtime.connectionState.Store(realtimev1.ConnectionConnecting)
+	webRTCNotReadyStart := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/start",
+		account.Tokens.AccessToken,
+		"start-before-webrtc",
+		http.NoBody,
+	)
+	assertSessionError(t, webRTCNotReadyStart, http.StatusConflict, sessions.CodeWebRTCNotReady)
+	realtime.connectionState.Store(realtimev1.ConnectionConnected)
 
 	start := serveAPIRequest(
 		t,
@@ -305,6 +345,21 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 	}
 	if started.Status != sessions.StatusActive || realtime.startCalls.Load() != 1 {
 		t.Fatalf("started session = %#v, realtime start calls = %d", started, realtime.startCalls.Load())
+	}
+	startReplay := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/start",
+		account.Tokens.AccessToken,
+		"start-session",
+		http.NoBody,
+	)
+	if startReplay.Code != http.StatusOK {
+		t.Fatalf("start replay status = %d, body = %s", startReplay.Code, startReplay.Body.String())
+	}
+	if realtime.startCalls.Load() != 1 {
+		t.Fatalf("start replay called realtime again: %d", realtime.startCalls.Load())
 	}
 
 	detail := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID, account.Tokens.AccessToken, "", http.NoBody)
@@ -343,6 +398,31 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 	if ended.Status != sessions.StatusEnded || realtime.stopCalls.Load() != 1 {
 		t.Fatalf("ended session = %#v, realtime stop calls = %d", ended, realtime.stopCalls.Load())
 	}
+	endReplay := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/end",
+		account.Tokens.AccessToken,
+		"end-session",
+		http.NoBody,
+	)
+	if endReplay.Code != http.StatusOK {
+		t.Fatalf("end replay status = %d, body = %s", endReplay.Code, endReplay.Body.String())
+	}
+	if realtime.stopCalls.Load() != 1 {
+		t.Fatalf("end replay called realtime again: %d", realtime.stopCalls.Load())
+	}
+	endConflict := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/end",
+		account.Tokens.AccessToken,
+		"end-session",
+		strings.NewReader(`{"reason":"operator_cancelled"}`),
+	)
+	assertSessionError(t, endConflict, http.StatusConflict, sessions.CodeIdempotencyKeyConflict)
 }
 
 func serveAPIRequest(
@@ -365,12 +445,31 @@ func serveAPIRequest(
 	return response
 }
 
+func assertSessionError(t *testing.T, response *httptest.ResponseRecorder, status int, code sessions.ErrorCode) {
+	t.Helper()
+	if response.Code != status {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, status, response.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if body.Error.Code != string(code) {
+		t.Fatalf("error code = %q, want %q", body.Error.Code, code)
+	}
+}
+
 type sessionRuntimeControlPlane struct {
-	server       *httptest.Server
-	startCalls   atomic.Int32
-	stopCalls    atomic.Int32
-	runtimeCalls atomic.Int32
-	operationID  atomic.Value
+	server          *httptest.Server
+	startCalls      atomic.Int32
+	stopCalls       atomic.Int32
+	runtimeCalls    atomic.Int32
+	operationID     atomic.Value
+	connectionState atomic.Value
 }
 
 func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRuntimeControlPlane {
@@ -388,6 +487,7 @@ func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRu
 	}
 	realtime := &sessionRuntimeControlPlane{}
 	realtime.operationID.Store("")
+	realtime.connectionState.Store(realtimev1.ConnectionConnected)
 	handler, err := controlplane.New(controlplane.Dependencies{
 		Lifecycle:   realtime,
 		Signaling:   sessionRuntimeSignaling{},
@@ -440,10 +540,14 @@ func (p *sessionRuntimeControlPlane) GetRuntimeState(_ context.Context, sessionI
 }
 
 func (p *sessionRuntimeControlPlane) GetCurrent(_ context.Context, sessionID string) (realtimev1.ConnectionSnapshot, error) {
+	state, _ := p.connectionState.Load().(realtimev1.ConnectionState)
+	if state == "" {
+		state = realtimev1.ConnectionConnected
+	}
 	return realtimev1.ConnectionSnapshot{
 		SessionID:    sessionID,
 		ConnectionID: "conn_" + sessionID,
-		State:        realtimev1.ConnectionConnected,
+		State:        state,
 		Version:      1,
 		UpdatedAt:    time.Now().UTC(),
 	}, nil

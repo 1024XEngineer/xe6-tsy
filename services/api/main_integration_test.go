@@ -252,6 +252,10 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create anonymous account: %v", err)
 	}
+	other, err := records.accounts.CreateAnonymous(t.Context())
+	if err != nil {
+		t.Fatalf("create unrelated account: %v", err)
+	}
 	mux := buildMux(
 		languageDependencies.handler,
 		sessionDependencies.handler,
@@ -361,17 +365,43 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 	if realtime.startCalls.Load() != 1 {
 		t.Fatalf("start replay called realtime again: %d", realtime.startCalls.Load())
 	}
+	accountRepository := accounts.NewPostgresRepository(pool)
+	registered, err := accountRepository.FindOrCreateByPhoneHashes(
+		t.Context(),
+		"phone_hash_v2_session_runtime_merge",
+		"phone_hash_legacy_session_runtime_merge",
+	)
+	if err != nil {
+		t.Fatalf("create registered account: %v", err)
+	}
+	claims, err := records.tokens.VerifyAccessToken(t.Context(), account.Tokens.AccessToken)
+	if err != nil {
+		t.Fatalf("verify anonymous token before binding: %v", err)
+	}
+	if _, err := accountRepository.BindAnonymous(t.Context(), account.Account.ID, registered.ID); err != nil {
+		t.Fatalf("bind anonymous account: %v", err)
+	}
+	issuer, ok := records.tokens.(accounts.TokenIssuer)
+	if !ok {
+		t.Fatal("production token verifier does not implement TokenIssuer")
+	}
+	registeredTokens, err := issuer.Issue(t.Context(), registered, accounts.Session{ID: claims.SessionID})
+	if err != nil {
+		t.Fatalf("issue registered token: %v", err)
+	}
+	foreignDetail := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID, other.Tokens.AccessToken, "", http.NoBody)
+	assertSessionError(t, foreignDetail, http.StatusNotFound, sessions.CodeVoiceSessionNotFound)
 
-	detail := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID, account.Tokens.AccessToken, "", http.NoBody)
+	detail := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID, registeredTokens.AccessToken, "", http.NoBody)
 	if detail.Code != http.StatusOK {
 		t.Fatalf("detail status = %d, body = %s", detail.Code, detail.Body.String())
 	}
-	state := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID+"/state", account.Tokens.AccessToken, "", http.NoBody)
+	state := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID+"/state", registeredTokens.AccessToken, "", http.NoBody)
 	if state.Code != http.StatusOK {
 		t.Fatalf("state status = %d, body = %s", state.Code, state.Body.String())
 	}
 	runtimeReads := realtime.runtimeCalls.Load()
-	list := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions", account.Tokens.AccessToken, "", http.NoBody)
+	list := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions", registeredTokens.AccessToken, "", http.NoBody)
 	if list.Code != http.StatusOK {
 		t.Fatalf("list status = %d, body = %s", list.Code, list.Body.String())
 	}
@@ -384,7 +414,7 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 		mux,
 		http.MethodPost,
 		"/api/v1/voice-sessions/"+created.ID+"/end",
-		account.Tokens.AccessToken,
+		registeredTokens.AccessToken,
 		"end-session",
 		http.NoBody,
 	)
@@ -403,7 +433,7 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 		mux,
 		http.MethodPost,
 		"/api/v1/voice-sessions/"+created.ID+"/end",
-		account.Tokens.AccessToken,
+		registeredTokens.AccessToken,
 		"end-session",
 		http.NoBody,
 	)
@@ -418,7 +448,7 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 		mux,
 		http.MethodPost,
 		"/api/v1/voice-sessions/"+created.ID+"/end",
-		account.Tokens.AccessToken,
+		registeredTokens.AccessToken,
 		"end-session",
 		strings.NewReader(`{"reason":"operator_cancelled"}`),
 	)

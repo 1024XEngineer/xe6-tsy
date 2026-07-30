@@ -265,7 +265,9 @@ The package exposes the worker lifecycle and deterministic one-step processing
 entrypoint. The API process wires `sessions.NewService` with
 `realtimeaccess.NewLanguageConfigReader(languages.Service)` for start readiness.
 Realtime WebRTC/lifecycle adapters are enabled when `REALTIME_BASE_URL` is set;
-otherwise Start/End remain `not_implemented` while Create/List/Get stay available.
+otherwise Start remains `not_implemented`. End of a `created` session does not
+call realtime and still succeeds; End of an `active` session remains
+`not_implemented` until Stop is wired. Create/List/Get stay available.
 
 ## Query flows
 

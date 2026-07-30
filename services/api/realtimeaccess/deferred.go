@@ -7,9 +7,12 @@ import (
 )
 
 // DeferredRealtime keeps sessions Create/List/Get usable when the realtime
-// control-plane URL is not configured. Start and End stay fail-closed with
-// ErrNotImplemented. Missing runtime snapshots synthesize stopped for
-// created/ended/failed business states.
+// control-plane URL is not configured. Start and Stop stay fail-closed with
+// ErrNotImplemented. sessions.Service.End only calls Stop for active sessions,
+// so ending a still-created session succeeds without realtime; ending an
+// active session surfaces ErrNotImplemented until the control-plane client is
+// wired. Missing runtime snapshots synthesize stopped for created/ended/failed
+// business states.
 type DeferredRealtime struct{}
 
 func (DeferredRealtime) Start(context.Context, sessions.StartRealtimeCommand) (sessions.RuntimeSnapshot, error) {

@@ -20,7 +20,10 @@ import (
 
 // newSessionHandlerFromPool builds the voice-session HTTP boundary with a real
 // languages.Service for start readiness. When REALTIME_BASE_URL is unset,
-// WebRTC/runtime Start/End stay deferred (501) while Create/List/Get work.
+// Start stays deferred (501) because WebRTC readiness and Realtime.Start are
+// unavailable. End of a still-created session succeeds without calling Stop;
+// End of an active session stays deferred until realtime cleanup is wired.
+// Create/List/Get remain available.
 func newSessionHandlerFromPool(
 	pool *pgxpool.Pool,
 	languageService *languages.Service,
@@ -61,7 +64,7 @@ func realtimeSessionAdapters(
 ) (sessions.WebRTCConnectionReader, sessions.RealtimeLifecycle, error) {
 	baseURL := strings.TrimSpace(os.Getenv("REALTIME_BASE_URL"))
 	if baseURL == "" {
-		slog.Info("REALTIME_BASE_URL unset; session start/end stay not_implemented until realtime is wired")
+		slog.Info("REALTIME_BASE_URL unset; session Start and active End stay not_implemented until realtime is wired")
 		return realtimeaccess.DeferredWebRTCConnection{}, realtimeaccess.DeferredRealtime{}, nil
 	}
 	if strings.TrimSpace(ticketSecret) == "" {

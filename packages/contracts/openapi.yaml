@@ -203,6 +203,24 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RuntimeOperationConflictError' }
+  /realtime/v1/sessions/{session_id}/connection:
+    servers:
+      - url: /
+    get:
+      operationId: getRealtimeConnectionSnapshot
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Current WebRTC connection snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebRTCConnectionSnapshot' }
+        '404':
+          description: No current WebRTC connection exists for the Session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebRTCConnectionError' }
 components:
   securitySchemes:
     accountContext:
@@ -274,6 +292,19 @@ components:
     WebRTCErrorCode:
       type: string
       enum: [webrtc_connection_not_found, webrtc_connection_not_ready, webrtc_connection_failed]
+    WebRTCConnectionError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/WebRTCConnectionErrorBody' }
+    WebRTCConnectionErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/WebRTCErrorCode' }
+        message: { type: string }
     WebRTCConnectionSnapshot:
       type: object
       additionalProperties: false

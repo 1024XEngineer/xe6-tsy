@@ -10,6 +10,7 @@ import (
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 )
 
 func TestClientStartCarriesOperationAndReplays(t *testing.T) {
@@ -45,6 +46,115 @@ func TestClientStartCarriesOperationAndReplays(t *testing.T) {
 		fixture.lifecycle.startCommand.TraceID != request.TraceID ||
 		fixture.lifecycle.startCommand.StartedBy != request.StartedBy {
 		t.Fatalf("provider command = %#v, want complete mapping", fixture.lifecycle.startCommand)
+	}
+}
+
+func TestClientGetConnectionMapsAllStates(t *testing.T) {
+	for _, state := range []realtimev1.ConnectionState{
+		realtimev1.ConnectionNew,
+		realtimev1.ConnectionConnecting,
+		realtimev1.ConnectionConnected,
+		realtimev1.ConnectionDisconnected,
+		realtimev1.ConnectionFailed,
+		realtimev1.ConnectionClosed,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			fixture := newFixture(t)
+			fixture.connections.snapshot.State = state
+			server := httptest.NewServer(fixture.handler)
+			t.Cleanup(server.Close)
+
+			snapshot, err := newTestClient(t, server.URL).GetConnection(
+				t.Context(),
+				"session-1",
+			)
+			if err != nil {
+				t.Fatalf("GetConnection() error = %v", err)
+			}
+			if snapshot.SessionID != "session-1" ||
+				snapshot.ConnectionID != "connection-1" ||
+				snapshot.State != state ||
+				snapshot.UpdatedAt.IsZero() {
+				t.Fatalf("GetConnection() = %#v", snapshot)
+			}
+		})
+	}
+}
+
+func TestClientGetConnectionMapsErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{
+			name: "not found",
+			err:  webrtc.ErrConnectionNotFound,
+			want: ErrConnectionNotFound,
+		},
+		{
+			name: "provider",
+			err:  errors.New("provider unavailable"),
+			want: ErrDependencyUnavailable,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			fixture.connections.err = test.err
+			server := httptest.NewServer(fixture.handler)
+			t.Cleanup(server.Close)
+
+			_, err := newTestClient(t, server.URL).GetConnection(
+				t.Context(),
+				"session-1",
+			)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("GetConnection() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestClientGetConnectionRejectsInvalidSnapshots(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	valid := realtimev1.ConnectionSnapshot{
+		SessionID: "session-1", ConnectionID: "connection-1",
+		State: realtimev1.ConnectionConnected, Version: 1, UpdatedAt: now,
+	}
+	tests := []struct {
+		name string
+		edit func(*realtimev1.ConnectionSnapshot)
+	}{
+		{name: "session mismatch", edit: func(value *realtimev1.ConnectionSnapshot) { value.SessionID = "session-2" }},
+		{name: "empty connection", edit: func(value *realtimev1.ConnectionSnapshot) { value.ConnectionID = "" }},
+		{name: "unknown state", edit: func(value *realtimev1.ConnectionSnapshot) { value.State = "unknown" }},
+		{name: "invalid version", edit: func(value *realtimev1.ConnectionSnapshot) { value.Version = 0 }},
+		{name: "zero timestamp", edit: func(value *realtimev1.ConnectionSnapshot) { value.UpdatedAt = time.Time{} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			fixture.connections.snapshot = valid
+			test.edit(&fixture.connections.snapshot)
+			server := httptest.NewServer(fixture.handler)
+			t.Cleanup(server.Close)
+
+			_, err := newTestClient(t, server.URL).GetConnection(
+				t.Context(),
+				"session-1",
+			)
+			if !errors.Is(err, ErrInvalidResponse) {
+				t.Fatalf("GetConnection() error = %v, want ErrInvalidResponse", err)
+			}
+		})
+	}
+}
+
+func TestClientGetConnectionRejectsEmptySession(t *testing.T) {
+	client := newTestClient(t, "https://realtime.example")
+	if _, err := client.GetConnection(t.Context(), ""); !errors.Is(err, ErrClientRequest) {
+		t.Fatalf("GetConnection() error = %v, want ErrClientRequest", err)
 	}
 }
 
@@ -150,6 +260,9 @@ func TestClientPreservesContextErrors(t *testing.T) {
 				OperationID: "operation-1",
 			}); !errors.Is(err, test.want) {
 				t.Fatalf("Start() error = %v, want %v", err, test.want)
+			}
+			if _, err := client.GetConnection(ctx, "session-1"); !errors.Is(err, test.want) {
+				t.Fatalf("GetConnection() error = %v, want %v", err, test.want)
 			}
 		})
 	}

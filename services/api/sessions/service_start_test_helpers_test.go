@@ -505,6 +505,24 @@ func (*startRepository) GetEndIntent(context.Context, string, string) (EndIntent
 	return EndIntent{}, ErrNotImplemented
 }
 
+func (*startRepository) ClaimPendingEndIntent(
+	context.Context,
+	ClaimEndIntentParams,
+) (EndIntent, bool, error) {
+	return EndIntent{}, false, ErrNotImplemented
+}
+
+func (*startRepository) RetryClaimedEndIntent(context.Context, RetryEndIntentParams) error {
+	return ErrNotImplemented
+}
+
+func (*startRepository) CompleteClaimedEndIntent(
+	context.Context,
+	CompleteClaimedEndIntentParams,
+) error {
+	return ErrNotImplemented
+}
+
 func (*startRepository) CompleteEndIntent(context.Context, string, string, time.Time) error {
 	return ErrNotImplemented
 }

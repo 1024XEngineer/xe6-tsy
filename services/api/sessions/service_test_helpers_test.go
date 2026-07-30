@@ -222,6 +222,24 @@ func (f *fakeRepository) GetEndIntent(context.Context, string, string) (EndInten
 	return EndIntent{}, ErrNotImplemented
 }
 
+func (f *fakeRepository) ClaimPendingEndIntent(
+	context.Context,
+	ClaimEndIntentParams,
+) (EndIntent, bool, error) {
+	return EndIntent{}, false, ErrNotImplemented
+}
+
+func (f *fakeRepository) RetryClaimedEndIntent(context.Context, RetryEndIntentParams) error {
+	return ErrNotImplemented
+}
+
+func (f *fakeRepository) CompleteClaimedEndIntent(
+	context.Context,
+	CompleteClaimedEndIntentParams,
+) error {
+	return ErrNotImplemented
+}
+
 func (f *fakeRepository) CompleteEndIntent(context.Context, string, string, time.Time) error {
 	return ErrNotImplemented
 }

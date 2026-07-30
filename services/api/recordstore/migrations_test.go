@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 13 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 13", len(migrations))
+	if len(migrations) != 14 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 14", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -158,6 +158,23 @@ func TestEmbeddedMigrations(t *testing.T) {
 	} {
 		if !strings.Contains(failedTerminalTimestamp.SQL, expected) {
 			t.Fatalf("failed-terminal migration does not contain %q", expected)
+		}
+	}
+
+	endRecovery := migrations[13]
+	if endRecovery.Version != 14 || endRecovery.Name != "end_intent_recovery" {
+		t.Fatalf("migration = %#v, want version 14 named end_intent_recovery", endRecovery)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN trace_id",
+		"ADD COLUMN retry_count",
+		"ADD COLUMN next_attempt_at",
+		"ADD COLUMN recovery_owner",
+		"LEAST(requested_at, clock_timestamp())",
+		"voice_session_end_intents_recovery_due_idx",
+	} {
+		if !strings.Contains(endRecovery.SQL, expected) {
+			t.Fatalf("end-recovery migration does not contain %q", expected)
 		}
 	}
 }

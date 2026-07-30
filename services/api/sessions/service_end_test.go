@@ -60,9 +60,19 @@ func (r *endRepository) SaveEndIntent(
 		if !r.intent.MatchesRequest(intent.IdempotencyKey, intent.RequestHash) {
 			return EndIntent{}, false, ErrIdempotencyKeyConflict
 		}
+		if r.intent.Completed() ||
+			(r.intent.RecoveryOwner != nil &&
+				r.intent.LeaseExpiresAt != nil &&
+				r.intent.LeaseExpiresAt.After(intent.RequestedAt) &&
+				*r.intent.RecoveryOwner != *intent.RecoveryOwner) {
+			return *r.intent, true, nil
+		}
+		r.intent.RecoveryOwner = intent.RecoveryOwner
+		r.intent.LeaseExpiresAt = intent.LeaseExpiresAt
 		return *r.intent, true, nil
 	}
 	saved := intent
+	saved.NextAttemptAt = saved.RequestedAt
 	r.intent = &saved
 	return saved, false, nil
 }
@@ -104,7 +114,31 @@ func (r *endRepository) CompleteEndIntent(
 	}
 	if r.intent.CompletedAt == nil {
 		r.intent.CompletedAt = &completedAt
+		r.intent.RecoveryOwner = nil
+		r.intent.LeaseExpiresAt = nil
 	}
+	return nil
+}
+
+func (r *endRepository) RetryClaimedEndIntent(
+	ctx context.Context,
+	params RetryEndIntentParams,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.endMu.Lock()
+	defer r.endMu.Unlock()
+	if r.intent == nil || r.intent.RecoveryOwner == nil ||
+		*r.intent.RecoveryOwner != params.WorkerID {
+		return ErrConcurrentTransition
+	}
+	r.intent.RetryCount++
+	lastError := params.LastError
+	r.intent.LastError = &lastError
+	r.intent.NextAttemptAt = params.NextAttemptAt
+	r.intent.RecoveryOwner = nil
+	r.intent.LeaseExpiresAt = nil
 	return nil
 }
 
@@ -386,6 +420,32 @@ func TestServiceEndActiveStopsBeforeTransition(t *testing.T) {
 		t.Fatalf("Stop() command = %#v", command)
 	}
 	assertEndCompleted(t, fixture)
+}
+
+func TestServiceEndDoesNotCompeteWithActiveRecoveryLease(t *testing.T) {
+	fixture := newEndFixture(t, StatusActive)
+	now := fixture.clock.now
+	workerOwner := "worker_1"
+	leaseExpiresAt := now.Add(time.Minute)
+	fixture.repository.intent = &EndIntent{
+		SessionID: "vs_1", AccountID: "acct_1",
+		Reason: EndReasonUserRequested, IdempotencyKey: "end_1",
+		RequestHash: "hash_1", TraceID: "req_1",
+		RequestedAt: now.Add(-time.Minute), NextAttemptAt: now.Add(-time.Minute),
+		RecoveryOwner: &workerOwner, LeaseExpiresAt: &leaseExpiresAt,
+	}
+
+	_, err := fixture.service.End(t.Context(), validEndInput())
+	if !errors.Is(err, ErrConcurrentTransition) {
+		t.Fatalf("End() error = %v, want ErrConcurrentTransition", err)
+	}
+	if fixture.realtime.stopCalls != 0 || fixture.repository.transitionCalls != 0 {
+		t.Fatalf(
+			"calls = Stop %d TransitionToEnded %d, want 0, 0",
+			fixture.realtime.stopCalls,
+			fixture.repository.transitionCalls,
+		)
+	}
 }
 
 func TestServiceEndActiveStopErrorPreservesSession(t *testing.T) {

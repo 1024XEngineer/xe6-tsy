@@ -23,6 +23,7 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		t.Fatalf("second Migrate() error = %v", err)
 	}
 	assertSessionStartCompatibilitySchema(t, pool)
+	assertEndIntentRecoverySchema(t, pool)
 
 	statuses, err := AppliedMigrations(t.Context(), pool)
 	if err != nil {
@@ -45,6 +46,7 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{11, "email_bind_challenges"},
 		{12, "enable_wechat_channel"},
 		{13, "session_failed_terminal_timestamp"},
+		{14, "end_intent_recovery"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))
@@ -54,6 +56,34 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		if status.Version != expected.version || status.Name != expected.name || status.AppliedAt.IsZero() {
 			t.Fatalf("AppliedMigrations()[%d] = %#v, want applied %s version %d", index, status, expected.name, expected.version)
 		}
+	}
+}
+
+func assertEndIntentRecoverySchema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var columns int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT COUNT(*)
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'voice_session_end_intents'
+		  AND column_name IN (
+			  'trace_id', 'retry_count', 'last_error', 'next_attempt_at',
+			  'recovery_owner', 'recovery_lease_expires_at'
+		  )`).Scan(&columns); err != nil {
+		t.Fatalf("count EndIntent recovery columns: %v", err)
+	}
+	if columns != 6 {
+		t.Fatalf("EndIntent recovery columns = %d, want 6", columns)
+	}
+	var indexExists bool
+	if err := pool.QueryRow(t.Context(), `
+		SELECT to_regclass('voice_session_end_intents_recovery_due_idx') IS NOT NULL
+	`).Scan(&indexExists); err != nil {
+		t.Fatalf("inspect EndIntent recovery index: %v", err)
+	}
+	if !indexExists {
+		t.Fatal("voice_session_end_intents_recovery_due_idx does not exist")
 	}
 }
 

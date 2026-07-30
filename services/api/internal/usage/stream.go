@@ -27,11 +27,12 @@ type StreamConsumer interface {
 
 // ValkeyUsageStream consumes usage.recorded events from a Redis/Valkey stream group.
 type ValkeyUsageStream struct {
-	client   *redis.Client
-	stream   string
-	group    string
-	consumer string
-	block    time.Duration
+	client    *redis.Client
+	stream    string
+	group     string
+	consumer  string
+	block     time.Duration
+	claimIdle time.Duration
 }
 
 func NewValkeyUsageStream(ctx context.Context, client *redis.Client, stream, group, consumer string) (*ValkeyUsageStream, error) {
@@ -47,7 +48,14 @@ func NewValkeyUsageStream(ctx context.Context, client *redis.Client, stream, gro
 	if consumer == "" {
 		consumer = "usage-worker"
 	}
-	queue := &ValkeyUsageStream{client: client, stream: stream, group: group, consumer: consumer, block: defaultUsageStreamBlock}
+	queue := &ValkeyUsageStream{
+		client:    client,
+		stream:    stream,
+		group:     group,
+		consumer:  consumer,
+		block:     defaultUsageStreamBlock,
+		claimIdle: 30 * time.Second,
+	}
 	if err := client.XGroupCreateMkStream(ctx, stream, group, "0").Err(); err != nil && !isBusyGroup(err) {
 		return nil, err
 	}
@@ -63,12 +71,15 @@ func (q *ValkeyUsageStream) Publish(ctx context.Context, payload []byte) error {
 }
 
 func (q *ValkeyUsageStream) Receive(ctx context.Context) (StreamMessage, error) {
-	if message, ok, err := q.autoclaim(ctx); err != nil {
-		return StreamMessage{}, err
-	} else if ok {
-		return message, nil
-	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return StreamMessage{}, err
+		}
+		if message, ok, err := q.autoclaim(ctx); err != nil {
+			return StreamMessage{}, err
+		} else if ok {
+			return message, nil
+		}
 		streams, err := q.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 			Group:    q.group,
 			Consumer: q.consumer,
@@ -115,7 +126,7 @@ func (q *ValkeyUsageStream) autoclaim(ctx context.Context) (StreamMessage, bool,
 		Stream:   q.stream,
 		Group:    q.group,
 		Consumer: q.consumer,
-		MinIdle:  30 * time.Second,
+		MinIdle:  q.claimIdle,
 		Start:    "0-0",
 		Count:    1,
 	}).Result()

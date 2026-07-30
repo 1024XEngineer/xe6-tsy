@@ -33,9 +33,32 @@ func TestParseDevEmailBindTokenAcceptsLocalFormats(t *testing.T) {
 }
 
 func TestParseDevEmailBindTokenFailsClosedOutsideLocal(t *testing.T) {
-	_, _, err := parseDevEmailBindToken("production", "dev:user@example.test")
-	if !errors.Is(err, domain.ErrNotImplemented) {
-		t.Fatalf("parseDevEmailBindToken() error = %v, want not implemented", err)
+	tests := []struct {
+		name   string
+		appEnv string
+	}{
+		{name: "production", appEnv: "production"},
+		{name: "staging", appEnv: "staging"},
+		{name: "preview", appEnv: "preview"},
+		{name: "empty", appEnv: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := parseDevEmailBindToken(test.appEnv, "dev:user@example.test")
+			if !errors.Is(err, domain.ErrNotImplemented) {
+				t.Fatalf("parseDevEmailBindToken() error = %v, want not implemented", err)
+			}
+		})
+	}
+}
+
+func TestParseDevEmailBindTokenAllowsExplicitTestEnvironment(t *testing.T) {
+	ref, email, err := parseDevEmailBindToken("test", "dev:user@example.test")
+	if err != nil {
+		t.Fatalf("parseDevEmailBindToken() error = %v", err)
+	}
+	if ref != "primary-email" || email != "user@example.test" {
+		t.Fatalf("parseDevEmailBindToken() = (%q, %q)", ref, email)
 	}
 }
 

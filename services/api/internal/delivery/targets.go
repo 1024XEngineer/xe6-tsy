@@ -38,7 +38,7 @@ func parseDevEmailBindToken(appEnv, token string) (destinationRef, email string,
 	if !strings.HasPrefix(token, "dev:") {
 		return "", "", domain.ErrNotImplemented
 	}
-	if strings.EqualFold(strings.TrimSpace(appEnv), "production") {
+	if !allowsDevEmailBindToken(appEnv) {
 		return "", "", domain.ErrNotImplemented
 	}
 	payload := strings.TrimPrefix(token, "dev:")
@@ -56,4 +56,13 @@ func parseDevEmailBindToken(appEnv, token string) (destinationRef, email string,
 		return "", "", domain.ErrInvalidArgument
 	}
 	return destinationRef, email, nil
+}
+
+func allowsDevEmailBindToken(appEnv string) bool {
+	switch strings.ToLower(strings.TrimSpace(appEnv)) {
+	case "local", "test":
+		return true
+	default:
+		return false
+	}
 }

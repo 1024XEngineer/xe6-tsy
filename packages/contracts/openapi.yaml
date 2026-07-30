@@ -184,6 +184,8 @@ paths:
       - url: /
     post:
       operationId: startRealtimeSession
+      security:
+        - realtimeTicket: []
       parameters:
         - { name: session_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/IdempotencyKey' }
@@ -198,16 +200,57 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '409':
           description: Runtime is owned by another Start operation
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RuntimeOperationConflictError' }
+  /realtime/v1/sessions/{session_id}/stop:
+    servers:
+      - url: /
+    post:
+      operationId: stopRealtimeSession
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RealtimeStopRequest' }
+      responses:
+        '200':
+          description: Runtime stopped
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /realtime/v1/sessions/{session_id}/runtime:
+    servers:
+      - url: /
+    get:
+      operationId: getRealtimeRuntimeSnapshot
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Current runtime snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /realtime/v1/sessions/{session_id}/connection:
     servers:
       - url: /
     get:
       operationId: getRealtimeConnectionSnapshot
+      security:
+        - realtimeTicket: []
       parameters:
         - { name: session_id, in: path, required: true, schema: { type: string } }
       responses:
@@ -216,6 +259,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WebRTCConnectionSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404':
           description: No current WebRTC connection exists for the Session
           content:
@@ -228,6 +272,10 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Access token validated by authentication middleware; account_id comes from the trusted request context.
+    realtimeTicket:
+      type: http
+      scheme: bearer
+      description: HMAC-signed ticket authorizing access to one realtime Session.
   parameters:
     SessionID: { name: id, in: path, required: true, schema: { type: string } }
     MessageID: { name: message_id, in: path, required: true, schema: { type: string } }
@@ -238,7 +286,7 @@ components:
       content: { application/json: { schema: { type: object, additionalProperties: false, required: [refresh_token], properties: { refresh_token: { type: string, minLength: 1 } } } } }
   responses:
     BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-    Unauthorized: { description: Missing or invalid account context, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Unauthorized: { description: Missing or invalid authorization credentials, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     Forbidden: { description: Authenticated account does not own the requested resource, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     TooManyRequests: { description: Phone verification requests are temporarily rate limited, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
@@ -274,6 +322,14 @@ components:
         operation_id: { type: string, minLength: 1 }
         trace_id: { type: string }
         started_by: { type: string }
+    RealtimeStopRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, ended_at]
+      properties:
+        trace_id: { type: string }
+        reason: { type: string, enum: [user_requested, operator_cancelled, client_disconnected] }
+        ended_at: { type: string, format: date-time }
     RealtimeRuntimeSnapshot:
       type: object
       additionalProperties: false

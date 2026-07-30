@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/1024XEngineer/xe6-tsy/packages/contracts v0.0.0
+	github.com/1024XEngineer/xe6-tsy/services/realtime-audio v0.0.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/redis/go-redis/v9 v9.7.0
@@ -22,3 +23,5 @@ require (
 )
 
 replace github.com/1024XEngineer/xe6-tsy/packages/contracts => ../../packages/contracts
+
+replace github.com/1024XEngineer/xe6-tsy/services/realtime-audio => ../realtime-audio

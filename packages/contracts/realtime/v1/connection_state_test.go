@@ -107,9 +107,12 @@ type openAPISpec struct {
 }
 
 type openAPISchema struct {
-	Enum       []string                   `yaml:"enum"`
-	Required   []string                   `yaml:"required"`
-	Properties map[string]openAPIProperty `yaml:"properties"`
+	Type         string                     `yaml:"type"`
+	Scheme       string                     `yaml:"scheme"`
+	BearerFormat string                     `yaml:"bearerFormat"`
+	Enum         []string                   `yaml:"enum"`
+	Required     []string                   `yaml:"required"`
+	Properties   map[string]openAPIProperty `yaml:"properties"`
 }
 
 type openAPIProperty struct {

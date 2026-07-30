@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,190 @@ func TestClientGetConnectionMapsAllStates(t *testing.T) {
 				t.Fatalf("GetConnection() = %#v", snapshot)
 			}
 		})
+	}
+}
+
+func TestClientStopCarriesReasonTimeAndReplaysByReason(t *testing.T) {
+	fixture := newFixture(t)
+	server := httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+	client := newTestClient(t, server.URL)
+	endedAt := time.Unix(1700000060, 0).UTC()
+
+	first, err := client.Stop(t.Context(), "session-1", realtimev1.StopRequest{
+		TraceID: "trace-stop-1",
+		Reason:  "user_requested",
+		EndedAt: endedAt,
+	})
+	if err != nil {
+		t.Fatalf("first Stop() error = %v", err)
+	}
+	second, err := client.Stop(t.Context(), "session-1", realtimev1.StopRequest{
+		TraceID: "trace-stop-2",
+		Reason:  "user_requested",
+		EndedAt: endedAt.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("replayed Stop() error = %v", err)
+	}
+	if first.RuntimeState != realtimev1.RuntimeStopped ||
+		second.RuntimeState != realtimev1.RuntimeStopped {
+		t.Fatalf("Stop() states = %q, %q", first.RuntimeState, second.RuntimeState)
+	}
+	if fixture.lifecycle.stops != 1 {
+		t.Fatalf("lifecycle stops = %d, want 1", fixture.lifecycle.stops)
+	}
+	if fixture.lifecycle.stopCommand.TraceID != "trace-stop-1" ||
+		fixture.lifecycle.stopCommand.Reason != "user_requested" ||
+		!fixture.lifecycle.stopCommand.EndedAt.Equal(endedAt) {
+		t.Fatalf("stop command = %#v, want first request mapping", fixture.lifecycle.stopCommand)
+	}
+}
+
+func TestClientStopAllowsEmptyTraceID(t *testing.T) {
+	endedAt := time.Unix(1700000060, 0).UTC()
+	observations := make(chan stopRequestObservation, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body realtimev1.StopRequest
+		decodeErr := json.NewDecoder(request.Body).Decode(&body)
+		observations <- stopRequestObservation{
+			authorization:  request.Header.Get("Authorization"),
+			idempotencyKey: request.Header.Get("Idempotency-Key"),
+			body:           body,
+			err:            decodeErr,
+		}
+		_ = json.NewEncoder(writer).Encode(realtimev1.RuntimeSnapshot{
+			SessionID: "session-1", RuntimeState: realtimev1.RuntimeStopped,
+			UpdatedAt: endedAt,
+		})
+	}))
+	t.Cleanup(server.Close)
+	client := newTestClient(t, server.URL)
+
+	snapshot, err := client.Stop(t.Context(), "session-1", realtimev1.StopRequest{
+		Reason:  "user_requested",
+		EndedAt: endedAt,
+	})
+	if err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	observation := <-observations
+	if observation.err != nil {
+		t.Fatalf("decode stop request: %v", observation.err)
+	}
+	if observation.authorization != "Bearer realtime-ticket" {
+		t.Fatalf("Authorization = %q, want bearer ticket", observation.authorization)
+	}
+	if observation.idempotencyKey != "stop:user_requested" {
+		t.Fatalf("Idempotency-Key = %q, want stop:user_requested", observation.idempotencyKey)
+	}
+	if observation.body.TraceID != "" ||
+		observation.body.Reason != "user_requested" ||
+		!observation.body.EndedAt.Equal(endedAt) {
+		t.Fatalf("stop body = %#v", observation.body)
+	}
+	if snapshot.SessionID != "session-1" ||
+		snapshot.RuntimeState != realtimev1.RuntimeStopped ||
+		snapshot.UpdatedAt.IsZero() {
+		t.Fatalf("Stop() = %#v", snapshot)
+	}
+}
+
+type stopRequestObservation struct {
+	authorization  string
+	idempotencyKey string
+	body           realtimev1.StopRequest
+	err            error
+}
+
+func TestClientStopValidatesRequestAndResponse(t *testing.T) {
+	client := newTestClient(t, "https://realtime.example")
+	valid := realtimev1.StopRequest{
+		Reason: "user_requested", EndedAt: time.Unix(1700000060, 0).UTC(),
+	}
+	tests := []struct {
+		name      string
+		sessionID string
+		request   realtimev1.StopRequest
+	}{
+		{name: "empty session", sessionID: "", request: valid},
+		{name: "empty reason", sessionID: "session-1", request: realtimev1.StopRequest{EndedAt: valid.EndedAt}},
+		{name: "zero time", sessionID: "session-1", request: realtimev1.StopRequest{Reason: "user_requested"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := client.Stop(
+				t.Context(), test.sessionID, test.request,
+			); !errors.Is(err, ErrClientRequest) {
+				t.Fatalf("Stop() error = %v, want ErrClientRequest", err)
+			}
+		})
+	}
+
+	fixture := newFixture(t)
+	fixture.lifecycle.stopped.RuntimeState = realtimev1.RuntimePlaying
+	server := httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+	snapshot, err := newTestClient(t, server.URL).Stop(
+		t.Context(),
+		"session-1",
+		realtimev1.StopRequest{
+			TraceID: "trace-stop",
+			Reason:  "user_requested",
+			EndedAt: time.Unix(1700000060, 0).UTC(),
+		},
+	)
+	if err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if snapshot.RuntimeState != realtimev1.RuntimePlaying {
+		t.Fatalf("Stop() state = %q, want pass-through valid state", snapshot.RuntimeState)
+	}
+
+	fixture = newFixture(t)
+	fixture.lifecycle.stopped.RuntimeState = "unknown"
+	server = httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+	_, err = newTestClient(t, server.URL).Stop(
+		t.Context(),
+		"session-1",
+		realtimev1.StopRequest{
+			TraceID: "trace-stop",
+			Reason:  "user_requested",
+			EndedAt: time.Unix(1700000060, 0).UTC(),
+		},
+	)
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("Stop(invalid state) error = %v, want ErrInvalidResponse", err)
+	}
+}
+
+func TestClientGetRuntimeStateMapsSnapshotsAndMissingRuntime(t *testing.T) {
+	fixture := newFixture(t)
+	server := httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+
+	snapshot, err := newTestClient(t, server.URL).GetRuntimeState(
+		t.Context(),
+		"session-1",
+	)
+	if err != nil {
+		t.Fatalf("GetRuntimeState() error = %v", err)
+	}
+	if snapshot.SessionID != "session-1" ||
+		snapshot.RuntimeState != realtimev1.RuntimeListening ||
+		snapshot.StartOperationID != "operation-1" ||
+		snapshot.UpdatedAt.IsZero() {
+		t.Fatalf("GetRuntimeState() = %#v", snapshot)
+	}
+
+	fixture = newFixture(t)
+	fixture.lifecycle.runtimeErr = session.ErrRuntimeNotFound
+	server = httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+	_, err = newTestClient(t, server.URL).GetRuntimeState(t.Context(), "session-1")
+	if !errors.Is(err, ErrRuntimeNotFound) {
+		t.Fatalf("GetRuntimeState() error = %v, want ErrRuntimeNotFound", err)
 	}
 }
 
@@ -263,6 +448,9 @@ func TestClientPreservesContextErrors(t *testing.T) {
 			}
 			if _, err := client.GetConnection(ctx, "session-1"); !errors.Is(err, test.want) {
 				t.Fatalf("GetConnection() error = %v, want %v", err, test.want)
+			}
+			if _, err := client.GetRuntimeState(ctx, "session-1"); !errors.Is(err, test.want) {
+				t.Fatalf("GetRuntimeState() error = %v, want %v", err, test.want)
 			}
 		})
 	}

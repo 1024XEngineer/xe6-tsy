@@ -58,10 +58,11 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/webrtc/offer", `{"sdp":"offer-sdp","type":"offer"}`, "offer-key"); response.Code != http.StatusOK {
 		t.Fatalf("replayed offer status = %d, body=%s", response.Code, response.Body.String())
 	}
-	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/stop", `{}`, "stop-key"); response.Code != http.StatusOK {
+	stopBody := `{"trace_id":"trace-stop","reason":"user_requested","ended_at":"2023-11-14T22:14:20Z"}`
+	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/stop", stopBody, "stop-key"); response.Code != http.StatusOK {
 		t.Fatalf("stop status = %d, body=%s", response.Code, response.Body.String())
 	}
-	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/stop", `{}`, "stop-key"); response.Code != http.StatusOK {
+	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/stop", stopBody, "stop-key"); response.Code != http.StatusOK {
 		t.Fatalf("replayed stop status = %d, body=%s", response.Code, response.Body.String())
 	}
 

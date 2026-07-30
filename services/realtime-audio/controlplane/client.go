@@ -22,6 +22,7 @@ var (
 	ErrClientUnauthorized       = errors.New("realtime client unauthorized")
 	ErrClientConflict           = errors.New("realtime client conflict")
 	ErrConnectionNotFound       = errors.New("realtime WebRTC connection not found")
+	ErrRuntimeNotFound          = errors.New("realtime runtime snapshot not found")
 	ErrRuntimeOperationConflict = errors.New("realtime runtime operation conflict")
 	ErrDependencyUnavailable    = errors.New("realtime dependency unavailable")
 	ErrInvalidResponse          = errors.New("invalid realtime response")
@@ -79,37 +80,82 @@ func (c *Client) Start(
 	if sessionID == "" || strings.TrimSpace(request.OperationID) == "" {
 		return realtimev1.RuntimeSnapshot{}, ErrClientRequest
 	}
+	return c.postRuntime(
+		ctx,
+		sessionID,
+		"start",
+		"start:"+request.OperationID,
+		request,
+		func(snapshot realtimev1.RuntimeSnapshot) error {
+			if snapshot.SessionID != sessionID ||
+				!snapshot.RuntimeState.Valid() ||
+				snapshot.UpdatedAt.IsZero() ||
+				snapshot.StartOperationID != request.OperationID {
+				return ErrInvalidResponse
+			}
+			return nil
+		},
+	)
+}
+
+// Stop confirms that realtime has cleaned up all media resources for one
+// business End reason. The replay identity deliberately excludes TraceID and
+// EndedAt because End retries may carry fresh audit metadata.
+func (c *Client) Stop(
+	ctx context.Context,
+	sessionID string,
+	request realtimev1.StopRequest,
+) (realtimev1.RuntimeSnapshot, error) {
+	if strings.TrimSpace(sessionID) == "" ||
+		strings.TrimSpace(request.Reason) == "" ||
+		request.EndedAt.IsZero() {
+		return realtimev1.RuntimeSnapshot{}, ErrClientRequest
+	}
+	return c.postRuntime(
+		ctx,
+		sessionID,
+		"stop",
+		"stop:"+request.Reason,
+		request,
+		func(snapshot realtimev1.RuntimeSnapshot) error {
+			if snapshot.SessionID != sessionID ||
+				!snapshot.RuntimeState.Valid() ||
+				snapshot.UpdatedAt.IsZero() {
+				return ErrInvalidResponse
+			}
+			return nil
+		},
+	)
+}
+
+// GetRuntimeState reads the authoritative media-plane runtime snapshot.
+func (c *Client) GetRuntimeState(
+	ctx context.Context,
+	sessionID string,
+) (realtimev1.RuntimeSnapshot, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return realtimev1.RuntimeSnapshot{}, ErrClientRequest
+	}
 	token, err := c.ticket(ctx, sessionID)
 	if err != nil {
 		return realtimev1.RuntimeSnapshot{}, err
 	}
-	encoded, err := json.Marshal(request)
-	if err != nil {
-		return realtimev1.RuntimeSnapshot{}, fmt.Errorf(
-			"%w: encode start request: %v", ErrClientRequest, err,
-		)
-	}
 	endpoint, err := url.JoinPath(
-		c.baseURL, "realtime/v1/sessions", sessionID, "start",
+		c.baseURL, "realtime/v1/sessions", sessionID, "runtime",
 	)
 	if err != nil {
 		return realtimev1.RuntimeSnapshot{}, fmt.Errorf(
-			"%w: build start endpoint: %v", ErrClientDependency, err,
+			"%w: build runtime endpoint: %v", ErrClientDependency, err,
 		)
 	}
-	httpRequest, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, endpoint, bytes.NewReader(encoded),
-	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return realtimev1.RuntimeSnapshot{}, fmt.Errorf(
-			"%w: build start request: %v", ErrClientRequest, err,
+			"%w: build runtime request: %v", ErrClientRequest, err,
 		)
 	}
-	httpRequest.Header.Set("Authorization", "Bearer "+token)
-	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("Idempotency-Key", "start:"+request.OperationID)
-
-	response, err := c.http.Do(httpRequest)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := c.http.Do(request)
 	if err != nil {
 		return realtimev1.RuntimeSnapshot{}, preserveContextError(
 			ctx, fmt.Errorf("%w: %v", ErrDependencyUnavailable, err),
@@ -126,12 +172,12 @@ func (c *Client) Start(
 	var snapshot realtimev1.RuntimeSnapshot
 	if err := json.NewDecoder(reader).Decode(&snapshot); err != nil {
 		return realtimev1.RuntimeSnapshot{}, fmt.Errorf(
-			"%w: decode start response: %v", ErrInvalidResponse, err,
+			"%w: decode runtime response: %v", ErrInvalidResponse, err,
 		)
 	}
-	if snapshot.SessionID != sessionID || !snapshot.RuntimeState.Valid() ||
-		snapshot.UpdatedAt.IsZero() ||
-		snapshot.StartOperationID != request.OperationID {
+	if snapshot.SessionID != sessionID ||
+		!snapshot.RuntimeState.Valid() ||
+		snapshot.UpdatedAt.IsZero() {
 		return realtimev1.RuntimeSnapshot{}, ErrInvalidResponse
 	}
 	return snapshot, nil
@@ -194,6 +240,70 @@ func (c *Client) GetConnection(
 	return snapshot, nil
 }
 
+func (c *Client) postRuntime(
+	ctx context.Context,
+	sessionID string,
+	action string,
+	idempotencyKey string,
+	body any,
+	validate func(realtimev1.RuntimeSnapshot) error,
+) (realtimev1.RuntimeSnapshot, error) {
+	token, err := c.ticket(ctx, sessionID)
+	if err != nil {
+		return realtimev1.RuntimeSnapshot{}, err
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return realtimev1.RuntimeSnapshot{}, fmt.Errorf(
+			"%w: encode %s request: %v", ErrClientRequest, action, err,
+		)
+	}
+	endpoint, err := url.JoinPath(
+		c.baseURL, "realtime/v1/sessions", sessionID, action,
+	)
+	if err != nil {
+		return realtimev1.RuntimeSnapshot{}, fmt.Errorf(
+			"%w: build %s endpoint: %v", ErrClientDependency, action, err,
+		)
+	}
+	request, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, endpoint, bytes.NewReader(encoded),
+	)
+	if err != nil {
+		return realtimev1.RuntimeSnapshot{}, fmt.Errorf(
+			"%w: build %s request: %v", ErrClientRequest, action, err,
+		)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", idempotencyKey)
+
+	response, err := c.http.Do(request)
+	if err != nil {
+		return realtimev1.RuntimeSnapshot{}, preserveContextError(
+			ctx, fmt.Errorf("%w: %v", ErrDependencyUnavailable, err),
+		)
+	}
+	defer response.Body.Close()
+	reader := io.LimitReader(response.Body, maxClientResponseBytes+1)
+	if response.StatusCode < http.StatusOK ||
+		response.StatusCode >= http.StatusMultipleChoices {
+		return realtimev1.RuntimeSnapshot{}, decodeClientError(
+			response.StatusCode, reader,
+		)
+	}
+	var snapshot realtimev1.RuntimeSnapshot
+	if err := json.NewDecoder(reader).Decode(&snapshot); err != nil {
+		return realtimev1.RuntimeSnapshot{}, fmt.Errorf(
+			"%w: decode %s response: %v", ErrInvalidResponse, action, err,
+		)
+	}
+	if err := validate(snapshot); err != nil {
+		return realtimev1.RuntimeSnapshot{}, err
+	}
+	return snapshot, nil
+}
+
 func (c *Client) ticket(ctx context.Context, sessionID string) (string, error) {
 	token, err := c.tickets.Token(ctx, sessionID)
 	if err != nil {
@@ -223,6 +333,8 @@ func decodeClientError(status int, reader io.Reader) error {
 		return ErrClientUnauthorized
 	case string(realtimev1.ErrorConnectionNotFound):
 		return ErrConnectionNotFound
+	case "not_found":
+		return ErrRuntimeNotFound
 	case string(realtimev1.ErrorRuntimeOperationConflict):
 		return ErrRuntimeOperationConflict
 	case "conflict":

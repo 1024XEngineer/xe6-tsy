@@ -61,6 +61,180 @@ func TestServiceStartRunsPrerequisitesBeforeTransition(t *testing.T) {
 	}
 }
 
+func TestServiceStartAllowsMergedActorAndPreservesOwner(t *testing.T) {
+	fixture := newMergedStartFixture(t, StatusCreated)
+	fixture.repository.transitionResult = activeStartSession(
+		fixture.repository.session,
+		fixture.clock.now,
+	)
+	input := mergedStartInput()
+
+	got, err := fixture.service.Start(t.Context(), input)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got.Status != StatusActive || got.AccountID != "acct_anonymous" {
+		t.Fatalf("Start() = %#v", got)
+	}
+	if fixture.repository.getAccountID != "acct_registered" ||
+		fixture.repository.getOperationAccountID != "acct_registered" {
+		t.Fatalf(
+			"repository actors = GetOwned %q, GetStartOperation %q",
+			fixture.repository.getAccountID,
+			fixture.repository.getOperationAccountID,
+		)
+	}
+	if fixture.repository.beginCalls != 1 ||
+		fixture.repository.beginParams[0].AccountID != "acct_registered" {
+		t.Fatalf(
+			"BeginStartOperation calls = %d, params = %#v",
+			fixture.repository.beginCalls,
+			fixture.repository.beginParams,
+		)
+	}
+	if fixture.repository.operation == nil ||
+		fixture.repository.operation.AccountID != "acct_anonymous" {
+		t.Fatalf("persisted operation = %#v", fixture.repository.operation)
+	}
+	if fixture.realtime.startCalls != 1 ||
+		fixture.realtime.startCommand.OperationID != "op_1" ||
+		fixture.realtime.startCommand.StartedBy != "acct_registered" {
+		t.Fatalf(
+			"realtime calls = %d, command = %#v",
+			fixture.realtime.startCalls,
+			fixture.realtime.startCommand,
+		)
+	}
+	if len(fixture.repository.transitions) != 1 ||
+		fixture.repository.transitions[0].AccountID != "acct_registered" {
+		t.Fatalf("transitions = %#v", fixture.repository.transitions)
+	}
+}
+
+func TestServiceStartMergedActorContinuesOwnerPendingOperation(t *testing.T) {
+	fixture := newMergedStartFixture(t, StatusCreated)
+	fixture.repository.operation = &StartOperation{
+		ID:             "op_1",
+		SessionID:      "vs_1",
+		AccountID:      "acct_anonymous",
+		IdempotencyKey: "start_1",
+		RequestHash:    "hash_1",
+		Status:         StartOperationPending,
+		CreatedAt:      fixture.clock.now,
+		UpdatedAt:      fixture.clock.now,
+	}
+	fixture.repository.transitionResult = activeStartSession(
+		fixture.repository.session,
+		fixture.clock.now,
+	)
+
+	got, err := fixture.service.Start(t.Context(), mergedStartInput())
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got.Status != StatusActive || got.AccountID != "acct_anonymous" {
+		t.Fatalf("Start() = %#v", got)
+	}
+	if fixture.repository.beginCalls != 0 ||
+		fixture.realtime.startCalls != 1 ||
+		len(fixture.repository.transitions) != 1 {
+		t.Fatalf(
+			"calls = begin %d, realtime %d, transition %d; want 0, 1, 1",
+			fixture.repository.beginCalls,
+			fixture.realtime.startCalls,
+			len(fixture.repository.transitions),
+		)
+	}
+}
+
+func TestServiceStartMergedActorReplaysCompletedOwnerOperation(t *testing.T) {
+	fixture := newMergedStartFixture(t, StatusActive)
+	startedAt := fixture.clock.now.Add(-time.Minute)
+	fixture.repository.session.StartedAt = &startedAt
+	fixture.repository.operation = completedStartOperation(
+		fixture.repository.session,
+		startedAt,
+	)
+
+	got, err := fixture.service.Start(t.Context(), mergedStartInput())
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got.Status != StatusActive || got.AccountID != "acct_anonymous" {
+		t.Fatalf("Start() = %#v", got)
+	}
+	if fixture.repository.beginCalls != 1 ||
+		fixture.repository.beginParams[0].AccountID != "acct_registered" {
+		t.Fatalf(
+			"BeginStartOperation calls = %d, params = %#v",
+			fixture.repository.beginCalls,
+			fixture.repository.beginParams,
+		)
+	}
+	assertNoStartPrerequisites(t, fixture)
+	if len(fixture.repository.transitions) != 0 {
+		t.Fatalf("transitions = %d, want 0", len(fixture.repository.transitions))
+	}
+}
+
+func TestServiceStartMergedActorRejectsWrongOperationOwner(t *testing.T) {
+	for _, operationOwner := range []string{"acct_registered", "acct_other"} {
+		t.Run(operationOwner, func(t *testing.T) {
+			fixture := newMergedStartFixture(t, StatusCreated)
+			fixture.repository.operation = &StartOperation{
+				ID:             "op_1",
+				SessionID:      "vs_1",
+				AccountID:      operationOwner,
+				IdempotencyKey: "start_1",
+				RequestHash:    "hash_1",
+				Status:         StartOperationPending,
+				CreatedAt:      fixture.clock.now,
+				UpdatedAt:      fixture.clock.now,
+			}
+
+			_, err := fixture.service.Start(t.Context(), mergedStartInput())
+			if !errors.Is(err, ErrConcurrentTransition) {
+				t.Fatalf("Start() error = %v, want ErrConcurrentTransition", err)
+			}
+			assertNoStartPrerequisites(t, fixture)
+			if fixture.repository.beginCalls != 0 {
+				t.Fatalf("BeginStartOperation calls = %d, want 0", fixture.repository.beginCalls)
+			}
+		})
+	}
+}
+
+func TestServiceStartMergedActorStillRequiresRepositoryAuthorization(t *testing.T) {
+	fixture := newMergedStartFixture(t, StatusCreated)
+	input := mergedStartInput()
+	input.AccountID = "acct_unrelated"
+	input.StartedBy = "acct_unrelated"
+
+	_, err := fixture.service.Start(t.Context(), input)
+	if !errors.Is(err, ErrVoiceSessionNotFound) {
+		t.Fatalf("Start() error = %v, want ErrVoiceSessionNotFound", err)
+	}
+	assertNoStartPrerequisites(t, fixture)
+}
+
+func TestServiceStartRejectsSessionWithoutOwner(t *testing.T) {
+	for _, status := range []Status{StatusCreated, StatusActive} {
+		t.Run(string(status), func(t *testing.T) {
+			fixture := newMergedStartFixture(t, status)
+			fixture.repository.session.AccountID = ""
+
+			_, err := fixture.service.Start(t.Context(), mergedStartInput())
+			if !errors.Is(err, ErrInvalidDependency) {
+				t.Fatalf("Start() error = %v, want ErrInvalidDependency", err)
+			}
+			assertNoStartPrerequisites(t, fixture)
+			if fixture.repository.beginCalls != 0 {
+				t.Fatalf("BeginStartOperation calls = %d, want 0", fixture.repository.beginCalls)
+			}
+		})
+	}
+}
+
 func TestServiceStartDefaultsStartedByToAccount(t *testing.T) {
 	fixture := newStartFixture(t, StatusCreated)
 	fixture.repository.transitionResult = activeStartSession(fixture.repository.session, fixture.clock.now)

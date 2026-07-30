@@ -97,6 +97,230 @@ func TestPostgresRepositoryCreateAndQueries(t *testing.T) {
 	}
 }
 
+func TestPostgresRepositoryMergedAccountKeepsOriginalSessionOwner(t *testing.T) {
+	pool := sessionTestDatabase(t)
+	repository := sessions.NewPostgresRepository(pool)
+	now := time.Date(2026, time.July, 30, 9, 0, 0, 0, time.UTC)
+
+	insertAccount(t, pool, "acct_anonymous", now.Add(-time.Hour))
+	insertRegisteredAccount(t, pool, "acct_registered", "phone_registered", now.Add(-time.Hour))
+	insertAccount(t, pool, "acct_unrelated", now.Add(-time.Hour))
+	mergeAccount(t, pool, "acct_anonymous", "acct_registered")
+
+	createSession(t, repository, "vs_anonymous", "acct_anonymous", now)
+	createSession(t, repository, "vs_registered", "acct_registered", now.Add(time.Second))
+	createSession(t, repository, "vs_unrelated", "acct_unrelated", now.Add(2*time.Second))
+
+	owned, err := repository.GetOwned(
+		t.Context(), "acct_registered", "vs_anonymous",
+	)
+	if err != nil || owned.AccountID != "acct_anonymous" {
+		t.Fatalf("merged GetOwned() = %#v, %v", owned, err)
+	}
+	if _, err := repository.GetOwned(
+		t.Context(), "acct_registered", "vs_unrelated",
+	); !errors.Is(err, sessions.ErrVoiceSessionNotFound) {
+		t.Fatalf("unrelated GetOwned() error = %v", err)
+	}
+	page, err := repository.List(t.Context(), sessions.ListFilter{
+		AccountID: "acct_registered",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("merged List() error = %v", err)
+	}
+	listed := make(map[string]string, len(page.Sessions))
+	for _, item := range page.Sessions {
+		listed[item.ID] = item.AccountID
+	}
+	if listed["vs_anonymous"] != "acct_anonymous" ||
+		listed["vs_registered"] != "acct_registered" {
+		t.Fatalf("merged List() owners = %#v", listed)
+	}
+	if _, exists := listed["vs_unrelated"]; exists {
+		t.Fatalf("merged List() exposed unrelated session: %#v", listed)
+	}
+
+	begin := beginParams(
+		"op_merged", "vs_anonymous", "acct_registered",
+		"start_merged", "hash_start_merged", now.Add(3*time.Second),
+	)
+	started, err := repository.BeginStartOperation(t.Context(), begin)
+	if err != nil || started.Operation.AccountID != "acct_anonymous" {
+		t.Fatalf("merged BeginStartOperation() = %#v, %v", started, err)
+	}
+	operation, err := repository.GetStartOperation(
+		t.Context(), "acct_registered", "vs_anonymous", "start_merged",
+	)
+	if err != nil || operation.AccountID != "acct_anonymous" {
+		t.Fatalf("merged GetStartOperation() = %#v, %v", operation, err)
+	}
+	if _, err := repository.GetStartOperation(
+		t.Context(), "acct_unrelated", "vs_anonymous", "start_merged",
+	); !errors.Is(err, sessions.ErrVoiceSessionNotFound) {
+		t.Fatalf("unrelated GetStartOperation() error = %v", err)
+	}
+	active, replayed, err := repository.TransitionToActive(
+		t.Context(),
+		sessions.StartTransitionParams{
+			SessionID: "vs_anonymous", AccountID: "acct_registered",
+			OperationID: "op_merged", Expected: sessions.StatusCreated,
+			StartedAt:      now.Add(4 * time.Second),
+			IdempotencyKey: "start_merged", RequestHash: "hash_start_merged",
+		},
+	)
+	if err != nil || replayed || active.Status != sessions.StatusActive ||
+		active.AccountID != "acct_anonymous" {
+		t.Fatalf("merged TransitionToActive() = %#v, %t, %v", active, replayed, err)
+	}
+
+	intent := endIntent(
+		"vs_anonymous", "acct_registered", "end_merged", "hash_end_merged",
+		now.Add(5*time.Second),
+	)
+	saved, replayed, err := repository.SaveEndIntent(t.Context(), intent)
+	if err != nil || replayed || saved.AccountID != "acct_anonymous" {
+		t.Fatalf("merged SaveEndIntent() = %#v, %t, %v", saved, replayed, err)
+	}
+	ended, err := repository.TransitionToEnded(
+		t.Context(),
+		sessions.EndTransitionParams{
+			SessionID: "vs_anonymous", AccountID: "acct_registered",
+			Expected: sessions.StatusActive, EndedAt: now.Add(6 * time.Second),
+			EndReason: sessions.EndReasonUserRequested,
+		},
+	)
+	if err != nil || ended.Status != sessions.StatusEnded ||
+		ended.AccountID != "acct_anonymous" {
+		t.Fatalf("merged TransitionToEnded() = %#v, %v", ended, err)
+	}
+	if err := repository.CompleteEndIntent(
+		t.Context(), "acct_registered", "vs_anonymous", now.Add(7*time.Second),
+	); err != nil {
+		t.Fatalf("merged CompleteEndIntent() error = %v", err)
+	}
+	storedIntent, err := repository.GetEndIntent(
+		t.Context(), "acct_registered", "vs_anonymous",
+	)
+	if err != nil || storedIntent.AccountID != "acct_anonymous" ||
+		!storedIntent.Completed() {
+		t.Fatalf("merged GetEndIntent() = %#v, %v", storedIntent, err)
+	}
+
+	assertLifecycleOwners(
+		t, pool, "vs_anonymous", "acct_anonymous", "op_merged",
+	)
+
+	createSession(
+		t, repository, "vs_failed", "acct_anonymous", now.Add(8*time.Second),
+	)
+	if _, err := repository.BeginStartOperation(
+		t.Context(),
+		beginParams(
+			"op_failed", "vs_failed", "acct_registered",
+			"start_failed", "hash_start_failed", now.Add(9*time.Second),
+		),
+	); err != nil {
+		t.Fatalf("failed-path BeginStartOperation() error = %v", err)
+	}
+	if _, _, err := repository.TransitionToActive(
+		t.Context(),
+		sessions.StartTransitionParams{
+			SessionID: "vs_failed", AccountID: "acct_registered",
+			OperationID: "op_failed", Expected: sessions.StatusCreated,
+			StartedAt:      now.Add(10 * time.Second),
+			IdempotencyKey: "start_failed", RequestHash: "hash_start_failed",
+		},
+	); err != nil {
+		t.Fatalf("failed-path TransitionToActive() error = %v", err)
+	}
+	failed, err := repository.TransitionToFailed(
+		t.Context(),
+		sessions.FailureTransitionParams{
+			SessionID: "vs_failed", AccountID: "acct_registered",
+			Expected: sessions.StatusActive, FailedAt: now.Add(11 * time.Second),
+			ErrorCode: "runtime_failed",
+		},
+	)
+	if err != nil || failed.Status != sessions.StatusFailed ||
+		failed.AccountID != "acct_anonymous" {
+		t.Fatalf("merged TransitionToFailed() = %#v, %v", failed, err)
+	}
+}
+
+func TestPostgresRepositoryMergedAccountCanClaimCompensation(t *testing.T) {
+	pool := sessionTestDatabase(t)
+	repository := sessions.NewPostgresRepository(pool)
+	now := time.Date(2026, time.July, 30, 10, 0, 0, 0, time.UTC)
+
+	insertAccount(t, pool, "acct_source", now.Add(-time.Hour))
+	insertAccount(t, pool, "acct_intermediate", now.Add(-time.Hour))
+	insertRegisteredAccount(t, pool, "acct_actor", "phone_actor", now.Add(-time.Hour))
+	insertAccount(t, pool, "acct_other", now.Add(-time.Hour))
+	mergeAccount(t, pool, "acct_source", "acct_intermediate")
+	mergeAccount(t, pool, "acct_intermediate", "acct_actor")
+	createSession(t, repository, "vs_compensation", "acct_source", now)
+
+	if _, err := repository.BeginStartOperation(
+		t.Context(),
+		beginParams(
+			"op_compensation", "vs_compensation", "acct_actor",
+			"start_compensation", "hash_compensation", now.Add(time.Second),
+		),
+	); err != nil {
+		t.Fatalf("multilevel BeginStartOperation() error = %v", err)
+	}
+	claimParams := sessions.ClaimStartCompensationParams{
+		SessionID: "vs_compensation", AccountID: "acct_actor",
+		OperationID: "op_compensation", ClaimID: "claim_compensation",
+		ClaimedAt: now.Add(2 * time.Second),
+	}
+	claim, err := repository.ClaimStartCompensation(t.Context(), claimParams)
+	if err != nil || !claim.Claimed {
+		t.Fatalf("multilevel ClaimStartCompensation() = %#v, %v", claim, err)
+	}
+	otherClaim := claimParams
+	otherClaim.AccountID = "acct_other"
+	otherClaim.ClaimID = "claim_other"
+	if _, err := repository.ClaimStartCompensation(
+		t.Context(), otherClaim,
+	); !errors.Is(err, sessions.ErrVoiceSessionNotFound) {
+		t.Fatalf("unrelated ClaimStartCompensation() error = %v", err)
+	}
+	if err := repository.FailStartCompensation(
+		t.Context(),
+		sessions.FailStartCompensationParams{
+			SessionID: "vs_compensation", AccountID: "acct_actor",
+			OperationID: "op_compensation", ClaimID: "claim_compensation",
+			FailedAt: now.Add(3 * time.Second),
+		},
+	); err != nil {
+		t.Fatalf("multilevel FailStartCompensation() error = %v", err)
+	}
+	if err := repository.CompleteStartCompensation(
+		t.Context(),
+		sessions.CompleteStartCompensationParams{
+			SessionID: "vs_compensation", AccountID: "acct_actor",
+			OperationID: "op_compensation", ClaimID: "claim_compensation",
+			CompletedAt: now.Add(4 * time.Second),
+		},
+	); err != nil {
+		t.Fatalf("multilevel CompleteStartCompensation() error = %v", err)
+	}
+
+	var owner string
+	if err := pool.QueryRow(t.Context(), `
+		SELECT account_id
+		FROM voice_session_start_operations
+		WHERE operation_id = 'op_compensation'
+	`).Scan(&owner); err != nil {
+		t.Fatalf("read compensation owner: %v", err)
+	}
+	if owner != "acct_source" {
+		t.Fatalf("compensation operation owner = %q, want acct_source", owner)
+	}
+}
+
 func TestPostgresRepositoryStartCompensationAndTransitions(t *testing.T) {
 	pool := sessionTestDatabase(t)
 	repository := sessions.NewPostgresRepository(pool)
@@ -593,6 +817,82 @@ func insertAccount(t *testing.T, pool *pgxpool.Pool, accountID string, at time.T
 		INSERT INTO lingow_accounts (id, kind, created_at)
 		VALUES ($1, 'anonymous', $2)`, accountID, at); err != nil {
 		t.Fatalf("insert account %q: %v", accountID, err)
+	}
+}
+
+func insertRegisteredAccount(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	accountID string,
+	phoneHash string,
+	at time.Time,
+) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO lingow_accounts (id, kind, phone_hash, created_at)
+		VALUES ($1, 'registered', $2, $3)`,
+		accountID, phoneHash, at); err != nil {
+		t.Fatalf("insert registered account %q: %v", accountID, err)
+	}
+}
+
+func mergeAccount(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	sourceAccountID string,
+	targetAccountID string,
+) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE lingow_accounts
+		SET merged_into = $1
+		WHERE id = $2`,
+		targetAccountID, sourceAccountID); err != nil {
+		t.Fatalf(
+			"merge account %q into %q: %v",
+			sourceAccountID, targetAccountID, err,
+		)
+	}
+}
+
+func assertLifecycleOwners(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	sessionID string,
+	wantOwner string,
+	operationID string,
+) {
+	t.Helper()
+	var sessionOwner, operationOwner, intentOwner string
+	if err := pool.QueryRow(t.Context(), `
+		SELECT account_id FROM voice_sessions WHERE id = $1`,
+		sessionID,
+	).Scan(&sessionOwner); err != nil {
+		t.Fatalf("read session owner: %v", err)
+	}
+	if err := pool.QueryRow(t.Context(), `
+		SELECT account_id
+		FROM voice_session_start_operations
+		WHERE operation_id = $1`,
+		operationID,
+	).Scan(&operationOwner); err != nil {
+		t.Fatalf("read start operation owner: %v", err)
+	}
+	if err := pool.QueryRow(t.Context(), `
+		SELECT account_id
+		FROM voice_session_end_intents
+		WHERE session_id = $1`,
+		sessionID,
+	).Scan(&intentOwner); err != nil {
+		t.Fatalf("read end intent owner: %v", err)
+	}
+	if sessionOwner != wantOwner ||
+		operationOwner != wantOwner ||
+		intentOwner != wantOwner {
+		t.Fatalf(
+			"persisted owners = session %q, operation %q, intent %q; want %q",
+			sessionOwner, operationOwner, intentOwner, wantOwner,
+		)
 	}
 }
 

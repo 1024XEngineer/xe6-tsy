@@ -70,6 +70,14 @@ func newStartFixture(t *testing.T, status Status) *startFixture {
 	}
 }
 
+func newMergedStartFixture(t *testing.T, status Status) *startFixture {
+	t.Helper()
+	fixture := newStartFixture(t, status)
+	fixture.repository.session.AccountID = "acct_anonymous"
+	fixture.repository.actorAccountID = "acct_registered"
+	return fixture
+}
+
 func newSharedStartService(
 	t *testing.T,
 	repository Repository,
@@ -103,6 +111,13 @@ func validStartInput() StartInput {
 		TraceID:        "req_1",
 		StartedBy:      "acct_1",
 	}
+}
+
+func mergedStartInput() StartInput {
+	input := validStartInput()
+	input.AccountID = "acct_registered"
+	input.StartedBy = "acct_registered"
+	return input
 }
 
 func activeStartSession(session VoiceSession, startedAt time.Time) VoiceSession {
@@ -147,12 +162,15 @@ type startRepository struct {
 	mu sync.Mutex
 
 	session                    VoiceSession
+	actorAccountID             string
 	getErr                     error
 	getCalls                   int
+	getAccountID               string
 	getHook                    func(context.Context)
 	operation                  *StartOperation
 	getOperationErr            error
 	getOperationCalls          int
+	getOperationAccountID      string
 	beginErr                   error
 	beginCalls                 int
 	beginParams                []BeginStartOperationParams
@@ -193,13 +211,14 @@ func (r *startRepository) GetOwned(
 ) (VoiceSession, error) {
 	r.mu.Lock()
 	r.getCalls++
+	r.getAccountID = accountID
 	hook := r.getHook
 	if r.getErr != nil {
 		err := r.getErr
 		r.mu.Unlock()
 		return VoiceSession{}, err
 	}
-	if r.session.AccountID != accountID || r.session.ID != sessionID {
+	if r.authorizedActorAccountID() != accountID || r.session.ID != sessionID {
 		r.mu.Unlock()
 		return VoiceSession{}, ErrVoiceSessionNotFound
 	}
@@ -222,7 +241,8 @@ func (r *startRepository) BeginStartOperation(
 	if r.beginErr != nil {
 		return BeginStartOperationResult{}, r.beginErr
 	}
-	if r.session.ID != params.SessionID || r.session.AccountID != params.AccountID {
+	if r.session.ID != params.SessionID ||
+		r.authorizedActorAccountID() != params.AccountID {
 		return BeginStartOperationResult{}, ErrVoiceSessionNotFound
 	}
 	if r.operation != nil && r.operation.IdempotencyKey == params.IdempotencyKey {
@@ -251,7 +271,7 @@ func (r *startRepository) BeginStartOperation(
 	operation := StartOperation{
 		ID:             params.OperationID,
 		SessionID:      params.SessionID,
-		AccountID:      params.AccountID,
+		AccountID:      r.session.AccountID,
 		IdempotencyKey: params.IdempotencyKey,
 		RequestHash:    params.RequestHash,
 		Status:         StartOperationPending,
@@ -271,10 +291,12 @@ func (r *startRepository) GetStartOperation(
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.getOperationCalls++
+	r.getOperationAccountID = accountID
 	if r.getOperationErr != nil {
 		return StartOperation{}, r.getOperationErr
 	}
-	if r.session.ID != sessionID || r.session.AccountID != accountID {
+	if r.session.ID != sessionID ||
+		r.authorizedActorAccountID() != accountID {
 		return StartOperation{}, ErrVoiceSessionNotFound
 	}
 	if r.operation == nil {
@@ -318,7 +340,8 @@ func (r *startRepository) ClaimStartCompensation(
 	if r.claimResult != nil {
 		return *r.claimResult, nil
 	}
-	if r.session.ID != params.SessionID || r.session.AccountID != params.AccountID {
+	if r.session.ID != params.SessionID ||
+		r.authorizedActorAccountID() != params.AccountID {
 		return ClaimStartCompensationResult{}, ErrVoiceSessionNotFound
 	}
 	if r.session.Status != StatusCreated {
@@ -433,7 +456,7 @@ func (r *startRepository) ownsStartCompensation(
 	operationID string,
 	claimID string,
 ) bool {
-	return r.session.AccountID == accountID &&
+	return r.authorizedActorAccountID() == accountID &&
 		r.session.ID == sessionID &&
 		r.session.Status == StatusCreated &&
 		r.operation != nil &&
@@ -441,6 +464,13 @@ func (r *startRepository) ownsStartCompensation(
 		r.operation.Status == StartOperationCompensating &&
 		r.operation.CompensationClaimID != nil &&
 		*r.operation.CompensationClaimID == claimID
+}
+
+func (r *startRepository) authorizedActorAccountID() string {
+	if r.actorAccountID != "" {
+		return r.actorAccountID
+	}
+	return r.session.AccountID
 }
 
 func (*startRepository) List(context.Context, ListFilter) (ListPage, error) {

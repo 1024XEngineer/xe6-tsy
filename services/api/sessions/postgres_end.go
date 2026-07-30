@@ -27,12 +27,16 @@ func (r *PostgresRepository) SaveEndIntent(
 		return EndIntent{}, false, postgresError("begin end intent", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := getSession(ctx, tx, intent.AccountID, intent.SessionID, true); err != nil {
+	session, err := getSessionForActor(
+		ctx, tx, intent.AccountID, intent.SessionID, true,
+	)
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return EndIntent{}, false, ErrVoiceSessionNotFound
 		}
 		return EndIntent{}, false, postgresError("lock session for end intent", err)
 	}
+	intent.AccountID = session.AccountID
 	var unresolvedStart bool
 	if err := tx.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -125,7 +129,18 @@ func (r *PostgresRepository) GetEndIntent(
 	if accountID == "" || sessionID == "" {
 		return EndIntent{}, ErrInvalidRequest
 	}
-	intent, found, err := endIntentBySession(ctx, r.pool, accountID, sessionID, false)
+	session, err := getSessionForActor(
+		ctx, r.pool, accountID, sessionID, false,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return EndIntent{}, ErrEndIntentNotFound
+	}
+	if err != nil {
+		return EndIntent{}, postgresError("verify end intent session ownership", err)
+	}
+	intent, found, err := endIntentBySession(
+		ctx, r.pool, session.AccountID, sessionID, false,
+	)
 	if err != nil {
 		return EndIntent{}, postgresError("get end intent", err)
 	}
@@ -152,13 +167,19 @@ func (r *PostgresRepository) CompleteEndIntent(
 		return postgresError("begin end intent completion", err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := getSession(ctx, tx, accountID, sessionID, true); err != nil {
+	session, err := getSessionForActor(
+		ctx, tx, accountID, sessionID, true,
+	)
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrEndIntentNotFound
 		}
 		return postgresError("lock session for end intent completion", err)
 	}
-	intent, found, err := endIntentBySession(ctx, tx, accountID, sessionID, true)
+	ownerAccountID := session.AccountID
+	intent, found, err := endIntentBySession(
+		ctx, tx, ownerAccountID, sessionID, true,
+	)
 	if err != nil {
 		return postgresError("lock end intent for completion", err)
 	}
@@ -173,7 +194,7 @@ func (r *PostgresRepository) CompleteEndIntent(
 			UPDATE voice_session_end_intents
 			SET completed_at = $1
 			WHERE account_id = $2 AND session_id = $3`,
-			completedAt.UTC(), accountID, sessionID); err != nil {
+			completedAt.UTC(), ownerAccountID, sessionID); err != nil {
 			return postgresError("complete end intent", err)
 		}
 	}
@@ -221,25 +242,28 @@ func (r *PostgresRepository) TransitionToActive(
 		return VoiceSession{}, false, postgresError("begin active transition", err)
 	}
 	defer tx.Rollback(ctx)
-	session, err := getSession(ctx, tx, params.AccountID, params.SessionID, true)
+	session, err := getSessionForActor(
+		ctx, tx, params.AccountID, params.SessionID, true,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return VoiceSession{}, false, ErrVoiceSessionNotFound
 	}
 	if err != nil {
 		return VoiceSession{}, false, postgresError("lock session for activation", err)
 	}
+	ownerAccountID := session.AccountID
 	operation, err := scanStartOperation(tx.QueryRow(ctx, `
 		SELECT `+startOperationColumns+`
 		FROM voice_session_start_operations
 		WHERE operation_id = $1 AND account_id = $2 AND session_id = $3
-		FOR UPDATE`, params.OperationID, params.AccountID, params.SessionID))
+		FOR UPDATE`, params.OperationID, ownerAccountID, params.SessionID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return VoiceSession{}, false, ErrConcurrentTransition
 	}
 	if err != nil {
 		return VoiceSession{}, false, postgresError("lock operation for activation", err)
 	}
-	if operation.AccountID != params.AccountID ||
+	if operation.AccountID != ownerAccountID ||
 		operation.SessionID != params.SessionID ||
 		operation.IdempotencyKey != params.IdempotencyKey {
 		return VoiceSession{}, false, ErrConcurrentTransition
@@ -263,7 +287,7 @@ func (r *PostgresRepository) TransitionToActive(
 		UPDATE voice_sessions
 		SET status = 'active', started_at = $1
 		WHERE id = $2 AND account_id = $3`,
-		params.StartedAt.UTC(), params.SessionID, params.AccountID); err != nil {
+		params.StartedAt.UTC(), params.SessionID, ownerAccountID); err != nil {
 		return VoiceSession{}, false, postgresError("activate session", err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -273,7 +297,9 @@ func (r *PostgresRepository) TransitionToActive(
 		params.StartedAt.UTC(), params.OperationID); err != nil {
 		return VoiceSession{}, false, postgresError("complete start operation", err)
 	}
-	session, err = getSession(ctx, tx, params.AccountID, params.SessionID, false)
+	session, err = getSessionByOwner(
+		ctx, tx, ownerAccountID, params.SessionID, false,
+	)
 	if err != nil {
 		return VoiceSession{}, false, postgresError("read activated session", err)
 	}
@@ -300,13 +326,16 @@ func (r *PostgresRepository) TransitionToEnded(
 		return VoiceSession{}, postgresError("begin ended transition", err)
 	}
 	defer tx.Rollback(ctx)
-	session, err := getSession(ctx, tx, params.AccountID, params.SessionID, true)
+	session, err := getSessionForActor(
+		ctx, tx, params.AccountID, params.SessionID, true,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return VoiceSession{}, ErrVoiceSessionNotFound
 	}
 	if err != nil {
 		return VoiceSession{}, postgresError("lock session for end", err)
 	}
+	ownerAccountID := session.AccountID
 	if session.Status != params.Expected ||
 		params.EndedAt.Before(session.CreatedAt) ||
 		(session.StartedAt != nil && params.EndedAt.Before(*session.StartedAt)) {
@@ -316,10 +345,12 @@ func (r *PostgresRepository) TransitionToEnded(
 		UPDATE voice_sessions
 		SET status = 'ended', ended_at = $1, failure_error_code = NULL
 		WHERE id = $2 AND account_id = $3`,
-		params.EndedAt.UTC(), params.SessionID, params.AccountID); err != nil {
+		params.EndedAt.UTC(), params.SessionID, ownerAccountID); err != nil {
 		return VoiceSession{}, postgresError("end session", err)
 	}
-	session, err = getSession(ctx, tx, params.AccountID, params.SessionID, false)
+	session, err = getSessionByOwner(
+		ctx, tx, ownerAccountID, params.SessionID, false,
+	)
 	if err != nil {
 		return VoiceSession{}, postgresError("read ended session", err)
 	}
@@ -346,13 +377,16 @@ func (r *PostgresRepository) TransitionToFailed(
 		return VoiceSession{}, postgresError("begin failed transition", err)
 	}
 	defer tx.Rollback(ctx)
-	session, err := getSession(ctx, tx, params.AccountID, params.SessionID, true)
+	session, err := getSessionForActor(
+		ctx, tx, params.AccountID, params.SessionID, true,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return VoiceSession{}, ErrVoiceSessionNotFound
 	}
 	if err != nil {
 		return VoiceSession{}, postgresError("lock session for failure", err)
 	}
+	ownerAccountID := session.AccountID
 	if session.Status != StatusActive || session.StartedAt == nil ||
 		params.FailedAt.Before(*session.StartedAt) {
 		return VoiceSession{}, ErrConcurrentTransition
@@ -361,10 +395,12 @@ func (r *PostgresRepository) TransitionToFailed(
 		UPDATE voice_sessions
 		SET status = 'failed', failure_error_code = $1, ended_at = NULL
 		WHERE id = $2 AND account_id = $3`,
-		params.ErrorCode, params.SessionID, params.AccountID); err != nil {
+		params.ErrorCode, params.SessionID, ownerAccountID); err != nil {
 		return VoiceSession{}, postgresError("fail session", err)
 	}
-	session, err = getSession(ctx, tx, params.AccountID, params.SessionID, false)
+	session, err = getSessionByOwner(
+		ctx, tx, ownerAccountID, params.SessionID, false,
+	)
 	if err != nil {
 		return VoiceSession{}, postgresError("read failed session", err)
 	}

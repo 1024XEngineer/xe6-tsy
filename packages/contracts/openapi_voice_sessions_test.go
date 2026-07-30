@@ -1,0 +1,104 @@
+package contracts
+
+import (
+	"os"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
+	spec := loadRootOpenAPI(t)
+	paths := spec["paths"].(map[string]any)
+	for _, path := range []string{
+		"/voice-sessions",
+		"/voice-sessions/{id}",
+		"/voice-sessions/{id}/start",
+		"/voice-sessions/{id}/end",
+		"/voice-sessions/{id}/state",
+	} {
+		if _, ok := paths[path]; !ok {
+			t.Fatalf("missing voice-session path %s", path)
+		}
+	}
+
+	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
+	status := schemas["VoiceSessionStatus"].(map[string]any)
+	wantStatuses := []any{"created", "active", "ended", "failed"}
+	if got := status["enum"]; !sameStringSlice(got.([]any), wantStatuses) {
+		t.Fatalf("VoiceSessionStatus enum = %v, want %v", got, wantStatuses)
+	}
+
+	listItem := schemas["VoiceSessionListItem"].(map[string]any)
+	listProperties := listItem["properties"].(map[string]any)
+	for _, forbidden := range []string{
+		"runtime_state",
+		"current_turn_id",
+		"current_playback_id",
+		"last_error_code",
+		"retryable",
+		"runtime_updated_at",
+	} {
+		if _, ok := listProperties[forbidden]; ok {
+			t.Fatalf("VoiceSessionListItem contains runtime field %q", forbidden)
+		}
+	}
+
+	detail := schemas["VoiceSessionDetail"].(map[string]any)
+	detailProperties := detail["properties"].(map[string]any)
+	for _, requiredProperty := range []string{
+		"id",
+		"account_id",
+		"status",
+		"runtime_state",
+		"audio_config",
+		"capabilities",
+		"runtime_updated_at",
+	} {
+		if _, ok := detailProperties[requiredProperty]; !ok {
+			t.Fatalf("VoiceSessionDetail properties missing %q", requiredProperty)
+		}
+	}
+
+	state := schemas["VoiceSessionStateSnapshot"].(map[string]any)
+	stateRequired := state["required"].([]any)
+	for _, required := range []any{"session_id", "status", "runtime_state", "runtime_updated_at"} {
+		if !containsString(stateRequired, required) {
+			t.Fatalf("VoiceSessionStateSnapshot required = %v, missing %s", stateRequired, required)
+		}
+	}
+}
+
+func loadRootOpenAPI(t *testing.T) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile("openapi.yaml")
+	if err != nil {
+		t.Fatalf("read openapi.yaml: %v", err)
+	}
+	var spec map[string]any
+	if err := yaml.Unmarshal(raw, &spec); err != nil {
+		t.Fatalf("parse openapi.yaml: %v", err)
+	}
+	return spec
+}
+
+func sameStringSlice(got []any, want []any) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(values []any, want any) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

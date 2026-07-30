@@ -26,6 +26,13 @@ import (
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
+const (
+	apiReadHeaderTimeout = 5 * time.Second
+	apiReadTimeout       = 15 * time.Second
+	apiWriteTimeout      = 45 * time.Second
+	apiIdleTimeout       = 60 * time.Second
+)
+
 type recordsHTTPDependencies struct {
 	handler    *recordswebapi.Server
 	accounts   accounts.Service
@@ -125,10 +132,10 @@ func run() error {
 	server := &http.Server{
 		Addr:              processConfig.APIAddr,
 		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: apiReadHeaderTimeout,
+		ReadTimeout:       apiReadTimeout,
+		WriteTimeout:      apiWriteTimeout,
+		IdleTimeout:       apiIdleTimeout,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

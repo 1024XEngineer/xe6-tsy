@@ -82,13 +82,36 @@ func TestLoadValidatesRealtimeBaseURL(t *testing.T) {
 	}
 }
 
-func TestLoadAcceptsRealtimeHTTPTimeout(t *testing.T) {
-	config, err := LoadFrom(mapCoreEnv(map[string]string{"REALTIME_HTTP_TIMEOUT": "750ms"}))
-	if err != nil {
-		t.Fatalf("LoadFrom() error = %v", err)
+func TestLoadValidatesRealtimeHTTPTimeout(t *testing.T) {
+	tests := []struct {
+		value  string
+		wantOK bool
+	}{
+		{value: "5s", wantOK: true},
+		{value: "1s", wantOK: true},
+		{value: "0s", wantOK: false},
+		{value: "-1s", wantOK: false},
+		{value: "6s", wantOK: false},
+		{value: "30s", wantOK: false},
+		{value: "abc", wantOK: false},
 	}
-	if config.RealtimeHTTPTimeout != 750*time.Millisecond {
-		t.Fatalf("RealtimeHTTPTimeout = %s, want 750ms", config.RealtimeHTTPTimeout)
+	for _, test := range tests {
+		t.Run(test.value, func(t *testing.T) {
+			config, err := LoadFrom(mapCoreEnv(map[string]string{"REALTIME_HTTP_TIMEOUT": test.value}))
+			if test.wantOK {
+				if err != nil {
+					t.Fatalf("LoadFrom() error = %v, want nil", err)
+				}
+				want, _ := time.ParseDuration(test.value)
+				if config.RealtimeHTTPTimeout != want {
+					t.Fatalf("RealtimeHTTPTimeout = %s, want %s", config.RealtimeHTTPTimeout, want)
+				}
+				return
+			}
+			if !errors.Is(err, domain.ErrInvalidArgument) {
+				t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+			}
+		})
 	}
 }
 

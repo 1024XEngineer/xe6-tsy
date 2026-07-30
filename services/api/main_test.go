@@ -174,6 +174,20 @@ func TestBuildMuxMountsVoiceSessionRoutes(t *testing.T) {
 	}
 }
 
+func TestAPIServerTimeoutBudgetConstants(t *testing.T) {
+	if apiReadHeaderTimeout != 5*time.Second ||
+		apiReadTimeout != 15*time.Second ||
+		apiWriteTimeout != 45*time.Second ||
+		apiIdleTimeout != 60*time.Second {
+		t.Fatalf("API timeout budget = (%v, %v, %v, %v), want (5s, 15s, 45s, 60s)",
+			apiReadHeaderTimeout,
+			apiReadTimeout,
+			apiWriteTimeout,
+			apiIdleTimeout,
+		)
+	}
+}
+
 func TestNewRecordsHTTPDependenciesFromPoolRequiresPool(t *testing.T) {
 	_, err := newRecordsHTTPDependenciesFromPool(
 		context.Background(),

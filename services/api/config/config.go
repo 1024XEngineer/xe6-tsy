@@ -18,6 +18,7 @@ const (
 	providerFakeEmail           = "fake_email"
 	providerSMTP                = "smtp"
 	defaultRealtimeHTTPTimeout  = 5 * time.Second
+	maxRealtimeHTTPTimeout      = 5 * time.Second
 	minRealtimeTicketSecretSize = 32
 )
 
@@ -157,8 +158,8 @@ func validateCore(config Config) error {
 	if err := validateRealtimeBaseURL(config.RealtimeBaseURL); err != nil {
 		return err
 	}
-	if config.RealtimeHTTPTimeout <= 0 {
-		return fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be positive", domain.ErrInvalidArgument)
+	if config.RealtimeHTTPTimeout <= 0 || config.RealtimeHTTPTimeout > maxRealtimeHTTPTimeout {
+		return fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be between 1ns and %s", domain.ErrInvalidArgument, maxRealtimeHTTPTimeout)
 	}
 	return nil
 }

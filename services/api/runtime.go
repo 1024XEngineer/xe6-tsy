@@ -296,10 +296,10 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	server := &http.Server{
 		Addr:              address,
 		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: apiReadHeaderTimeout,
+		ReadTimeout:       apiReadTimeout,
+		WriteTimeout:      apiWriteTimeout,
+		IdleTimeout:       apiIdleTimeout,
 	}
 	errs := make(chan error, 8)
 	var components sync.WaitGroup

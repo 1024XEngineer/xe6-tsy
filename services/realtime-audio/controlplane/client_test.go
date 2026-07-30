@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -118,13 +119,84 @@ func TestClientStopCarriesReasonTimeAndReplaysByReason(t *testing.T) {
 	}
 }
 
+func TestClientStopAllowsEmptyTraceID(t *testing.T) {
+	endedAt := time.Unix(1700000060, 0).UTC()
+	observations := make(chan stopRequestObservation, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body realtimev1.StopRequest
+		decodeErr := json.NewDecoder(request.Body).Decode(&body)
+		observations <- stopRequestObservation{
+			authorization:  request.Header.Get("Authorization"),
+			idempotencyKey: request.Header.Get("Idempotency-Key"),
+			body:           body,
+			err:            decodeErr,
+		}
+		_ = json.NewEncoder(writer).Encode(realtimev1.RuntimeSnapshot{
+			SessionID: "session-1", RuntimeState: realtimev1.RuntimeStopped,
+			UpdatedAt: endedAt,
+		})
+	}))
+	t.Cleanup(server.Close)
+	client := newTestClient(t, server.URL)
+
+	snapshot, err := client.Stop(t.Context(), "session-1", realtimev1.StopRequest{
+		Reason:  "user_requested",
+		EndedAt: endedAt,
+	})
+	if err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	observation := <-observations
+	if observation.err != nil {
+		t.Fatalf("decode stop request: %v", observation.err)
+	}
+	if observation.authorization != "Bearer realtime-ticket" {
+		t.Fatalf("Authorization = %q, want bearer ticket", observation.authorization)
+	}
+	if observation.idempotencyKey != "stop:user_requested" {
+		t.Fatalf("Idempotency-Key = %q, want stop:user_requested", observation.idempotencyKey)
+	}
+	if observation.body.TraceID != "" ||
+		observation.body.Reason != "user_requested" ||
+		!observation.body.EndedAt.Equal(endedAt) {
+		t.Fatalf("stop body = %#v", observation.body)
+	}
+	if snapshot.SessionID != "session-1" ||
+		snapshot.RuntimeState != realtimev1.RuntimeStopped ||
+		snapshot.UpdatedAt.IsZero() {
+		t.Fatalf("Stop() = %#v", snapshot)
+	}
+}
+
+type stopRequestObservation struct {
+	authorization  string
+	idempotencyKey string
+	body           realtimev1.StopRequest
+	err            error
+}
+
 func TestClientStopValidatesRequestAndResponse(t *testing.T) {
 	client := newTestClient(t, "https://realtime.example")
-	if _, err := client.Stop(t.Context(), "session-1", realtimev1.StopRequest{
-		TraceID: "trace-stop",
-		Reason:  "user_requested",
-	}); !errors.Is(err, ErrClientRequest) {
-		t.Fatalf("Stop(zero time) error = %v, want ErrClientRequest", err)
+	valid := realtimev1.StopRequest{
+		Reason: "user_requested", EndedAt: time.Unix(1700000060, 0).UTC(),
+	}
+	tests := []struct {
+		name      string
+		sessionID string
+		request   realtimev1.StopRequest
+	}{
+		{name: "empty session", sessionID: "", request: valid},
+		{name: "empty reason", sessionID: "session-1", request: realtimev1.StopRequest{EndedAt: valid.EndedAt}},
+		{name: "zero time", sessionID: "session-1", request: realtimev1.StopRequest{Reason: "user_requested"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := client.Stop(
+				t.Context(), test.sessionID, test.request,
+			); !errors.Is(err, ErrClientRequest) {
+				t.Fatalf("Stop() error = %v, want ErrClientRequest", err)
+			}
+		})
 	}
 
 	fixture := newFixture(t)

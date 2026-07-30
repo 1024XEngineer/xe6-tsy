@@ -107,7 +107,6 @@ func (c *Client) Stop(
 	request realtimev1.StopRequest,
 ) (realtimev1.RuntimeSnapshot, error) {
 	if strings.TrimSpace(sessionID) == "" ||
-		strings.TrimSpace(request.TraceID) == "" ||
 		strings.TrimSpace(request.Reason) == "" ||
 		request.EndedAt.IsZero() {
 		return realtimev1.RuntimeSnapshot{}, ErrClientRequest

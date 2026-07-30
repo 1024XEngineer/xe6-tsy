@@ -74,6 +74,7 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 						Schema openAPIProperty `yaml:"schema"`
 					} `yaml:"content"`
 				} `yaml:"requestBody"`
+				Security  []map[string][]string `yaml:"security"`
 				Responses map[string]struct {
 					Content map[string]struct {
 						Schema openAPIProperty `yaml:"schema"`
@@ -86,10 +87,12 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 						Schema openAPIProperty `yaml:"schema"`
 					} `yaml:"content"`
 				} `yaml:"responses"`
+				Security []map[string][]string `yaml:"security"`
 			} `yaml:"get"`
 		} `yaml:"paths"`
 		Components struct {
-			Schemas map[string]openAPISchema `yaml:"schemas"`
+			SecuritySchemes map[string]openAPISchema `yaml:"securitySchemes"`
+			Schemas         map[string]openAPISchema `yaml:"schemas"`
 		} `yaml:"components"`
 	}
 	if err := yaml.Unmarshal(specData, &spec); err != nil {
@@ -105,8 +108,16 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 			t.Fatal("WebRTCErrorCode must not contain runtime_operation_conflict")
 		}
 	}
+	ticket := spec.Components.SecuritySchemes["realtimeTicket"]
+	if ticket.Type != "http" || ticket.Scheme != "bearer" || ticket.BearerFormat != "" {
+		t.Fatalf("realtimeTicket = %#v, want non-JWT HTTP bearer scheme", ticket)
+	}
 
 	start := spec.Paths["/realtime/v1/sessions/{session_id}/start"]
+	assertRealtimeSecurity(t, "start", start.Post.Security)
+	if _, ok := start.Post.Responses["401"]; !ok {
+		t.Fatal("Start must declare 401 Unauthorized")
+	}
 	conflict := start.Post.Responses["409"]
 	schema := conflict.Content["application/json"].Schema
 	if want := "#/components/schemas/RuntimeOperationConflictError"; schema.Ref != want {
@@ -122,6 +133,10 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 	}
 
 	stop := spec.Paths["/realtime/v1/sessions/{session_id}/stop"]
+	assertRealtimeSecurity(t, "stop", stop.Post.Security)
+	if _, ok := stop.Post.Responses["401"]; !ok {
+		t.Fatal("Stop must declare 401 Unauthorized")
+	}
 	if got := stop.Post.RequestBody.Content["application/json"].Schema.Ref; got != "#/components/schemas/RealtimeStopRequest" {
 		t.Fatalf("Stop request schema ref = %q", got)
 	}
@@ -129,12 +144,31 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 		t.Fatalf("Stop 200 schema ref = %q", got)
 	}
 	runtime := spec.Paths["/realtime/v1/sessions/{session_id}/runtime"]
+	assertRealtimeSecurity(t, "runtime", runtime.Get.Security)
+	if _, ok := runtime.Get.Responses["401"]; !ok {
+		t.Fatal("Runtime must declare 401 Unauthorized")
+	}
 	if got := runtime.Get.Responses["200"].Content["application/json"].Schema.Ref; got != "#/components/schemas/RealtimeRuntimeSnapshot" {
 		t.Fatalf("Runtime 200 schema ref = %q", got)
+	}
+	connection := spec.Paths["/realtime/v1/sessions/{session_id}/connection"]
+	assertRealtimeSecurity(t, "connection", connection.Get.Security)
+	if _, ok := connection.Get.Responses["401"]; !ok {
+		t.Fatal("Connection must declare 401 Unauthorized")
 	}
 	stopSchema := spec.Components.Schemas["RealtimeStopRequest"]
 	wantFields := []string{"reason", "ended_at"}
 	if !reflect.DeepEqual(stopSchema.Required, wantFields) {
 		t.Fatalf("RealtimeStopRequest required = %v, want %v", stopSchema.Required, wantFields)
+	}
+}
+
+func assertRealtimeSecurity(t *testing.T, operation string, security []map[string][]string) {
+	t.Helper()
+	if len(security) != 1 {
+		t.Fatalf("%s security = %#v, want exactly realtimeTicket", operation, security)
+	}
+	if scopes, ok := security[0]["realtimeTicket"]; !ok || len(scopes) != 0 {
+		t.Fatalf("%s security = %#v, want realtimeTicket with no scopes", operation, security)
 	}
 }

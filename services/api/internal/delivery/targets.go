@@ -52,8 +52,12 @@ func parseDevEmailBindToken(appEnv, token string) (destinationRef, email string,
 	default:
 		return "", "", domain.ErrInvalidArgument
 	}
-	if destinationRef == "" || email == "" || !strings.Contains(email, "@") {
+	if destinationRef == "" || email == "" {
 		return "", "", domain.ErrInvalidArgument
+	}
+	email, err = validateBindEmail(email)
+	if err != nil {
+		return "", "", err
 	}
 	return destinationRef, email, nil
 }

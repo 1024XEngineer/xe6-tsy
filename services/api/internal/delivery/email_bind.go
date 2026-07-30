@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -66,8 +67,11 @@ type EmailBindSender interface {
 type LogEmailBindSender struct{}
 
 func (LogEmailBindSender) SendBindToken(_ context.Context, email, destinationRef, token string) error {
-	if strings.TrimSpace(email) == "" || strings.TrimSpace(token) == "" {
+	if strings.TrimSpace(token) == "" {
 		return domain.ErrInvalidArgument
+	}
+	if _, err := validateBindEmail(email); err != nil {
+		return err
 	}
 	fmt.Printf("email bind token destination_ref=%s email=%s token=%s\n", destinationRef, email, token)
 	return nil
@@ -87,11 +91,35 @@ func generateEmailBindToken() (string, error) {
 }
 
 func normalizeBindEmail(email string) (string, error) {
-	email = strings.TrimSpace(strings.ToLower(email))
-	if email == "" || !strings.Contains(email, "@") {
+	return validateBindEmail(email)
+}
+
+// validateBindEmail rejects control characters and non addr-spec addresses before SMTP use.
+func validateBindEmail(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
 		return "", domain.ErrInvalidArgument
 	}
-	return email, nil
+	for _, r := range raw {
+		if r < 0x20 || r == 0x7f {
+			return "", domain.ErrInvalidArgument
+		}
+	}
+	if strings.ContainsAny(raw, "<>\"") {
+		return "", domain.ErrInvalidArgument
+	}
+	parsed, err := mail.ParseAddress(raw)
+	if err != nil || parsed.Name != "" {
+		return "", domain.ErrInvalidArgument
+	}
+	normalized := strings.ToLower(strings.TrimSpace(parsed.Address))
+	if normalized == "" || !strings.Contains(normalized, "@") {
+		return "", domain.ErrInvalidArgument
+	}
+	if strings.ToLower(raw) != normalized {
+		return "", domain.ErrInvalidArgument
+	}
+	return normalized, nil
 }
 
 func normalizeBindDestinationRef(destinationRef string) string {

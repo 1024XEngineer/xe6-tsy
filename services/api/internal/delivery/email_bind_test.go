@@ -202,3 +202,43 @@ func TestEnforceEmailBindRateLimitAllowsFreshRequest(t *testing.T) {
 		t.Fatalf("enforceEmailBindRateLimit() error = %v, want nil", err)
 	}
 }
+
+func TestValidateBindEmailRejectsControlCharacters(t *testing.T) {
+	tests := []string{
+		"user@example.test\r\nBcc: attacker@evil.test",
+		"user@example.test\nRCPT TO:<attacker@evil.test>",
+		"user@example.test\x00",
+	}
+	for _, email := range tests {
+		if _, err := validateBindEmail(email); !errors.Is(err, domain.ErrInvalidArgument) {
+			t.Fatalf("validateBindEmail(%q) error = %v, want invalid argument", email, err)
+		}
+	}
+}
+
+func TestValidateBindEmailRejectsDisplayNameForm(t *testing.T) {
+	if _, err := validateBindEmail("Attacker <user@example.test>"); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("validateBindEmail() error = %v, want invalid argument", err)
+	}
+}
+
+func TestValidateBindEmailNormalizesCase(t *testing.T) {
+	email, err := validateBindEmail(" User@Example.test ")
+	if err != nil {
+		t.Fatalf("validateBindEmail() error = %v", err)
+	}
+	if email != "user@example.test" {
+		t.Fatalf("validateBindEmail() = %q, want user@example.test", email)
+	}
+}
+
+func TestRequestEmailBindVerificationRejectsHeaderInjection(t *testing.T) {
+	service := NewPersistentUseCases(&targetRepositoryStub{}, nil, nil, nil)
+	service.ConfigureTargetBinding(testDestinationKey(t), "production")
+	service.ConfigureEmailVerification(&emailBindChallengeStub{}, &emailBindSenderStub{})
+
+	err := service.RequestEmailBindVerification(t.Context(), "account-1", "user@example.test\r\nBcc: attacker@evil.test", "")
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("RequestEmailBindVerification() error = %v, want invalid argument", err)
+	}
+}

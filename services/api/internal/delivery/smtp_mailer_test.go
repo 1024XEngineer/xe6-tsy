@@ -117,6 +117,17 @@ func TestSMTPMailerSendPlainTextRejectsMissingRecipient(t *testing.T) {
 	}
 }
 
+func TestSMTPMailerSendPlainTextRejectsHeaderInjectionRecipient(t *testing.T) {
+	mailer, err := NewSMTPMailer(SMTPConfig{Host: "smtp.example.test", From: "noreply@example.test"})
+	if err != nil {
+		t.Fatalf("NewSMTPMailer() error = %v", err)
+	}
+	err = mailer.SendPlainText(t.Context(), "user@example.test\r\nBcc: attacker@evil.test", "subject", "body")
+	if err == nil || !strings.Contains(err.Error(), "invalid") {
+		t.Fatalf("SendPlainText() error = %v, want invalid recipient", err)
+	}
+}
+
 func TestSMTPMailerSendPlainTextRequiresSTARTTLSWhenEnabled(t *testing.T) {
 	host, port, cleanup := startFakeSMTPServer(t)
 	defer cleanup()

@@ -226,6 +226,7 @@ func TestParseDevEmailBindTokenRejectsInvalidPayload(t *testing.T) {
 		{name: "empty token", token: "", want: domain.ErrInvalidArgument},
 		{name: "missing email", token: "dev:", want: domain.ErrInvalidArgument},
 		{name: "invalid email", token: "dev:not-an-email", want: domain.ErrInvalidArgument},
+		{name: "header injection", token: "dev:user@example.test\r\nBcc attacker@evil.test", want: domain.ErrInvalidArgument},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

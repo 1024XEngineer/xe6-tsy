@@ -50,9 +50,9 @@ func (m *SMTPMailer) sendPlainText(ctx context.Context, to, subject, body, messa
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	to = strings.TrimSpace(to)
-	if to == "" {
-		return fmt.Errorf("smtp recipient is required")
+	to, err := validateBindEmail(to)
+	if err != nil {
+		return fmt.Errorf("smtp recipient is invalid")
 	}
 	messageID = strings.TrimSpace(messageID)
 	if messageID == "" {

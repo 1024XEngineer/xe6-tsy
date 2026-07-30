@@ -218,6 +218,48 @@ func TestConfiguredProviderRejectsUnknownName(t *testing.T) {
 	}
 }
 
+func TestNewConfiguredSMTPMailerReturnsNilWithoutHost(t *testing.T) {
+	mailer, err := newConfiguredSMTPMailer(config.Config{})
+	if err != nil || mailer != nil {
+		t.Fatalf("newConfiguredSMTPMailer() = (%v, %v), want (nil, nil)", mailer, err)
+	}
+}
+
+func TestNewConfiguredSMTPMailerBuildsMailerFromConfig(t *testing.T) {
+	mailer, err := newConfiguredSMTPMailer(config.Config{
+		SMTPHost: "smtp.example.test",
+		SMTPPort: "2525",
+		SMTPFrom: "noreply@example.test",
+	})
+	if err != nil || mailer == nil {
+		t.Fatalf("newConfiguredSMTPMailer() = (%v, %v)", mailer, err)
+	}
+}
+
+func TestNewEmailBindSenderPrefersSMTPOverLogSender(t *testing.T) {
+	mailer, err := delivery.NewSMTPMailer(delivery.SMTPConfig{Host: "smtp.example.test", From: "noreply@example.test"})
+	if err != nil {
+		t.Fatalf("NewSMTPMailer() error = %v", err)
+	}
+	sender := newEmailBindSender(config.Config{AppEnv: "local"}, mailer)
+	if _, ok := sender.(*delivery.SMTPEmailBindSender); !ok {
+		t.Fatalf("sender = %T, want *SMTPEmailBindSender", sender)
+	}
+}
+
+func TestNewEmailBindSenderUsesLogSenderInLocalWithoutSMTP(t *testing.T) {
+	sender := newEmailBindSender(config.Config{AppEnv: "local"}, nil)
+	if _, ok := sender.(delivery.LogEmailBindSender); !ok {
+		t.Fatalf("sender = %T, want LogEmailBindSender", sender)
+	}
+}
+
+func TestNewEmailBindSenderReturnsNilOutsideLocalWithoutSMTP(t *testing.T) {
+	if sender := newEmailBindSender(config.Config{AppEnv: "production"}, nil); sender != nil {
+		t.Fatalf("sender = %T, want nil", sender)
+	}
+}
+
 func TestConfiguredRuntimeHonorsCanceledStartupContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

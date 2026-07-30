@@ -596,6 +596,42 @@ func TestBindEmailTargetRejectsMissingToken(t *testing.T) {
 	}
 }
 
+func TestRequestEmailBindVerificationPassesAuthenticatedAccount(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/email/verification-codes", strings.NewReader(`{"email":"user@example.test","destination_ref":"work-email"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	if fake.bindAccountID != "account-1" || fake.bindToken != "user@example.test:work-email" {
+		t.Fatalf("verification input = (%q, %q)", fake.bindAccountID, fake.bindToken)
+	}
+}
+
+func TestRequestEmailBindVerificationRejectsMissingEmail(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/email/verification-codes", strings.NewReader(`{"email":" "}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.bindAccountID != "" {
+		t.Fatal("invalid verification request reached service")
+	}
+}
+
 func TestUnbindEmailTargetPassesDestinationRef(t *testing.T) {
 	fake := &deliveryFake{}
 	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})

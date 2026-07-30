@@ -154,12 +154,31 @@ func validateCore(config Config) error {
 	if len([]byte(config.RealtimeTicketSecret)) < minRealtimeTicketSecretSize {
 		return fmt.Errorf("%w: REALTIME_TICKET_SECRET must contain at least 32 bytes", domain.ErrInvalidArgument)
 	}
-	parsed, err := url.Parse(config.RealtimeBaseURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("%w: REALTIME_BASE_URL must include scheme and host", domain.ErrInvalidArgument)
+	if err := validateRealtimeBaseURL(config.RealtimeBaseURL); err != nil {
+		return err
 	}
 	if config.RealtimeHTTPTimeout <= 0 {
 		return fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be positive", domain.ErrInvalidArgument)
+	}
+	return nil
+}
+
+func validateRealtimeBaseURL(rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("%w: REALTIME_BASE_URL must be a valid HTTP or HTTPS URL", domain.ErrInvalidArgument)
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("%w: REALTIME_BASE_URL must use http or https", domain.ErrInvalidArgument)
+	}
+	if parsed.Host == "" ||
+		parsed.User != nil ||
+		parsed.RawQuery != "" ||
+		parsed.Fragment != "" ||
+		parsed.Opaque != "" {
+		return fmt.Errorf("%w: REALTIME_BASE_URL must include only scheme, host, and optional path", domain.ErrInvalidArgument)
 	}
 	return nil
 }

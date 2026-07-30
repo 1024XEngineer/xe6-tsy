@@ -55,6 +55,33 @@ func TestLoadSetsRealtimeHTTPTimeoutDefault(t *testing.T) {
 	}
 }
 
+func TestLoadValidatesRealtimeBaseURL(t *testing.T) {
+	tests := []struct {
+		rawURL string
+		wantOK bool
+	}{
+		{rawURL: "http://127.0.0.1:8090", wantOK: true},
+		{rawURL: "https://realtime.example.com", wantOK: true},
+		{rawURL: "https://example.com/internal", wantOK: true},
+		{rawURL: "ftp://example.com", wantOK: false},
+		{rawURL: "file:///tmp/realtime", wantOK: false},
+		{rawURL: "http://user:pass@example.com", wantOK: false},
+		{rawURL: "http://example.com?token=value", wantOK: false},
+		{rawURL: "http://example.com#fragment", wantOK: false},
+	}
+	for _, test := range tests {
+		t.Run(test.rawURL, func(t *testing.T) {
+			_, err := LoadFrom(mapCoreEnv(map[string]string{"REALTIME_BASE_URL": test.rawURL}))
+			if test.wantOK && err != nil {
+				t.Fatalf("LoadFrom() error = %v, want nil", err)
+			}
+			if !test.wantOK && !errors.Is(err, domain.ErrInvalidArgument) {
+				t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+			}
+		})
+	}
+}
+
 func TestLoadAcceptsRealtimeHTTPTimeout(t *testing.T) {
 	config, err := LoadFrom(mapCoreEnv(map[string]string{"REALTIME_HTTP_TIMEOUT": "750ms"}))
 	if err != nil {

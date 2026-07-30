@@ -11,19 +11,30 @@ import (
 )
 
 type UseCases struct {
-	repository   Repository
-	turns        TurnReader
-	destinations DestinationReader
-	queue        Queue
-	keys         sync.Mutex
-	createKeys   map[string]string
-	retryKeys    map[string]string
+	repository     Repository
+	turns          TurnReader
+	destinations   DestinationReader
+	queue          Queue
+	keys           sync.Mutex
+	createKeys     map[string]string
+	retryKeys      map[string]string
+	destinationKey []byte
+	appEnv         string
 }
 
 func NewUseCases() *UseCases { return &UseCases{} }
 
 func NewPersistentUseCases(repository Repository, turns TurnReader, destinations DestinationReader, queue Queue) *UseCases {
 	return &UseCases{repository: repository, turns: turns, destinations: destinations, queue: queue, createKeys: make(map[string]string), retryKeys: make(map[string]string)}
+}
+
+// ConfigureTargetBinding enables message-target bind/list/unbind operations on a
+// persistent deployment. Without destination key material the routes fail closed.
+func (u *UseCases) ConfigureTargetBinding(destinationKey []byte, appEnv string) {
+	if len(destinationKey) == 32 {
+		u.destinationKey = append([]byte(nil), destinationKey...)
+	}
+	u.appEnv = appEnv
 }
 
 func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, error) {
@@ -195,6 +206,50 @@ func (u *UseCases) PutPreference(ctx context.Context, accountID string, channel 
 	// repository derives it from the currently verified, non-revoked target;
 	// the preference endpoint must not manufacture a verified state.
 	return u.repository.PutPreference(ctx, Preference{AccountID: accountID, Channel: channel, Enabled: enabled, UpdatedAt: time.Now().UTC()})
+}
+
+func (u *UseCases) ListMessageTargets(ctx context.Context, accountID string, channel *Channel) ([]MessageTarget, error) {
+	repository := targetRepository(u.repository)
+	if repository == nil || accountID == "" {
+		return nil, domain.ErrNotImplemented
+	}
+	return repository.ListMessageTargets(ctx, accountID, channel)
+}
+
+func (u *UseCases) BindEmailTarget(ctx context.Context, accountID, token string) (MessageTarget, error) {
+	repository := targetRepository(u.repository)
+	if repository == nil || accountID == "" || len(u.destinationKey) != 32 {
+		return MessageTarget{}, domain.ErrNotImplemented
+	}
+	destinationRef, email, err := parseDevEmailBindToken(u.appEnv, token)
+	if err != nil {
+		return MessageTarget{}, err
+	}
+	ciphertext, err := EncryptProviderTarget(u.destinationKey, email)
+	if err != nil {
+		return MessageTarget{}, err
+	}
+	now := time.Now().UTC()
+	return repository.BindEmailTarget(ctx, BindEmailTargetRecord{
+		ID:             "dest_" + ulid.Make().String(),
+		AccountID:      accountID,
+		DestinationRef: destinationRef,
+		Ciphertext:     ciphertext,
+		KeyVersion:     destinationKeyVersion,
+		VerifiedAt:     now,
+	})
+}
+
+func (u *UseCases) BindWeChatTarget(context.Context, string, string) (MessageTarget, error) {
+	return MessageTarget{}, domain.ErrNotImplemented
+}
+
+func (u *UseCases) RevokeMessageTarget(ctx context.Context, accountID string, channel Channel, destinationRef string) error {
+	repository := targetRepository(u.repository)
+	if repository == nil || accountID == "" {
+		return domain.ErrNotImplemented
+	}
+	return repository.RevokeMessageTarget(ctx, accountID, channel, destinationRef, time.Now().UTC())
 }
 
 func isOutboxBacked(repository Repository) bool { _, ok := repository.(OutboxRepository); return ok }

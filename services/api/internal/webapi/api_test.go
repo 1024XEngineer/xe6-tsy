@@ -88,6 +88,18 @@ func (*deliveryFake) Preferences(context.Context, string) ([]delivery.Preference
 func (*deliveryFake) PutPreference(context.Context, string, delivery.Channel, bool) (delivery.Preference, error) {
 	return delivery.Preference{}, domain.ErrNotImplemented
 }
+func (*deliveryFake) ListMessageTargets(context.Context, string, *delivery.Channel) ([]delivery.MessageTarget, error) {
+	return nil, domain.ErrNotImplemented
+}
+func (*deliveryFake) BindEmailTarget(context.Context, string, string) (delivery.MessageTarget, error) {
+	return delivery.MessageTarget{}, domain.ErrNotImplemented
+}
+func (*deliveryFake) BindWeChatTarget(context.Context, string, string) (delivery.MessageTarget, error) {
+	return delivery.MessageTarget{}, domain.ErrNotImplemented
+}
+func (*deliveryFake) RevokeMessageTarget(context.Context, string, delivery.Channel, string) error {
+	return domain.ErrNotImplemented
+}
 
 func TestCreateMessagePassesAuthenticatedAccount(t *testing.T) {
 	fake := &deliveryFake{}

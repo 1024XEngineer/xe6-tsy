@@ -33,6 +33,9 @@ type Config struct {
 	DeliveryGroup       string
 	DeliveryDelayStream string
 	DeliveryDelayKey    string
+	UsageStream         string
+	UsageGroup          string
+	UsageConsumer       string
 }
 
 // Load reads the process environment and validates only the configuration
@@ -69,6 +72,9 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		DeliveryGroup:       value("LINGOW_DELIVERY_GROUP", ""),
 		DeliveryDelayStream: value("LINGOW_DELIVERY_DELAY_STREAM", ""),
 		DeliveryDelayKey:    value("LINGOW_DELIVERY_DELAY_KEY", ""),
+		UsageStream:         value("LINGOW_USAGE_STREAM", ""),
+		UsageGroup:          value("LINGOW_USAGE_GROUP", ""),
+		UsageConsumer:       value("LINGOW_USAGE_CONSUMER", ""),
 	}
 	runtimeMode := strings.ToLower(value("LINGOW_DELIVERY_RUNTIME", "disabled"))
 	switch runtimeMode {

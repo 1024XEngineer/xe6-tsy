@@ -33,6 +33,7 @@ type configuredRuntime struct {
 	redis           *redis.Client
 	dispatcher      *delivery.OutboxDispatcher
 	worker          *delivery.Worker
+	usageConsumer   *usage.Consumer
 	accountService  accounts.Service
 	usageService    usage.Service
 	deliveryService delivery.Service
@@ -133,6 +134,19 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		destinationReader,
 		queue,
 	)
+	deliveryService.ConfigureTargetBinding(destinationKey, processConfig.AppEnv)
+
+	usageConsumerName := processConfig.UsageConsumer
+	if usageConsumerName == "" {
+		usageConsumerName = processConfig.DeliveryConsumer + "-usage"
+	}
+	usageStream, err := usage.NewValkeyUsageStream(startupCtx, redisClient, processConfig.UsageStream, processConfig.UsageGroup, usageConsumerName)
+	if err != nil {
+		redisClient.Close()
+		return nil, nil, fmt.Errorf("initialize usage stream: %w", err)
+	}
+	usageConsumer := usage.NewConsumer(usageStream, usageService)
+
 	provider, err := configuredProvider(processConfig.DeliveryProvider)
 	if err != nil {
 		redisClient.Close()
@@ -147,6 +161,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 			Destinations: destinationReader,
 			Provider:     provider,
 		}),
+		usageConsumer:   usageConsumer,
 		accountService:  records.accounts,
 		usageService:    usageService,
 		deliveryService: deliveryService,
@@ -188,11 +203,15 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	errs := make(chan error, 5)
+	errs := make(chan error, 6)
 	var components sync.WaitGroup
 	components.Add(2)
 	go runDeliveryComponent(componentCtx, "outbox dispatcher", r.dispatcher.Run, errs, &components)
 	go runDeliveryComponent(componentCtx, "delivery worker", r.worker.Run, errs, &components)
+	if r.usageConsumer != nil {
+		components.Add(1)
+		go runDeliveryComponent(componentCtx, "usage consumer", r.usageConsumer.Run, errs, &components)
+	}
 	if r.authMaintainer != nil {
 		components.Add(1)
 		go runDeliveryComponent(componentCtx, "auth maintainer", r.authMaintainer.Run, errs, &components)

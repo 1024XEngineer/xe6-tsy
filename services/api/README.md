@@ -65,7 +65,9 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 生产组合必须先基于最新鉴权迁移（包括账户 lineage 函数）完成，再启用异步投递。
 
 运行时启用还要求 `DATABASE_URL`、`REDIS_URL`、至少 32 字节的 `JWT_SECRET` 和
-`LINGOW_DELIVERY_DESTINATION_KEY`。`LINGOW_DELIVERY_PROVIDER` 默认是
+`LINGOW_DELIVERY_DESTINATION_KEY`。enabled 路径还会启动 usage stream consumer，
+并暴露 `/api/v1/account/message-targets/*`（email bind 在 local 环境支持 `dev:` token）。
+`LINGOW_DELIVERY_PROVIDER` 默认是
 `unconfigured`；`fake_email` 只允许本地或测试环境显式选择，不能用于生产。
 
 ## 语音记录 HTTP 装配

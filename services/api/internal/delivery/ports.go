@@ -133,4 +133,12 @@ type Service interface {
 	Preferences(context.Context, string) ([]Preference, error)
 	// PutPreference updates whether the account enables one supported channel.
 	PutPreference(context.Context, string, Channel, bool) (Preference, error)
+	// ListMessageTargets returns account-owned destination bindings.
+	ListMessageTargets(context.Context, string, *Channel) ([]MessageTarget, error)
+	// BindEmailTarget verifies and stores one email destination for the account.
+	BindEmailTarget(context.Context, string, string) (MessageTarget, error)
+	// BindWeChatTarget remains unimplemented until a WeCom adapter exists.
+	BindWeChatTarget(context.Context, string, string) (MessageTarget, error)
+	// RevokeMessageTarget marks one verified destination as revoked.
+	RevokeMessageTarget(context.Context, string, Channel, string) error
 }

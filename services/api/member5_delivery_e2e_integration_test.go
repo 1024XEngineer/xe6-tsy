@@ -230,6 +230,7 @@ func newMember5DeliveryE2EFixture(t *testing.T) *member5DeliveryE2EFixture {
 	}
 	turnReader := delivery.NewPostgresTurnReader(pool)
 	deliveryService := delivery.NewPersistentUseCases(repository, turnReader, destinationReader, queue)
+	deliveryService.ConfigureTargetBinding(destinationKey, "local")
 
 	accountRepository := accounts.NewPostgresRepository(pool)
 	tokenSecret := strings.Repeat("j", 36)

@@ -112,6 +112,19 @@ func TestBuildMuxAuthenticatesLanguageRoutes(t *testing.T) {
 	}
 }
 
+func TestNewRecordsHTTPDependenciesFromPoolRequiresPool(t *testing.T) {
+	_, err := newRecordsHTTPDependenciesFromPool(
+		context.Background(),
+		nil,
+		strings.Repeat("s", 32),
+		"lingow-api",
+		"lingow-client",
+	)
+	if err == nil {
+		t.Fatal("newRecordsHTTPDependenciesFromPool() succeeded with nil pool")
+	}
+}
+
 func TestNewRecordsHTTPDependenciesRequiresConfiguration(t *testing.T) {
 	tests := []struct {
 		name        string

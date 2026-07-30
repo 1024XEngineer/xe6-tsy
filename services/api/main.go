@@ -240,21 +240,39 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
 	}
 
-	accountRepository := accounts.NewPostgresRepository(pool)
-	tokens, err := accounts.NewHMACIssuerWithAccount(
-		tokenSecret,
-		accessTokenIssuer,
-		accessTokenAudience,
-		accountRepository.SessionActiveForAccount,
-	)
+	dependencies, err := newRecordsHTTPDependenciesFromPool(ctx, pool, tokenSecret, accessTokenIssuer, accessTokenAudience)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
 	}
+	dependencies.cleanup = pool.Close
+	return dependencies, nil
+}
+
+// newRecordsHTTPDependenciesFromPool wires records HTTP and background workers on
+// an already-open pool. The caller owns pool lifecycle unless cleanup is set.
+func newRecordsHTTPDependenciesFromPool(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	tokenSecret, issuer, audience string,
+) (*recordsHTTPDependencies, error) {
+	if pool == nil {
+		return nil, errors.New("records HTTP requires PostgreSQL pool")
+	}
+
+	accountRepository := accounts.NewPostgresRepository(pool)
+	tokens, err := accounts.NewHMACIssuerWithAccount(
+		tokenSecret,
+		issuer,
+		audience,
+		accountRepository.SessionActiveForAccount,
+	)
+	if err != nil {
+		return nil, err
+	}
 	sessionScope, err := recordstore.NewPostgresSessionScopeReader(pool)
 	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+		return nil, err
 	}
 
 	// Derive a domain-specific key so JWTs and record cursors never use identical key material.
@@ -266,19 +284,16 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		sessionScope,
 	)
 	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+		return nil, err
 	}
 
 	digester, err := credentialDigesterFromEnv()
 	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+		return nil, err
 	}
 	policy, err := accounts.VerificationPolicyFromEnv()
 	if err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("initialize records HTTP: %w", err)
+		return nil, err
 	}
 	accountUseCases := accounts.NewPersistentUseCases(
 		accountRepository,
@@ -300,7 +315,7 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		tokens:     tokens,
 		worker:     services.FinalTurnWorker,
 		maintainer: accounts.NewAuthMaintainer(accountRepository, 0, 0),
-		cleanup:    pool.Close,
+		cleanup:    func() {},
 	}, nil
 }
 

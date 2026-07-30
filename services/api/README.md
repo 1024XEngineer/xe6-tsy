@@ -59,9 +59,9 @@ WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webr
 验证码发送或真实 Email Provider 的业务方法必须返回 `not_implemented`，不得伪造成功结果。
 
 消息投递的 Queue、Worker 和 Provider 适配器已提供可注入的运行时边界，但默认不会启动。
-将 `LINGOW_DELIVERY_RUNTIME=enabled` 后，`main.go` 才会组合 PostgreSQL、Valkey、持久化
-账户/用量/消息服务、Outbox Dispatcher 和 Delivery Worker。未接入数据库、验证码发送、Token
-签发、队列或 Email Provider 的业务方法必须返回 `not_implemented`，不得伪造成功结果。
+将 `LINGOW_DELIVERY_RUNTIME=enabled` 后，`main.go` 会在**同一 PostgreSQL pool** 上组合
+records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消息服务、Outbox Dispatcher
+和 Delivery Worker。未接入真实 Email Provider 的发送仍保持 fail-closed。
 生产组合必须先基于最新鉴权迁移（包括账户 lineage 函数）完成，再启用异步投递。
 
 运行时启用还要求 `DATABASE_URL`、`REDIS_URL`、至少 32 字节的 `JWT_SECRET` 和

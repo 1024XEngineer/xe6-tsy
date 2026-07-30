@@ -18,6 +18,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
+	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -36,6 +37,9 @@ type configuredRuntime struct {
 	usageService    usage.Service
 	deliveryService delivery.Service
 	tokenVerifier   accounts.AccessTokenVerifier
+	recordsHandler  *recordswebapi.Server
+	finalTurnWorker finalTurnWorker
+	authMaintainer  backgroundWorker
 }
 
 func runConfigured(config config.Config) error {
@@ -51,7 +55,7 @@ func runConfigured(config config.Config) error {
 		runtime.usageService,
 		runtime.deliveryService,
 		runtime.tokenVerifier,
-		nil,
+		runtime.recordsHandler,
 	)
 	return runtime.Serve(config.APIAddr, mux)
 }
@@ -81,6 +85,17 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		return nil, nil, err
 	}
 
+	records, err := newRecordsHTTPDependenciesFromPool(
+		startupCtx,
+		pool,
+		processConfig.JWTSecret,
+		processConfig.JWTIssuer,
+		processConfig.JWTAudience,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("initialize configured records HTTP: %w", err)
+	}
+
 	redisOptions, err := redis.ParseURL(processConfig.RedisURL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse REDIS_URL: %w", err)
@@ -92,17 +107,6 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	}
 
 	accountRepository := accounts.NewPostgresRepository(pool)
-	tokenIssuer, err := accounts.NewHMACIssuerWithAccount(
-		processConfig.JWTSecret,
-		processConfig.JWTIssuer,
-		processConfig.JWTAudience,
-		accountRepository.SessionActiveForAccount,
-	)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, err
-	}
-	accountService := accounts.NewPersistentUseCases(accountRepository, tokenIssuer, tokenIssuer, nil)
 	usageService := usage.NewPersistentUseCases(usage.NewPostgresRepository(pool), accountRepository)
 
 	destinationKey, err := delivery.DecodeDestinationKey(processConfig.DestinationKey)
@@ -143,10 +147,13 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 			Destinations: destinationReader,
 			Provider:     provider,
 		}),
-		accountService:  accountService,
+		accountService:  records.accounts,
 		usageService:    usageService,
 		deliveryService: deliveryService,
-		tokenVerifier:   tokenIssuer,
+		tokenVerifier:   records.tokens,
+		recordsHandler:  records.handler,
+		finalTurnWorker: records.worker,
+		authMaintainer:  records.maintainer,
 	}
 	closeOnError = false
 	return runtime, languageHandler, nil
@@ -164,7 +171,8 @@ func configuredProvider(name string) (delivery.Provider, error) {
 }
 
 func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
-	if r == nil || r.pool == nil || r.redis == nil || r.dispatcher == nil || r.worker == nil || handler == nil {
+	if r == nil || r.pool == nil || r.redis == nil || r.dispatcher == nil || r.worker == nil ||
+		r.recordsHandler == nil || r.finalTurnWorker == nil || handler == nil {
 		return errors.New("configured runtime is incomplete")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -180,11 +188,17 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	errs := make(chan error, 3)
+	errs := make(chan error, 5)
 	var components sync.WaitGroup
 	components.Add(2)
 	go runDeliveryComponent(componentCtx, "outbox dispatcher", r.dispatcher.Run, errs, &components)
 	go runDeliveryComponent(componentCtx, "delivery worker", r.worker.Run, errs, &components)
+	if r.authMaintainer != nil {
+		components.Add(1)
+		go runDeliveryComponent(componentCtx, "auth maintainer", r.authMaintainer.Run, errs, &components)
+	}
+	components.Add(1)
+	go runDeliveryComponent(componentCtx, "final turn worker", r.finalTurnWorker.Run, errs, &components)
 	go func() {
 		slog.Info("Lingow API listening", "address", address, "delivery_runtime", "enabled")
 		err := server.ListenAndServe()

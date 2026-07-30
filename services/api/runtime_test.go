@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"reflect"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/config"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
+	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
 type runtimeTestQueue struct{}
@@ -52,7 +55,9 @@ func (runtimeTestDestinationReader) ResolveVerifiedDestination(context.Context, 
 
 type runtimeTestWorkerRepo struct{}
 
-func (runtimeTestWorkerRepo) CreateMessage(context.Context, delivery.CreateMessageRecord) error { return nil }
+func (runtimeTestWorkerRepo) CreateMessage(context.Context, delivery.CreateMessageRecord) error {
+	return nil
+}
 func (runtimeTestWorkerRepo) GetMessage(context.Context, string, string) (delivery.Message, error) {
 	return delivery.Message{}, nil
 }
@@ -85,6 +90,13 @@ func (runtimeTestWorkerRepo) GetMessageForWorker(context.Context, string) (deliv
 	return delivery.Message{}, nil
 }
 
+type stubFinalTurnWorker struct{}
+
+func (stubFinalTurnWorker) Run(ctx context.Context) error {
+	<-ctx.Done()
+	return nil
+}
+
 func testConfiguredRuntimePool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	return reflect.New(reflect.TypeOf(pgxpool.Pool{})).Interface().(*pgxpool.Pool)
@@ -104,6 +116,8 @@ func newRuntimeServeFixture(t *testing.T) *configuredRuntime {
 			Destinations: nil,
 			Provider:     delivery.UnconfiguredProvider{},
 		}),
+		recordsHandler:  recordswebapi.NewNotImplementedHandler(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		finalTurnWorker: stubFinalTurnWorker{},
 	}
 }
 
@@ -121,6 +135,8 @@ func newRuntimeBlockingServeFixture(t *testing.T) *configuredRuntime {
 			Destinations: runtimeTestDestinationReader{},
 			Provider:     delivery.UnconfiguredProvider{},
 		}),
+		recordsHandler:  recordswebapi.NewNotImplementedHandler(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		finalTurnWorker: stubFinalTurnWorker{},
 	}
 }
 

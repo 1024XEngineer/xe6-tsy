@@ -36,6 +36,9 @@ cd services/realtime-audio && go run .
 APP_ENV=local
 API_ADDR=:8080
 REALTIME_ADDR=:8090
+REALTIME_BASE_URL=http://127.0.0.1:8090
+REALTIME_TICKET_SECRET=local-dev-realtime-ticket-secret-123456
+REALTIME_HTTP_TIMEOUT=5s
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/lingow?sslmode=disable
 REDIS_URL=redis://localhost:6379/0
 JWT_SECRET=local-dev-only-secret-change-me-1234

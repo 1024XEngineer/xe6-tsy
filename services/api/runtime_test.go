@@ -129,6 +129,7 @@ func newRuntimeServeFixture(t *testing.T) *configuredRuntime {
 			Provider:     delivery.UnconfiguredProvider{},
 		}),
 		sessionHandler:  sessions.NewHandler(nil, nil),
+		sessionRecovery: stubFinalTurnWorker{},
 		recordsHandler:  recordswebapi.NewNotImplementedHandler(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		finalTurnWorker: stubFinalTurnWorker{},
 	}
@@ -149,6 +150,7 @@ func newRuntimeBlockingServeFixture(t *testing.T) *configuredRuntime {
 			Provider:     delivery.UnconfiguredProvider{},
 		}),
 		sessionHandler:  sessions.NewHandler(nil, nil),
+		sessionRecovery: stubFinalTurnWorker{},
 		recordsHandler:  recordswebapi.NewNotImplementedHandler(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		finalTurnWorker: stubFinalTurnWorker{},
 	}
@@ -157,13 +159,16 @@ func newRuntimeBlockingServeFixture(t *testing.T) *configuredRuntime {
 func testRuntimeConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{
-		APIAddr:        "127.0.0.1:0",
-		DatabaseURL:    "",
-		RedisURL:       "redis://127.0.0.1:6379/0",
-		JWTSecret:      strings.Repeat("x", 32),
-		JWTIssuer:      "lingow-api",
-		JWTAudience:    "lingow-client",
-		DestinationKey: base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
+		APIAddr:              "127.0.0.1:0",
+		DatabaseURL:          "",
+		RedisURL:             "redis://127.0.0.1:6379/0",
+		JWTSecret:            strings.Repeat("x", 32),
+		JWTIssuer:            "lingow-api",
+		JWTAudience:          "lingow-client",
+		RealtimeBaseURL:      "http://127.0.0.1:8090",
+		RealtimeTicketSecret: strings.Repeat("r", 32),
+		RealtimeHTTPTimeout:  5 * time.Second,
+		DestinationKey:       base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
 	}
 }
 

@@ -214,9 +214,11 @@ func TestNewRecordsHTTPDependenciesRequiresConfiguration(t *testing.T) {
 func TestRunValidatesRecordsConfigurationBeforeDatabaseSetup(t *testing.T) {
 	t.Setenv("DATABASE_URL", "://invalid")
 	t.Setenv("JWT_SECRET", strings.Repeat("s", 31))
+	t.Setenv("REALTIME_BASE_URL", "http://127.0.0.1:8090")
+	t.Setenv("REALTIME_TICKET_SECRET", strings.Repeat("r", 32))
 
 	err := run()
-	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET must be at least 32 bytes") {
+	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET must contain at least 32 bytes") {
 		t.Fatalf("run() error = %v, want JWT_SECRET length error", err)
 	}
 }

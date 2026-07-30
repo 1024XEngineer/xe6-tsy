@@ -46,10 +46,19 @@ services/api/
 └── webapi/
 ```
 
-语言配置能力与本地接线说明见 [`languages/README.md`](./languages/README.md)。
+语言配置能力与本地接线说明见 [`languages/README.md`](./languages/README.md)。Session HTTP
+生产装配会在同一 PostgreSQL pool 上复用真实 `languages.Service`，并通过 Session owner
+校验语言配置归属；不得使用 `LANGUAGE_SESSION_OWNER=trust-auth` 作为生产替代。
 
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
+
+Session 路由启动需要 `DATABASE_URL`、至少 32 字节的 `JWT_SECRET`、`REALTIME_BASE_URL`
+和至少 32 字节的 `REALTIME_TICKET_SECRET`。`REALTIME_BASE_URL` 是 API 访问
+`services/realtime-audio` control-plane 的完整 URL，例如 `http://127.0.0.1:8090`；
+`REALTIME_HTTP_TIMEOUT` 可选，默认 `5s`。API 会使用短期 HMAC realtime ticket 调用
+WebRTC connection、Start、Stop 和 runtime state 接口，ticket secret 必须与 realtime-audio
+验证端一致，不能与 JWT secret 混用或写入日志。
 
 结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
 本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。
@@ -76,7 +85,7 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 
 ## 语音记录 HTTP 装配
 
-API 启动语音记录路由需要 `DATABASE_URL` 和至少 32 字节的 `JWT_SECRET`。缺少配置或数据库
+API 启动语音记录和 Session 路由需要 `DATABASE_URL` 和至少 32 字节的 `JWT_SECRET`。缺少配置或数据库
 不可用时启动直接失败，不回退到 501 handler。启动时会应用 recordstore migration，并组装真实
 PostgreSQL participant/turn repositories 与账户 session scope。
 

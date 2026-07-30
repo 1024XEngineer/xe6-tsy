@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -34,12 +35,22 @@ type recordsHTTPDependencies struct {
 	cleanup    func()
 }
 
+type languageHTTPDependencies struct {
+	service *languages.Service
+	handler *languages.Handler
+}
+
 type finalTurnWorker interface {
 	Run(context.Context) error
 }
 
 type backgroundWorker interface {
 	Run(context.Context) error
+}
+
+type namedBackgroundWorker struct {
+	name string
+	run  func(context.Context) error
 }
 
 // main wires foundation use cases into the HTTP server and owns graceful shutdown.
@@ -59,34 +70,60 @@ func run() error {
 		return runConfigured(processConfig)
 	}
 
-	if _, _, err := recordsHTTPConfigurationFromEnv(); err != nil {
-		return err
-	}
-
-	address := os.Getenv("API_ADDR")
-	if address == "" {
-		address = ":8080"
-	}
-
-	langHandler, cleanup, err := newLanguageHandler(context.Background())
+	pool, err := recordstore.Open(context.Background(), processConfig.DatabaseURL)
 	if err != nil {
 		return err
 	}
-	if cleanup != nil {
-		defer cleanup()
+	defer pool.Close()
+	if err := recordstore.Migrate(context.Background(), pool); err != nil {
+		return err
 	}
 
-	records, err := newRecordsHTTPDependencies(context.Background())
+	sessionRepository := sessions.NewPostgresRepository(pool)
+	langDependencies, err := newLanguageDependenciesWithPool(
+		context.Background(),
+		pool,
+		sessionOwnerReader{reader: sessionRepository},
+	)
 	if err != nil {
 		return err
 	}
-	defer records.cleanup()
+	records, err := newRecordsHTTPDependenciesFromPool(
+		context.Background(),
+		pool,
+		processConfig.JWTSecret,
+		processConfig.JWTIssuer,
+		processConfig.JWTAudience,
+	)
+	if err != nil {
+		return err
+	}
+	sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
+		Repository:     sessionRepository,
+		SessionReader:  sessionRepository,
+		LanguageReader: langDependencies.service,
+		HTTPClient: &http.Client{
+			Timeout: realtimeHTTPTimeout(processConfig),
+		},
+		IDs:    newSessionIDGenerator(),
+		Clock:  utcClock{},
+		Config: processConfig,
+		Logger: slog.Default(),
+	})
+	if err != nil {
+		return err
+	}
 
-	sessionHandler := newSessionHandler(nil)
-	mux := buildMux(langHandler, sessionHandler, records.handler, records.accounts, records.tokens)
+	mux := buildMux(
+		langDependencies.handler,
+		sessionDependencies.handler,
+		records.handler,
+		records.accounts,
+		records.tokens,
+	)
 
 	server := &http.Server{
-		Addr:              address,
+		Addr:              processConfig.APIAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -107,61 +144,61 @@ func run() error {
 		}()
 	}
 
-	return runHTTPAndFinalTurnWorker(ctx, server, records.worker)
+	return runHTTPAndBackgroundWorkers(
+		ctx,
+		server,
+		namedBackgroundWorker{name: "final turn worker", run: records.worker.Run},
+		namedBackgroundWorker{name: "session end recovery worker", run: sessionDependencies.endRecovery.Run},
+	)
 }
 
-func runHTTPAndFinalTurnWorker(ctx context.Context, server *http.Server, worker finalTurnWorker) error {
-	workerCtx, cancelWorker := context.WithCancel(ctx)
-	defer cancelWorker()
+func runHTTPAndBackgroundWorkers(
+	ctx context.Context,
+	server *http.Server,
+	workers ...namedBackgroundWorker,
+) error {
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
 
 	serverErrors := make(chan error, 1)
 	go func() {
 		slog.Info("Lingow API listening", "address", server.Addr)
 		serverErrors <- server.ListenAndServe()
 	}()
-	workerErrors := make(chan error, 1)
-	go func() { workerErrors <- worker.Run(workerCtx) }()
 
-	var (
-		runErr     error
-		workerDone bool
-	)
+	workerErrors := make(chan error, max(1, len(workers)))
+	var workerGroup sync.WaitGroup
+	for _, worker := range workers {
+		worker := worker
+		workerGroup.Add(1)
+		go runFailFastBackgroundWorker(workerCtx, worker.name, worker.run, workerErrors, &workerGroup)
+	}
+
+	var runErr error
 	select {
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
 			runErr = fmt.Errorf("run API HTTP server: %w", err)
 		}
 	case err := <-workerErrors:
-		workerDone = true
-		if err != nil {
-			runErr = fmt.Errorf("run final turn worker: %w", err)
-		} else if ctx.Err() == nil {
-			runErr = errors.New("final turn worker stopped unexpectedly")
-		}
+		runErr = err
 	case <-ctx.Done():
 	}
-	cancelWorker()
+	cancelWorkers()
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
 	shutdownErrors := make(chan error, 1)
 	go func() { shutdownErrors <- server.Shutdown(shutdownCtx) }()
-	if !workerDone {
-		select {
-		case err := <-workerErrors:
-			if err != nil {
-				runErr = errors.Join(runErr, fmt.Errorf("stop final turn worker: %w", err))
-			}
-		default:
-			select {
-			case err := <-workerErrors:
-				if err != nil {
-					runErr = errors.Join(runErr, fmt.Errorf("stop final turn worker: %w", err))
-				}
-			case <-shutdownCtx.Done():
-				runErr = errors.Join(runErr, fmt.Errorf("stop final turn worker: %w", shutdownCtx.Err()))
-			}
-		}
+	workerDone := make(chan struct{})
+	go func() {
+		workerGroup.Wait()
+		close(workerDone)
+	}()
+	select {
+	case <-workerDone:
+	case <-shutdownCtx.Done():
+		runErr = errors.Join(runErr, fmt.Errorf("stop background workers: %w", shutdownCtx.Err()))
 	}
 	shutdownErr := <-shutdownErrors
 	return errors.Join(runErr, shutdownErr)
@@ -195,19 +232,33 @@ func newLanguageHandler(ctx context.Context) (*languages.Handler, func(), error)
 }
 
 func newLanguageHandlerWithPool(ctx context.Context, pool *pgxpool.Pool) (*languages.Handler, error) {
+	dependencies, err := newLanguageDependenciesWithPool(ctx, pool, sessionOwnerFromEnv())
+	if err != nil {
+		return nil, err
+	}
+	return dependencies.handler, nil
+}
+
+func newLanguageDependenciesWithPool(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	sessions languages.SessionOwnerReader,
+) (*languageHTTPDependencies, error) {
 	if pool == nil {
 		return nil, errors.New("language handler requires PostgreSQL pool")
 	}
 	if err := languages.ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
-	sessions := sessionOwnerFromEnv()
 	svc := languages.NewService(languages.NewPostgresStore(pool, nil), sessions)
 	slog.Info("language configuration service enabled")
 	accountID := func(r *http.Request) (string, bool) {
 		return internalwebapi.AccountIDFromContext(r.Context())
 	}
-	return languages.NewHandler(svc, accountID), nil
+	return &languageHTTPDependencies{
+		service: svc,
+		handler: languages.NewHandler(svc, accountID),
+	}, nil
 }
 
 func sessionOwnerFromEnv() languages.SessionOwnerReader {

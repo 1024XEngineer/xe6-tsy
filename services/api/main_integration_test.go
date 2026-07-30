@@ -7,19 +7,24 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/config"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
+	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -186,6 +191,293 @@ func TestRecordsHTTPProductionCompositionReadsOnlyOwnedTurns(t *testing.T) {
 	if storedAccountID != owner.Account.ID {
 		t.Fatalf("stored usage account_id = %q, want original owner %q", storedAccountID, owner.Account.ID)
 	}
+}
+
+func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
+	databaseURL := recordsHTTPTestDatabaseURL(t)
+	pool, err := recordstore.Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatalf("open PostgreSQL integration database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := recordstore.Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("migrate recordstore: %v", err)
+	}
+
+	ticketSecret := strings.Repeat("r", 32)
+	realtime := newSessionRuntimeControlPlane(t, ticketSecret)
+	defer realtime.server.Close()
+
+	sessionRepository := sessions.NewPostgresRepository(pool)
+	languageDependencies, err := newLanguageDependenciesWithPool(
+		t.Context(),
+		pool,
+		sessionOwnerReader{reader: sessionRepository},
+	)
+	if err != nil {
+		t.Fatalf("newLanguageDependenciesWithPool() error = %v", err)
+	}
+	sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
+		Repository:     sessionRepository,
+		SessionReader:  sessionRepository,
+		LanguageReader: languageDependencies.service,
+		HTTPClient: &http.Client{
+			Transport: realtime.server.Client().Transport,
+			Timeout:   time.Second,
+		},
+		IDs:   newSessionIDGenerator(),
+		Clock: utcClock{},
+		Config: config.Config{
+			RealtimeBaseURL:      realtime.server.URL,
+			RealtimeTicketSecret: ticketSecret,
+		},
+	})
+	if err != nil {
+		t.Fatalf("newSessionHTTPDependencies() error = %v", err)
+	}
+	records, err := newRecordsHTTPDependenciesFromPool(
+		t.Context(),
+		pool,
+		strings.Repeat("j", 32),
+		"lingow-api",
+		"lingow-client",
+	)
+	if err != nil {
+		t.Fatalf("newRecordsHTTPDependenciesFromPool() error = %v", err)
+	}
+	account, err := records.accounts.CreateAnonymous(t.Context())
+	if err != nil {
+		t.Fatalf("create anonymous account: %v", err)
+	}
+	mux := buildMux(
+		languageDependencies.handler,
+		sessionDependencies.handler,
+		records.handler,
+		records.accounts,
+		records.tokens,
+	)
+
+	create := serveAPIRequest(t, mux, http.MethodPost, "/api/v1/voice-sessions", account.Tokens.AccessToken, "create-session", strings.NewReader(
+		`{"capabilities":{"webrtc":true,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
+	))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", create.Code, create.Body.String())
+	}
+	var created sessions.VoiceSession
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created session: %v", err)
+	}
+	if created.ID == "" || created.AccountID != account.Account.ID || created.Status != sessions.StatusCreated {
+		t.Fatalf("created session = %#v", created)
+	}
+
+	languageConfig := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/language-configs",
+		account.Tokens.AccessToken,
+		"language-config",
+		strings.NewReader(`{"languages":[{"source":"zh-CN","target":"en-US"},{"source":"en-US","target":"zh-CN"}]}`),
+	)
+	if languageConfig.Code != http.StatusCreated {
+		t.Fatalf("language config status = %d, body = %s", languageConfig.Code, languageConfig.Body.String())
+	}
+
+	start := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/start",
+		account.Tokens.AccessToken,
+		"start-session",
+		http.NoBody,
+	)
+	if start.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", start.Code, start.Body.String())
+	}
+	var started sessions.VoiceSession
+	if err := json.Unmarshal(start.Body.Bytes(), &started); err != nil {
+		t.Fatalf("decode started session: %v", err)
+	}
+	if started.Status != sessions.StatusActive || realtime.startCalls.Load() != 1 {
+		t.Fatalf("started session = %#v, realtime start calls = %d", started, realtime.startCalls.Load())
+	}
+
+	detail := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID, account.Tokens.AccessToken, "", http.NoBody)
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body = %s", detail.Code, detail.Body.String())
+	}
+	state := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID+"/state", account.Tokens.AccessToken, "", http.NoBody)
+	if state.Code != http.StatusOK {
+		t.Fatalf("state status = %d, body = %s", state.Code, state.Body.String())
+	}
+	runtimeReads := realtime.runtimeCalls.Load()
+	list := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions", account.Tokens.AccessToken, "", http.NoBody)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", list.Code, list.Body.String())
+	}
+	if realtime.runtimeCalls.Load() != runtimeReads {
+		t.Fatalf("list called realtime: before=%d after=%d", runtimeReads, realtime.runtimeCalls.Load())
+	}
+
+	end := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/end",
+		account.Tokens.AccessToken,
+		"end-session",
+		http.NoBody,
+	)
+	if end.Code != http.StatusOK {
+		t.Fatalf("end status = %d, body = %s", end.Code, end.Body.String())
+	}
+	var ended sessions.VoiceSession
+	if err := json.Unmarshal(end.Body.Bytes(), &ended); err != nil {
+		t.Fatalf("decode ended session: %v", err)
+	}
+	if ended.Status != sessions.StatusEnded || realtime.stopCalls.Load() != 1 {
+		t.Fatalf("ended session = %#v, realtime stop calls = %d", ended, realtime.stopCalls.Load())
+	}
+}
+
+func serveAPIRequest(
+	t *testing.T,
+	handler http.Handler,
+	method string,
+	path string,
+	accessToken string,
+	idempotencyKey string,
+	body io.Reader,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, body)
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	if idempotencyKey != "" {
+		request.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+type sessionRuntimeControlPlane struct {
+	server       *httptest.Server
+	startCalls   atomic.Int32
+	stopCalls    atomic.Int32
+	runtimeCalls atomic.Int32
+	operationID  atomic.Value
+	codec        *realtimev1.HMACTicketCodec
+}
+
+func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRuntimeControlPlane {
+	t.Helper()
+	codec, err := realtimev1.NewHMACTicketCodec(realtimev1.TicketConfig{
+		Secret: []byte(ticketSecret),
+		TTL:    time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewHMACTicketCodec() error = %v", err)
+	}
+	realtime := &sessionRuntimeControlPlane{codec: codec}
+	realtime.operationID.Store("")
+	realtime.server = httptest.NewServer(http.HandlerFunc(realtime.handle))
+	return realtime
+}
+
+func (p *sessionRuntimeControlPlane) handle(w http.ResponseWriter, r *http.Request) {
+	sessionID, action, ok := parseRealtimePath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	claims, err := p.codec.Validate(token, sessionID)
+	if err != nil || claims.AccountID == "" {
+		writeRealtimeTestError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	now := time.Now().UTC()
+	switch {
+	case r.Method == http.MethodGet && action == "connection":
+		writeRealtimeTestJSON(w, http.StatusOK, realtimev1.ConnectionSnapshot{
+			SessionID:    sessionID,
+			ConnectionID: "conn_" + sessionID,
+			State:        realtimev1.ConnectionConnected,
+			Version:      1,
+			UpdatedAt:    now,
+		})
+	case r.Method == http.MethodPost && action == "start":
+		var request realtimev1.StartRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.OperationID == "" {
+			writeRealtimeTestError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		p.startCalls.Add(1)
+		p.operationID.Store(request.OperationID)
+		writeRealtimeTestJSON(w, http.StatusOK, realtimev1.RuntimeSnapshot{
+			SessionID:        sessionID,
+			StartOperationID: request.OperationID,
+			RuntimeState:     realtimev1.RuntimeListening,
+			UpdatedAt:        now,
+		})
+	case r.Method == http.MethodGet && action == "runtime":
+		p.runtimeCalls.Add(1)
+		operationID, _ := p.operationID.Load().(string)
+		writeRealtimeTestJSON(w, http.StatusOK, realtimev1.RuntimeSnapshot{
+			SessionID:        sessionID,
+			StartOperationID: operationID,
+			RuntimeState:     realtimev1.RuntimeListening,
+			UpdatedAt:        now,
+		})
+	case r.Method == http.MethodPost && action == "stop":
+		var request realtimev1.StopRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Reason == "" || request.EndedAt.IsZero() {
+			writeRealtimeTestError(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		p.stopCalls.Add(1)
+		operationID, _ := p.operationID.Load().(string)
+		writeRealtimeTestJSON(w, http.StatusOK, realtimev1.RuntimeSnapshot{
+			SessionID:        sessionID,
+			StartOperationID: operationID,
+			RuntimeState:     realtimev1.RuntimeStopped,
+			UpdatedAt:        now,
+		})
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func parseRealtimePath(path string) (sessionID string, action string, ok bool) {
+	rest := strings.TrimPrefix(path, "/realtime/v1/sessions/")
+	if rest == path {
+		return "", "", false
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func writeRealtimeTestError(w http.ResponseWriter, status int, code string) {
+	writeRealtimeTestJSON(w, status, struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}{
+		Error: struct {
+			Code string `json:"code"`
+		}{Code: code},
+	})
+}
+
+func writeRealtimeTestJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 func recordsHTTPTestDatabaseURL(t *testing.T) string {

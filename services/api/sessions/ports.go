@@ -153,6 +153,9 @@ func (i EndIntent) Completed() bool {
 type Repository interface {
 	Create(ctx context.Context, params CreateParams) (session VoiceSession, replayed bool, err error)
 	GetOwned(ctx context.Context, accountID string, sessionID string) (VoiceSession, error)
+	// GetSession is a trusted internal read used when no user actor exists,
+	// such as a realtime failure notification. It returns the immutable owner.
+	GetSession(ctx context.Context, sessionID string) (SessionSnapshot, error)
 	List(ctx context.Context, filter ListFilter) (ListPage, error)
 	// GetStartOperation returns the matching request when present. If another
 	// key owns a pending, compensating, or compensation_failed operation for the

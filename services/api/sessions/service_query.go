@@ -133,7 +133,7 @@ func synthesizeMissingRuntime(session VoiceSession) (RuntimeSnapshot, error) {
 			RuntimeState: RuntimeStopped,
 			UpdatedAt:    session.CreatedAt.UTC(),
 		}, nil
-	case StatusEnded:
+	case StatusEnded, StatusFailed:
 		if session.EndedAt == nil || session.EndedAt.IsZero() {
 			return RuntimeSnapshot{}, ErrRuntimeUnavailable
 		}

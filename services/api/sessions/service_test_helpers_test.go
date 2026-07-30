@@ -155,6 +155,23 @@ func (f *fakeRepository) GetOwned(_ context.Context, accountID string, sessionID
 	return f.getOwnedResult, f.getOwnedErr
 }
 
+func (f *fakeRepository) GetSession(
+	ctx context.Context,
+	sessionID string,
+) (SessionSnapshot, error) {
+	session, err := f.GetOwned(ctx, f.getOwnedResult.AccountID, sessionID)
+	if err != nil {
+		return SessionSnapshot{}, err
+	}
+	return SessionSnapshot{
+		SessionID: session.ID,
+		AccountID: session.AccountID,
+		Status:    session.Status,
+		StartedAt: session.StartedAt,
+		EndedAt:   session.EndedAt,
+	}, nil
+}
+
 func (f *fakeRepository) List(_ context.Context, filter ListFilter) (ListPage, error) {
 	f.listFilters = append(f.listFilters, filter)
 	return f.listResult, f.listErr

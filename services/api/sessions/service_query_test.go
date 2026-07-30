@@ -199,6 +199,15 @@ func TestServiceDetailSynthesizesStoppedForMissingRuntime(t *testing.T) {
 			}(),
 			wantUpdatedAt: endedAt,
 		},
+		{
+			name: "failed session",
+			session: func() VoiceSession {
+				session := queryTestSession(StatusFailed)
+				session.EndedAt = &endedAt
+				return session
+			}(),
+			wantUpdatedAt: endedAt,
+		},
 	}
 
 	for _, test := range tests {
@@ -236,7 +245,7 @@ func TestServiceDetailRejectsMissingRuntimeForInvalidBusinessState(t *testing.T)
 		session VoiceSession
 	}{
 		{name: "active session", session: queryTestSession(StatusActive)},
-		{name: "failed session", session: queryTestSession(StatusFailed)},
+		{name: "failed session without ended at", session: queryTestSession(StatusFailed)},
 		{name: "ended session without ended at", session: queryTestSession(StatusEnded)},
 		{
 			name: "created session without created at",
@@ -265,28 +274,53 @@ func TestServiceDetailRejectsMissingRuntimeForInvalidBusinessState(t *testing.T)
 	}
 }
 
-func TestServiceGetStateSynthesizesStoppedForCreatedSessionWithoutRuntime(t *testing.T) {
-	session := queryTestSession(StatusCreated)
-	repository := &fakeRepository{getOwnedResult: session}
-	realtime := &fakeRealtimeLifecycle{getErr: ErrRuntimeSnapshotNotFound}
-	service := newQueryTestService(t, repository, realtime)
+func TestServiceGetStateSynthesizesStoppedWithoutRuntime(t *testing.T) {
+	endedAt := time.Date(2026, 7, 27, 11, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name          string
+		session       VoiceSession
+		wantUpdatedAt time.Time
+	}{
+		{
+			name:          "created session",
+			session:       queryTestSession(StatusCreated),
+			wantUpdatedAt: queryTestSession(StatusCreated).CreatedAt,
+		},
+		{
+			name: "failed session",
+			session: func() VoiceSession {
+				session := queryTestSession(StatusFailed)
+				session.EndedAt = &endedAt
+				return session
+			}(),
+			wantUpdatedAt: endedAt,
+		},
+	}
 
-	got, err := service.GetState(context.Background(), DetailInput{
-		AccountID: session.AccountID,
-		SessionID: session.ID,
-	})
-	if err != nil {
-		t.Fatalf("GetState() error = %v", err)
-	}
-	want := StateSnapshot{
-		SessionID:        session.ID,
-		Status:           StatusCreated,
-		RuntimeState:     RuntimeStopped,
-		Retryable:        false,
-		RuntimeUpdatedAt: session.CreatedAt.UTC(),
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("GetState() = %#v, want %#v", got, want)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &fakeRepository{getOwnedResult: test.session}
+			realtime := &fakeRealtimeLifecycle{getErr: ErrRuntimeSnapshotNotFound}
+			service := newQueryTestService(t, repository, realtime)
+
+			got, err := service.GetState(context.Background(), DetailInput{
+				AccountID: test.session.AccountID,
+				SessionID: test.session.ID,
+			})
+			if err != nil {
+				t.Fatalf("GetState() error = %v", err)
+			}
+			want := StateSnapshot{
+				SessionID:        test.session.ID,
+				Status:           test.session.Status,
+				RuntimeState:     RuntimeStopped,
+				Retryable:        false,
+				RuntimeUpdatedAt: test.wantUpdatedAt.UTC(),
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("GetState() = %#v, want %#v", got, want)
+			}
+		})
 	}
 }
 

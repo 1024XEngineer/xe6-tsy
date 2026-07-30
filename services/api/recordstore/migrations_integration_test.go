@@ -42,6 +42,9 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{8, "delivery_retry_idempotency"},
 		{9, "final_turn_outbox"},
 		{10, "session_start_operation_compatibility"},
+		{11, "email_bind_challenges"},
+		{12, "enable_wechat_channel"},
+		{13, "session_failed_terminal_timestamp"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))
@@ -93,7 +96,7 @@ func testSessionLifecycleConstraints(t *testing.T, pool *pgxpool.Pool) {
 		{name: "active", status: "active", startedAt: &startedAt},
 		{name: "created_to_ended", status: "ended", endedAt: &endedAt},
 		{name: "active_to_ended", status: "ended", startedAt: &startedAt, endedAt: &activeEndedAt},
-		{name: "active_to_failed", status: "failed", startedAt: &startedAt, failure: &failureCode},
+		{name: "active_to_failed", status: "failed", startedAt: &startedAt, endedAt: &activeEndedAt, failure: &failureCode},
 	}
 	for _, test := range valid {
 		t.Run("valid_"+test.name, func(t *testing.T) {
@@ -120,6 +123,8 @@ func testSessionLifecycleConstraints(t *testing.T, pool *pgxpool.Pool) {
 		{name: "ended_before_created", status: "ended", endedAt: &beforeCreated},
 		{name: "ended_before_started", status: "ended", startedAt: &startedAt, endedAt: &beforeStarted},
 		{name: "failed_without_error", status: "failed", startedAt: &startedAt},
+		{name: "failed_without_end", status: "failed", startedAt: &startedAt, failure: &failureCode},
+		{name: "failed_before_started", status: "failed", startedAt: &startedAt, endedAt: &beforeStarted, failure: &failureCode},
 	}
 	for _, test := range invalid {
 		t.Run("invalid_"+test.name, func(t *testing.T) {

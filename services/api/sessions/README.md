@@ -275,9 +275,13 @@ and lifecycle-transition contracts against the final control-plane tables.
 Detail and State combine an owned persistent session with one validated runtime
 snapshot; List remains persistent-only.
 
-Runtime-failure handling, HTTP handlers, route registration, OpenAPI,
-production wiring, and realtime/language/WebRTC adapters belong to follow-up
-reviewable slices.
+Runtime-failure handling consumes a trusted cleanup-confirmed notification,
+serializes it with Start and End, and conditionally records `active -> failed`
+with `ended_at` and the stable failure code. The cross-service transport that
+delivers this notification belongs to production adapter wiring.
+
+HTTP handlers, route registration, OpenAPI, production wiring, and
+realtime/language/WebRTC adapters belong to follow-up reviewable slices.
 No stub in this package returns fabricated success data. It does not change
 `main.go`, `go.work`, shared authentication, shared error responses, or
 request-ID middleware.

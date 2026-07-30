@@ -131,12 +131,12 @@ func TestServiceStartStopGetsFreshContextAfterSlowClaim(t *testing.T) {
 		}
 	}
 	var stopContextErr error
-	var stopDeadline time.Time
 	var claimContextErrAtStop error
+	var stopReusedClaimContext bool
 	fixture.realtime.stopHook = func(ctx context.Context) {
 		stopContextErr = ctx.Err()
-		stopDeadline, _ = ctx.Deadline()
 		claimContextErrAtStop = claimCtx.Err()
+		stopReusedClaimContext = ctx == claimCtx
 	}
 
 	results := make(chan error, 1)
@@ -152,13 +152,13 @@ func TestServiceStartStopGetsFreshContextAfterSlowClaim(t *testing.T) {
 	}
 	if stopContextErr != nil ||
 		!errors.Is(claimContextErrAtStop, context.Canceled) ||
-		!stopDeadline.After(claimDeadline) {
+		stopReusedClaimContext {
 		t.Fatalf(
-			"stop context error = %v, claim context at stop = %v, deadlines = claim %v stop %v",
+			"stop context error = %v, claim context at stop = %v, claim deadline = %v, reused = %t",
 			stopContextErr,
 			claimContextErrAtStop,
 			claimDeadline,
-			stopDeadline,
+			stopReusedClaimContext,
 		)
 	}
 	if fixture.realtime.stopCalls != 1 ||

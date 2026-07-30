@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 10 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 10", len(migrations))
+	if len(migrations) != 11 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 11", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -124,5 +124,13 @@ func TestEmbeddedMigrations(t *testing.T) {
 		if !strings.Contains(sessionCompatibility.SQL, expected) {
 			t.Fatalf("session compatibility migration does not contain %q", expected)
 		}
+	}
+
+	emailBind := migrations[10]
+	if emailBind.Version != 11 || emailBind.Name != "email_bind_challenges" {
+		t.Fatalf("migration = %#v, want version 11 named email_bind_challenges", emailBind)
+	}
+	if !strings.Contains(emailBind.SQL, "CREATE TABLE email_bind_challenges") {
+		t.Fatal("email bind migration does not create email_bind_challenges")
 	}
 }

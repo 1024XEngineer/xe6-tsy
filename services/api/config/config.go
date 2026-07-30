@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
@@ -12,6 +13,7 @@ import (
 const (
 	providerUnconfigured = "unconfigured"
 	providerFakeEmail    = "fake_email"
+	providerSMTP         = "smtp"
 )
 
 // Config contains only process configuration. Secrets are kept as strings at
@@ -36,6 +38,12 @@ type Config struct {
 	UsageStream         string
 	UsageGroup          string
 	UsageConsumer       string
+	SMTPHost            string
+	SMTPPort            string
+	SMTPUser            string
+	SMTPPassword        string
+	SMTPFrom            string
+	SMTPTLS             bool
 }
 
 // Load reads the process environment and validates only the configuration
@@ -75,6 +83,12 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		UsageStream:         value("LINGOW_USAGE_STREAM", ""),
 		UsageGroup:          value("LINGOW_USAGE_GROUP", ""),
 		UsageConsumer:       value("LINGOW_USAGE_CONSUMER", ""),
+		SMTPHost:            value("LINGOW_SMTP_HOST", ""),
+		SMTPPort:            value("LINGOW_SMTP_PORT", "587"),
+		SMTPUser:            value("LINGOW_SMTP_USER", ""),
+		SMTPPassword:        value("LINGOW_SMTP_PASSWORD", ""),
+		SMTPFrom:            value("LINGOW_SMTP_FROM", ""),
+		SMTPTLS:             parseBoolDefault(value("LINGOW_SMTP_TLS", "true"), true),
 	}
 	runtimeMode := strings.ToLower(value("LINGOW_DELIVERY_RUNTIME", "disabled"))
 	switch runtimeMode {
@@ -116,6 +130,10 @@ func validateEnabled(config Config) error {
 		if strings.EqualFold(config.AppEnv, "production") {
 			return fmt.Errorf("%w: fake email provider is not allowed in production", domain.ErrInvalidArgument)
 		}
+	case providerSMTP:
+		if config.SMTPHost == "" || config.SMTPFrom == "" {
+			return fmt.Errorf("%w: LINGOW_SMTP_HOST and LINGOW_SMTP_FROM are required when LINGOW_DELIVERY_PROVIDER=smtp", domain.ErrInvalidArgument)
+		}
 	default:
 		return fmt.Errorf("%w: unsupported delivery provider %q", domain.ErrInvalidArgument, config.DeliveryProvider)
 	}
@@ -123,4 +141,24 @@ func validateEnabled(config Config) error {
 		return fmt.Errorf("%w: LINGOW_DELIVERY_CONSUMER is required in production", domain.ErrInvalidArgument)
 	}
 	return nil
+}
+
+func parseBoolDefault(raw string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+// SMTPPortInt returns the configured SMTP port or the supplied default.
+func (c Config) SMTPPortInt(defaultPort int) int {
+	port, err := strconv.Atoi(strings.TrimSpace(c.SMTPPort))
+	if err != nil || port <= 0 {
+		return defaultPort
+	}
+	return port
 }

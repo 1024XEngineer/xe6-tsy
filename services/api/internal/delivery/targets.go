@@ -66,3 +66,8 @@ func allowsDevEmailBindToken(appEnv string) bool {
 		return false
 	}
 }
+
+// AllowsDevEmailBindEnvironment reports whether dev-prefixed bind tokens are accepted.
+func AllowsDevEmailBindEnvironment(appEnv string) bool {
+	return allowsDevEmailBindToken(appEnv)
+}

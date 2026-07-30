@@ -112,7 +112,7 @@ func TestLoadEnabledRejectsShortJWTSecret(t *testing.T) {
 	}
 }
 
-func TestLoadEnabledRejectsUnsupportedProvider(t *testing.T) {
+func TestLoadEnabledRejectsSMTPWithoutMailConfig(t *testing.T) {
 	_, err := LoadFrom(mapEnv(map[string]string{
 		"APP_ENV":                         "local",
 		"LINGOW_DELIVERY_RUNTIME":         "enabled",
@@ -124,6 +124,27 @@ func TestLoadEnabledRejectsUnsupportedProvider(t *testing.T) {
 	}))
 	if !errors.Is(err, domain.ErrInvalidArgument) {
 		t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+	}
+}
+
+func TestLoadEnabledAcceptsSMTPProvider(t *testing.T) {
+	config, err := LoadFrom(mapEnv(map[string]string{
+		"APP_ENV":                         "production",
+		"LINGOW_DELIVERY_RUNTIME":         "enabled",
+		"DATABASE_URL":                    "postgres://localhost/lingow",
+		"REDIS_URL":                       "redis://localhost:6379/0",
+		"JWT_SECRET":                      "01234567890123456789012345678901",
+		"LINGOW_DELIVERY_DESTINATION_KEY": "base64-key",
+		"LINGOW_DELIVERY_PROVIDER":        "smtp",
+		"LINGOW_DELIVERY_CONSUMER":        "api-prod-1",
+		"LINGOW_SMTP_HOST":                "smtp.example.test",
+		"LINGOW_SMTP_FROM":                "noreply@example.test",
+	}))
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if config.DeliveryProvider != providerSMTP {
+		t.Fatalf("DeliveryProvider = %q, want %q", config.DeliveryProvider, providerSMTP)
 	}
 }
 

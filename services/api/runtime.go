@@ -135,6 +135,12 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		queue,
 	)
 	deliveryService.ConfigureTargetBinding(destinationKey, processConfig.AppEnv)
+	smtpMailer, err := newConfiguredSMTPMailer(processConfig)
+	if err != nil {
+		redisClient.Close()
+		return nil, nil, err
+	}
+	deliveryService.ConfigureEmailVerification(deliveryRepository, newEmailBindSender(processConfig, smtpMailer))
 
 	usageConsumerName := processConfig.UsageConsumer
 	if usageConsumerName == "" {
@@ -147,7 +153,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	}
 	usageConsumer := usage.NewConsumer(usageStream, usageService)
 
-	provider, err := configuredProvider(processConfig.DeliveryProvider)
+	provider, err := configuredProvider(processConfig, smtpMailer)
 	if err != nil {
 		redisClient.Close()
 		return nil, nil, err
@@ -174,15 +180,44 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	return runtime, languageHandler, nil
 }
 
-func configuredProvider(name string) (delivery.Provider, error) {
-	switch name {
+func configuredProvider(processConfig config.Config, smtpMailer *delivery.SMTPMailer) (delivery.Provider, error) {
+	switch processConfig.DeliveryProvider {
 	case "unconfigured", "":
 		return delivery.UnconfiguredProvider{}, nil
 	case "fake_email":
 		return delivery.NewFakeEmailProvider(delivery.FakeEmailProviderConfig{}), nil
+	case "smtp":
+		if smtpMailer == nil {
+			return nil, fmt.Errorf("smtp mailer is required when LINGOW_DELIVERY_PROVIDER=smtp")
+		}
+		return delivery.NewSMTPProvider(smtpMailer)
 	default:
-		return nil, fmt.Errorf("unsupported delivery provider %q", name)
+		return nil, fmt.Errorf("unsupported delivery provider %q", processConfig.DeliveryProvider)
 	}
+}
+
+func newConfiguredSMTPMailer(processConfig config.Config) (*delivery.SMTPMailer, error) {
+	if processConfig.SMTPHost == "" {
+		return nil, nil
+	}
+	return delivery.NewSMTPMailer(delivery.SMTPConfig{
+		Host:     processConfig.SMTPHost,
+		Port:     processConfig.SMTPPortInt(587),
+		Username: processConfig.SMTPUser,
+		Password: processConfig.SMTPPassword,
+		From:     processConfig.SMTPFrom,
+		UseTLS:   processConfig.SMTPTLS,
+	})
+}
+
+func newEmailBindSender(processConfig config.Config, smtpMailer *delivery.SMTPMailer) delivery.EmailBindSender {
+	if smtpMailer != nil {
+		return delivery.NewSMTPEmailBindSender(smtpMailer)
+	}
+	if delivery.AllowsDevEmailBindEnvironment(processConfig.AppEnv) {
+		return delivery.LogEmailBindSender{}
+	}
+	return nil
 }
 
 func (r *configuredRuntime) Serve(address string, handler http.Handler) error {

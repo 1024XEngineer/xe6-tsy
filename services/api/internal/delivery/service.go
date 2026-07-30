@@ -11,15 +11,17 @@ import (
 )
 
 type UseCases struct {
-	repository     Repository
-	turns          TurnReader
-	destinations   DestinationReader
-	queue          Queue
-	keys           sync.Mutex
-	createKeys     map[string]string
-	retryKeys      map[string]string
-	destinationKey []byte
-	appEnv         string
+	repository          Repository
+	turns               TurnReader
+	destinations        DestinationReader
+	queue               Queue
+	keys                sync.Mutex
+	createKeys          map[string]string
+	retryKeys           map[string]string
+	destinationKey      []byte
+	appEnv              string
+	emailBindChallenges EmailBindChallengeRepository
+	emailBindSender     EmailBindSender
 }
 
 func NewUseCases() *UseCases { return &UseCases{} }
@@ -35,6 +37,12 @@ func (u *UseCases) ConfigureTargetBinding(destinationKey []byte, appEnv string) 
 		u.destinationKey = append([]byte(nil), destinationKey...)
 	}
 	u.appEnv = appEnv
+}
+
+// ConfigureEmailVerification wires durable bind challenges and outbound token delivery.
+func (u *UseCases) ConfigureEmailVerification(challenges EmailBindChallengeRepository, sender EmailBindSender) {
+	u.emailBindChallenges = challenges
+	u.emailBindSender = sender
 }
 
 func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, error) {
@@ -216,12 +224,33 @@ func (u *UseCases) ListMessageTargets(ctx context.Context, accountID string, cha
 	return repository.ListMessageTargets(ctx, accountID, channel)
 }
 
+func (u *UseCases) RequestEmailBindVerification(ctx context.Context, accountID, email, destinationRef string) error {
+	if u.emailBindChallenges == nil || u.emailBindSender == nil || accountID == "" || len(u.destinationKey) != 32 {
+		return domain.ErrNotImplemented
+	}
+	normalizedEmail, err := normalizeBindEmail(email)
+	if err != nil {
+		return err
+	}
+	destinationRef = normalizeBindDestinationRef(destinationRef)
+	token, err := generateEmailBindToken()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	challenge := newEmailBindChallenge(accountID, destinationRef, normalizedEmail, hashEmailBindToken(token), now)
+	if err := u.emailBindChallenges.CreateEmailBindChallenge(ctx, challenge); err != nil {
+		return err
+	}
+	return u.emailBindSender.SendBindToken(ctx, normalizedEmail, destinationRef, token)
+}
+
 func (u *UseCases) BindEmailTarget(ctx context.Context, accountID, token string) (MessageTarget, error) {
 	repository := targetRepository(u.repository)
 	if repository == nil || accountID == "" || len(u.destinationKey) != 32 {
 		return MessageTarget{}, domain.ErrNotImplemented
 	}
-	destinationRef, email, err := parseDevEmailBindToken(u.appEnv, token)
+	destinationRef, email, err := resolveEmailBindToken(ctx, u.appEnv, token, accountID, u.emailBindChallenges)
 	if err != nil {
 		return MessageTarget{}, err
 	}

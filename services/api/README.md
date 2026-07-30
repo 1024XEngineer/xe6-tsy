@@ -66,9 +66,11 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 
 运行时启用还要求 `DATABASE_URL`、`REDIS_URL`、至少 32 字节的 `JWT_SECRET` 和
 `LINGOW_DELIVERY_DESTINATION_KEY`。enabled 路径还会启动 usage stream consumer，
-并暴露 `/api/v1/account/message-targets/*`（email bind 在 local 环境支持 `dev:` token）。
-`LINGOW_DELIVERY_PROVIDER` 默认是
-`unconfigured`；`fake_email` 只允许本地或测试环境显式选择，不能用于生产。
+并暴露 `/api/v1/account/message-targets/*`（email bind 在 local 环境支持 `dev:` token；
+非 local 环境通过 `POST /api/v1/account/message-targets/email/verification-codes` 发送一次性
+验证 token，再调用 bind）。`LINGOW_DELIVERY_PROVIDER` 默认是
+`unconfigured`；`fake_email` 只允许本地或测试环境显式选择；生产环境使用 `smtp`
+并配置 `LINGOW_SMTP_*`。
 
 ## 语音记录 HTTP 装配
 

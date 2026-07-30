@@ -158,6 +158,26 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/email/verification-codes:
+    post:
+      operationId: requestEmailBindVerification
+      security: [{ accountContext: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, minLength: 3, format: email }
+                destination_ref: { type: string, minLength: 1 }
+      responses:
+        '202': { description: Verification token accepted for delivery }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /account/message-targets/email/bind:
     post:
       operationId: bindEmailTarget

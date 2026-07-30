@@ -107,6 +107,11 @@ func (f *deliveryFake) ListMessageTargets(_ context.Context, accountID string, c
 	}
 	return f.targets, nil
 }
+func (f *deliveryFake) RequestEmailBindVerification(_ context.Context, accountID, email, destinationRef string) error {
+	f.bindAccountID = accountID
+	f.bindToken = email + ":" + destinationRef
+	return f.bindEmailErr
+}
 func (f *deliveryFake) BindEmailTarget(_ context.Context, accountID, token string) (delivery.MessageTarget, error) {
 	f.bindAccountID = accountID
 	f.bindToken = token
@@ -381,6 +386,7 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 		{"get message preferences", http.MethodGet, "/api/v1/account/message-preferences", "", true, false},
 		{"update message preference", http.MethodPut, "/api/v1/account/message-preferences/email", `{"enabled":true}`, true, false},
 		{"list message targets", http.MethodGet, "/api/v1/account/message-targets", "", true, false},
+		{"request email bind verification", http.MethodPost, "/api/v1/account/message-targets/email/verification-codes", `{"email":"user@example.test"}`, true, false},
 		{"bind email target", http.MethodPost, "/api/v1/account/message-targets/email/bind", `{"token":"dev:user@example.test"}`, true, false},
 		{"unbind email target", http.MethodDelete, "/api/v1/account/message-targets/email/primary-email", "", true, false},
 		{"bind wechat target", http.MethodPost, "/api/v1/account/message-targets/wechat/bind", `{"code":"oauth-code"}`, true, false},

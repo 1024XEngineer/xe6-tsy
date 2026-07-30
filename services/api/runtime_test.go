@@ -181,7 +181,7 @@ func TestNewConfiguredRuntimeRejectsMissingDatabaseURL(t *testing.T) {
 }
 
 func TestConfiguredProviderDefaultsToFailClosed(t *testing.T) {
-	provider, err := configuredProvider(config.Config{DeliveryProvider: "unconfigured"}, nil)
+	provider, err := configuredProvider(config.Config{DeliveryProvider: "unconfigured"}, nil, nil)
 	if err != nil {
 		t.Fatalf("configuredProvider() error = %v", err)
 	}
@@ -189,13 +189,13 @@ func TestConfiguredProviderDefaultsToFailClosed(t *testing.T) {
 	if provider == nil || !ok || idempotent.SupportsProviderIdempotency() {
 		t.Fatal("unconfigured provider must be non-idempotent and non-nil")
 	}
-	if err := provider.Send(t.Context(), delivery.SendRequest{}); !errors.Is(err, delivery.ErrProviderNotConfigured) {
+	if err := provider.Send(t.Context(), delivery.SendRequest{Message: delivery.Message{Channel: delivery.ChannelEmail}}); !errors.Is(err, delivery.ErrProviderNotConfigured) {
 		t.Fatalf("Send() error = %v, want ErrProviderNotConfigured", err)
 	}
 }
 
 func TestConfiguredProviderAcceptsFakeEmail(t *testing.T) {
-	provider, err := configuredProvider(config.Config{DeliveryProvider: "fake_email"}, nil)
+	provider, err := configuredProvider(config.Config{DeliveryProvider: "fake_email"}, nil, nil)
 	if err != nil {
 		t.Fatalf("configuredProvider() error = %v", err)
 	}
@@ -205,20 +205,20 @@ func TestConfiguredProviderAcceptsFakeEmail(t *testing.T) {
 }
 
 func TestConfiguredProviderRequiresSMTPMailer(t *testing.T) {
-	if _, err := configuredProvider(config.Config{DeliveryProvider: "smtp"}, nil); err == nil {
+	if _, err := configuredProvider(config.Config{DeliveryProvider: "smtp"}, nil, nil); err == nil {
 		t.Fatal("configuredProvider() succeeded without smtp mailer")
 	}
 	mailer, err := delivery.NewSMTPMailer(delivery.SMTPConfig{Host: "smtp.example.test", From: "noreply@example.test"})
 	if err != nil {
 		t.Fatalf("NewSMTPMailer() error = %v", err)
 	}
-	if _, err := configuredProvider(config.Config{DeliveryProvider: "smtp"}, mailer); err != nil {
+	if _, err := configuredProvider(config.Config{DeliveryProvider: "smtp"}, mailer, nil); err != nil {
 		t.Fatalf("configuredProvider() error = %v", err)
 	}
 }
 
 func TestConfiguredProviderRejectsUnknownName(t *testing.T) {
-	if _, err := configuredProvider(config.Config{DeliveryProvider: "sms"}, nil); err == nil {
+	if _, err := configuredProvider(config.Config{DeliveryProvider: "sms"}, nil, nil); err == nil {
 		t.Fatal("configuredProvider() succeeded for unknown provider")
 	}
 }

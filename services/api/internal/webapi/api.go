@@ -508,11 +508,21 @@ func (a *API) bindWeChatTarget(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) unbindWeChatTarget(w http.ResponseWriter, r *http.Request) {
-	if _, err := accountID(r); err != nil {
+	id, err := accountID(r)
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeError(w, r, domain.ErrNotImplemented)
+	destinationRef := strings.TrimSpace(r.PathValue("destination_ref"))
+	if destinationRef == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	if err := a.delivery.RevokeMessageTarget(r.Context(), id, delivery.ChannelWeChat, destinationRef); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // hasDuplicates also rejects empty identifiers so Turn selection stays unambiguous.

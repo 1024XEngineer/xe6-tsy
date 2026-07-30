@@ -124,8 +124,13 @@ func (f *deliveryFake) BindEmailTarget(_ context.Context, accountID, token strin
 	}
 	return delivery.MessageTarget{DestinationRef: "primary-email", Channel: delivery.ChannelEmail, Verified: true}, nil
 }
-func (f *deliveryFake) BindWeChatTarget(context.Context, string, string) (delivery.MessageTarget, error) {
-	return delivery.MessageTarget{}, domain.ErrNotImplemented
+func (f *deliveryFake) BindWeChatTarget(_ context.Context, accountID, code string) (delivery.MessageTarget, error) {
+	f.bindAccountID = accountID
+	f.bindToken = code
+	if f.bindEmailErr != nil {
+		return delivery.MessageTarget{}, f.bindEmailErr
+	}
+	return delivery.MessageTarget{DestinationRef: "primary-wechat", Channel: delivery.ChannelWeChat, Verified: true}, nil
 }
 func (f *deliveryFake) RevokeMessageTarget(_ context.Context, accountID string, channel delivery.Channel, destinationRef string) error {
 	f.revokeAccountID = accountID
@@ -679,29 +684,52 @@ func TestUnbindEmailTargetPassesDestinationRef(t *testing.T) {
 	}
 }
 
-func TestBindWeChatTargetReturnsNotImplemented(t *testing.T) {
-	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/wechat/bind", strings.NewReader(`{"code":"oauth-code"}`))
+func TestBindWeChatTargetInvalidOAuthCodeReturnsBadRequest(t *testing.T) {
+	fake := &deliveryFake{bindEmailErr: domain.ErrInvalidArgument}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/wechat/bind", strings.NewReader(`{"code":"expired-code"}`))
 	request = authenticate(request)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNotImplemented, response.Body.String())
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
 	}
 }
 
-func TestUnbindWeChatTargetReturnsNotImplemented(t *testing.T) {
-	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
-	request := httptest.NewRequest(http.MethodDelete, "/api/v1/account/message-targets/wechat/primary-wechat", nil)
+func TestBindWeChatTargetPassesCodeToService(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/wechat/bind", strings.NewReader(`{"code":"oauth-code-1"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.bindAccountID != "account-1" || fake.bindToken != "oauth-code-1" {
+		t.Fatalf("bind input = (%q, %q)", fake.bindAccountID, fake.bindToken)
+	}
+}
+
+func TestUnbindWeChatTargetPassesDestinationRef(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/account/message-targets/wechat/work-wechat", nil)
 	request = authenticate(request)
 	response := httptest.NewRecorder()
 
 	handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusNotImplemented {
-		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNotImplemented, response.Body.String())
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNoContent, response.Body.String())
+	}
+	if fake.revokeAccountID != "account-1" || fake.revokeChannel != delivery.ChannelWeChat || fake.revokeRef != "work-wechat" {
+		t.Fatalf("revoke input = (%q, %q, %q)", fake.revokeAccountID, fake.revokeChannel, fake.revokeRef)
 	}
 }

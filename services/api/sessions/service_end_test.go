@@ -18,6 +18,7 @@ type endRepository struct {
 	completeCalls   int
 	transitionCalls int
 	transitionHook  func()
+	saveResultHook  func(*EndIntent)
 }
 
 func (r *endRepository) BeginStartOperation(
@@ -74,6 +75,9 @@ func (r *endRepository) SaveEndIntent(
 	saved := intent
 	saved.NextAttemptAt = saved.RequestedAt
 	r.intent = &saved
+	if r.saveResultHook != nil {
+		r.saveResultHook(&saved)
+	}
 	return saved, false, nil
 }
 
@@ -304,6 +308,73 @@ func TestServiceEndRejectsCanceledContextBeforeDependencies(t *testing.T) {
 	if fixture.repository.getCalls != 0 || fixture.realtime.stopCalls != 0 {
 		t.Fatalf("dependency calls = GetOwned %d, Stop %d; want 0, 0",
 			fixture.repository.getCalls, fixture.realtime.stopCalls)
+	}
+}
+
+func TestServiceEndRejectsInvalidPersistedIntentLease(t *testing.T) {
+	tests := []struct {
+		name       string
+		clockTimes func(time.Time) []time.Time
+		mutate     func(*EndIntent)
+		want       error
+	}{
+		{
+			name: "mismatched request",
+			mutate: func(intent *EndIntent) {
+				intent.RequestHash = "other"
+			},
+			want: ErrIdempotencyKeyConflict,
+		},
+		{
+			name: "invalid persisted intent",
+			mutate: func(intent *EndIntent) {
+				intent.TraceID = ""
+			},
+			want: ErrInvalidDependency,
+		},
+		{
+			name: "missing lease owner",
+			mutate: func(intent *EndIntent) {
+				intent.RecoveryOwner = nil
+			},
+			want: ErrConcurrentTransition,
+		},
+		{
+			name: "zero attempt time",
+			clockTimes: func(now time.Time) []time.Time {
+				return []time.Time{now, {}}
+			},
+			want: ErrInvalidDependency,
+		},
+		{
+			name: "expired returned lease",
+			clockTimes: func(now time.Time) []time.Time {
+				return []time.Time{now, now.Add(defaultEndRecoveryLeaseDuration)}
+			},
+			want: ErrConcurrentTransition,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEndFixture(t, StatusActive)
+			fixture.repository.saveResultHook = test.mutate
+			if test.clockTimes != nil {
+				fixture.clock.times = test.clockTimes(fixture.clock.now)
+			}
+
+			_, err := fixture.service.End(t.Context(), validEndInput())
+			if !errors.Is(err, test.want) {
+				t.Fatalf("End() error = %v, want %v", err, test.want)
+			}
+			if fixture.realtime.stopCalls != 0 || fixture.repository.transitionCalls != 0 {
+				t.Fatalf(
+					"calls = Stop %d TransitionToEnded %d, want 0, 0",
+					fixture.realtime.stopCalls,
+					fixture.repository.transitionCalls,
+				)
+			}
+		})
 	}
 }
 

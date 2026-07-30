@@ -184,11 +184,6 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	h.mux.ServeHTTP(writer, request)
 }
 
-type stopRequest struct {
-	TraceID string `json:"trace_id"`
-	Reason  string `json:"reason"`
-}
-
 func (h *Handler) start(writer http.ResponseWriter, request *http.Request) {
 	sessionID := request.PathValue("session_id")
 	if _, err := h.authorize(request.Context(), request, sessionID); err != nil {
@@ -228,19 +223,32 @@ func (h *Handler) stop(writer http.ResponseWriter, request *http.Request) {
 		h.writeError(writer, request, err)
 		return
 	}
-	var body stopRequest
-	if err := decodeJSON(request, &body, true); err != nil {
+	var body realtimev1.StopRequest
+	if err := decodeJSON(request, &body, false); err != nil {
 		h.writeError(writer, request, err)
 		return
 	}
-	if body.Reason == "" {
-		body.Reason = "user_requested"
+	if !validStopReason(body.Reason) || body.EndedAt.IsZero() {
+		h.writeError(writer, request, ErrInvalidRequest)
+		return
 	}
-	h.handleReplay(writer, request.Context(), sessionID, "stop\x00"+sessionID+"\x00"+idempotencyKey, body, func() (any, error) {
+	replayBody := struct {
+		Reason string `json:"reason"`
+	}{Reason: body.Reason}
+	h.handleReplay(writer, request.Context(), sessionID, "stop\x00"+sessionID+"\x00"+idempotencyKey, replayBody, func() (any, error) {
 		return h.lifecycle.Stop(request.Context(), session.StopRealtimeCommand{
-			SessionID: sessionID, TraceID: body.TraceID, Reason: body.Reason, EndedAt: h.now(),
+			SessionID: sessionID, TraceID: body.TraceID, Reason: body.Reason, EndedAt: body.EndedAt,
 		})
 	})
+}
+
+func validStopReason(reason string) bool {
+	switch reason {
+	case "user_requested", "operator_cancelled", "client_disconnected":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *Handler) runtime(writer http.ResponseWriter, request *http.Request) {

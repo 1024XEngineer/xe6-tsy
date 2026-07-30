@@ -81,6 +81,119 @@ func TestClientGetConnectionMapsAllStates(t *testing.T) {
 	}
 }
 
+func TestClientStopCarriesReasonTimeAndReplaysByReason(t *testing.T) {
+	fixture := newFixture(t)
+	server := httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+	client := newTestClient(t, server.URL)
+	endedAt := time.Unix(1700000060, 0).UTC()
+
+	first, err := client.Stop(t.Context(), "session-1", realtimev1.StopRequest{
+		TraceID: "trace-stop-1",
+		Reason:  "user_requested",
+		EndedAt: endedAt,
+	})
+	if err != nil {
+		t.Fatalf("first Stop() error = %v", err)
+	}
+	second, err := client.Stop(t.Context(), "session-1", realtimev1.StopRequest{
+		TraceID: "trace-stop-2",
+		Reason:  "user_requested",
+		EndedAt: endedAt.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("replayed Stop() error = %v", err)
+	}
+	if first.RuntimeState != realtimev1.RuntimeStopped ||
+		second.RuntimeState != realtimev1.RuntimeStopped {
+		t.Fatalf("Stop() states = %q, %q", first.RuntimeState, second.RuntimeState)
+	}
+	if fixture.lifecycle.stops != 1 {
+		t.Fatalf("lifecycle stops = %d, want 1", fixture.lifecycle.stops)
+	}
+	if fixture.lifecycle.stopCommand.TraceID != "trace-stop-1" ||
+		fixture.lifecycle.stopCommand.Reason != "user_requested" ||
+		!fixture.lifecycle.stopCommand.EndedAt.Equal(endedAt) {
+		t.Fatalf("stop command = %#v, want first request mapping", fixture.lifecycle.stopCommand)
+	}
+}
+
+func TestClientStopValidatesRequestAndResponse(t *testing.T) {
+	client := newTestClient(t, "https://realtime.example")
+	if _, err := client.Stop(t.Context(), "session-1", realtimev1.StopRequest{
+		TraceID: "trace-stop",
+		Reason:  "user_requested",
+	}); !errors.Is(err, ErrClientRequest) {
+		t.Fatalf("Stop(zero time) error = %v, want ErrClientRequest", err)
+	}
+
+	fixture := newFixture(t)
+	fixture.lifecycle.stopped.RuntimeState = realtimev1.RuntimePlaying
+	server := httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+	snapshot, err := newTestClient(t, server.URL).Stop(
+		t.Context(),
+		"session-1",
+		realtimev1.StopRequest{
+			TraceID: "trace-stop",
+			Reason:  "user_requested",
+			EndedAt: time.Unix(1700000060, 0).UTC(),
+		},
+	)
+	if err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if snapshot.RuntimeState != realtimev1.RuntimePlaying {
+		t.Fatalf("Stop() state = %q, want pass-through valid state", snapshot.RuntimeState)
+	}
+
+	fixture = newFixture(t)
+	fixture.lifecycle.stopped.RuntimeState = "unknown"
+	server = httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+	_, err = newTestClient(t, server.URL).Stop(
+		t.Context(),
+		"session-1",
+		realtimev1.StopRequest{
+			TraceID: "trace-stop",
+			Reason:  "user_requested",
+			EndedAt: time.Unix(1700000060, 0).UTC(),
+		},
+	)
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("Stop(invalid state) error = %v, want ErrInvalidResponse", err)
+	}
+}
+
+func TestClientGetRuntimeStateMapsSnapshotsAndMissingRuntime(t *testing.T) {
+	fixture := newFixture(t)
+	server := httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+
+	snapshot, err := newTestClient(t, server.URL).GetRuntimeState(
+		t.Context(),
+		"session-1",
+	)
+	if err != nil {
+		t.Fatalf("GetRuntimeState() error = %v", err)
+	}
+	if snapshot.SessionID != "session-1" ||
+		snapshot.RuntimeState != realtimev1.RuntimeListening ||
+		snapshot.StartOperationID != "operation-1" ||
+		snapshot.UpdatedAt.IsZero() {
+		t.Fatalf("GetRuntimeState() = %#v", snapshot)
+	}
+
+	fixture = newFixture(t)
+	fixture.lifecycle.runtimeErr = session.ErrRuntimeNotFound
+	server = httptest.NewServer(fixture.handler)
+	t.Cleanup(server.Close)
+	_, err = newTestClient(t, server.URL).GetRuntimeState(t.Context(), "session-1")
+	if !errors.Is(err, ErrRuntimeNotFound) {
+		t.Fatalf("GetRuntimeState() error = %v, want ErrRuntimeNotFound", err)
+	}
+}
+
 func TestClientGetConnectionMapsErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -263,6 +376,9 @@ func TestClientPreservesContextErrors(t *testing.T) {
 			}
 			if _, err := client.GetConnection(ctx, "session-1"); !errors.Is(err, test.want) {
 				t.Fatalf("GetConnection() error = %v, want %v", err, test.want)
+			}
+			if _, err := client.GetRuntimeState(ctx, "session-1"); !errors.Is(err, test.want) {
+				t.Fatalf("GetRuntimeState() error = %v, want %v", err, test.want)
 			}
 		})
 	}

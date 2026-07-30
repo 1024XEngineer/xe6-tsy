@@ -37,17 +37,23 @@ func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
 		t.Fatalf("start command = %#v, want complete request mapping", fixture.lifecycle.startCommand)
 	}
 
-	stopBody := `{"trace_id":"trace-stop","reason":"user_requested"}`
+	stopBody := `{"trace_id":"trace-stop","reason":"user_requested","ended_at":"2023-11-14T22:14:20Z"}`
 	firstStop := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/stop", stopBody, "stop-key")
 	if firstStop.Code != http.StatusOK {
 		t.Fatalf("first stop status = %d, body=%s", firstStop.Code, firstStop.Body.String())
 	}
-	secondStop := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/stop", stopBody, "stop-key")
+	secondStopBody := `{"trace_id":"trace-stop-replay","reason":"user_requested","ended_at":"2023-11-14T22:15:20Z"}`
+	secondStop := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/stop", secondStopBody, "stop-key")
 	if secondStop.Code != http.StatusOK {
 		t.Fatalf("replayed stop status = %d, body=%s", secondStop.Code, secondStop.Body.String())
 	}
 	if fixture.lifecycle.stops != 1 {
 		t.Fatalf("lifecycle stops = %d, want 1", fixture.lifecycle.stops)
+	}
+	if fixture.lifecycle.stopCommand.TraceID != "trace-stop" ||
+		fixture.lifecycle.stopCommand.Reason != "user_requested" ||
+		!fixture.lifecycle.stopCommand.EndedAt.Equal(time.Unix(1700000060, 0).UTC()) {
+		t.Fatalf("stop command = %#v, want first request mapping", fixture.lifecycle.stopCommand)
 	}
 }
 
@@ -191,6 +197,14 @@ func TestHandlerRejectsMalformedAndMissingIdentity(t *testing.T) {
 	}
 	if fixture.lifecycle.starts != 0 {
 		t.Fatalf("lifecycle starts = %d, want 0", fixture.lifecycle.starts)
+	}
+
+	invalidStop := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/stop", `{"reason":"unknown"}`, "stop-key")
+	if invalidStop.Code != http.StatusBadRequest {
+		t.Fatalf("invalid stop status = %d, want 400", invalidStop.Code)
+	}
+	if fixture.lifecycle.stops != 0 {
+		t.Fatalf("lifecycle stops = %d, want 0", fixture.lifecycle.stops)
 	}
 
 	missingKey := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/webrtc/offer", `{"sdp":"offer-sdp","type":"offer"}`, "")
@@ -470,9 +484,11 @@ type lifecycleFake struct {
 	stopped      session.RuntimeSnapshot
 	startErr     error
 	stopErr      error
+	runtimeErr   error
 	starts       int
 	stops        int
 	startCommand session.StartRealtimeCommand
+	stopCommand  session.StopRealtimeCommand
 }
 
 type blockingLifecycleFake struct {
@@ -536,6 +552,7 @@ func (f *multiSessionLifecycleFake) GetRuntimeState(context.Context, string) (se
 
 func (f *lifecycleFake) Stop(_ context.Context, command session.StopRealtimeCommand) (session.RuntimeSnapshot, error) {
 	f.stops++
+	f.stopCommand = command
 	if f.stopErr != nil {
 		return session.RuntimeSnapshot{}, f.stopErr
 	}
@@ -546,6 +563,9 @@ func (f *lifecycleFake) Stop(_ context.Context, command session.StopRealtimeComm
 }
 
 func (f *lifecycleFake) GetRuntimeState(context.Context, string) (session.RuntimeSnapshot, error) {
+	if f.runtimeErr != nil {
+		return session.RuntimeSnapshot{}, f.runtimeErr
+	}
 	return f.runtime, nil
 }
 

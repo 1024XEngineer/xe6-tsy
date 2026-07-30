@@ -1,5 +1,7 @@
 package realtimev1
 
+import "time"
+
 // ControlPlaneErrorCode is a stable cross-service error identifier returned
 // by realtime control-plane lifecycle operations.
 type ControlPlaneErrorCode string
@@ -15,4 +17,11 @@ type StartRequest struct {
 	OperationID string `json:"operation_id"`
 	TraceID     string `json:"trace_id"`
 	StartedBy   string `json:"started_by"`
+}
+
+// StopRequest binds a business End intent to realtime cleanup confirmation.
+type StopRequest struct {
+	TraceID string    `json:"trace_id"`
+	Reason  string    `json:"reason"`
+	EndedAt time.Time `json:"ended_at"`
 }

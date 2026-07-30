@@ -203,6 +203,38 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/RuntimeOperationConflictError' }
+  /realtime/v1/sessions/{session_id}/stop:
+    servers:
+      - url: /
+    post:
+      operationId: stopRealtimeSession
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RealtimeStopRequest' }
+      responses:
+        '200':
+          description: Runtime stopped
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
+  /realtime/v1/sessions/{session_id}/runtime:
+    servers:
+      - url: /
+    get:
+      operationId: getRealtimeRuntimeSnapshot
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Current runtime snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
   /realtime/v1/sessions/{session_id}/connection:
     servers:
       - url: /
@@ -274,6 +306,14 @@ components:
         operation_id: { type: string, minLength: 1 }
         trace_id: { type: string }
         started_by: { type: string }
+    RealtimeStopRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, ended_at]
+      properties:
+        trace_id: { type: string }
+        reason: { type: string, enum: [user_requested, operator_cancelled, client_disconnected] }
+        ended_at: { type: string, format: date-time }
     RealtimeRuntimeSnapshot:
       type: object
       additionalProperties: false

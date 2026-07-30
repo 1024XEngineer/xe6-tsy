@@ -30,6 +30,14 @@ through a `ListFilter` with a non-empty `AccountID`. `SessionReader.GetSession`
 is reserved for trusted internal modules and is not an authorization boundary.
 The two read paths must not be interchanged.
 
+Repository authorization separates the current actor from the immutable
+session owner. `GetOwned`, `List`, and lifecycle mutations authorize an actor
+through `lingow_account_lineage(actor_account_id)`, then retain the
+`voice_sessions.account_id` returned by PostgreSQL as the owner for every
+StartOperation, EndIntent, and business-state write. Merging an anonymous
+account into a registered account therefore grants the registered actor access
+without rewriting historical ownership.
+
 `RealtimeLifecycle` and `LanguageConfigReader` are consumer-owned ports. Their
 providers do not directly implement these interfaces: follow-up adapters map
 provider commands and snapshots explicitly. Adapters must exhaustively map

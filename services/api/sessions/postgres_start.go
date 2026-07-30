@@ -21,17 +21,21 @@ func (r *PostgresRepository) GetStartOperation(
 	if accountID == "" || sessionID == "" || idempotencyKey == "" {
 		return StartOperation{}, ErrInvalidRequest
 	}
-	if _, err := getSession(ctx, r.pool, accountID, sessionID, false); err != nil {
+	session, err := getSessionForActor(
+		ctx, r.pool, accountID, sessionID, false,
+	)
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return StartOperation{}, ErrVoiceSessionNotFound
 		}
 		return StartOperation{}, postgresError("verify start session ownership", err)
 	}
+	ownerAccountID := session.AccountID
 	operation, err := scanStartOperation(r.pool.QueryRow(ctx, `
 		SELECT `+startOperationColumns+`
 		FROM voice_session_start_operations
 		WHERE account_id = $1 AND session_id = $2 AND idempotency_key = $3`,
-		accountID, sessionID, idempotencyKey))
+		ownerAccountID, sessionID, idempotencyKey))
 	if err == nil {
 		if operation.Status == StartOperationCompensated {
 			return StartOperation{}, ErrStartOperationNotFound
@@ -49,7 +53,7 @@ func (r *PostgresRepository) GetStartOperation(
 			FROM voice_session_start_operations
 			WHERE account_id = $1 AND session_id = $2
 			  AND status IN ('pending', 'compensating', 'compensation_failed')
-		)`, accountID, sessionID).Scan(&occupied)
+		)`, ownerAccountID, sessionID).Scan(&occupied)
 	if err != nil {
 		return StartOperation{}, postgresError("check unresolved start operation", err)
 	}
@@ -77,20 +81,23 @@ func (r *PostgresRepository) BeginStartOperation(
 		return BeginStartOperationResult{}, postgresError("begin start operation", err)
 	}
 	defer tx.Rollback(ctx)
-	session, err := getSession(ctx, tx, params.AccountID, params.SessionID, true)
+	session, err := getSessionForActor(
+		ctx, tx, params.AccountID, params.SessionID, true,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return BeginStartOperationResult{}, ErrVoiceSessionNotFound
 	}
 	if err != nil {
 		return BeginStartOperationResult{}, postgresError("lock session for start", err)
 	}
+	ownerAccountID := session.AccountID
 
 	var incompleteEnd bool
 	if err := tx.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM voice_session_end_intents
 			WHERE account_id = $1 AND session_id = $2 AND completed_at IS NULL
-		)`, params.AccountID, params.SessionID).Scan(&incompleteEnd); err != nil {
+		)`, ownerAccountID, params.SessionID).Scan(&incompleteEnd); err != nil {
 		return BeginStartOperationResult{}, postgresError("check end interlock for start", err)
 	}
 	if incompleteEnd {
@@ -98,13 +105,15 @@ func (r *PostgresRepository) BeginStartOperation(
 	}
 
 	existing, found, err := startOperationByAccountKey(
-		ctx, tx, params.AccountID, params.IdempotencyKey,
+		ctx, tx, ownerAccountID, params.IdempotencyKey,
 	)
 	if err != nil {
 		return BeginStartOperationResult{}, postgresError("read start idempotency key", err)
 	}
 	if found {
-		return classifyBeginReplay(existing, params)
+		ownerParams := params
+		ownerParams.AccountID = ownerAccountID
+		return classifyBeginReplay(existing, ownerParams)
 	}
 	if session.Status != StatusCreated {
 		return BeginStartOperationResult{}, ErrConcurrentTransition
@@ -115,7 +124,7 @@ func (r *PostgresRepository) BeginStartOperation(
 			SELECT 1 FROM voice_session_start_operations
 			WHERE account_id = $1 AND session_id = $2
 			  AND status IN ('pending', 'compensating', 'compensation_failed')
-		)`, params.AccountID, params.SessionID).Scan(&unresolved); err != nil {
+		)`, ownerAccountID, params.SessionID).Scan(&unresolved); err != nil {
 		return BeginStartOperationResult{}, postgresError("check start interlock", err)
 	}
 	if unresolved {
@@ -128,7 +137,7 @@ func (r *PostgresRepository) BeginStartOperation(
 			status, created_at, updated_at
 		) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $6)
 		RETURNING `+startOperationColumns,
-		params.OperationID, params.SessionID, params.AccountID,
+		params.OperationID, params.SessionID, ownerAccountID,
 		params.IdempotencyKey, params.RequestHash, params.CreatedAt.UTC()))
 	if err != nil {
 		constraint := constraintName(err)
@@ -139,7 +148,9 @@ func (r *PostgresRepository) BeginStartOperation(
 					"rollback start operation race", rollbackErr,
 				)
 			}
-			return r.resolveBeginStartRace(ctx, params, constraint)
+			ownerParams := params
+			ownerParams.AccountID = ownerAccountID
+			return r.resolveBeginStartRace(ctx, ownerParams, constraint)
 		}
 		return BeginStartOperationResult{}, postgresError("insert start operation", err)
 	}
@@ -226,13 +237,16 @@ func (r *PostgresRepository) ClaimStartCompensation(
 		return ClaimStartCompensationResult{}, postgresError("begin compensation claim", err)
 	}
 	defer tx.Rollback(ctx)
-	session, err := getSession(ctx, tx, params.AccountID, params.SessionID, true)
+	session, err := getSessionForActor(
+		ctx, tx, params.AccountID, params.SessionID, true,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ClaimStartCompensationResult{}, ErrVoiceSessionNotFound
 	}
 	if err != nil {
 		return ClaimStartCompensationResult{}, postgresError("lock session for compensation claim", err)
 	}
+	ownerAccountID := session.AccountID
 	if session.Status != StatusCreated {
 		return ClaimStartCompensationResult{
 			Reason: StartCompensationSessionNotCreated,
@@ -243,7 +257,7 @@ func (r *PostgresRepository) ClaimStartCompensation(
 		FROM voice_session_start_operations
 		WHERE account_id = $1 AND session_id = $2 AND operation_id = $3
 		FOR UPDATE`,
-		params.AccountID, params.SessionID, params.OperationID))
+		ownerAccountID, params.SessionID, params.OperationID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ClaimStartCompensationResult{
 			Reason: StartCompensationOperationMismatch,
@@ -317,7 +331,7 @@ func (r *PostgresRepository) FailStartCompensation(
 
 func (r *PostgresRepository) finishStartCompensation(
 	ctx context.Context,
-	accountID string,
+	actorAccountID string,
 	sessionID string,
 	operationID string,
 	claimID string,
@@ -332,13 +346,16 @@ func (r *PostgresRepository) finishStartCompensation(
 		return postgresError("begin compensation outcome", err)
 	}
 	defer tx.Rollback(ctx)
-	session, err := getSession(ctx, tx, accountID, sessionID, true)
+	session, err := getSessionForActor(
+		ctx, tx, actorAccountID, sessionID, true,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrVoiceSessionNotFound
 	}
 	if err != nil {
 		return postgresError("lock session for compensation outcome", err)
 	}
+	ownerAccountID := session.AccountID
 	if session.Status != StatusCreated {
 		return ErrConcurrentTransition
 	}
@@ -346,7 +363,7 @@ func (r *PostgresRepository) finishStartCompensation(
 		SELECT `+startOperationColumns+`
 		FROM voice_session_start_operations
 		WHERE account_id = $1 AND session_id = $2 AND operation_id = $3
-		FOR UPDATE`, accountID, sessionID, operationID))
+		FOR UPDATE`, ownerAccountID, sessionID, operationID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrConcurrentTransition
 	}

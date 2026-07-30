@@ -72,7 +72,9 @@ func (r *PostgresRepository) Create(
 		if stored.requestHash != params.RequestHash {
 			return VoiceSession{}, false, ErrIdempotencyKeyConflict
 		}
-		session, err := getSession(ctx, tx, params.AccountID, stored.sessionID, false)
+		session, err := getSessionByOwner(
+			ctx, tx, params.AccountID, stored.sessionID, false,
+		)
 		return session, true, postgresError("replay create", err)
 	}
 
@@ -109,7 +111,7 @@ func (r *PostgresRepository) Create(
 	if err != nil {
 		return VoiceSession{}, false, postgresError("insert create request", err)
 	}
-	session, err := getSession(ctx, tx, params.AccountID, params.ID, false)
+	session, err := getSessionByOwner(ctx, tx, params.AccountID, params.ID, false)
 	if err != nil {
 		return VoiceSession{}, false, postgresError("read created session", err)
 	}
@@ -137,7 +139,9 @@ func (r *PostgresRepository) replayCreate(
 	if stored.requestHash != requestHash {
 		return VoiceSession{}, false, ErrIdempotencyKeyConflict
 	}
-	session, err := getSession(ctx, r.pool, accountID, stored.sessionID, false)
+	session, err := getSessionByOwner(
+		ctx, r.pool, accountID, stored.sessionID, false,
+	)
 	return session, true, postgresError("read winning session", err)
 }
 
@@ -152,7 +156,9 @@ func (r *PostgresRepository) GetOwned(
 	if accountID == "" || sessionID == "" {
 		return VoiceSession{}, ErrInvalidRequest
 	}
-	session, err := getSession(ctx, r.pool, accountID, sessionID, false)
+	session, err := getSessionForActor(
+		ctx, r.pool, accountID, sessionID, false,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return VoiceSession{}, ErrVoiceSessionNotFound
 	}
@@ -169,7 +175,7 @@ func (r *PostgresRepository) GetSession(
 	if sessionID == "" {
 		return SessionSnapshot{}, ErrInvalidRequest
 	}
-	session, err := getSession(ctx, r.pool, "", sessionID, false)
+	session, err := getSessionTrusted(ctx, r.pool, sessionID, false)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SessionSnapshot{}, ErrVoiceSessionNotFound
 	}
@@ -198,7 +204,9 @@ func (r *PostgresRepository) List(
 	}
 
 	args := []any{filter.AccountID}
-	where := []string{"account_id = $1"}
+	where := []string{
+		"account_id IN (SELECT account_id FROM lingow_account_lineage($1))",
+	}
 	if filter.Status != nil {
 		args = append(args, *filter.Status)
 		where = append(where, fmt.Sprintf("status = $%d", len(args)))
@@ -290,19 +298,58 @@ func findCreateRequest(
 	return stored, err == nil, err
 }
 
-func getSession(
+// getSessionForActor authorizes the current account through the lineage
+// function while preserving the immutable owner returned from voice_sessions.
+func getSessionForActor(
 	ctx context.Context,
 	db queryRower,
-	accountID string,
+	actorAccountID string,
+	sessionID string,
+	forUpdate bool,
+) (VoiceSession, error) {
+	query := `SELECT ` + sessionColumns + `
+		FROM voice_sessions
+		WHERE id = $1
+		  AND account_id IN (
+			SELECT account_id FROM lingow_account_lineage($2)
+		  )`
+	return querySession(ctx, db, query, []any{sessionID, actorAccountID}, forUpdate)
+}
+
+// getSessionByOwner performs an exact owner read after authorization has
+// already resolved the immutable account used by operation and intent rows.
+func getSessionByOwner(
+	ctx context.Context,
+	db queryRower,
+	ownerAccountID string,
+	sessionID string,
+	forUpdate bool,
+) (VoiceSession, error) {
+	query := `SELECT ` + sessionColumns + `
+		FROM voice_sessions
+		WHERE id = $1 AND account_id = $2`
+	return querySession(ctx, db, query, []any{sessionID, ownerAccountID}, forUpdate)
+}
+
+// getSessionTrusted is reserved for the internal SessionReader boundary, which
+// is explicitly not an account authorization path.
+func getSessionTrusted(
+	ctx context.Context,
+	db queryRower,
 	sessionID string,
 	forUpdate bool,
 ) (VoiceSession, error) {
 	query := `SELECT ` + sessionColumns + ` FROM voice_sessions WHERE id = $1`
-	args := []any{sessionID}
-	if accountID != "" {
-		query += ` AND account_id = $2`
-		args = append(args, accountID)
-	}
+	return querySession(ctx, db, query, []any{sessionID}, forUpdate)
+}
+
+func querySession(
+	ctx context.Context,
+	db queryRower,
+	query string,
+	args []any,
+	forUpdate bool,
+) (VoiceSession, error) {
 	if forUpdate {
 		query += ` FOR UPDATE`
 	}

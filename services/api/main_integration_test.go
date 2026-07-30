@@ -455,6 +455,157 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 	assertSessionError(t, endConflict, http.StatusConflict, sessions.CodeIdempotencyKeyConflict)
 }
 
+func TestSessionProductionCompositionRecoversFailedEndIntent(t *testing.T) {
+	databaseURL := recordsHTTPTestDatabaseURL(t)
+	pool, err := recordstore.Open(t.Context(), databaseURL)
+	if err != nil {
+		t.Fatalf("open PostgreSQL integration database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := recordstore.Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("migrate recordstore: %v", err)
+	}
+
+	ticketSecret := strings.Repeat("r", 32)
+	realtime := newSessionRuntimeControlPlane(t, ticketSecret)
+	defer realtime.server.Close()
+
+	sessionRepository := sessions.NewPostgresRepository(pool)
+	languageDependencies, err := newLanguageDependenciesWithPool(
+		t.Context(),
+		pool,
+		sessionOwnerReader{reader: sessionRepository},
+	)
+	if err != nil {
+		t.Fatalf("newLanguageDependenciesWithPool() error = %v", err)
+	}
+	sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
+		Repository:     sessionRepository,
+		SessionReader:  sessionRepository,
+		LanguageReader: languageDependencies.service,
+		HTTPClient: &http.Client{
+			Transport: realtime.server.Client().Transport,
+			Timeout:   time.Second,
+		},
+		IDs:   newSessionIDGenerator(),
+		Clock: utcClock{},
+		Config: config.Config{
+			RealtimeBaseURL:      realtime.server.URL,
+			RealtimeTicketSecret: ticketSecret,
+		},
+	})
+	if err != nil {
+		t.Fatalf("newSessionHTTPDependencies() error = %v", err)
+	}
+	recovery, ok := sessionDependencies.endRecovery.(*sessions.EndRecoveryWorker)
+	if !ok {
+		t.Fatalf("end recovery worker = %T, want *sessions.EndRecoveryWorker", sessionDependencies.endRecovery)
+	}
+	records, err := newRecordsHTTPDependenciesFromPool(
+		t.Context(),
+		pool,
+		strings.Repeat("j", 32),
+		"lingow-api",
+		"lingow-client",
+	)
+	if err != nil {
+		t.Fatalf("newRecordsHTTPDependenciesFromPool() error = %v", err)
+	}
+	account, err := records.accounts.CreateAnonymous(t.Context())
+	if err != nil {
+		t.Fatalf("create anonymous account: %v", err)
+	}
+	mux := buildMux(
+		languageDependencies.handler,
+		sessionDependencies.handler,
+		records.handler,
+		records.accounts,
+		records.tokens,
+	)
+	created := createStartedSession(t, mux, realtime, account.Tokens.AccessToken)
+
+	realtime.stopState.Store(realtimev1.RuntimeStopping)
+	end := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/end",
+		account.Tokens.AccessToken,
+		"recover-end-session",
+		http.NoBody,
+	)
+	assertSessionError(t, end, http.StatusServiceUnavailable, sessions.CodeRealtimeStopFailed)
+	active, err := sessionRepository.GetOwned(t.Context(), account.Account.ID, created.ID)
+	if err != nil {
+		t.Fatalf("read active session after failed End: %v", err)
+	}
+	if active.Status != sessions.StatusActive || active.EndedAt != nil {
+		t.Fatalf("session after failed End = %#v, want active without ended_at", active)
+	}
+
+	realtime.stopState.Store(realtimev1.RuntimeStopped)
+	processed, err := recovery.ProcessNext(t.Context())
+	if err != nil || !processed {
+		t.Fatalf("ProcessNext() = %t, %v, want recovered intent", processed, err)
+	}
+	ended, err := sessionRepository.GetOwned(t.Context(), account.Account.ID, created.ID)
+	if err != nil {
+		t.Fatalf("read ended session after recovery: %v", err)
+	}
+	if ended.Status != sessions.StatusEnded || ended.EndedAt == nil {
+		t.Fatalf("session after recovery = %#v, want ended with ended_at", ended)
+	}
+}
+
+func createStartedSession(
+	t *testing.T,
+	mux http.Handler,
+	realtime *sessionRuntimeControlPlane,
+	accessToken string,
+) sessions.VoiceSession {
+	t.Helper()
+	create := serveAPIRequest(t, mux, http.MethodPost, "/api/v1/voice-sessions", accessToken, "create-recovery-session", strings.NewReader(
+		`{"capabilities":{"webrtc":true,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
+	))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", create.Code, create.Body.String())
+	}
+	var created sessions.VoiceSession
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created session: %v", err)
+	}
+	languageConfig := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/language-configs",
+		accessToken,
+		"language-config-recovery-session",
+		strings.NewReader(`{"languages":[{"source":"zh-CN","target":"en-US"},{"source":"en-US","target":"zh-CN"}]}`),
+	)
+	if languageConfig.Code != http.StatusCreated {
+		t.Fatalf("language config status = %d, body = %s", languageConfig.Code, languageConfig.Body.String())
+	}
+	realtime.connectionState.Store(realtimev1.ConnectionConnected)
+	start := serveAPIRequest(
+		t,
+		mux,
+		http.MethodPost,
+		"/api/v1/voice-sessions/"+created.ID+"/start",
+		accessToken,
+		"start-recovery-session",
+		http.NoBody,
+	)
+	if start.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", start.Code, start.Body.String())
+	}
+	var started sessions.VoiceSession
+	if err := json.Unmarshal(start.Body.Bytes(), &started); err != nil {
+		t.Fatalf("decode started session: %v", err)
+	}
+	return started
+}
+
 func serveAPIRequest(
 	t *testing.T,
 	handler http.Handler,
@@ -500,6 +651,7 @@ type sessionRuntimeControlPlane struct {
 	runtimeCalls    atomic.Int32
 	operationID     atomic.Value
 	connectionState atomic.Value
+	stopState       atomic.Value
 }
 
 func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRuntimeControlPlane {
@@ -518,6 +670,7 @@ func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRu
 	realtime := &sessionRuntimeControlPlane{}
 	realtime.operationID.Store("")
 	realtime.connectionState.Store(realtimev1.ConnectionConnected)
+	realtime.stopState.Store(realtimev1.RuntimeStopped)
 	handler, err := controlplane.New(controlplane.Dependencies{
 		Lifecycle:   realtime,
 		Signaling:   sessionRuntimeSignaling{},
@@ -549,10 +702,14 @@ func (p *sessionRuntimeControlPlane) Stop(_ context.Context, command rtsession.S
 	now := time.Now().UTC()
 	p.stopCalls.Add(1)
 	operationID, _ := p.operationID.Load().(string)
+	state, _ := p.stopState.Load().(realtimev1.RuntimeState)
+	if state == "" {
+		state = realtimev1.RuntimeStopped
+	}
 	return realtimev1.RuntimeSnapshot{
 		SessionID:        command.SessionID,
 		StartOperationID: operationID,
-		RuntimeState:     realtimev1.RuntimeStopped,
+		RuntimeState:     state,
 		UpdatedAt:        now,
 	}, nil
 }

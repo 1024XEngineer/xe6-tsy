@@ -27,6 +27,7 @@ func (r *PostgresRepository) SaveEndIntent(
 		!intent.LeaseExpiresAt.After(intent.RequestedAt) {
 		return EndIntent{}, false, ErrInvalidRequest
 	}
+	leaseDuration := intent.LeaseExpiresAt.Sub(intent.RequestedAt)
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return EndIntent{}, false, postgresError("begin end intent", err)
@@ -68,17 +69,21 @@ func (r *PostgresRepository) SaveEndIntent(
 		if existing.Completed() {
 			return existing, true, nil
 		}
-		if existing.LeaseExpiresAt != nil &&
-			existing.LeaseExpiresAt.After(intent.RequestedAt) {
-			return EndIntent{}, false, ErrConcurrentTransition
-		}
 		updated, err := scanEndIntent(tx.QueryRow(ctx, `
 			UPDATE voice_session_end_intents
-			SET recovery_owner = $1, recovery_lease_expires_at = $2
+			SET recovery_owner = $1,
+				recovery_lease_expires_at = clock_timestamp() + ($2::double precision * interval '1 second')
 			WHERE session_id = $3 AND account_id = $4
+			  AND (
+				recovery_lease_expires_at IS NULL
+				OR recovery_lease_expires_at <= clock_timestamp()
+			  )
 			RETURNING `+endIntentColumns,
-			*intent.RecoveryOwner, intent.LeaseExpiresAt.UTC(),
+			*intent.RecoveryOwner, leaseDuration.Seconds(),
 			intent.SessionID, intent.AccountID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return EndIntent{}, false, ErrConcurrentTransition
+		}
 		if err != nil {
 			return EndIntent{}, false, postgresError("claim replayed end intent", err)
 		}
@@ -93,11 +98,14 @@ func (r *PostgresRepository) SaveEndIntent(
 			session_id, account_id, reason, idempotency_key, request_hash,
 			trace_id, requested_at, next_attempt_at, recovery_owner,
 			recovery_lease_expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9)
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $7, $8,
+			clock_timestamp() + ($9::double precision * interval '1 second')
+		)
 		RETURNING `+endIntentColumns,
 		intent.SessionID, intent.AccountID, intent.Reason, intent.IdempotencyKey,
 		intent.RequestHash, intent.TraceID, intent.RequestedAt.UTC(),
-		*intent.RecoveryOwner, intent.LeaseExpiresAt.UTC()))
+		*intent.RecoveryOwner, leaseDuration.Seconds()))
 	if err != nil {
 		if constraintName(err) == "voice_session_end_intents_key_unique" {
 			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {

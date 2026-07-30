@@ -141,6 +141,8 @@ type EndIntent struct {
 
 // ClaimEndIntentParams grants one worker a bounded lease on the next due
 // unfinished intent. WorkerID must be unique for one running API instance.
+// The timestamps define the requested duration; persistent repositories anchor
+// the actual lease to their own clock and return that expiration in EndIntent.
 type ClaimEndIntentParams struct {
 	WorkerID       string
 	ClaimedAt      time.Time

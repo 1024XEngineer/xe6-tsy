@@ -511,7 +511,7 @@ func TestPostgresRepositoryEndIntentAndInterlocks(t *testing.T) {
 func TestPostgresRepositoryEndRecoveryClaimLeaseAndRetry(t *testing.T) {
 	pool := sessionTestDatabase(t)
 	repository := sessions.NewPostgresRepository(pool)
-	now := time.Date(2026, time.July, 30, 13, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	insertAccount(t, pool, "acct_end_recovery", now.Add(-time.Hour))
 	createSession(t, repository, "vs_end_recovery", "acct_end_recovery", now)
 	if _, _, err := repository.SaveEndIntent(t.Context(), endIntent(
@@ -531,8 +531,9 @@ func TestPostgresRepositoryEndRecoveryClaimLeaseAndRetry(t *testing.T) {
 	); err != nil || ok {
 		t.Fatalf("request-leased ClaimPendingEndIntent() = %t, %v, want false, nil", ok, err)
 	}
+	expireEndIntentLease(t, pool, "vs_end_recovery")
 
-	claimedAt := now.Add(2 * time.Minute)
+	claimedAt := time.Now().UTC()
 	claimed, ok, err := repository.ClaimPendingEndIntent(
 		t.Context(),
 		sessions.ClaimEndIntentParams{
@@ -579,12 +580,19 @@ func TestPostgresRepositoryEndRecoveryClaimLeaseAndRetry(t *testing.T) {
 	); err != nil || ok {
 		t.Fatalf("early ClaimPendingEndIntent() = %t, %v, want false, nil", ok, err)
 	}
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE voice_session_end_intents
+		SET next_attempt_at = clock_timestamp() - interval '1 second'
+		WHERE session_id = $1`, "vs_end_recovery"); err != nil {
+		t.Fatalf("make EndIntent due: %v", err)
+	}
+	reclaimedAt := time.Now().UTC()
 	reclaimed, ok, err := repository.ClaimPendingEndIntent(
 		t.Context(),
 		sessions.ClaimEndIntentParams{
 			WorkerID:       "worker_2",
-			ClaimedAt:      nextAttemptAt,
-			LeaseExpiresAt: nextAttemptAt.Add(time.Minute),
+			ClaimedAt:      reclaimedAt,
+			LeaseExpiresAt: reclaimedAt.Add(time.Minute),
 		},
 	)
 	if err != nil || !ok || reclaimed.RetryCount != 1 ||
@@ -641,19 +649,21 @@ func TestPostgresRepositoryRejectsExpiredEndRecoveryOwner(t *testing.T) {
 	)); err != nil {
 		t.Fatalf("SaveEndIntent() error = %v", err)
 	}
+	expireEndIntentLease(t, pool, "vs_expired_recovery")
 
-	claimedAt := now.Add(-2 * time.Minute)
+	claimedAt := time.Now().UTC()
 	claimed, ok, err := repository.ClaimPendingEndIntent(
 		t.Context(),
 		sessions.ClaimEndIntentParams{
 			WorkerID:       "expired_worker",
 			ClaimedAt:      claimedAt,
-			LeaseExpiresAt: now.Add(-time.Minute),
+			LeaseExpiresAt: claimedAt.Add(time.Minute),
 		},
 	)
 	if err != nil || !ok {
 		t.Fatalf("ClaimPendingEndIntent() = %#v, %t, %v", claimed, ok, err)
 	}
+	expireEndIntentLease(t, pool, "vs_expired_recovery")
 	if err := repository.RetryClaimedEndIntent(
 		t.Context(),
 		sessions.RetryEndIntentParams{
@@ -984,6 +994,16 @@ func endIntent(sessionID, accountID, key, hash string, at time.Time) sessions.En
 		IdempotencyKey: key, RequestHash: hash,
 		TraceID: "trace_" + key, RequestedAt: at,
 		RecoveryOwner: &owner, LeaseExpiresAt: &leaseExpiresAt,
+	}
+}
+
+func expireEndIntentLease(t *testing.T, pool *pgxpool.Pool, sessionID string) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE voice_session_end_intents
+		SET recovery_lease_expires_at = clock_timestamp() - interval '1 second'
+		WHERE session_id = $1`, sessionID); err != nil {
+		t.Fatalf("expire EndIntent lease: %v", err)
 	}
 }
 

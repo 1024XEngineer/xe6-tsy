@@ -22,6 +22,7 @@ func (r *PostgresRepository) ClaimPendingEndIntent(
 		!params.LeaseExpiresAt.After(params.ClaimedAt) {
 		return EndIntent{}, false, ErrInvalidRequest
 	}
+	leaseDuration := params.LeaseExpiresAt.Sub(params.ClaimedAt)
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return EndIntent{}, false, postgresError("begin end recovery claim", err)
@@ -32,36 +33,35 @@ func (r *PostgresRepository) ClaimPendingEndIntent(
 		SELECT `+endIntentColumns+`
 		FROM voice_session_end_intents
 		WHERE completed_at IS NULL
-		  AND next_attempt_at <= $1
+		  AND next_attempt_at <= clock_timestamp()
 		  AND (
 			recovery_lease_expires_at IS NULL
-			OR recovery_lease_expires_at <= $1
+			OR recovery_lease_expires_at <= clock_timestamp()
 		  )
 		ORDER BY next_attempt_at, requested_at, session_id
 		FOR UPDATE SKIP LOCKED
-		LIMIT 1`, params.ClaimedAt.UTC()))
+		LIMIT 1`))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return EndIntent{}, false, nil
 	}
 	if err != nil {
 		return EndIntent{}, false, postgresError("scan pending end intent", err)
 	}
-	if _, err := tx.Exec(ctx, `
+	claimed, err := scanEndIntent(tx.QueryRow(ctx, `
 		UPDATE voice_session_end_intents
-		SET recovery_owner = $1, recovery_lease_expires_at = $2
-		WHERE session_id = $3 AND account_id = $4`,
-		params.WorkerID, params.LeaseExpiresAt.UTC(),
-		intent.SessionID, intent.AccountID); err != nil {
+		SET recovery_owner = $1,
+			recovery_lease_expires_at = clock_timestamp() + ($2::double precision * interval '1 second')
+		WHERE session_id = $3 AND account_id = $4
+		RETURNING `+endIntentColumns,
+		params.WorkerID, leaseDuration.Seconds(),
+		intent.SessionID, intent.AccountID))
+	if err != nil {
 		return EndIntent{}, false, postgresError("claim pending end intent", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return EndIntent{}, false, postgresError("commit end recovery claim", err)
 	}
-	owner := params.WorkerID
-	lease := params.LeaseExpiresAt.UTC()
-	intent.RecoveryOwner = &owner
-	intent.LeaseExpiresAt = &lease
-	return intent, true, nil
+	return claimed, true, nil
 }
 
 // RetryClaimedEndIntent records one failed recovery and releases its lease.

@@ -94,6 +94,13 @@ $env:RECORDSTORE_TEST_DATABASE_URL = 'postgres://postgres:postgres@localhost:543
 go test -count=1 -tags=integration . ./recordstore/...
 ```
 
+Delivery 全链路集成测试（匿名鉴权 → 创建 outbound message → outbox → Valkey → worker → fake email provider）同样使用
+`integration` build tag，依赖 `RECORDSTORE_TEST_DATABASE_URL` 与 miniredis（进程内，无需外部 Valkey）：
+
+```powershell
+go test -count=1 -tags=integration -run 'TestMember5DeliveryAcceptance|TestPostgresDestinationReader|TestConfiguredRuntimeComposition' . ./recordstore/...
+```
+
 测试 helper 会为每个测试创建并删除随机 schema，并拒绝连接名称不以 `_test` 结尾的数据库。主包的
 生产装配测试只会从 `RECORDSTORE_TEST_DATABASE_URL` 派生隔离后的 `DATABASE_URL`，不会使用外部设置的
 `DATABASE_URL`。

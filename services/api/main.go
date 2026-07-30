@@ -39,6 +39,7 @@ type recordsHTTPDependencies struct {
 	tokens     accounts.AccessTokenVerifier
 	worker     finalTurnWorker
 	maintainer backgroundWorker
+	pool       *pgxpool.Pool
 	cleanup    func()
 }
 
@@ -227,41 +228,6 @@ func runHTTPAndBackgroundWorkers(
 	return errors.Join(runErr, shutdownErr)
 }
 
-func newLanguageHandler(ctx context.Context) (*languages.Handler, func(), error) {
-	accountID := func(r *http.Request) (string, bool) {
-		return internalwebapi.AccountIDFromContext(r.Context())
-	}
-
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		slog.Warn("DATABASE_URL unset; language HTTP routes return not_implemented until wired")
-		return languages.NewHandler(nil, accountID), nil, nil
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, nil, err
-	}
-	handler, err := newLanguageHandlerWithPool(ctx, pool)
-	if err != nil {
-		pool.Close()
-		return nil, nil, err
-	}
-	return handler, pool.Close, nil
-}
-
-func newLanguageHandlerWithPool(ctx context.Context, pool *pgxpool.Pool) (*languages.Handler, error) {
-	dependencies, err := newLanguageDependenciesWithPool(ctx, pool, sessionOwnerFromEnv())
-	if err != nil {
-		return nil, err
-	}
-	return dependencies.handler, nil
-}
-
 func newLanguageDependenciesWithPool(
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -284,7 +250,7 @@ func newLanguageDependenciesWithPool(
 	}, nil
 }
 
-func sessionOwnerFromEnv() languages.SessionOwnerReader {
+func languageSessionOwner(pool *pgxpool.Pool) languages.SessionOwnerReader {
 	switch os.Getenv("LANGUAGE_SESSION_OWNER") {
 	case "trust-auth":
 		slog.Warn("LANGUAGE_SESSION_OWNER=trust-auth enabled; sessions are not ownership-checked")
@@ -292,7 +258,9 @@ func sessionOwnerFromEnv() languages.SessionOwnerReader {
 			AccountIDFromCtx: internalwebapi.AccountIDFromContext,
 		}
 	default:
-		return languages.NotImplementedSessionOwner{}
+		return languages.NewRecordsSessionOwner(
+			recordstore.NewCanonicalSessionOwner(accounts.NewPostgresRepository(pool)),
+		)
 	}
 }
 
@@ -321,6 +289,7 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		pool.Close()
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
 	}
+	dependencies.pool = pool
 	dependencies.cleanup = pool.Close
 	return dependencies, nil
 }

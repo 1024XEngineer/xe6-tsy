@@ -29,6 +29,7 @@ func TestAuthHTTPRefreshRotationAndPersistence(t *testing.T) {
 
 	handler := buildMux(
 		languages.NewHandler(nil, nil),
+		nil,
 		dependencies.handler,
 		dependencies.accounts,
 		dependencies.tokens,
@@ -61,6 +62,7 @@ func TestAuthHTTPRefreshRotationAndPersistence(t *testing.T) {
 	t.Cleanup(restarted.cleanup)
 	restartedHandler := buildMux(
 		languages.NewHandler(nil, nil),
+		nil,
 		restarted.handler,
 		restarted.accounts,
 		restarted.tokens,
@@ -95,6 +97,7 @@ func TestAuthHTTPPhoneVerificationSingleUse(t *testing.T) {
 
 	handler := buildMux(
 		languages.NewHandler(nil, nil),
+		nil,
 		dependencies.handler,
 		dependencies.accounts,
 		dependencies.tokens,

@@ -21,6 +21,7 @@ import (
 	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
+	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
@@ -81,7 +82,8 @@ func run() error {
 	}
 	defer records.cleanup()
 
-	mux := buildMux(langHandler, records.handler, records.accounts, records.tokens)
+	sessionHandler := newSessionHandler(nil)
+	mux := buildMux(langHandler, sessionHandler, records.handler, records.accounts, records.tokens)
 
 	server := &http.Server{
 		Addr:              address,
@@ -344,15 +346,25 @@ func recordsHTTPConfigurationFromEnv() (string, string, error) {
 
 func buildMux(
 	lang *languages.Handler,
+	sessionHandler *sessions.Handler,
 	records *recordswebapi.Server,
 	accountUseCases accounts.Service,
 	tokens accounts.AccessTokenVerifier,
 ) *http.ServeMux {
-	return buildMuxWithServices(lang, accountUseCases, usage.NewUseCases(), delivery.NewUseCases(), tokens, records)
+	return buildMuxWithServices(
+		lang,
+		sessionHandler,
+		accountUseCases,
+		usage.NewUseCases(),
+		delivery.NewUseCases(),
+		tokens,
+		records,
+	)
 }
 
 func buildMuxWithServices(
 	lang *languages.Handler,
+	sessionHandler *sessions.Handler,
 	accountService accounts.Service,
 	usageService usage.Service,
 	deliveryService delivery.Service,
@@ -363,6 +375,11 @@ func buildMuxWithServices(
 	lang.Register(mux, func(next http.Handler) http.Handler {
 		return internalwebapi.Authenticate(tokens, next)
 	})
+	if sessionHandler != nil {
+		sessionHandler.Register(mux, func(next http.Handler) http.Handler {
+			return internalwebapi.Authenticate(tokens, next)
+		})
+	}
 	if records != nil {
 		records.Register(mux, func(next http.Handler) http.Handler {
 			return records.Authenticate(tokens, next)
@@ -373,4 +390,11 @@ func buildMuxWithServices(
 		return internalwebapi.Authenticate(tokens, next)
 	})
 	return mux
+}
+
+func newSessionHandler(service sessions.UseCases) *sessions.Handler {
+	accountID := func(r *http.Request) (string, bool) {
+		return internalwebapi.AccountIDFromContext(r.Context())
+	}
+	return sessions.NewHandler(service, accountID)
 }

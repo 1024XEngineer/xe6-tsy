@@ -18,6 +18,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
+	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -38,6 +39,7 @@ type configuredRuntime struct {
 	usageService    usage.Service
 	deliveryService delivery.Service
 	tokenVerifier   accounts.AccessTokenVerifier
+	sessionHandler  *sessions.Handler
 	recordsHandler  *recordswebapi.Server
 	finalTurnWorker finalTurnWorker
 	authMaintainer  backgroundWorker
@@ -52,6 +54,7 @@ func runConfigured(config config.Config) error {
 
 	mux := buildMuxWithServices(
 		languageHandler,
+		runtime.sessionHandler,
 		runtime.accountService,
 		runtime.usageService,
 		runtime.deliveryService,
@@ -172,6 +175,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		usageService:    usageService,
 		deliveryService: deliveryService,
 		tokenVerifier:   records.tokens,
+		sessionHandler:  newSessionHandler(nil),
 		recordsHandler:  records.handler,
 		finalTurnWorker: records.worker,
 		authMaintainer:  records.maintainer,
@@ -222,7 +226,7 @@ func newEmailBindSender(processConfig config.Config, smtpMailer *delivery.SMTPMa
 
 func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	if r == nil || r.pool == nil || r.redis == nil || r.dispatcher == nil || r.worker == nil ||
-		r.recordsHandler == nil || r.finalTurnWorker == nil || handler == nil {
+		r.sessionHandler == nil || r.recordsHandler == nil || r.finalTurnWorker == nil || handler == nil {
 		return errors.New("configured runtime is incomplete")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

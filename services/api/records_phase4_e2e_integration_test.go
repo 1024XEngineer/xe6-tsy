@@ -164,6 +164,7 @@ func TestRecordsPhase4HTTPAndSnapshotConsistency(t *testing.T) {
 
 	handler := buildMux(
 		languages.NewHandler(nil, nil),
+		nil,
 		fixture.dependencies.handler,
 		fixture.dependencies.accounts,
 		fixture.dependencies.tokens,

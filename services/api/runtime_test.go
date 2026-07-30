@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"reflect"
 	"strings"
 	"sync"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/config"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
+	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
@@ -125,6 +128,7 @@ func newRuntimeServeFixture(t *testing.T) *configuredRuntime {
 			Destinations: nil,
 			Provider:     delivery.UnconfiguredProvider{},
 		}),
+		sessionHandler:  sessions.NewHandler(nil, nil),
 		recordsHandler:  recordswebapi.NewNotImplementedHandler(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		finalTurnWorker: stubFinalTurnWorker{},
 	}
@@ -144,6 +148,7 @@ func newRuntimeBlockingServeFixture(t *testing.T) *configuredRuntime {
 			Destinations: runtimeTestDestinationReader{},
 			Provider:     delivery.UnconfiguredProvider{},
 		}),
+		sessionHandler:  sessions.NewHandler(nil, nil),
 		recordsHandler:  recordswebapi.NewNotImplementedHandler(slog.New(slog.NewTextHandler(io.Discard, nil))),
 		finalTurnWorker: stubFinalTurnWorker{},
 	}
@@ -458,6 +463,10 @@ func TestRunDeliveryComponentStopsTimerOnContextCancelDuringRetry(t *testing.T) 
 }
 
 func TestConfiguredRuntimeServeStopsOnTerminationSignal(t *testing.T) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM)
+	t.Cleanup(func() { signal.Stop(signals) })
+
 	runtime := newRuntimeBlockingServeFixture(t)
 	done := make(chan error, 1)
 	go func() {

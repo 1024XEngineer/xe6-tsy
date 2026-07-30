@@ -198,7 +198,7 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 		go runDeliveryComponent(componentCtx, "auth maintainer", r.authMaintainer.Run, errs, &components)
 	}
 	components.Add(1)
-	go runDeliveryComponent(componentCtx, "final turn worker", r.finalTurnWorker.Run, errs, &components)
+	go runFailFastBackgroundWorker(componentCtx, "final turn worker", r.finalTurnWorker.Run, errs, &components)
 	go func() {
 		slog.Info("Lingow API listening", "address", address, "delivery_runtime", "enabled")
 		err := server.ListenAndServe()
@@ -238,6 +238,23 @@ func runDeliveryComponent(ctx context.Context, name string, run func(context.Con
 		case <-timer.C:
 		}
 	}
+}
+
+// runFailFastBackgroundWorker supervises records workers whose Run contract requires
+// process-level restart on error. FinalTurnWorker returns ErrFinalTurnSettlement when
+// receipt settlement is uncertain; retrying in-process would violate the default-path
+// shutdown semantics documented for records HTTP composition.
+func runFailFastBackgroundWorker(ctx context.Context, name string, run func(context.Context) error, errs chan<- error, components *sync.WaitGroup) {
+	defer components.Done()
+	err := run(ctx)
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		errs <- fmt.Errorf("%s stopped: %w", name, err)
+		return
+	}
+	errs <- fmt.Errorf("%s stopped unexpectedly", name)
 }
 
 func shutdownConfiguredServer(server *http.Server, components *sync.WaitGroup) error {

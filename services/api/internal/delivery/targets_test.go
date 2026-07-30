@@ -83,6 +83,7 @@ type targetRepositoryStub struct {
 	listAccountID string
 	listChannel   *Channel
 	bindRecord    BindEmailTargetRecord
+	bindErr       error
 	revokeAccount string
 	revokeChannel Channel
 	revokeRef     string
@@ -128,6 +129,9 @@ func (s *targetRepositoryStub) ListMessageTargets(_ context.Context, accountID s
 }
 
 func (s *targetRepositoryStub) BindEmailTarget(_ context.Context, record BindEmailTargetRecord) (MessageTarget, error) {
+	if s.bindErr != nil {
+		return MessageTarget{}, s.bindErr
+	}
 	s.bindRecord = record
 	return MessageTarget{
 		DestinationRef: record.DestinationRef,

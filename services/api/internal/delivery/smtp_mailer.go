@@ -71,7 +71,7 @@ func (m *SMTPMailer) sendPlainText(ctx context.Context, to, subject, body, messa
 	addr := net.JoinHostPort(m.config.Host, strconv.Itoa(m.config.Port))
 	auth := smtpAuth(m.config)
 	if m.config.UseTLS {
-		return sendMailSTARTTLS(ctx, addr, m.config.From, []string{to}, buffer.Bytes(), auth, m.config.Host)
+		return sendMailSTARTTLS(ctx, addr, m.config.From, []string{to}, buffer.Bytes(), auth, m.config.Host, startTLSConfig(m.config.Host))
 	}
 	return smtp.SendMail(addr, auth, m.config.From, []string{to}, buffer.Bytes())
 }
@@ -83,7 +83,14 @@ func smtpAuth(config SMTPConfig) smtp.Auth {
 	return smtp.PlainAuth("", config.Username, config.Password, config.Host)
 }
 
-func sendMailSTARTTLS(ctx context.Context, addr, from string, to []string, msg []byte, auth smtp.Auth, serverName string) error {
+func startTLSConfig(serverName string) *tls.Config {
+	return &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}
+}
+
+func sendMailSTARTTLS(ctx context.Context, addr, from string, to []string, msg []byte, auth smtp.Auth, serverName string, tlsConfig *tls.Config) error {
+	if tlsConfig == nil {
+		tlsConfig = startTLSConfig(serverName)
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -102,10 +109,12 @@ func sendMailSTARTTLS(ctx context.Context, addr, from string, to []string, msg [
 	if err := client.Hello("localhost"); err != nil {
 		return fmt.Errorf("smtp hello: %w", err)
 	}
-	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err := client.StartTLS(&tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}); err != nil {
-			return fmt.Errorf("smtp starttls: %w", err)
-		}
+	ok, _ := client.Extension("STARTTLS")
+	if !ok {
+		return fmt.Errorf("smtp starttls: server does not support STARTTLS")
+	}
+	if err := client.StartTLS(tlsConfig); err != nil {
+		return fmt.Errorf("smtp starttls: %w", err)
 	}
 	if auth != nil {
 		if err := client.Auth(auth); err != nil {

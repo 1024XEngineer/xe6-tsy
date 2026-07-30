@@ -13,7 +13,13 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-const emailBindChallengeTTL = 15 * time.Minute
+const (
+	emailBindChallengeTTL            = 15 * time.Minute
+	emailBindChallengeCooldown       = time.Minute
+	emailBindChallengeWindow         = time.Hour
+	emailBindChallengeWindowMaxSends = 5
+	emailBindChallengeRestoreTimeout = 3 * time.Second
+)
 
 // EmailBindChallenge is a short-lived ownership proof before persisting a destination.
 type EmailBindChallenge struct {
@@ -31,6 +37,24 @@ type EmailBindChallenge struct {
 type EmailBindChallengeRepository interface {
 	CreateEmailBindChallenge(context.Context, EmailBindChallenge) error
 	ConsumeEmailBindChallenge(context.Context, string, string) (EmailBindChallenge, error)
+	// RestoreEmailBindChallenge makes a consumed challenge retryable after a downstream failure.
+	RestoreEmailBindChallenge(context.Context, string) error
+}
+
+type resolvedEmailBindToken struct {
+	DestinationRef string
+	Email          string
+	ChallengeID    string
+}
+
+func enforceEmailBindRateLimit(latest *time.Time, sends int64, now time.Time) error {
+	if latest != nil && now.Before(latest.Add(emailBindChallengeCooldown)) {
+		return domain.ErrRateLimited
+	}
+	if sends >= emailBindChallengeWindowMaxSends {
+		return domain.ErrRateLimited
+	}
+	return nil
 }
 
 // EmailBindSender delivers one-time bind tokens to an inbox without logging the secret.
@@ -83,22 +107,30 @@ func resolveEmailBindToken(
 	ctx context.Context,
 	appEnv, token, accountID string,
 	challenges EmailBindChallengeRepository,
-) (destinationRef, email string, err error) {
+) (resolvedEmailBindToken, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return "", "", domain.ErrInvalidArgument
+		return resolvedEmailBindToken{}, domain.ErrInvalidArgument
 	}
 	if strings.HasPrefix(token, "dev:") {
-		return parseDevEmailBindToken(appEnv, token)
+		destinationRef, email, err := parseDevEmailBindToken(appEnv, token)
+		if err != nil {
+			return resolvedEmailBindToken{}, err
+		}
+		return resolvedEmailBindToken{DestinationRef: destinationRef, Email: email}, nil
 	}
 	if challenges == nil || accountID == "" {
-		return "", "", domain.ErrNotImplemented
+		return resolvedEmailBindToken{}, domain.ErrNotImplemented
 	}
 	challenge, err := challenges.ConsumeEmailBindChallenge(ctx, accountID, hashEmailBindToken(token))
 	if err != nil {
-		return "", "", err
+		return resolvedEmailBindToken{}, err
 	}
-	return challenge.DestinationRef, challenge.Email, nil
+	return resolvedEmailBindToken{
+		DestinationRef: challenge.DestinationRef,
+		Email:          challenge.Email,
+		ChallengeID:    challenge.ID,
+	}, nil
 }
 
 func newEmailBindChallenge(accountID, destinationRef, email, tokenHash string, now time.Time) EmailBindChallenge {

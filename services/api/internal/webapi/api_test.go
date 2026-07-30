@@ -19,21 +19,22 @@ import (
 )
 
 type deliveryFake struct {
-	created          delivery.CreateInput
-	retryAccountID   string
-	retryMessageID   string
-	retryIdempotency string
-	targets          []delivery.MessageTarget
-	listAccountID    string
-	listChannel      *delivery.Channel
-	bindAccountID    string
-	bindToken        string
-	revokeAccountID  string
-	revokeChannel    delivery.Channel
-	revokeRef        string
-	bindEmailErr     error
-	listTargetsErr   error
-	revokeErr        error
+	created              delivery.CreateInput
+	retryAccountID       string
+	retryMessageID       string
+	retryIdempotency     string
+	targets              []delivery.MessageTarget
+	listAccountID        string
+	listChannel          *delivery.Channel
+	bindAccountID        string
+	bindToken            string
+	revokeAccountID      string
+	revokeChannel        delivery.Channel
+	revokeRef            string
+	bindEmailErr         error
+	emailVerificationErr error
+	listTargetsErr       error
+	revokeErr            error
 }
 
 type tokenVerifierFake struct{}
@@ -110,6 +111,9 @@ func (f *deliveryFake) ListMessageTargets(_ context.Context, accountID string, c
 func (f *deliveryFake) RequestEmailBindVerification(_ context.Context, accountID, email, destinationRef string) error {
 	f.bindAccountID = accountID
 	f.bindToken = email + ":" + destinationRef
+	if f.emailVerificationErr != nil {
+		return f.emailVerificationErr
+	}
 	return f.bindEmailErr
 }
 func (f *deliveryFake) BindEmailTarget(_ context.Context, accountID, token string) (delivery.MessageTarget, error) {
@@ -629,6 +633,32 @@ func TestRequestEmailBindVerificationRejectsMissingEmail(t *testing.T) {
 	}
 	if fake.bindAccountID != "" {
 		t.Fatal("invalid verification request reached service")
+	}
+}
+
+func TestEmailBindVerificationRateLimitUsesRetryableHTTPStatus(t *testing.T) {
+	fake := &deliveryFake{emailVerificationErr: domain.ErrRateLimited}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/email/verification-codes", strings.NewReader(`{"email":"user@example.test"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusTooManyRequests)
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error.Code != "rate_limited" {
+		t.Fatalf("error code = %q, want rate_limited", payload.Error.Code)
 	}
 }
 

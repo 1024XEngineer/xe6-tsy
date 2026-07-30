@@ -367,6 +367,9 @@ func mapDeliveryError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, domain.ErrRateLimited) {
+		return err
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrNotFound
 	}

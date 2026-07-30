@@ -18,12 +18,27 @@ func TestLoadDefaultsToDisabledFailClosedMode(t *testing.T) {
 	if config.DeliveryEnabled {
 		t.Fatal("DeliveryEnabled = true, want false by default")
 	}
+	if config.SessionRuntimeEnabled {
+		t.Fatal("SessionRuntimeEnabled = true, want false by default")
+	}
 	if config.DeliveryProvider != providerUnconfigured {
 		t.Fatalf("DeliveryProvider = %q, want %q", config.DeliveryProvider, providerUnconfigured)
 	}
 }
 
-func TestLoadRequiresRealtimeSessionConfig(t *testing.T) {
+func TestLoadDisabledSessionRuntimeDoesNotRequireRealtimeConfig(t *testing.T) {
+	config, err := LoadFrom(mapCoreEnv(map[string]string{
+		"LINGOW_SESSION_RUNTIME": "disabled",
+	}))
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if config.SessionRuntimeEnabled {
+		t.Fatal("SessionRuntimeEnabled = true, want false")
+	}
+}
+
+func TestLoadRequiresRealtimeSessionConfigWhenEnabled(t *testing.T) {
 	tests := []struct {
 		name string
 		env  map[string]string
@@ -37,7 +52,7 @@ func TestLoadRequiresRealtimeSessionConfig(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := LoadFrom(mapCoreEnv(test.env))
+			_, err := LoadFrom(mapSessionRuntimeEnv(test.env))
 			if !errors.Is(err, domain.ErrInvalidArgument) {
 				t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
 			}
@@ -46,7 +61,7 @@ func TestLoadRequiresRealtimeSessionConfig(t *testing.T) {
 }
 
 func TestLoadSetsRealtimeHTTPTimeoutDefault(t *testing.T) {
-	config, err := LoadFrom(mapCoreEnv(map[string]string{}))
+	config, err := LoadFrom(mapSessionRuntimeEnv(map[string]string{}))
 	if err != nil {
 		t.Fatalf("LoadFrom() error = %v", err)
 	}
@@ -71,7 +86,7 @@ func TestLoadValidatesRealtimeBaseURL(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.rawURL, func(t *testing.T) {
-			_, err := LoadFrom(mapCoreEnv(map[string]string{"REALTIME_BASE_URL": test.rawURL}))
+			_, err := LoadFrom(mapSessionRuntimeEnv(map[string]string{"REALTIME_BASE_URL": test.rawURL}))
 			if test.wantOK && err != nil {
 				t.Fatalf("LoadFrom() error = %v, want nil", err)
 			}
@@ -97,7 +112,7 @@ func TestLoadValidatesRealtimeHTTPTimeout(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.value, func(t *testing.T) {
-			config, err := LoadFrom(mapCoreEnv(map[string]string{"REALTIME_HTTP_TIMEOUT": test.value}))
+			config, err := LoadFrom(mapSessionRuntimeEnv(map[string]string{"REALTIME_HTTP_TIMEOUT": test.value}))
 			if test.wantOK {
 				if err != nil {
 					t.Fatalf("LoadFrom() error = %v, want nil", err)
@@ -149,6 +164,13 @@ func TestLoadRejectsUnknownRuntimeMode(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnknownSessionRuntimeMode(t *testing.T) {
+	_, err := LoadFrom(mapCoreEnv(map[string]string{"LINGOW_SESSION_RUNTIME": "enabeld"}))
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+	}
+}
+
 func TestLoadEnabledAcceptsLocalFakeProvider(t *testing.T) {
 	config, err := LoadFrom(mapCoreEnv(map[string]string{
 		"APP_ENV":                         "local",
@@ -194,8 +216,7 @@ func TestLoadUsesProcessEnvironment(t *testing.T) {
 	t.Setenv("LINGOW_DELIVERY_RUNTIME", "disabled")
 	t.Setenv("DATABASE_URL", "postgres://localhost/lingow")
 	t.Setenv("JWT_SECRET", "01234567890123456789012345678901")
-	t.Setenv("REALTIME_BASE_URL", "http://127.0.0.1:8090")
-	t.Setenv("REALTIME_TICKET_SECRET", "realtime-ticket-secret-123456789012")
+	t.Setenv("LINGOW_SESSION_RUNTIME", "disabled")
 	config, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
@@ -272,15 +293,25 @@ func TestLoadEnabledRejectsPartialWeComConfig(t *testing.T) {
 
 func mapCoreEnv(values map[string]string) func(string) (string, bool) {
 	env := map[string]string{
-		"DATABASE_URL":           "postgres://localhost/lingow",
-		"JWT_SECRET":             "01234567890123456789012345678901",
+		"DATABASE_URL": "postgres://localhost/lingow",
+		"JWT_SECRET":   "01234567890123456789012345678901",
+	}
+	for key, value := range values {
+		env[key] = value
+	}
+	return mapEnv(env)
+}
+
+func mapSessionRuntimeEnv(values map[string]string) func(string) (string, bool) {
+	env := map[string]string{
+		"LINGOW_SESSION_RUNTIME": "enabled",
 		"REALTIME_BASE_URL":      "http://127.0.0.1:8090",
 		"REALTIME_TICKET_SECRET": "realtime-ticket-secret-123456789012",
 	}
 	for key, value := range values {
 		env[key] = value
 	}
-	return mapEnv(env)
+	return mapCoreEnv(env)
 }
 
 func mapEnv(values map[string]string) func(string) (string, bool) {

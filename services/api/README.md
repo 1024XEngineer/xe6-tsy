@@ -53,12 +53,18 @@ services/api/
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
 
-Session 路由启动需要 `DATABASE_URL`、至少 32 字节的 `JWT_SECRET`、`REALTIME_BASE_URL`
-和至少 32 字节的 `REALTIME_TICKET_SECRET`。`REALTIME_BASE_URL` 是 API 访问
-`services/realtime-audio` control-plane 的完整 URL，例如 `http://127.0.0.1:8090`；
-`REALTIME_HTTP_TIMEOUT` 可选，默认 `5s`。API 会使用短期 HMAC realtime ticket 调用
-WebRTC connection、Start、Stop 和 runtime state 接口，ticket secret 必须与 realtime-audio
-验证端一致，不能与 JWT secret 混用或写入日志。
+当前仓库中的 `realtime-audio` 尚未提供完整可部署的 HTTP/Pion 运行入口。
+`LINGOW_SESSION_RUNTIME` 默认 `disabled`；disabled 时 Session 路由明确返回 501，
+不会构造 Realtime client、adapter 或 EndRecoveryWorker。只有部署了兼容的 Realtime
+control-plane 服务后才能设置为 `enabled`。
+
+启用 Session runtime 时需要 `DATABASE_URL`、至少 32 字节的 `JWT_SECRET`、
+`REALTIME_BASE_URL` 和至少 32 字节的 `REALTIME_TICKET_SECRET`。`REALTIME_BASE_URL`
+是 API 访问 `services/realtime-audio` control-plane 的 HTTP/HTTPS URL，例如
+`http://127.0.0.1:8090`；可带路径以兼容 API Gateway，但不得包含用户信息、query 或
+fragment。`REALTIME_HTTP_TIMEOUT` 可选，默认 `5s`，最大 `5s`。API 会使用短期 HMAC
+realtime ticket 调用 WebRTC connection、Start、Stop 和 runtime state 接口，ticket secret
+必须与 realtime-audio 验证端一致，不能与 JWT secret 混用或写入日志。
 
 结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
 本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。

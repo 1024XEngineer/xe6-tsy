@@ -105,25 +105,37 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
-		Repository:     sessionRepository,
-		SessionReader:  sessionRepository,
-		LanguageReader: langDependencies.service,
-		HTTPClient: &http.Client{
-			Timeout: realtimeHTTPTimeout(processConfig),
-		},
-		IDs:    newSessionIDGenerator(),
-		Clock:  utcClock{},
-		Config: processConfig,
-		Logger: slog.Default(),
-	})
-	if err != nil {
-		return err
+
+	sessionHandler := newSessionHandler(nil)
+	var sessionRecovery backgroundWorker
+	if processConfig.SessionRuntimeEnabled {
+		sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
+			Repository:     sessionRepository,
+			SessionReader:  sessionRepository,
+			LanguageReader: langDependencies.service,
+			HTTPClient: &http.Client{
+				Timeout: realtimeHTTPTimeout(processConfig),
+			},
+			IDs:    newSessionIDGenerator(),
+			Clock:  utcClock{},
+			Config: processConfig,
+			Logger: slog.Default(),
+		})
+		if err != nil {
+			return err
+		}
+		sessionHandler = sessionDependencies.handler
+		sessionRecovery = sessionDependencies.endRecovery
+	} else {
+		slog.Warn(
+			"voice session runtime disabled",
+			"configuration", "LINGOW_SESSION_RUNTIME",
+		)
 	}
 
 	mux := buildMux(
 		langDependencies.handler,
-		sessionDependencies.handler,
+		sessionHandler,
 		records.handler,
 		records.accounts,
 		records.tokens,
@@ -151,12 +163,16 @@ func run() error {
 		}()
 	}
 
-	return runHTTPAndBackgroundWorkers(
-		ctx,
-		server,
-		namedBackgroundWorker{name: "final turn worker", run: records.worker.Run},
-		namedBackgroundWorker{name: "session end recovery worker", run: sessionDependencies.endRecovery.Run},
-	)
+	workers := []namedBackgroundWorker{
+		{name: "final turn worker", run: records.worker.Run},
+	}
+	if sessionRecovery != nil {
+		workers = append(workers, namedBackgroundWorker{
+			name: "session end recovery worker",
+			run:  sessionRecovery.Run,
+		})
+	}
+	return runHTTPAndBackgroundWorkers(ctx, server, workers...)
 }
 
 func runHTTPAndBackgroundWorkers(

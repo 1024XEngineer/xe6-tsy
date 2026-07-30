@@ -174,6 +174,29 @@ func TestBuildMuxMountsVoiceSessionRoutes(t *testing.T) {
 	}
 }
 
+func TestBuildMuxSessionRoutesFailClosedWhenRuntimeDisabled(t *testing.T) {
+	handler := buildMux(
+		languages.NewHandler(nil, nil),
+		newSessionHandler(nil),
+		newRecordsTestHandler(),
+		accounts.NewUseCases(),
+		mainTokenVerifier{},
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions", strings.NewReader(
+		`{"capabilities":{"webrtc":true,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
+	))
+	request.Header.Set("Authorization", "Bearer account-token")
+	request.Header.Set("Idempotency-Key", "create-disabled")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusNotImplemented, response.Body.String())
+	}
+}
+
 func TestAPIServerTimeoutBudgetConstants(t *testing.T) {
 	if apiReadHeaderTimeout != 5*time.Second ||
 		apiReadTimeout != 15*time.Second ||

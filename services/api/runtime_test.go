@@ -328,6 +328,42 @@ func TestConfiguredRuntimeServeRejectsIncompleteRuntime(t *testing.T) {
 	}
 }
 
+func TestConfiguredRuntimeServeAllowsDisabledSessionRuntimeWithoutRecovery(t *testing.T) {
+	runtime := newRuntimeServeFixture(t)
+	runtime.sessionRuntimeEnabled = false
+	runtime.sessionRecovery = nil
+
+	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	if err == nil || !errors.Is(err, delivery.ErrWorkerNotConfigured) {
+		t.Fatalf("Serve() error = %v, want delivery ErrWorkerNotConfigured after passing session recovery completeness", err)
+	}
+}
+
+func TestConfiguredRuntimeServeRejectsEnabledSessionRuntimeWithoutRecovery(t *testing.T) {
+	runtime := newRuntimeServeFixture(t)
+	runtime.sessionRuntimeEnabled = true
+	runtime.sessionRecovery = nil
+
+	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	if err == nil {
+		t.Fatal("Serve() succeeded with enabled session runtime and nil recovery worker")
+	}
+	if errors.Is(err, delivery.ErrWorkerNotConfigured) {
+		t.Fatalf("Serve() error = %v, want incomplete runtime before delivery worker starts", err)
+	}
+}
+
+func TestConfiguredRuntimeServeSupervisesSessionRecoveryWorker(t *testing.T) {
+	runtime := newRuntimeBlockingServeFixture(t)
+	runtime.sessionRuntimeEnabled = true
+	runtime.sessionRecovery = failFastFinalTurnWorker{err: sessions.ErrInvalidDependency}
+
+	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	if err == nil || !errors.Is(err, sessions.ErrInvalidDependency) {
+		t.Fatalf("Serve() error = %v, want session recovery failure", err)
+	}
+}
+
 func TestConfiguredRuntimeServeStopsWhenWorkerIsNotConfigured(t *testing.T) {
 	runtime := newRuntimeServeFixture(t)
 	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())

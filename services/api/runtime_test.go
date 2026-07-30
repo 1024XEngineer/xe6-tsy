@@ -21,6 +21,7 @@ import (
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/config"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
+	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
@@ -95,6 +96,14 @@ type stubFinalTurnWorker struct{}
 func (stubFinalTurnWorker) Run(ctx context.Context) error {
 	<-ctx.Done()
 	return nil
+}
+
+type failFastFinalTurnWorker struct {
+	err error
+}
+
+func (w failFastFinalTurnWorker) Run(context.Context) error {
+	return w.err
 }
 
 func testConfiguredRuntimePool(t *testing.T) *pgxpool.Pool {
@@ -259,6 +268,53 @@ func TestConfiguredRuntimeServeStopsWhenWorkerIsNotConfigured(t *testing.T) {
 	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
 	if err == nil || !errors.Is(err, delivery.ErrWorkerNotConfigured) {
 		t.Fatalf("Serve() error = %v, want ErrWorkerNotConfigured", err)
+	}
+}
+
+func TestConfiguredRuntimeServeStopsWhenFinalTurnWorkerFails(t *testing.T) {
+	runtime := newRuntimeBlockingServeFixture(t)
+	runtime.finalTurnWorker = failFastFinalTurnWorker{err: turns.ErrFinalTurnSettlement}
+
+	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	if err == nil || !errors.Is(err, turns.ErrFinalTurnSettlement) {
+		t.Fatalf("Serve() error = %v, want settlement failure", err)
+	}
+}
+
+func TestRunFailFastBackgroundWorkerReportsWorkerError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errs := make(chan error, 1)
+	var components sync.WaitGroup
+	components.Add(1)
+	go runFailFastBackgroundWorker(ctx, "final turn worker", func(context.Context) error {
+		return turns.ErrFinalTurnSettlement
+	}, errs, &components)
+	components.Wait()
+
+	err := <-errs
+	if err == nil || !errors.Is(err, turns.ErrFinalTurnSettlement) {
+		t.Fatalf("runFailFastBackgroundWorker() error = %v, want settlement failure", err)
+	}
+}
+
+func TestRunFailFastBackgroundWorkerStopsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	errs := make(chan error, 1)
+	var components sync.WaitGroup
+	components.Add(1)
+	go runFailFastBackgroundWorker(ctx, "final turn worker", func(context.Context) error {
+		return turns.ErrFinalTurnSettlement
+	}, errs, &components)
+	components.Wait()
+
+	select {
+	case err := <-errs:
+		t.Fatalf("runFailFastBackgroundWorker() sent error %v on canceled context", err)
+	default:
 	}
 }
 

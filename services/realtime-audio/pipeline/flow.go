@@ -108,8 +108,8 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if result.SourceLanguage == "" {
 		result.SourceLanguage = request.SourceLanguage
 	}
-	if strings.TrimSpace(result.Text) == "" {
-		// Energy VAD / Manual commit can produce empty cuts; keep listening.
+	if strings.TrimSpace(result.Text) == "" || isTrivialASRText(result.Text) {
+		// Energy VAD / Manual commit can produce empty or filler cuts; keep listening.
 		if err := p.pipeline.reportListening(ctx, turn); err != nil {
 			return turn, err
 		}
@@ -122,6 +122,26 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		return turn, err
 	}
 	return turn, nil
+}
+
+func isTrivialASRText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	trimmed = strings.Trim(trimmed, "。.!！?？…~～、,， ")
+	if trimmed == "" {
+		return true
+	}
+	runes := []rune(trimmed)
+	if len(runes) <= 1 {
+		return true
+	}
+	switch strings.ToLower(trimmed) {
+	case "嗯", "嗯嗯", "啊", "呃", "额", "哎", "欸", "诶", "哦", "噢", "喔",
+		"咳", "咳咳", "对", "是", "好", "行", "嗯哼",
+		"mm", "mmm", "mhm", "uh", "uhh", "um", "umm", "ah", "oh", "okay", "ok",
+		"yes", "yeah", "yep", "hmm", "hm", "huh", "sigh", "ahem", "really":
+		return true
+	}
+	return false
 }
 
 func collectFinalASREvent(ctx context.Context, events <-chan asr.Event, finalEvents chan<- *asr.FinalResult, eventErrors chan<- error) {

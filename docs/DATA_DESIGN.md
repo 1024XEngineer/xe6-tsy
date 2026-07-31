@@ -1,15 +1,8 @@
 # Lingow 数据设计文档
 
-## 1. 范围与依据
+## 1. 范围
 
-本文档以仓库当前代码为主，参考来源如下：
-
-- 仓库分支：`feat/module1-pr-e`
-- 核心迁移目录：`services/api/recordstore/migrations`
-- 语言配置迁移目录：`services/api/languages/migrations`
-- 契约来源：`packages/contracts/openapi.yaml`、`packages/contracts/events.yaml`
-- 需求来源：GitHub issue `#76`，即“双向语音翻译会话、说话人分离与计费用量表结构”
-- 现有数据库：仅用于核对已部署表与仓库迁移差异，不作为本文档的最终真源
+本文档整理仓库当前实现的数据设计范围。
 
 当前数据设计覆盖：账户、认证、语音会话、语言配置、说话人、Final Turn、用量记录、异步消息投递、Redis/Valkey 队列。
 
@@ -890,7 +883,7 @@ CREATE TABLE supported_languages (
 
 CREATE TABLE voice_session_language_configs (
     id VARCHAR(26) PRIMARY KEY,
-    session_id VARCHAR(26) NOT NULL,
+    session_id TEXT NOT NULL,
     version INT NOT NULL,
     language_pairs JSONB NOT NULL,
     status VARCHAR(20) NOT NULL,
@@ -1326,7 +1319,7 @@ CREATE TRIGGER final_turn_outbox_reject_payload_updates
 | `final_turn_outbox` | 承载 realtime-audio 到 API 的入站 FinalTurn 消费状态 | 如果 FinalTurn 改为 API 同步写入且无重试 | 当前合理，不应与出站 `delivery_outbox` 合并 |
 | 消息投递表组 | issue 评论和仓库代码已覆盖外部消息投递 | 如果只保留语音翻译核心，不做外部渠道发送 | 应作为控制面扩展模块呈现，不混同为语音会话必需路径 |
 
-## 11. 后续建议
+## 10. 后续建议
 
 - 如果要让 issue #76 的“简化语言配置表”成为真源，需要新增迁移替换或演进 `voice_session_language_configs`，并同步 contracts 与代码。
 - 如果用量汇总查询压力升高，再增加物化汇总表；当前仓库代码不需要 `voice_session_usage_summaries`。

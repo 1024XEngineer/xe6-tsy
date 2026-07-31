@@ -51,4 +51,4 @@ cd services/realtime-audio && go run .
 
 - [架构设计](docs/ARCHITECTURE.md)
 - [开发说明](docs/DEVELOPMENT.md)
-- [当前阶段范围](docs/CURRENT_SCOPE.md)
+- [数据设计](docs/DATA_DESIGN.md)

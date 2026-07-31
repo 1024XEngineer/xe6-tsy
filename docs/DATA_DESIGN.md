@@ -291,7 +291,7 @@ supported_languages 独立承载语言字典。
 | 字段 | 类型 | 空 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `VARCHAR(26)` | 否 |  | 配置 ID |
-| `session_id` | `VARCHAR(26)` | 否 |  | 会话 ID，当前无 FK |
+| `session_id` | `TEXT` | 否 |  | 会话 ID，当前无 FK |
 | `version` | `INT` | 否 |  | 会话内配置版本 |
 | `language_pairs` | `JSONB` | 否 |  | 语言对配置 |
 | `status` | `VARCHAR(20)` | 否 |  | `active` / `superseded` / `expired` |
@@ -1325,18 +1325,6 @@ CREATE TRIGGER final_turn_outbox_reject_payload_updates
 | `voice_session_start_operations` 与 `voice_session_end_intents` 恢复字段 | 解决 API 与 realtime-audio 跨服务 Start/Stop 副作用一致性 | 如果 Start/Stop 永远是单进程同步调用 | 当前不建议删，属于可靠性设计 |
 | `final_turn_outbox` | 承载 realtime-audio 到 API 的入站 FinalTurn 消费状态 | 如果 FinalTurn 改为 API 同步写入且无重试 | 当前合理，不应与出站 `delivery_outbox` 合并 |
 | 消息投递表组 | issue 评论和仓库代码已覆盖外部消息投递 | 如果只保留语音翻译核心，不做外部渠道发送 | 应作为控制面扩展模块呈现，不混同为语音会话必需路径 |
-
-## 10. 现有数据库核对结果
-
-远程 PostgreSQL 可连接，版本为 PostgreSQL 16.14，库名 `lingow`，用户 `lingow_member5`。现有数据库不是本文档真源，仅作为部署差异观察，不参与设计决策。
-
-当前观察到的差异：
-
-- 远程库 `recordstore_schema_migrations` 只显示 9 条迁移；仓库当前 `recordstore` 有 14 条迁移。
-- 远程库未观察到 `final_turn_outbox`，而仓库第 9 个迁移会创建该表。
-- 远程库存在 `voice_session_start_requests` 旧表；仓库迁移已将其标记为 deprecated，新路径使用 `voice_session_start_operations`。
-- 远程库 `voice_session_end_intents` 未观察到仓库第 14 个迁移新增的恢复字段；本文档按仓库第 14 个迁移记录。
-- 远程库语言迁移记录里存在仓库当前目录未提供的 `004_enable_wechat_channel.sql`，应在后续整理迁移真源时核对。
 
 ## 11. 后续建议
 

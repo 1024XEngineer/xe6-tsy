@@ -58,8 +58,21 @@ func TestStaticWebRTCConfigDefaultsICEServers(t *testing.T) {
 	if len(config.ICEServers) == 0 {
 		t.Fatal("expected default ICE servers")
 	}
-	if config.Audio.DownlinkCodec != "opus" || config.Audio.SampleRateHz != 48000 || config.Audio.Channels != 1 {
-		t.Fatalf("audio config = %#v, want opus/48000/1", config.Audio)
+	if config.Audio.DownlinkCodec != "none" || config.Audio.SampleRateHz != 48000 || config.Audio.Channels != 1 {
+		t.Fatalf("audio config = %#v, want none/48000/1", config.Audio)
+	}
+}
+
+func TestStaticWebRTCConfigRespectsDownlinkCodec(t *testing.T) {
+	config, err := (StaticWebRTCConfig{
+		DownlinkCodec: "pcm",
+		SampleRateHz:  24000,
+	}).GetConfig(context.Background(), "vs_pcm")
+	if err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if config.Audio.DownlinkCodec != "pcm" || config.Audio.SampleRateHz != 24000 {
+		t.Fatalf("audio config = %#v, want pcm/24000", config.Audio)
 	}
 }
 

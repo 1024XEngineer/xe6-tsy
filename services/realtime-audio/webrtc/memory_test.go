@@ -8,6 +8,8 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
 )
 
 func TestMemoryConnectionManagerOpenIsIdempotentPerSession(t *testing.T) {
@@ -566,6 +568,50 @@ func TestMemoryConnectionManagerCloseDoesNotWaitForAnswer(t *testing.T) {
 	}
 }
 
+func TestMemoryConnectionManagerCurrentMedia(t *testing.T) {
+	mediaTransport := &mediaFakeTransport{
+		fakeTransport: fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}},
+	}
+	manager := NewMemoryConnectionManager(&singleTransportFactory{transport: mediaTransport})
+	request := validOpenConnectionRequest()
+	if _, err := manager.Open(context.Background(), request); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	got, err := manager.CurrentMedia(context.Background(), request.SessionID)
+	if err != nil {
+		t.Fatalf("CurrentMedia() error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("CurrentMedia() = nil")
+	}
+
+	if _, err := manager.CurrentMedia(context.Background(), ""); !errors.Is(err, ErrSessionIDRequired) {
+		t.Fatalf("empty session error = %v", err)
+	}
+	if _, err := manager.CurrentMedia(context.Background(), "missing"); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("missing session error = %v", err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.CurrentMedia(canceled, request.SessionID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled error = %v", err)
+	}
+
+	// Non-media transport should surface ErrMediaUnavailable.
+	plain := NewMemoryConnectionManager(&fakeTransportFactory{
+		transport: &fakeTransport{answer: SessionDescription{SDP: "a", Type: "answer"}},
+	})
+	plainReq := validOpenConnectionRequest()
+	plainReq.SessionID = "session-plain"
+	if _, err := plain.Open(context.Background(), plainReq); err != nil {
+		t.Fatalf("plain Open() error = %v", err)
+	}
+	if _, err := plain.CurrentMedia(context.Background(), plainReq.SessionID); !errors.Is(err, ErrMediaUnavailable) {
+		t.Fatalf("plain CurrentMedia() error = %v, want ErrMediaUnavailable", err)
+	}
+}
+
 func TestMemoryConnectionManagerHidesOpeningConnection(t *testing.T) {
 	answerStarted := make(chan struct{})
 	answerRelease := make(chan struct{})
@@ -752,6 +798,17 @@ type fakeTransport struct {
 	closeRelease       <-chan struct{}
 	closeOnce          sync.Once
 }
+
+type mediaFakeTransport struct {
+	fakeTransport
+}
+
+func (*mediaFakeTransport) AudioSource() segment.FrameSource { return nil }
+func (*mediaFakeTransport) TTSAudioTrack() *PionAudioTrack   { return nil }
+func (*mediaFakeTransport) TranslationEvents() *PionEventSink {
+	return nil
+}
+func (*mediaFakeTransport) Playback() *playback.Service { return nil }
 
 type blockingAnswerTransport struct {
 	answer        SessionDescription

@@ -147,6 +147,28 @@ Import-DotEnv -Path (Join-Path $Root ".env")
 switch ($Service) {
   "realtime" {
     Assert-RealtimeEnv
+    Write-Host "    Providers: ASR=$($env:ASR_PROVIDER) LLM=$($env:LLM_PROVIDER) TTS=$($env:TTS_PROVIDER)"
+    $srcLang = if ($env:REALTIME_SOURCE_LANGUAGE) { $env:REALTIME_SOURCE_LANGUAGE } else { "zh-CN" }
+    $tgtLang = if ($env:REALTIME_TARGET_LANGUAGE) { $env:REALTIME_TARGET_LANGUAGE } else { "en-US" }
+    Write-Host "    Languages: $srcLang → $tgtLang"
+    if ($env:REALTIME_API_DATABASE) {
+      Write-Host "    API database link: $($env:REALTIME_API_DATABASE) (session/language/FinalTurn/speakers)"
+    } else {
+      Write-Host "    API database link: off (TrustSession + static languages + DC-only finals)"
+    }
+    if ($env:REALTIME_OUTBOX) {
+      Write-Host "    Usage outbox: $($env:REALTIME_OUTBOX)"
+    } else {
+      Write-Host "    Usage outbox: memory (set REALTIME_OUTBOX=valkey + REDIS_URL to persist)"
+    }
+    if ($env:REALTIME_TTS_DOWNLINK) {
+      Write-Host "    TTS downlink: $($env:REALTIME_TTS_DOWNLINK)"
+    } else {
+      Write-Host "    TTS downlink: none (subtitles only; TTS forced mock)"
+    }
+    if ($env:REALTIME_TTS_DOWNLINK -eq "pcm") {
+      Write-Host "    TTS audio: DataChannel PCM → browser Web Audio"
+    }
     Write-Host "==> Starting realtime-audio control-plane..."
     Write-Host "    Keep this window open. Ctrl+C to stop."
     Write-Host ""

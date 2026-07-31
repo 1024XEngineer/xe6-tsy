@@ -332,6 +332,31 @@ func (m *MemoryConnectionManager) GetCurrent(ctx context.Context, sessionID stri
 	return record.snapshot, nil
 }
 
+// CurrentMedia returns the media-capable transport for the session's current connection.
+func (m *MemoryConnectionManager) CurrentMedia(ctx context.Context, sessionID string) (MediaTransport, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if sessionID == "" {
+		return nil, ErrSessionIDRequired
+	}
+	connections := m.getSession(sessionID)
+	if connections == nil {
+		return nil, ErrConnectionNotFound
+	}
+	connections.mu.Lock()
+	defer connections.mu.Unlock()
+	record := connections.byID[connections.currentID]
+	if connections.closed || record == nil || record.opening || record.transport == nil {
+		return nil, ErrConnectionNotFound
+	}
+	media, ok := record.transport.(MediaTransport)
+	if !ok || media == nil {
+		return nil, ErrMediaUnavailable
+	}
+	return media, nil
+}
+
 // ApplyState accepts a transport callback only for the session's current connection generation.
 func (m *MemoryConnectionManager) ApplyState(
 	ctx context.Context,

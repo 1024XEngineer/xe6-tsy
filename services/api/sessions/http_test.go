@@ -517,9 +517,116 @@ func TestHandlerMapsSessionErrors(t *testing.T) {
 	}
 }
 
+func TestHandlerMintsRealtimeTicketForOwner(t *testing.T) {
+	expires := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	minter := &ticketMinterFake{ticket: RealtimeTicket{
+		Ticket: "v1.ticket", SessionID: "vs_1", ExpiresAt: expires,
+	}}
+	handler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeTickets(minter)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/realtime-ticket", http.NoBody)
+	request.SetPathValue("id", "vs_1")
+	request.Header.Set("X-Test-Account", "acct_1")
+	response := httptest.NewRecorder()
+
+	handler.mintRealtimeTicket(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", response.Code, response.Body.String())
+	}
+	if minter.accountID != "acct_1" || minter.sessionID != "vs_1" {
+		t.Fatalf("mint args = %s/%s", minter.accountID, minter.sessionID)
+	}
+	var body RealtimeTicket
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Ticket != "v1.ticket" || body.SessionID != "vs_1" {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestHandlerMintRealtimeTicketRequiresAuthAndEmptyBody(t *testing.T) {
+	handler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeTickets(&ticketMinterFake{
+		ticket: RealtimeTicket{Ticket: "t", SessionID: "vs_1"},
+	})
+	unauth := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/realtime-ticket", http.NoBody)
+	unauth.SetPathValue("id", "vs_1")
+	unauthRes := httptest.NewRecorder()
+	handler.mintRealtimeTicket(unauthRes, unauth)
+	if unauthRes.Code != http.StatusUnauthorized {
+		t.Fatalf("unauth status = %d, want 401", unauthRes.Code)
+	}
+
+	withBody := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/voice-sessions/vs_1/realtime-ticket",
+		bytes.NewBufferString(`{"nope":true}`),
+	)
+	withBody.SetPathValue("id", "vs_1")
+	withBody.Header.Set("X-Test-Account", "acct_1")
+	bodyRes := httptest.NewRecorder()
+	handler.mintRealtimeTicket(bodyRes, withBody)
+	if bodyRes.Code != http.StatusBadRequest {
+		t.Fatalf("body status = %d, want 400", bodyRes.Code)
+	}
+}
+
+func TestHandlerMintRealtimeTicketNotImplementedWithoutMinter(t *testing.T) {
+	handler := NewHandler(&handlerUseCases{}, headerAccount)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/realtime-ticket", http.NoBody)
+	request.SetPathValue("id", "vs_1")
+	request.Header.Set("X-Test-Account", "acct_1")
+	response := httptest.NewRecorder()
+	handler.mintRealtimeTicket(response, request)
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", response.Code)
+	}
+}
+
+func TestHandlerMintRealtimeTicketMapsMinterErrors(t *testing.T) {
+	handler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeTickets(&ticketMinterFake{
+		err: ErrVoiceSessionNotFound,
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/realtime-ticket", http.NoBody)
+	request.SetPathValue("id", "vs_1")
+	request.Header.Set("X-Test-Account", "acct_1")
+	response := httptest.NewRecorder()
+	handler.mintRealtimeTicket(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", response.Code)
+	}
+}
+
+func TestHandlerRegisterMountsRealtimeTicketRoute(t *testing.T) {
+	minter := &ticketMinterFake{ticket: RealtimeTicket{Ticket: "t", SessionID: "vs_1"}}
+	handler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeTickets(minter)
+	mux := http.NewServeMux()
+	handler.Register(mux, func(next http.Handler) http.Handler { return next })
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/realtime-ticket", http.NoBody)
+	request.Header.Set("X-Test-Account", "acct_1")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("registered route status = %d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func headerAccount(r *http.Request) (string, bool) {
 	accountID := r.Header.Get("X-Test-Account")
 	return accountID, accountID != ""
+}
+
+type ticketMinterFake struct {
+	accountID string
+	sessionID string
+	ticket    RealtimeTicket
+	err       error
+}
+
+func (m *ticketMinterFake) MintRealtimeTicket(_ context.Context, accountID, sessionID string) (RealtimeTicket, error) {
+	m.accountID = accountID
+	m.sessionID = sessionID
+	return m.ticket, m.err
 }
 
 type handlerUseCases struct {

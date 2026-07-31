@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxHTTPBodyBytes = 1 << 20
@@ -28,10 +29,23 @@ type UseCases interface {
 	List(context.Context, ListInput) (ListPage, error)
 }
 
+// RealtimeTicket is the browser-facing mint response for WebRTC signaling.
+type RealtimeTicket struct {
+	Ticket    string    `json:"ticket"`
+	SessionID string    `json:"session_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// RealtimeTicketMinter issues short-lived realtime tickets for session owners.
+type RealtimeTicketMinter interface {
+	MintRealtimeTicket(ctx context.Context, accountID, sessionID string) (RealtimeTicket, error)
+}
+
 // Handler exposes Issue #86's public voice-session HTTP contract.
 type Handler struct {
 	service   UseCases
 	accountID AccountIDFromRequest
+	tickets   RealtimeTicketMinter
 }
 
 // NewHandler wires the HTTP boundary. The account extractor must read only
@@ -41,6 +55,15 @@ func NewHandler(service UseCases, accountID AccountIDFromRequest) *Handler {
 		accountID = func(*http.Request) (string, bool) { return "", false }
 	}
 	return &Handler{service: service, accountID: accountID}
+}
+
+// WithRealtimeTickets enables POST .../realtime-ticket for browser WebRTC join.
+func (h *Handler) WithRealtimeTickets(tickets RealtimeTicketMinter) *Handler {
+	if h == nil {
+		return nil
+	}
+	h.tickets = tickets
+	return h
 }
 
 // Register attaches voice-session lifecycle routes behind authentication.
@@ -54,6 +77,12 @@ func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) h
 	mux.Handle("GET /api/v1/voice-sessions/{id}", authenticate(http.HandlerFunc(h.detail)))
 	mux.Handle("GET /api/v1/voice-sessions", authenticate(http.HandlerFunc(h.list)))
 	mux.Handle("GET /api/v1/voice-sessions/{id}/state", authenticate(http.HandlerFunc(h.state)))
+	if h.tickets != nil {
+		mux.Handle(
+			"POST /api/v1/voice-sessions/{id}/realtime-ticket",
+			authenticate(http.HandlerFunc(h.mintRealtimeTicket)),
+		)
+	}
 }
 
 type createRequest struct {
@@ -206,6 +235,28 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeHTTPJSON(w, http.StatusOK, state)
+}
+
+func (h *Handler) mintRealtimeTicket(w http.ResponseWriter, r *http.Request) {
+	accountID, err := h.requireAccount(r)
+	if err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	if h.tickets == nil {
+		writeHTTPError(w, r, ErrNotImplemented)
+		return
+	}
+	if err := rejectNonEmptyBody(r); err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	ticket, err := h.tickets.MintRealtimeTicket(r.Context(), accountID, r.PathValue("id"))
+	if err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	writeHTTPJSON(w, http.StatusOK, ticket)
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {

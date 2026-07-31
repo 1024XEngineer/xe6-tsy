@@ -133,9 +133,13 @@ func newSessionHTTPDependencies(inputs sessionCompositionInputs) (*sessionHTTPDe
 	if err != nil {
 		return nil, fmt.Errorf("initialize session end recovery worker: %w", err)
 	}
+	handler := newSessionHandler(service).WithRealtimeTickets(realtimeaccess.SessionTicketMinter{
+		Source:    tickets,
+		Validator: codec,
+	})
 	return &sessionHTTPDependencies{
 		service:     service,
-		handler:     newSessionHandler(service),
+		handler:     handler,
 		endRecovery: endRecovery,
 	}, nil
 }

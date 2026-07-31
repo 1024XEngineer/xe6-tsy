@@ -16,6 +16,7 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 		"/voice-sessions/{id}/start",
 		"/voice-sessions/{id}/end",
 		"/voice-sessions/{id}/state",
+		"/voice-sessions/{id}/realtime-ticket",
 	} {
 		if _, ok := paths[path]; !ok {
 			t.Fatalf("missing voice-session path %s", path)

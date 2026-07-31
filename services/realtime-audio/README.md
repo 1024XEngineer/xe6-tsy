@@ -52,11 +52,10 @@ The provider packages keep vendor protocol details outside `pipeline`:
 
 The adapters are constructed explicitly from typed configuration values.
 `config.LoadProviderConfigFromEnvironment` reads typed settings from the process environment, and
-`config.BuildProviders` selects each adapter independently. The HTTP entrypoint (`main.go`) serves
-the `/realtime/v1` control-plane today and does **not** yet assemble ASR/LLM/TTS providers; media
-pipeline work still uses `NoopPipeline` via `localruntime`. The process also does not load `.env`
-files automatically — export variables (or use a launcher) before `go run .`. `.env.example`
-remains a configuration reference. Keep API keys in an ignored `.env`. The canonical selector keys
+`config.BuildProviders` selects each adapter independently. The HTTP entrypoint (`server.go` /
+`main.go`) assembles `runtime.Manager` with those providers plus `localruntime` WebRTC/media
+adapters. The process does not load `.env` files automatically — export variables (or use
+`start-local`) before `go run .`. Keep API keys in an ignored `.env`. The canonical selector keys
 are `ASR_PROVIDER`, `LLM_PROVIDER`, and `TTS_PROVIDER`; each defaults to `mock` and currently
 accepts `mock` or `aliyun`. Mock selection requires explicit offline provider instances, which
 prevents a production startup from silently constructing fake behavior. Building Aliyun providers
@@ -93,9 +92,16 @@ Required env:
 | --- | --- | --- |
 | `REALTIME_ADDR` | `:8090` | Listen address |
 | `REALTIME_TICKET_SECRET` | _(required)_ | Raw secret (≥32 bytes), must match API `REALTIME_TICKET_SECRET` |
+| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun` (same wiring; offline fakes injected for mock) |
+| `REALTIME_TTS_DOWNLINK` | `none` | `none` = subtitles only (forces mock TTS); `pcm` = TTS PCM over DataChannel; `opus` = WebRTC Opus track (stub) |
+| `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Fallback pair when API DB link is off |
+| `REALTIME_API_DATABASE` | _(off)_ | `enabled` + `DATABASE_URL` → Postgres session/language readers + FinalTurn outbox |
+| `ASR_SERVER_VAD` | _(unset → false in entrypoint)_ | Set `true` to enable Qwen server_vad; local energy VAD is the default owner |
+
+Provider switch (Phase 3): keep `start-local.bat`, set `ASR_PROVIDER=aliyun` + `LLM_PROVIDER=aliyun` plus Qwen keys in root `.env`, restart. Leave downlink at `none` so TTS stays mock while you validate real subtitles. No control-plane protocol change.
 
 Routes: `/realtime/v1/sessions/{id}/webrtc/config|offer`, `ice-candidates`, `start|stop`, `runtime`, `connection`.
-Local adapters live under `localruntime/` (`TrustSessionReader`, `NoopPipeline`, `StaticWebRTCConfig`) until business session reads and real pipelines are wired.
+Local adapters live under `localruntime/` (`TrustSessionReader`, `StaticLanguageConfigReader`, `StaticWebRTCConfig`, WebRTC frame/sink bridges).
 
 `pipeline.NewPostgresFinalTurnSink(pool)` is the production final-turn sink adapter. It writes the
 validated immutable event into the API service's PostgreSQL `final_turn_outbox`; the API consumer

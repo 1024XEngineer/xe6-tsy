@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -120,6 +121,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err := s.publishUsage(ctx, turn, "asr", result.Provider, result.Model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
 		return fmt.Errorf("publish ASR usage: %w", err)
 	}
+	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
 	target, ok := targetLanguage(turn.LanguageConfig, result.SourceLanguage)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
@@ -268,13 +270,18 @@ func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider
 }
 
 func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, result asr.FinalResult, startedAt, endedAt time.Time) recordsv1.SpeakerAttribution {
-	if s.speakers == nil || result.ProviderSpeakerID == "" {
+	if s.speakers == nil {
 		return pendingSpeakerAttribution()
+	}
+	providerSpeakerID := strings.TrimSpace(result.ProviderSpeakerID)
+	if providerSpeakerID == "" {
+		// Single-mic demos have no diarization; still allocate a provisional participant.
+		providerSpeakerID = "local-mic"
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, s.speakerTimeout)
 	defer cancel()
 	attribution, err := s.speakers.GetProvisionalAttribution(lookupCtx, recordsv1.SpeakerObservation{
-		SessionID: turn.SessionID, TurnID: turn.ID, ProviderSpeakerID: result.ProviderSpeakerID,
+		SessionID: turn.SessionID, TurnID: turn.ID, ProviderSpeakerID: providerSpeakerID,
 		StartedAt: startedAt, EndedAt: endedAt,
 		AudioStartMS: result.AudioStart.Milliseconds(), AudioEndMS: result.AudioEnd.Milliseconds(),
 	})
@@ -313,8 +320,9 @@ func turnBounds(turn TurnContext, result asr.FinalResult, fallback time.Time) (t
 }
 
 func targetLanguage(config session.LanguageConfigSnapshot, source string) (string, bool) {
+	source = asr.NormalizeLanguage(source)
 	for _, pair := range config.LanguagePairs {
-		if pair.Source == source {
+		if asr.NormalizeLanguage(pair.Source) == source {
 			return pair.Target, true
 		}
 	}

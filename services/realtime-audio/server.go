@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
@@ -19,6 +22,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -146,10 +150,40 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	}
 
 	runtimeBridge := &localruntime.LifecycleRuntimeBridge{}
-	languages := localruntime.StaticLanguageConfigReader{
+	staticLanguages := localruntime.StaticLanguageConfigReader{
 		Source: cfg.SourceLanguage, Target: cfg.TargetLanguage, Now: now,
 	}
-	finalTurns := localruntime.DataChannelFinalTurnSink{Media: connections}
+	var languages session.LanguageConfigReader = staticLanguages
+	var sessions session.SessionReader = localruntime.TrustSessionReader{}
+	var durableFinalTurns recordsv1.FinalTurnSink
+	if apiDatabaseEnabled(os.Getenv) {
+		databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+		if databaseURL == "" {
+			return nil, fmt.Errorf("REALTIME_API_DATABASE is enabled but DATABASE_URL is empty")
+		}
+		pool, err := pgxpool.New(context.Background(), databaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("open DATABASE_URL for realtime records: %w", err)
+		}
+		if err := pool.Ping(context.Background()); err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("ping DATABASE_URL for realtime records: %w", err)
+		}
+		slog.Info("realtime-audio linked to API database",
+			"final_turn_outbox", true, "session_reader", "postgres", "language_reader", "postgres")
+		sessions = localruntime.PostgresSessionReader{Pool: pool}
+		languages = localruntime.FallbackLanguageConfigReader{
+			Primary:  localruntime.PostgresLanguageConfigReader{Pool: pool, Now: now},
+			Fallback: staticLanguages,
+		}
+		durableFinalTurns = pipeline.NewPostgresFinalTurnSink(pool)
+	}
+
+	liveFinalTurns := localruntime.DataChannelFinalTurnSink{Media: connections}
+	var finalTurns recordsv1.FinalTurnSink = liveFinalTurns
+	if durableFinalTurns != nil {
+		finalTurns = localruntime.FanoutFinalTurnSink{Durable: durableFinalTurns, Live: liveFinalTurns}
+	}
 	usage := &localruntime.MemoryUsageSink{}
 
 	providerConfig, err := config.LoadProviderConfigFromEnvironment()
@@ -183,6 +217,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		FrameSources: localruntime.WebRTCFrameSources{
 			Media:          connections,
 			SourceLanguage: cfg.SourceLanguage,
+			Languages:      languages,
 		},
 		NewSegmenter: func() (*vad.Segmenter, error) {
 			return vad.NewSegmenter(localruntime.EnergySpeechClassifier{Threshold: 0.035}, vad.Options{
@@ -203,7 +238,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	}
 
 	lifecycle, err := session.NewLifecycleService(session.Dependencies{
-		Sessions:    localruntime.TrustSessionReader{},
+		Sessions:    sessions,
 		Runtimes:    session.NewMemoryRuntimeRepository(),
 		Pipelines:   manager,
 		Connections: connections,
@@ -231,6 +266,18 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		return nil, fmt.Errorf("configure control-plane: %w", err)
 	}
 	return handler, nil
+}
+
+func apiDatabaseEnabled(getenv func(string) string) bool {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	switch strings.ToLower(strings.TrimSpace(getenv("REALTIME_API_DATABASE"))) {
+	case "1", "true", "yes", "enabled", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func mockOfflineProviders(sourceLanguage string) config.Providers {

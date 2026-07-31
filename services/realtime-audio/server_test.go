@@ -102,6 +102,7 @@ func setMockProviderEnv(t *testing.T) {
 	t.Setenv("ASR_PROVIDER", "mock")
 	t.Setenv("LLM_PROVIDER", "mock")
 	t.Setenv("TTS_PROVIDER", "mock")
+	t.Setenv("REALTIME_API_DATABASE", "")
 }
 
 func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {

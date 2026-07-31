@@ -29,6 +29,28 @@ func TestTicketSourceIssuesTicketForSessionOwner(t *testing.T) {
 	}
 }
 
+func TestTicketSourceTokenForAccountEnforcesOwner(t *testing.T) {
+	source, err := NewTicketSource(sessionReaderFake{snapshot: sessions.SessionSnapshot{
+		SessionID: "session-1",
+		AccountID: "account-1",
+		Status:    sessions.StatusCreated,
+	}}, issuerFake{})
+	if err != nil {
+		t.Fatalf("NewTicketSource() error = %v", err)
+	}
+	token, err := source.TokenForAccount(t.Context(), "account-1", "session-1")
+	if err != nil {
+		t.Fatalf("TokenForAccount() error = %v", err)
+	}
+	if token != "session-1:account-1" {
+		t.Fatalf("token = %q", token)
+	}
+	_, err = source.TokenForAccount(t.Context(), "account-2", "session-1")
+	if !errors.Is(err, sessions.ErrVoiceSessionNotFound) {
+		t.Fatalf("TokenForAccount() error = %v, want ErrVoiceSessionNotFound", err)
+	}
+}
+
 func TestTicketSourceRejectsInvalidOwnershipFacts(t *testing.T) {
 	source, err := NewTicketSource(sessionReaderFake{snapshot: sessions.SessionSnapshot{
 		SessionID: "session-2",

@@ -205,29 +205,51 @@ func configurePionTTSTrack(transport *PionTransport) error {
 	mediaNow := transport.mediaNow
 	ttsTrack := transport.ttsTrack
 	events := transport.events
+	alreadyConfigured := transport.playback != nil
 	transport.mu.Unlock()
-	if mediaConnection == nil || ttsTrack != nil {
+	if mediaConnection == nil || ttsTrack != nil || alreadyConfigured {
 		return nil
 	}
-	track, err := pion.NewTrackLocalStaticRTP(pion.RTPCodecCapability{
-		MimeType: "audio/L16", ClockRate: uint32(config.SampleRate), Channels: uint16(config.Channels),
-	}, config.TTSTrackID, "realtime-audio")
-	if err != nil {
-		return fmt.Errorf("create TTS track: %w", err)
-	}
-	audioTrack, err := newPionAudioTrack(track, config)
-	if err != nil {
-		return err
+	var audioTrack playback.AudioTrack
+	if strings.EqualFold(config.DownlinkCodec, "opus") {
+		track, err := pion.NewTrackLocalStaticSample(pion.RTPCodecCapability{
+			MimeType: pion.MimeTypeOpus, ClockRate: 48_000, Channels: 2,
+		}, config.TTSTrackID, "realtime-audio")
+		if err != nil {
+			return fmt.Errorf("create Opus TTS track: %w", err)
+		}
+		opusTrack, err := newOpusSampleTrack(track)
+		if err != nil {
+			return err
+		}
+		if _, err := mediaConnection.AddTrack(track); err != nil {
+			return fmt.Errorf("add Opus TTS track: %w", err)
+		}
+		audioTrack = opusTrack
+	} else {
+		track, err := pion.NewTrackLocalStaticRTP(pion.RTPCodecCapability{
+			MimeType: "audio/L16", ClockRate: uint32(config.SampleRate), Channels: uint16(config.Channels),
+		}, config.TTSTrackID, "realtime-audio")
+		if err != nil {
+			return fmt.Errorf("create TTS track: %w", err)
+		}
+		l16Track, err := newPionAudioTrack(track, config)
+		if err != nil {
+			return err
+		}
+		if _, err := mediaConnection.AddTrack(track); err != nil {
+			return fmt.Errorf("add TTS track: %w", err)
+		}
+		audioTrack = l16Track
+		transport.mu.Lock()
+		transport.ttsTrack = l16Track
+		transport.mu.Unlock()
 	}
 	playbackService, err := playback.NewService(playback.Dependencies{Track: audioTrack, Events: events, Now: mediaNow})
 	if err != nil {
 		return fmt.Errorf("create playback service: %w", err)
 	}
-	if _, err := mediaConnection.AddTrack(track); err != nil {
-		return fmt.Errorf("add TTS track: %w", err)
-	}
 	transport.mu.Lock()
-	transport.ttsTrack = audioTrack
 	transport.playback = playbackService
 	transport.mu.Unlock()
 	return nil
@@ -242,7 +264,7 @@ func newPionAPI(config MediaConfig) (*pion.API, error) {
 	if err := mediaEngine.RegisterDefaultCodecs(); err != nil {
 		return nil, fmt.Errorf("register default codecs: %w", err)
 	}
-	if !normalized.SkipTTSTrack {
+	if !normalized.SkipTTSTrack && !strings.EqualFold(normalized.DownlinkCodec, "opus") {
 		if err := mediaEngine.RegisterCodec(pion.RTPCodecParameters{
 			RTPCodecCapability: pion.RTPCodecCapability{
 				MimeType: "audio/L16", ClockRate: uint32(normalized.SampleRate), Channels: uint16(normalized.Channels),
@@ -322,6 +344,7 @@ func validateTTSAudioOffer(rawSDP string, config MediaConfig) error {
 	if err != nil {
 		return err
 	}
+	wantOpus := strings.EqualFold(normalized.DownlinkCodec, "opus")
 	var description sdp.SessionDescription
 	if err := description.UnmarshalString(rawSDP); err != nil {
 		return fmt.Errorf("parse remote SDP offer: %w", err)
@@ -337,7 +360,16 @@ func validateTTSAudioOffer(rawSDP string, config MediaConfig) error {
 				continue
 			}
 			codec, ok := codecs[uint8(payloadType)]
-			if !ok || !strings.EqualFold(codec.Name, "L16") || codec.ClockRate != uint32(normalized.SampleRate) {
+			if !ok {
+				continue
+			}
+			if wantOpus {
+				if strings.EqualFold(codec.Name, "opus") {
+					return nil
+				}
+				continue
+			}
+			if !strings.EqualFold(codec.Name, "L16") || codec.ClockRate != uint32(normalized.SampleRate) {
 				continue
 			}
 			if codec.EncodingParameters == strconv.Itoa(normalized.Channels) {

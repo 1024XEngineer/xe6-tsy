@@ -87,6 +87,20 @@ func TestLoadProviderConfigRequiresLookup(t *testing.T) {
 	}
 }
 
+func TestLoadProviderConfigReadsServerVADOverride(t *testing.T) {
+	config, err := LoadProviderConfig(mapLookup(map[string]string{"ASR_SERVER_VAD": "false"}))
+	if err != nil {
+		t.Fatalf("LoadProviderConfig() error = %v", err)
+	}
+	if config.ASR.ServerVAD {
+		t.Fatal("ASR.ServerVAD = true, want false")
+	}
+	_, err = LoadProviderConfig(mapLookup(map[string]string{"ASR_SERVER_VAD": "maybe"}))
+	if !errors.Is(err, ErrInvalidEnvironmentValue) {
+		t.Fatalf("invalid ASR_SERVER_VAD error = %v", err)
+	}
+}
+
 func mapLookup(values map[string]string) LookupEnv {
 	return func(key string) (string, bool) {
 		value, ok := values[key]

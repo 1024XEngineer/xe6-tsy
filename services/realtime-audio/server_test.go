@@ -11,7 +11,9 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 )
 
 func secretEnv(secret string) func(string) string {
@@ -234,6 +236,104 @@ func TestRunReturnsListenError(t *testing.T) {
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("run() error = %v, want %v", err, want)
+	}
+}
+
+func TestAPIDatabaseAndUsageOutboxFlags(t *testing.T) {
+	if apiDatabaseEnabled(func(string) string { return "enabled" }) != true {
+		t.Fatal("enabled should be true")
+	}
+	if apiDatabaseEnabled(func(string) string { return "off" }) {
+		t.Fatal("off should be false")
+	}
+	if usageOutboxEnabled(func(string) string { return "valkey" }) != true {
+		t.Fatal("valkey should enable usage outbox")
+	}
+	if usageOutboxEnabled(func(string) string { return "memory" }) {
+		t.Fatal("memory should not enable usage outbox")
+	}
+	if usageOutboxEnabled(nil) {
+		t.Fatal("nil getenv without env should be false")
+	}
+}
+
+func TestLoadProcessConfigOpusAndCustomLanguages(t *testing.T) {
+	cfg, err := loadProcessConfig(func(key string) string {
+		switch key {
+		case "REALTIME_TICKET_SECRET":
+			return strings.Repeat("o", 32)
+		case "REALTIME_TTS_DOWNLINK":
+			return "opus"
+		case "REALTIME_SOURCE_LANGUAGE":
+			return "en-US"
+		case "REALTIME_TARGET_LANGUAGE":
+			return "zh-CN"
+		case "REALTIME_ADDR":
+			return ":19090"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("loadProcessConfig() error = %v", err)
+	}
+	if cfg.DownlinkMode != "opus" || cfg.SkipTTSTrack || cfg.ForceMockTTS || cfg.DownlinkCodec != "opus" {
+		t.Fatalf("opus config = %#v", cfg)
+	}
+	if cfg.SourceLanguage != "en-US" || cfg.TargetLanguage != "zh-CN" || cfg.Addr != ":19090" {
+		t.Fatalf("languages/addr = %#v", cfg)
+	}
+}
+
+func TestMockOfflineProvidersSwitchWithSourceLanguage(t *testing.T) {
+	zh := mockOfflineProviders("zh-CN")
+	en := mockOfflineProviders("")
+	enUS := mockOfflineProviders("en-US")
+	if zh.ASR == nil || en.ASR == nil || enUS.Translation == nil || zh.TTS == nil {
+		t.Fatal("providers missing")
+	}
+	zhStream, err := zh.ASR.StartStream(context.Background(), asr.StreamRequest{SourceLanguage: "zh-CN"})
+	if err != nil {
+		t.Fatalf("zh StartStream: %v", err)
+	}
+	zhFinal, err := zhStream.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("zh Finish: %v", err)
+	}
+	if zhFinal.Text != "你好" || zhFinal.SourceLanguage != "zh-CN" {
+		t.Fatalf("zh final = %#v", zhFinal)
+	}
+	enStream, err := enUS.ASR.StartStream(context.Background(), asr.StreamRequest{SourceLanguage: "en-US"})
+	if err != nil {
+		t.Fatalf("en StartStream: %v", err)
+	}
+	enFinal, err := enStream.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("en Finish: %v", err)
+	}
+	if enFinal.Text != "Hello" || enFinal.SourceLanguage != "en-US" {
+		t.Fatalf("en final = %#v", enFinal)
+	}
+	translated, err := enUS.Translation.Translate(context.Background(), translate.Request{
+		Text: "Hello", SourceLanguage: "en-US", TargetLanguage: "zh-CN",
+	})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	if translated.Text != "你好" {
+		t.Fatalf("translated = %#v", translated)
+	}
+}
+
+func TestNewControlPlaneHandlerPCMDownlinkStarts(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("REALTIME_TTS_DOWNLINK", "pcm")
+	handler, err := newControlPlaneHandler(strings.Repeat("p", 32))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+	if handler == nil {
+		t.Fatal("handler = nil")
 	}
 }
 

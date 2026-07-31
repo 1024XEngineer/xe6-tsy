@@ -43,6 +43,10 @@ type MediaConfig struct {
 	DataChannelLabel string
 	SampleRate       int
 	Channels         int
+	// SkipTTSTrack disables PCM L16 TTS track attachment and the matching
+	// remote-offer codec check. Browser clients (Chrome) cannot negotiate
+	// audio/L16; the local HTTP entrypoint uses this for Opus-only signaling.
+	SkipTTSTrack bool
 }
 
 func (c MediaConfig) normalized() (MediaConfig, error) {

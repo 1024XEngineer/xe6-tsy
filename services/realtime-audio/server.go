@@ -63,6 +63,8 @@ func newControlPlaneHandler(ticketSecret string) (http.Handler, error) {
 		ICEServers: []webrtc.ICEServerConfig{{
 			URLs: []string{"stun:stun.l.google.com:19302"},
 		}},
+		// Chrome cannot negotiate audio/L16; local NoopPipeline does not emit TTS.
+		Media: webrtc.MediaConfig{SkipTTSTrack: true},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure pion transport factory: %w", err)

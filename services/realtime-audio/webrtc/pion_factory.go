@@ -242,13 +242,15 @@ func newPionAPI(config MediaConfig) (*pion.API, error) {
 	if err := mediaEngine.RegisterDefaultCodecs(); err != nil {
 		return nil, fmt.Errorf("register default codecs: %w", err)
 	}
-	if err := mediaEngine.RegisterCodec(pion.RTPCodecParameters{
-		RTPCodecCapability: pion.RTPCodecCapability{
-			MimeType: "audio/L16", ClockRate: uint32(normalized.SampleRate), Channels: uint16(normalized.Channels),
-		},
-		PayloadType: 118,
-	}, pion.RTPCodecTypeAudio); err != nil {
-		return nil, fmt.Errorf("register TTS codec: %w", err)
+	if !normalized.SkipTTSTrack {
+		if err := mediaEngine.RegisterCodec(pion.RTPCodecParameters{
+			RTPCodecCapability: pion.RTPCodecCapability{
+				MimeType: "audio/L16", ClockRate: uint32(normalized.SampleRate), Channels: uint16(normalized.Channels),
+			},
+			PayloadType: 118,
+		}, pion.RTPCodecTypeAudio); err != nil {
+			return nil, fmt.Errorf("register TTS codec: %w", err)
+		}
 	}
 	return pion.NewAPI(pion.WithMediaEngine(mediaEngine)), nil
 }

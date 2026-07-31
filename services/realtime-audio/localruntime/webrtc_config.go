@@ -47,6 +47,7 @@ func (c StaticWebRTCConfig) GetConfig(_ context.Context, sessionID string) (cont
 			Ordered: true,
 		},
 		Audio: controlplane.AudioConfig{
+			// Local entrypoint skips L16 TTS tracks so browser Opus offers work.
 			UplinkCodec:   "opus",
 			DownlinkCodec: "opus",
 			SampleRateHz:  48000,

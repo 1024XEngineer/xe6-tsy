@@ -90,8 +90,10 @@ func (t *PionTransport) Answer(ctx context.Context, offer SessionDescription) (S
 	if err := t.validateTTSAudioOffer(offer.SDP); err != nil {
 		return SessionDescription{}, err
 	}
-	if err := configurePionTTSTrack(t); err != nil {
-		return SessionDescription{}, err
+	if !t.skipTTSTrack() {
+		if err := configurePionTTSTrack(t); err != nil {
+			return SessionDescription{}, err
+		}
 	}
 	answer, err := connection.CreateAnswer(nil)
 	if err != nil {
@@ -128,10 +130,19 @@ func (t *PionTransport) validateTTSAudioOffer(rawSDP string) error {
 	mediaEnabled := t.mediaConnection != nil
 	config := t.mediaConfig
 	t.mu.Unlock()
-	if !mediaEnabled {
+	if !mediaEnabled || config.SkipTTSTrack {
 		return nil
 	}
 	return validateTTSAudioOffer(rawSDP, config)
+}
+
+func (t *PionTransport) skipTTSTrack() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.mediaConfig.SkipTTSTrack
 }
 
 // AddCandidate passes one remote trickle candidate into Pion.

@@ -58,6 +58,9 @@ func TestStaticWebRTCConfigDefaultsICEServers(t *testing.T) {
 	if len(config.ICEServers) == 0 {
 		t.Fatal("expected default ICE servers")
 	}
+	if config.Audio.DownlinkCodec != "opus" || config.Audio.SampleRateHz != 48000 || config.Audio.Channels != 1 {
+		t.Fatalf("audio config = %#v, want opus/48000/1", config.Audio)
+	}
 }
 
 func TestStaticWebRTCConfigRejectsEmptySessionID(t *testing.T) {

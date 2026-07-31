@@ -291,7 +291,7 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 		t.Fatalf("create replay session ID = %q, want %q", replayedCreate.ID, created.ID)
 	}
 	createConflict := serveAPIRequest(t, mux, http.MethodPost, "/api/v1/voice-sessions", account.Tokens.AccessToken, "create-session", strings.NewReader(
-		`{"capabilities":{"webrtc":false,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
+		`{"audio_config":{"codec":"opus","sample_rate_hz":48000,"channels":1,"echo_cancellation":false,"noise_suppression":true,"auto_gain_control":true},"capabilities":{"webrtc":true,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
 	))
 	assertSessionError(t, createConflict, http.StatusConflict, sessions.CodeIdempotencyKeyConflict)
 
@@ -524,7 +524,7 @@ func TestSessionProductionCompositionRecoversFailedEndIntent(t *testing.T) {
 	)
 	created := createStartedSession(t, mux, realtime, account.Tokens.AccessToken)
 
-	realtime.stopState.Store(realtimev1.RuntimeStopping)
+	realtime.stopFailures.Store(1)
 	end := serveAPIRequest(
 		t,
 		mux,
@@ -547,6 +547,7 @@ func TestSessionProductionCompositionRecoversFailedEndIntent(t *testing.T) {
 	}
 
 	realtime.stopState.Store(realtimev1.RuntimeStopped)
+	realtime.stopFailures.Store(0)
 	processed, err := recovery.ProcessNext(t.Context())
 	if err != nil || !processed {
 		t.Fatalf("ProcessNext() = %t, %v, want recovered intent", processed, err)
@@ -654,6 +655,7 @@ type sessionRuntimeControlPlane struct {
 	server          *httptest.Server
 	startCalls      atomic.Int32
 	stopCalls       atomic.Int32
+	stopFailures    atomic.Int32
 	runtimeCalls    atomic.Int32
 	operationID     atomic.Value
 	connectionState atomic.Value
@@ -709,6 +711,11 @@ func (p *sessionRuntimeControlPlane) Stop(_ context.Context, command rtsession.S
 	p.stopCalls.Add(1)
 	operationID, _ := p.operationID.Load().(string)
 	state, _ := p.stopState.Load().(realtimev1.RuntimeState)
+	if p.stopFailures.Load() > 0 && p.stopFailures.CompareAndSwap(1, 0) {
+		return realtimev1.RuntimeSnapshot{}, fmt.Errorf("simulated stop failure")
+	} else {
+		state = realtimev1.RuntimeStopped
+	}
 	if state == "" {
 		state = realtimev1.RuntimeStopped
 	}

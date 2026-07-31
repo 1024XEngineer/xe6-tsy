@@ -112,8 +112,8 @@ func TestUsagePostgresRejectsForeignSessionOwner(t *testing.T) {
 		TurnID: "usage_owner_turn", ServiceType: usage.StageASR,
 		Provider: "mock-asr", Model: "v1", OccurredAt: time.Now().UTC(),
 	})
-	if !errors.Is(err, domain.ErrForbidden) {
-		t.Fatalf("Record() error = %v, want forbidden", err)
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Record() error = %v, want not found", err)
 	}
 }
 

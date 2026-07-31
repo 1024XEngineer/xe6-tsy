@@ -23,7 +23,11 @@ func TestMessageTargetRepositoryBindListAndRevokeEmailTarget(t *testing.T) {
 	repository := delivery.NewPostgresRepository(pool)
 	insertDeliveryAccount(t, pool, "target_bind_account", "anonymous", nil)
 
-	service := delivery.NewPersistentUseCases(repository, nil, delivery.NewPostgresDestinationReader(pool, key), nil)
+	reader, err := delivery.NewPostgresDestinationReader(pool, key)
+	if err != nil {
+		t.Fatalf("NewPostgresDestinationReader() error = %v", err)
+	}
+	service := delivery.NewPersistentUseCases(repository, nil, reader, nil)
 	service.ConfigureTargetBinding(key, "local")
 
 	target, err := service.BindEmailTarget(t.Context(), "target_bind_account", "dev:primary-email:bind@example.test")
@@ -42,7 +46,11 @@ func TestMessageTargetRepositoryBindListAndRevokeEmailTarget(t *testing.T) {
 		t.Fatalf("ListMessageTargets() = %#v", targets)
 	}
 
-	destination, err := delivery.NewPostgresDestinationReader(pool, key).ResolveVerifiedDestination(
+	reader, err = delivery.NewPostgresDestinationReader(pool, key)
+	if err != nil {
+		t.Fatalf("NewPostgresDestinationReader() error = %v", err)
+	}
+	destination, err := reader.ResolveVerifiedDestination(
 		t.Context(), "target_bind_account", delivery.ChannelEmail, "primary-email",
 	)
 	if err != nil {
@@ -63,7 +71,11 @@ func TestMessageTargetRepositoryBindListAndRevokeEmailTarget(t *testing.T) {
 		t.Fatalf("ListMessageTargets() after revoke = %#v", targets)
 	}
 
-	_, err = delivery.NewPostgresDestinationReader(pool, key).ResolveVerifiedDestination(
+	reader, err = delivery.NewPostgresDestinationReader(pool, key)
+	if err != nil {
+		t.Fatalf("NewPostgresDestinationReader() error = %v", err)
+	}
+	_, err = reader.ResolveVerifiedDestination(
 		t.Context(), "target_bind_account", delivery.ChannelEmail, "primary-email",
 	)
 	if !errors.Is(err, domain.ErrNotFound) {

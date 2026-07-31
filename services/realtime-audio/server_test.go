@@ -43,12 +43,21 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	if _, err := loadProcessConfig(func(string) string { return "" }); err == nil {
 		t.Fatal("loadProcessConfig() error = nil, want secret validation error")
 	}
+	t.Setenv("REALTIME_TICKET_SECRET", "")
 	if _, err := loadProcessConfig(nil); err == nil {
 		t.Fatal("loadProcessConfig(nil) error = nil, want secret validation error")
 	}
 }
 
+func setMockProviderEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("ASR_PROVIDER", "mock")
+	t.Setenv("LLM_PROVIDER", "mock")
+	t.Setenv("TTS_PROVIDER", "mock")
+}
+
 func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {
+	setMockProviderEnv(t)
 	secret := strings.Repeat("r", 32)
 	handler, err := newControlPlaneHandler(secret)
 	if err != nil {
@@ -91,6 +100,7 @@ func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {
 }
 
 func TestNewControlPlaneHandlerRejectsMissingTicket(t *testing.T) {
+	setMockProviderEnv(t)
 	handler, err := newControlPlaneHandler(strings.Repeat("r", 32))
 	if err != nil {
 		t.Fatalf("newControlPlaneHandler() error = %v", err)
@@ -121,6 +131,7 @@ func TestNewHTTPServerAppliesTimeouts(t *testing.T) {
 }
 
 func TestNewControlPlaneHandlerRejectsShortSecret(t *testing.T) {
+	setMockProviderEnv(t)
 	if _, err := newControlPlaneHandler("short"); err == nil {
 		t.Fatal("newControlPlaneHandler(short) error = nil")
 	}
@@ -178,6 +189,7 @@ func TestRunReturnsListenError(t *testing.T) {
 }
 
 func TestControlPlaneStartWithTrustSession(t *testing.T) {
+	setMockProviderEnv(t)
 	secret := strings.Repeat("t", 32)
 	handler, err := newControlPlaneHandler(secret)
 	if err != nil {
@@ -195,7 +207,7 @@ func TestControlPlaneStartWithTrustSession(t *testing.T) {
 		t.Fatalf("Issue() error = %v", err)
 	}
 
-	body := strings.NewReader(`{"operation_id":"op-1"}`)
+	body := strings.NewReader(`{"operation_id":"op-1","trace_id":"trace-1"}`)
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/realtime/v1/sessions/vs_start/start",

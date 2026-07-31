@@ -204,10 +204,14 @@ func (h *Handler) start(writer http.ResponseWriter, request *http.Request) {
 		h.writeError(writer, request, session.ErrStartOperationIDRequired)
 		return
 	}
+	traceID := strings.TrimSpace(body.TraceID)
+	if traceID == "" {
+		traceID = body.OperationID
+	}
 	h.handleReplay(writer, request.Context(), sessionID, "start\x00"+sessionID+"\x00"+idempotencyKey, body, func() (any, error) {
 		return h.lifecycle.Start(request.Context(), session.StartRealtimeCommand{
 			SessionID: sessionID, OperationID: body.OperationID,
-			TraceID: body.TraceID, StartedBy: body.StartedBy,
+			TraceID: traceID, StartedBy: body.StartedBy,
 		})
 	})
 }

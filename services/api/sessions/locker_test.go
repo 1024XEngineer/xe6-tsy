@@ -142,6 +142,26 @@ func TestKeyedLockerLiveWaiterProceedsAfterCancelledWaiter(t *testing.T) {
 	assertKeyedLockerEmpty(t, &locker)
 }
 
+func TestKeyedLockerCancelledContextCoversTokenRace(t *testing.T) {
+	// Free lock + already-canceled ctx makes both select cases ready. Go picks
+	// uniformly at random, so enough iterations cover the post-token ctx.Err
+	// branch that otherwise flakes under CI -race scheduling (locker.go ~89%).
+	for range 2_000 {
+		locker := newKeyedLocker()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		unlock, err := locker.lock(ctx, "vs_race")
+		if unlock != nil {
+			t.Fatal("cancelled lock returned unlock func")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("lock error = %v, want context.Canceled", err)
+		}
+		assertKeyedLockerEmpty(t, &locker)
+	}
+}
+
 func TestKeyedLockerUnlockIsIdempotent(t *testing.T) {
 	locker := newKeyedLocker()
 	unlock, err := locker.lock(context.Background(), "vs_1")

@@ -14,6 +14,9 @@ func TestLoadProviderConfigDefaultsToOfflineProviders(t *testing.T) {
 	if config.ASR.Provider != ProviderMock || config.Translation.Provider != ProviderMock || config.TTS.Provider != ProviderMock {
 		t.Fatalf("providers = %q/%q/%q, want all mock", config.ASR.Provider, config.Translation.Provider, config.TTS.Provider)
 	}
+	if !config.ASR.ServerVAD {
+		t.Fatal("ASR.ServerVAD default = false, want true")
+	}
 }
 
 func TestLoadProviderConfigReadsQwenSettings(t *testing.T) {
@@ -29,6 +32,9 @@ func TestLoadProviderConfigReadsQwenSettings(t *testing.T) {
 	}
 	if config.ASR.SampleRate != 16000 || config.ASR.VADThreshold != 0.3 || config.ASR.SilenceDuration != 700*time.Millisecond {
 		t.Fatalf("ASR config = %+v", config.ASR)
+	}
+	if !config.ASR.ServerVAD {
+		t.Fatal("ASR.ServerVAD = false when ASR_SERVER_VAD unset, want true")
 	}
 	if config.Translation.Model != defaultTranslationModel || !config.Translation.EnableThinking || config.Translation.Timeout != 12*time.Second {
 		t.Fatalf("translation config = %+v", config.Translation)

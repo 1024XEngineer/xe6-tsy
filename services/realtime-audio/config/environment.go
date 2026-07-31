@@ -43,6 +43,8 @@ type ASRConfig struct {
 	SampleRate      int
 	VADThreshold    float64
 	SilenceDuration time.Duration
+	// ServerVAD enables Qwen turn_detection.server_vad. Default true when unset.
+	ServerVAD bool
 }
 
 type TranslationConfig struct {
@@ -97,6 +99,10 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 	if err != nil {
 		return ProviderConfig{}, err
 	}
+	serverVAD, err := readBoolDefault(lookup, "ASR_SERVER_VAD", true)
+	if err != nil {
+		return ProviderConfig{}, err
+	}
 	if vadThreshold < -1 || vadThreshold > 1 {
 		return ProviderConfig{}, invalidValue("ASR_VAD_THRESHOLD", value(lookup, "ASR_VAD_THRESHOLD"))
 	}
@@ -132,7 +138,7 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 			Provider: asrProvider, APIKey: value(lookup, "ASR_API_KEY"),
 			BaseURL: value(lookup, "ASR_BASE_URL"), WebSocketURL: value(lookup, "ASR_WEBSOCKET_URL"),
 			Model: value(lookup, "ASR_MODEL"), SampleRate: sampleRate,
-			VADThreshold: vadThreshold, SilenceDuration: silenceDuration,
+			VADThreshold: vadThreshold, SilenceDuration: silenceDuration, ServerVAD: serverVAD,
 		},
 		Translation: TranslationConfig{
 			Provider: translationProvider, APIKey: value(lookup, "LLM_API_KEY"),
@@ -203,6 +209,18 @@ func readBool(lookup LookupEnv, key string) (bool, error) {
 	raw := value(lookup, key)
 	if raw == "" {
 		return false, nil
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, invalidValue(key, raw)
+	}
+	return parsed, nil
+}
+
+func readBoolDefault(lookup LookupEnv, key string, defaultValue bool) (bool, error) {
+	raw := value(lookup, key)
+	if raw == "" {
+		return defaultValue, nil
 	}
 	parsed, err := strconv.ParseBool(raw)
 	if err != nil {

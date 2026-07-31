@@ -39,7 +39,10 @@ type Config struct {
 	SampleRate      int
 	VADThreshold    float64
 	SilenceDuration time.Duration
-	Dialer          *websocket.Dialer
+	// DisableServerVAD omits Qwen turn_detection so a local segmenter owns
+	// utterance boundaries (avoids double VAD / duplicate finals).
+	DisableServerVAD bool
+	Dialer           *websocket.Dialer
 }
 
 // Provider starts Qwen realtime ASR streams.
@@ -109,18 +112,21 @@ func sessionUpdateEvent(language string, config Config) map[string]any {
 	if language != "" {
 		transcription["language"] = languageCode(language)
 	}
+	session := map[string]any{
+		"input_audio_format":        "pcm",
+		"sample_rate":               config.SampleRate,
+		"input_audio_transcription": transcription,
+	}
+	if !config.DisableServerVAD {
+		session["turn_detection"] = map[string]any{
+			"type":                "server_vad",
+			"threshold":           config.VADThreshold,
+			"silence_duration_ms": config.SilenceDuration.Milliseconds(),
+		}
+	}
 	return map[string]any{
-		"type": "session.update",
-		"session": map[string]any{
-			"input_audio_format":        "pcm",
-			"sample_rate":               config.SampleRate,
-			"input_audio_transcription": transcription,
-			"turn_detection": map[string]any{
-				"type":                "server_vad",
-				"threshold":           config.VADThreshold,
-				"silence_duration_ms": config.SilenceDuration.Milliseconds(),
-			},
-		},
+		"type":    "session.update",
+		"session": session,
 	}
 }
 

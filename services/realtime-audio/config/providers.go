@@ -65,6 +65,7 @@ func buildASR(config ASRConfig, offline asr.Provider) (asr.Provider, error) {
 			APIKey: config.APIKey, BaseURL: config.BaseURL, WebSocketURL: config.WebSocketURL,
 			Model: config.Model, Provider: string(ProviderAliyun), SampleRate: config.SampleRate,
 			VADThreshold: config.VADThreshold, SilenceDuration: config.SilenceDuration,
+			DisableServerVAD: !config.ServerVAD,
 		})
 	default:
 		return nil, unsupportedProvider(config.Provider)

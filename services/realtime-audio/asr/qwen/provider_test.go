@@ -317,3 +317,26 @@ func (c *blockingWriteConn) Close() error {
 }
 
 func (*blockingWriteConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestSessionUpdateEventOmitsTurnDetectionWhenDisabled(t *testing.T) {
+	event := sessionUpdateEvent("zh-CN", Config{SampleRate: 16000, DisableServerVAD: true})
+	session, ok := event["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("session missing: %#v", event)
+	}
+	if _, exists := session["turn_detection"]; exists {
+		t.Fatalf("turn_detection present when DisableServerVAD=true: %#v", session)
+	}
+
+	withVAD := sessionUpdateEvent("zh-CN", Config{
+		SampleRate: 16000, VADThreshold: 0.2, SilenceDuration: 400 * time.Millisecond,
+	})
+	session, ok = withVAD["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("session missing: %#v", withVAD)
+	}
+	detection, ok := session["turn_detection"].(map[string]any)
+	if !ok || detection["type"] != "server_vad" {
+		t.Fatalf("turn_detection = %#v", session["turn_detection"])
+	}
+}

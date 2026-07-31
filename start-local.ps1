@@ -147,6 +147,12 @@ Import-DotEnv -Path (Join-Path $Root ".env")
 switch ($Service) {
   "realtime" {
     Assert-RealtimeEnv
+    Write-Host "    Providers: ASR=$($env:ASR_PROVIDER) LLM=$($env:LLM_PROVIDER) TTS=$($env:TTS_PROVIDER)"
+    if ($env:REALTIME_TTS_DOWNLINK) {
+      Write-Host "    TTS downlink: $($env:REALTIME_TTS_DOWNLINK)"
+    } else {
+      Write-Host "    TTS downlink: none (subtitles only)"
+    }
     Write-Host "==> Starting realtime-audio control-plane..."
     Write-Host "    Keep this window open. Ctrl+C to stop."
     Write-Host ""

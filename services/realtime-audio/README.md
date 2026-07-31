@@ -93,6 +93,10 @@ Required env:
 | --- | --- | --- |
 | `REALTIME_ADDR` | `:8090` | Listen address |
 | `REALTIME_TICKET_SECRET` | _(required)_ | Raw secret (≥32 bytes), must match API `REALTIME_TICKET_SECRET` |
+| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun` (same wiring; offline fakes injected for mock) |
+| `REALTIME_TTS_DOWNLINK` | `none` | `none` = subtitles only; `opus` = attach browser Opus TTS track |
+
+Provider switch (Phase 3): keep `start-local.bat`, set the three `*_PROVIDER=aliyun` values plus Qwen keys in root `.env`, restart. No control-plane protocol change.
 
 Routes: `/realtime/v1/sessions/{id}/webrtc/config|offer`, `ice-candidates`, `start|stop`, `runtime`, `connection`.
 Local adapters live under `localruntime/` (`TrustSessionReader`, `NoopPipeline`, `StaticWebRTCConfig`) until business session reads and real pipelines are wired.

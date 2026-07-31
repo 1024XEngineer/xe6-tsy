@@ -107,6 +107,17 @@ func TestFakeEmailProviderRejectsIdempotencyKeyReuse(t *testing.T) {
 	}
 }
 
+func TestFakeEmailProviderInitializesZeroValueState(t *testing.T) {
+	var provider FakeEmailProvider
+	request := validFakeRequest()
+	if err := provider.Send(context.Background(), request); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if got := len(provider.Requests()); got != 1 {
+		t.Fatalf("Requests() length = %d, want 1", got)
+	}
+}
+
 func TestFakeEmailProviderConcurrentDuplicateInvokesOnce(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -134,6 +145,35 @@ func TestFakeEmailProviderConcurrentDuplicateInvokesOnce(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("SendFunc calls = %d, want 1", got)
+	}
+}
+
+func TestFakeEmailProviderRejectsMismatchedInFlightRequestIdentity(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	provider := NewFakeEmailProvider(FakeEmailProviderConfig{
+		SendFunc: func(context.Context, SendRequest) error {
+			close(started)
+			<-release
+			return nil
+		},
+	})
+	request := validFakeRequest()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- provider.Send(context.Background(), request) }()
+	<-started
+	second := validFakeRequest()
+	second.Message.ID = "message-2"
+	second.Attempt.MessageID = "message-2"
+	second.ProviderIdempotencyKey = request.ProviderIdempotencyKey
+	second.Attempt.ID = request.Attempt.ID
+	err := provider.Send(context.Background(), second)
+	close(release)
+	if !errors.Is(err, ErrProviderRejected) || !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("Send() error = %v, want provider rejection and conflict", err)
+	}
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Send() error = %v", err)
 	}
 }
 
@@ -234,6 +274,15 @@ func TestFakeEmailProviderWaiterHonorsCancellation(t *testing.T) {
 	close(release)
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first Send() error = %v", err)
+	}
+}
+
+func TestWaitForFakeProviderCallReturnsSettledError(t *testing.T) {
+	expected := errors.New("provider failed")
+	call := &fakeProviderCall{done: make(chan struct{}), err: expected}
+	close(call.done)
+	if err := waitForFakeProviderCall(context.Background(), call); !errors.Is(err, expected) {
+		t.Fatalf("waitForFakeProviderCall() error = %v, want settled error", err)
 	}
 }
 

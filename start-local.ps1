@@ -210,6 +210,7 @@ switch ($Service) {
     Start-Sleep -Seconds 1
     Write-Host "==> Starting API on $($env:API_ADDR)"
     Write-Host "    Realtime runs in a separate window; Ctrl+C here stops API only."
+    Write-Host "    Frontend: cd apps\web && copy .env.example .env.local && npm install && npm run dev"
     Write-Host ""
     Invoke-GoRun -ServiceDir "services\api"
   }

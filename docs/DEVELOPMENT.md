@@ -93,19 +93,17 @@ services/realtime-audio/
 - API 类型从 `packages/contracts` 生成，不手写重复 DTO。
 - UI 组件只处理展示和交互，不直接拼实时音频协议。
 - 业务调用统一放在 `features/*/api.ts` 或 `lib/api/*`。
-- 状态管理先用 Vue 组件局部状态和少量共享 store，避免过早引入复杂全局状态。
+- 状态管理先用 React 组件局部状态和少量共享 hook/store，避免过早引入复杂全局状态。
 
 建议前端结构：
 
 ```text
 apps/web/
-├── app/
-├── features/
-│   ├── conversation/
-│   ├── language/
-│   └── sessions/
-├── components/
-└── lib/
+├── src/app/
+├── src/features/
+│   └── voice/
+├── public/
+└── package.json
 
 apps/mobile/
 ├── app/

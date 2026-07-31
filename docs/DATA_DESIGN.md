@@ -13,7 +13,6 @@
 ```text
 lingow_accounts
     ├── lingow_auth_sessions
-    ├── lingow_phone_challenges
     ├── email_bind_challenges
 ├── account_destinations
 ├── message_preferences
@@ -31,14 +30,15 @@ lingow_accounts
     └── lingow_usage_records
 
 final_turn_outbox 独立承载 Final Turn 入站事件收据状态。
+lingow_phone_challenges 独立承载注册前手机号 OTP 挑战，不通过 `account_id` 关联账户。
 supported_languages 独立承载语言字典。
 ```
 
 ## 3. 设计原则
 
-- `services/api` 拥有账户、会话、语言配置、Final Turn 持久化、历史查询、用量汇总和异步消息投递。
-- `services/realtime-audio` 拥有 WebRTC 音频、VAD、ASR、翻译、TTS、打断和运行时状态机。
-- PostgreSQL 保存长期业务事实；Redis/Valkey 保存短期队列、消费组和延迟重试调度。
+- `services/api` 拥有账户、会话、语言配置、Final Turn 持久化、历史查询、用量汇总和异步消息投递；Final Turn 的 PostgreSQL consumer 已实现。
+- `services/realtime-audio` 拥有 WebRTC 音频、VAD、ASR、翻译、TTS、打断和运行时状态机，并通过当前配置的 outbox 发布实时事件。
+- PostgreSQL 保存长期业务事实；Redis/Valkey 保存队列、消费组、延迟重试调度和实时事件幂等状态。
 - Final Turn 与 UsageFact 都按事件幂等写入，避免实时链路重复投递造成重复计费或重复历史。
 - `voice_turns` 的文本、语言、时间、序号等事实字段写入后不可变；说话人归属允许通过 `participant_id`、`speaker_confidence`、`attribution_status`、`corrected_by`、`corrected_at` 修正。
 - `lingow_usage_records` 完全不可更新；用量汇总通过实时聚合查询生成，仓库代码当前没有物化的 `voice_session_usage_summaries` 表。
@@ -76,6 +76,7 @@ supported_languages 独立承载语言字典。
 ### 4.2 `lingow_phone_challenges`
 
 手机号 OTP 挑战表，保存验证码摘要、过期时间、尝试次数和摘要版本。
+该表不通过 `account_id` 关联账户；它按手机号摘要保存注册前的 OTP 挑战，生命周期不依赖某个已存在的 `lingow_accounts` 记录。
 
 | 字段 | 类型 | 空 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -382,7 +383,7 @@ Turn 侧的 `speaker_code`、`display_name`、`provider_speaker_id`、`voice_pro
 
 ### 4.12 `final_turn_outbox`
 
-Final Turn 入站事件 outbox。它负责 realtime-audio 到 API 的入站持久化和消费状态；`delivery_outbox` 负责 API 到外部消息渠道的出站投递，两者方向和幂等身份不同。
+Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓库已实现 PostgreSQL sink 和 API consumer，但 realtime-audio 生产运行时默认使用内存 outbox；Valkey outbox 当前仅接受 `usage.recorded` 事件。因此该表目前是已实现但尚未接入默认 realtime 生产 composition 的持久化 schema，不应视为当前默认运行链路已经使用。`delivery_outbox` 负责 API 到外部消息渠道的出站投递，两者方向和幂等身份不同。
 
 | 字段 | 类型 | 空 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -550,17 +551,17 @@ Final Turn 入站事件 outbox。它负责 realtime-audio 到 API 的入站持�
 
 ## 5. Redis/Valkey 数据设计
 
-仓库使用 Redis 7 兼容的 Redis Streams 作为队列，不使用 Redis 作为权威业务库。
+仓库使用 Redis 7 兼容的 Redis Streams 作为队列，不使用 Redis 作为权威业务库。realtime usage outbox 还会保存永久的事件幂等状态。
 
 ### 5.1 用量事件流
 
-来源：`services/api/internal/usage/stream.go`
+来源：API 使用 `services/api/internal/usage/stream.go` 消费，realtime producer 使用 `services/realtime-audio/outbox/runtime.go` 发布。
 
 | Key | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| Stream | Redis Stream | `lingow:usage:recorded` | UsageFact payload 队列 |
-| Group | Consumer Group | `lingow-usage` | 用量消费组 |
-| Consumer | Consumer | `usage-worker` | 默认消费者名 |
+| Stream | Redis Stream | `lingow:usage:recorded` | realtime 使用 `USAGE_STREAM`，API 使用 `LINGOW_USAGE_STREAM`；两者为空时使用此默认值，部署时必须保持一致 |
+| Group | Consumer Group | `lingow-usage` | API 使用 `LINGOW_USAGE_GROUP`，为空时使用此默认值 |
+| Consumer | Consumer | 运行时派生 | API 优先使用 `LINGOW_USAGE_CONSUMER`；为空时使用 `<LINGOW_DELIVERY_CONSUMER>-usage`。仅直接调用 `NewValkeyUsageStream` 且传入空 consumer 时才使用 `usage-worker` |
 
 Stream entry 字段：
 
@@ -575,6 +576,8 @@ Stream entry 字段：
 - `XAUTOCLAIM` 回收超过 `30s` 未 ACK 的 pending 消息。
 - `Ack` 使用 `XACK`。
 - `Nack` 不删除消息，保留在 pending list 中等待 auto-claim 重试。
+
+realtime Valkey writer 的 dedup key 格式为 `<stream>:dedup:<topic>\0<idempotency-key>`，值为 payload hash 的十六进制值。该 key 的 TTL 当前为 `0`，即成功发布后永久保留；如果追加到 stream 失败则删除该 key。当前没有自动清理策略，因此其容量会随已发布 UsageFact 数量增长。
 
 ### 5.2 消息投递队列
 

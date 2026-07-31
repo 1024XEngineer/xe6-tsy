@@ -128,6 +128,13 @@ func TestHandlerReturnsAllConnectionStates(t *testing.T) {
 	}
 }
 
+func TestMapErrorTTSCodecUnsupported(t *testing.T) {
+	status, code := mapError(webrtc.ErrTTSCodecUnsupported)
+	if status != http.StatusBadRequest || code != "tts_codec_unsupported" {
+		t.Fatalf("mapError(ErrTTSCodecUnsupported) = %d %q", status, code)
+	}
+}
+
 func TestHandlerMapsConnectionReaderErrors(t *testing.T) {
 	tests := []struct {
 		name     string

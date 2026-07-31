@@ -528,6 +528,8 @@ func mapError(err error) (int, string) {
 		errors.Is(err, webrtc.ErrConnectionIDRequired), errors.Is(err, webrtc.ErrCandidateIDRequired),
 		errors.Is(err, webrtc.ErrCandidateRequired):
 		return http.StatusBadRequest, "invalid_request"
+	case errors.Is(err, webrtc.ErrTTSCodecUnsupported):
+		return http.StatusBadRequest, "tts_codec_unsupported"
 	case errors.Is(err, ErrTicketRequired), errors.Is(err, webrtc.ErrRealtimeTokenRequired),
 		errors.Is(err, webrtc.ErrTicketExpired), errors.Is(err, webrtc.ErrTicketSessionMismatch),
 		errors.Is(err, webrtc.ErrTicketAccountRequired):

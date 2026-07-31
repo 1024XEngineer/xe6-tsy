@@ -15,13 +15,11 @@
 
 ```text
 apps/web/
-├── app/
-├── features/
-│   ├── conversation/
-│   ├── language/
-│   └── sessions/
-├── components/
-└── lib/
+├── src/app/
+├── src/features/
+│   └── voice/
+├── public/
+└── package.json
 
 apps/mobile/
 ├── app/

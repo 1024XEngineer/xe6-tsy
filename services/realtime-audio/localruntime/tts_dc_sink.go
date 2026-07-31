@@ -17,6 +17,8 @@ const maxTTSPCMChunkBytes = 8 * 1024
 // DataChannelTTSAudioSink buffers one playback's audio, then ships DC-safe
 // chunks. The browser reassembles by playback_id before decoding/playing so
 // WAV/MP3 containers are never split mid-frame.
+//
+// PipelineService calls Complete via AudioPlaybackLifecycle after TTS finishes.
 type DataChannelTTSAudioSink struct {
 	Media      MediaLookup
 	SampleRate int
@@ -24,6 +26,9 @@ type DataChannelTTSAudioSink struct {
 	mu      sync.Mutex
 	buffers map[string]*ttsBuffer
 }
+
+var _ pipeline.AudioPlaybackLifecycle = (*DataChannelTTSAudioSink)(nil)
+var _ pipeline.AudioChunkSink = (*DataChannelTTSAudioSink)(nil)
 
 type ttsBuffer struct {
 	sessionID string

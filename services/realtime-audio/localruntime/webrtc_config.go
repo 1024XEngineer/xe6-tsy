@@ -13,9 +13,13 @@ var errSessionIDRequired = errors.New("session_id is required")
 
 // StaticWebRTCConfig returns a session-scoped WebRTC config for browser clients.
 type StaticWebRTCConfig struct {
-	ICEServers []controlplane.ICEServer
-	TTL        time.Duration
-	Now        func() time.Time
+	ICEServers    []controlplane.ICEServer
+	TTL           time.Duration
+	Now           func() time.Time
+	UplinkCodec   string
+	DownlinkCodec string
+	SampleRateHz  int
+	Channels      int
 }
 
 func (c StaticWebRTCConfig) GetConfig(_ context.Context, sessionID string) (controlplane.WebRTCConfig, error) {
@@ -37,6 +41,22 @@ func (c StaticWebRTCConfig) GetConfig(_ context.Context, sessionID string) (cont
 			URLs: []string{"stun:stun.l.google.com:19302"},
 		}}
 	}
+	uplink := strings.TrimSpace(c.UplinkCodec)
+	if uplink == "" {
+		uplink = "opus"
+	}
+	downlink := strings.TrimSpace(c.DownlinkCodec)
+	if downlink == "" {
+		downlink = "none"
+	}
+	sampleRate := c.SampleRateHz
+	if sampleRate <= 0 {
+		sampleRate = 48000
+	}
+	channels := c.Channels
+	if channels <= 0 {
+		channels = 1
+	}
 	return controlplane.WebRTCConfig{
 		SessionID:          sessionID,
 		ExpiresAt:          now().Add(ttl),
@@ -47,11 +67,10 @@ func (c StaticWebRTCConfig) GetConfig(_ context.Context, sessionID string) (cont
 			Ordered: true,
 		},
 		Audio: controlplane.AudioConfig{
-			// Local entrypoint skips L16 TTS tracks so browser Opus offers work.
-			UplinkCodec:   "opus",
-			DownlinkCodec: "opus",
-			SampleRateHz:  48000,
-			Channels:      1,
+			UplinkCodec:   uplink,
+			DownlinkCodec: downlink,
+			SampleRateHz:  sampleRate,
+			Channels:      channels,
 		},
 	}, nil
 }

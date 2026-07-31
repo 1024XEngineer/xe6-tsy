@@ -18,7 +18,7 @@ func (s *recordingFinalSink) Publish(_ context.Context, event recordsv1.FinalTur
 	return s.err
 }
 
-func TestFanoutFinalTurnSinkPublishesLiveThenDurable(t *testing.T) {
+func TestFanoutFinalTurnSinkPublishesDurableThenLive(t *testing.T) {
 	live := &recordingFinalSink{}
 	durable := &recordingFinalSink{}
 	sink := FanoutFinalTurnSink{Live: live, Durable: durable}
@@ -31,7 +31,7 @@ func TestFanoutFinalTurnSinkPublishesLiveThenDurable(t *testing.T) {
 	}
 }
 
-func TestFanoutFinalTurnSinkReturnsDurableError(t *testing.T) {
+func TestFanoutFinalTurnSinkSkipsLiveWhenDurableFails(t *testing.T) {
 	want := errors.New("outbox down")
 	live := &recordingFinalSink{}
 	durable := &recordingFinalSink{err: want}
@@ -40,7 +40,7 @@ func TestFanoutFinalTurnSinkReturnsDurableError(t *testing.T) {
 	if !errors.Is(err, want) {
 		t.Fatalf("Publish() error = %v, want %v", err, want)
 	}
-	if len(live.events) != 1 {
-		t.Fatalf("live events = %d, want 1 best-effort publish", len(live.events))
+	if len(live.events) != 0 {
+		t.Fatalf("live events = %d, want 0 when durable fails", len(live.events))
 	}
 }

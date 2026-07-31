@@ -63,13 +63,13 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 	downlink := strings.ToLower(strings.TrimSpace(getenv("REALTIME_TTS_DOWNLINK")))
 	skipTTS := true
 	forceMock := true
-	codec := ""
+	codec := "none"
 	mode := "none"
 	switch downlink {
 	case "opus":
 		mode, skipTTS, forceMock, codec = "opus", false, false, "opus"
 	case "pcm", "datachannel", "dc":
-		mode, skipTTS, forceMock = "pcm", true, false
+		mode, skipTTS, forceMock, codec = "pcm", true, false, "pcm"
 	}
 	source := strings.TrimSpace(getenv("REALTIME_SOURCE_LANGUAGE"))
 	if source == "" {
@@ -84,6 +84,15 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 		DownlinkMode: mode, DownlinkCodec: codec,
 		SourceLanguage: source, TargetLanguage: target,
 	}, nil
+}
+
+func webrtcConfigSampleRate(cfg processConfig) int {
+	switch cfg.DownlinkMode {
+	case "pcm":
+		return 24000
+	default:
+		return 48000
+	}
 }
 
 // applySubtitleOnlyOverrides keeps Aliyun TTS from running while downlink is none.
@@ -273,7 +282,11 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			ICEServers: []controlplane.ICEServer{{
 				URLs: []string{"stun:stun.l.google.com:19302"},
 			}},
-			Now: now,
+			Now:           now,
+			UplinkCodec:   "opus",
+			DownlinkCodec: cfg.DownlinkCodec,
+			SampleRateHz:  webrtcConfigSampleRate(cfg),
+			Channels:      1,
 		},
 		Now: now,
 	})

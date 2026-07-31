@@ -45,6 +45,9 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	if !cfg.SkipTTSTrack {
 		t.Fatal("SkipTTSTrack = false, want true by default")
 	}
+	if cfg.DownlinkMode != "none" || cfg.DownlinkCodec != "none" {
+		t.Fatalf("default downlink = mode=%q codec=%q, want none/none", cfg.DownlinkMode, cfg.DownlinkCodec)
+	}
 	if cfg.SourceLanguage != "zh-CN" || cfg.TargetLanguage != "en-US" {
 		t.Fatalf("languages = %s→%s", cfg.SourceLanguage, cfg.TargetLanguage)
 	}
@@ -94,7 +97,7 @@ func TestLoadProcessConfigPCMDownlinkKeepsRealTTS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadProcessConfig() error = %v", err)
 	}
-	if cfg.DownlinkMode != "pcm" || !cfg.SkipTTSTrack || cfg.ForceMockTTS {
+	if cfg.DownlinkMode != "pcm" || !cfg.SkipTTSTrack || cfg.ForceMockTTS || cfg.DownlinkCodec != "pcm" {
 		t.Fatalf("pcm downlink config = %#v", cfg)
 	}
 }

@@ -236,6 +236,9 @@ func (h *Handler) stop(writer http.ResponseWriter, request *http.Request) {
 		h.writeError(writer, request, ErrInvalidRequest)
 		return
 	}
+	// Replay identity matches controlplane.Client.Stop: key is stop:<reason>, and the
+	// hashed body deliberately excludes TraceID/EndedAt so End retries may refresh
+	// audit metadata without hitting an idempotency payload conflict.
 	replayBody := struct {
 		Reason string `json:"reason"`
 	}{Reason: body.Reason}

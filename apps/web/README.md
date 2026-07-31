@@ -39,7 +39,7 @@ npm run dev
 - `/api/v1/*` → `LINGOW_API_BASE_URL`（默认 `http://127.0.0.1:8080`）
 - `/realtime/v1/*` → `LINGOW_REALTIME_BASE_URL`（默认 `http://127.0.0.1:8090`）
 
-正式联调走 `POST /api/v1/voice-sessions/{id}/realtime-ticket`；本地仍保留 `/api/dev/realtime-ticket` 旁路（需 `REALTIME_TICKET_SECRET`）。
+正式联调走 `POST /api/v1/voice-sessions/{id}/realtime-ticket`。本地 `/api/dev/realtime-ticket` 旁路默认关闭（需 `ENABLE_DEV_REALTIME_TICKET=true` + `next dev`）。
 
 ## 脚本
 

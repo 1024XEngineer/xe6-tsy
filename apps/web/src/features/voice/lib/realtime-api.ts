@@ -56,6 +56,7 @@ function ticketHeaders(
   return headers;
 }
 
+/** Local-only helper. Requires ENABLE_DEV_REALTIME_TICKET=true in next dev. */
 export async function mintDevRealtimeTicket(
   sessionId: string,
   accountId: string,

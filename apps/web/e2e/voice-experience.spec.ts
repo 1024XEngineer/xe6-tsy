@@ -60,11 +60,15 @@ async function mockLingowApis(page: import("@playwright/test").Page) {
     });
   });
 
-  await page.route("**/api/dev/realtime-ticket", async (route) => {
+  await page.route("**/realtime-ticket", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ ticket: "v1.e2e.ticket", session_id: "vs-e2e" }),
+      body: JSON.stringify({
+        ticket: "v1.e2e.ticket",
+        session_id: "vs-e2e",
+        expires_at: "2026-07-31T00:01:00Z",
+      }),
     });
   });
 

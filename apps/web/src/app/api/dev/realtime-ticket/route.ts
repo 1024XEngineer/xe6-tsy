@@ -9,11 +9,35 @@ type Body = {
   account_id?: string;
 };
 
+function devTicketEnabled(): boolean {
+  // Never expose HMAC minting in production builds. Local next dev still
+  // requires an explicit opt-in so a publicly reachable :3000 cannot mint
+  // arbitrary session tickets with REALTIME_TICKET_SECRET.
+  return (
+    process.env.NODE_ENV === "development" &&
+    process.env.ENABLE_DEV_REALTIME_TICKET === "true"
+  );
+}
+
 /**
  * Local联调 helper: mint a realtime HMAC ticket using REALTIME_TICKET_SECRET.
- * This is NOT a product API — xe6-tsy does not yet expose browser ticket minting.
+ * Prefer the authenticated product API:
+ * `POST /api/v1/voice-sessions/{id}/realtime-ticket`.
  */
 export async function POST(request: Request) {
+  if (!devTicketEnabled()) {
+    return NextResponse.json(
+      {
+        error: {
+          code: "not_found",
+          message:
+            "Dev ticket minting is disabled. Use POST /api/v1/voice-sessions/{id}/realtime-ticket, or set ENABLE_DEV_REALTIME_TICKET=true in local next dev only.",
+        },
+      },
+      { status: 404 },
+    );
+  }
+
   const secret = process.env.REALTIME_TICKET_SECRET?.trim() ?? "";
   if (!secret) {
     return NextResponse.json(

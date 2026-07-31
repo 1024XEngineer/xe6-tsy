@@ -123,8 +123,8 @@ export function useVoiceSession() {
   const [state, dispatch] = useReducer(sessionReducer, initialSession);
   const [statusMessage, setStatusMessage] = useState("轻触开始");
   const [hintMessage, setHintMessage] = useState<string | null>(null);
-  const [voiceConfig, setVoiceConfig] = useState<VoiceSessionConfig>(
-    DEFAULT_VOICE_CONFIG,
+  const [voiceConfig, setVoiceConfig] = useState<VoiceSessionConfig>(() =>
+    loadVoiceConfig(DEFAULT_VOICE_CONFIG),
   );
   const [debug, setDebug] = useState<SessionDebugInfo>({
     accountId: null,
@@ -133,19 +133,13 @@ export function useVoiceSession() {
     lastError: null,
   });
 
-  const configRef = useRef<VoiceSessionConfig>(DEFAULT_VOICE_CONFIG);
+  const configRef = useRef<VoiceSessionConfig>(voiceConfig);
   const runningRef = useRef(false);
   const accessTokenRef = useRef<string | null>(null);
   const accountIdRef = useRef<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const webrtcRef = useRef<WebRTCSessionHandles | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    const saved = loadVoiceConfig(DEFAULT_VOICE_CONFIG);
-    configRef.current = saved;
-    setVoiceConfig(saved);
-  }, []);
 
   const updateConfig = useCallback((next: VoiceSessionConfig) => {
     const normalized = normalizeVoiceConfig(next);

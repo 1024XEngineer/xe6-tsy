@@ -10,13 +10,15 @@ cp .env.example .env.local
 | --- | --- |
 | `LINGOW_API_BASE_URL` | API 地址，默认 `http://127.0.0.1:8080` |
 | `LINGOW_REALTIME_BASE_URL` | Realtime 控制面，默认 `http://127.0.0.1:8090` |
-| `REALTIME_TICKET_SECRET` | 与仓库根目录 `.env` 的 `REALTIME_TICKET_SECRET` 相同（≥32 字节）。仅供 Next `/api/dev/realtime-ticket` 本地签发旁路 |
+| `ENABLE_DEV_REALTIME_TICKET` | 仅本地 `next dev`：设为 `true` 才开放 `/api/dev/realtime-ticket`（默认关闭） |
+| `REALTIME_TICKET_SECRET` | 仅上述旁路需要；与仓库根 `.env` 一致（≥32 字节） |
 
 Next 代理：
 
 - `/api/v1/*` → `LINGOW_API_BASE_URL`
 - `/realtime/v1/*` → `LINGOW_REALTIME_BASE_URL`
-- `/api/dev/realtime-ticket` 留在 Next 本机（联调旁路；产品路径用 API `.../realtime-ticket`）
+
+正式联调走 `POST /api/v1/voice-sessions/{id}/realtime-ticket`。`/api/dev/realtime-ticket` 默认关闭，需同时满足 `NODE_ENV=development` 与 `ENABLE_DEV_REALTIME_TICKET=true`。
 
 ## 后端启动
 

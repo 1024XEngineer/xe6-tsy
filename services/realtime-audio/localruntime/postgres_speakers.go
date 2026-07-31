@@ -9,15 +9,37 @@ import (
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const defaultLocalProviderSpeakerID = "local-mic"
 
+// speakerTx is the transaction surface findOrCreate needs. pgx.Tx satisfies it;
+// tests inject fakes through PostgresSpeakerReader.beginTx without a live DB.
+type speakerTx interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
+}
+
 // PostgresSpeakerReader resolves provisional speaker attribution against
 // voice_session_participants without importing services/api.
 type PostgresSpeakerReader struct {
 	Pool *pgxpool.Pool
+	// beginTx optionally overrides Pool.Begin for unit tests.
+	beginTx func(ctx context.Context) (speakerTx, error)
+}
+
+func (r PostgresSpeakerReader) openTx(ctx context.Context) (speakerTx, error) {
+	if r.beginTx != nil {
+		return r.beginTx(ctx)
+	}
+	if r.Pool == nil {
+		return nil, fmt.Errorf("postgres speaker reader pool is required")
+	}
+	return r.Pool.Begin(ctx)
 }
 
 func (r PostgresSpeakerReader) GetProvisionalAttribution(
@@ -30,7 +52,7 @@ func (r PostgresSpeakerReader) GetProvisionalAttribution(
 	if strings.TrimSpace(observation.SessionID) == "" || strings.TrimSpace(observation.TurnID) == "" {
 		return recordsv1.SpeakerAttribution{}, fmt.Errorf("session_id and turn_id are required")
 	}
-	if r.Pool == nil {
+	if r.Pool == nil && r.beginTx == nil {
 		return recordsv1.SpeakerAttribution{}, fmt.Errorf("postgres speaker reader pool is required")
 	}
 	providerID := strings.TrimSpace(observation.ProviderSpeakerID)
@@ -52,7 +74,7 @@ func (r PostgresSpeakerReader) GetProvisionalAttribution(
 }
 
 func (r PostgresSpeakerReader) findOrCreate(ctx context.Context, sessionID, providerSpeakerID string) (recordsv1.Participant, error) {
-	tx, err := r.Pool.Begin(ctx)
+	tx, err := r.openTx(ctx)
 	if err != nil {
 		return recordsv1.Participant{}, fmt.Errorf("begin participant allocation: %w", err)
 	}

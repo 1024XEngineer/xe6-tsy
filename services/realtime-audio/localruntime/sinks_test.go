@@ -3,11 +3,14 @@ package localruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 )
 
 func TestFrontendTranslationFinalJSONShape(t *testing.T) {
@@ -63,6 +66,83 @@ func TestStaticLanguageConfigReaderReturnsBilingualPairs(t *testing.T) {
 	if snapshot.Status != "active" || len(snapshot.LanguagePairs) != 2 {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
+}
+
+func TestMemoryUsageSinkRecordsFacts(t *testing.T) {
+	t.Parallel()
+	sink := &MemoryUsageSink{}
+	fact := pipeline.UsageFact{ID: "usage-1", SessionID: "session-1", TurnID: "turn-1"}
+	if err := sink.Publish(context.Background(), fact); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	got := sink.Facts()
+	if len(got) != 1 || got[0].ID != "usage-1" {
+		t.Fatalf("Facts() = %#v", got)
+	}
+	got[0].ID = "mutated"
+	if sink.Facts()[0].ID != "usage-1" {
+		t.Fatal("Facts() did not copy stored slice")
+	}
+}
+
+func TestDataChannelFinalTurnSinkPublish(t *testing.T) {
+	t.Parallel()
+
+	event := recordsv1.FinalTurnEvent{
+		EventID:               "evt_1",
+		TurnID:                "turn_1",
+		SessionID:             "vs_1",
+		SequenceNo:            1,
+		SourceLanguage:        "zh-CN",
+		TargetLanguage:        "en-US",
+		SourceText:            "你好",
+		TranslatedText:        "Hello",
+		LanguageConfigVersion: 1,
+	}
+
+	t.Run("canceled context", func(t *testing.T) {
+		t.Parallel()
+		canceled, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := (DataChannelFinalTurnSink{}).Publish(canceled, event)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("nil media is noop", func(t *testing.T) {
+		t.Parallel()
+		if err := (DataChannelFinalTurnSink{}).Publish(context.Background(), event); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	})
+
+	t.Run("media lookup error is best-effort", func(t *testing.T) {
+		t.Parallel()
+		sink := DataChannelFinalTurnSink{Media: stubMediaLookup{}}
+		if err := sink.Publish(context.Background(), event); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	})
+
+	t.Run("nil translation events is best-effort", func(t *testing.T) {
+		t.Parallel()
+		sink := DataChannelFinalTurnSink{
+			Media: mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) {
+				return &fakeMediaTransport{}, nil
+			}),
+		}
+		if err := sink.Publish(context.Background(), event); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	})
+
+	t.Run("discard audio sink accepts chunks", func(t *testing.T) {
+		t.Parallel()
+		if err := (DiscardAudioSink{}).Publish(context.Background(), pipeline.AudioChunk{Data: []byte{1}}); err != nil {
+			t.Fatalf("DiscardAudioSink.Publish: %v", err)
+		}
+	})
 }
 
 func TestEnergySpeechClassifierDetectsLoudFrame(t *testing.T) {

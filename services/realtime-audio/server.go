@@ -34,6 +34,8 @@ type processConfig struct {
 	Addr           string
 	TicketSecret   string
 	SkipTTSTrack   bool
+	ForceMockTTS   bool
+	DownlinkMode   string // none | pcm | opus
 	DownlinkCodec  string
 	SourceLanguage string
 	TargetLanguage string
@@ -51,13 +53,19 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 	if len([]byte(ticketSecret)) < minTicketSecretBytes {
 		return processConfig{}, fmt.Errorf("REALTIME_TICKET_SECRET must contain at least %d bytes", minTicketSecretBytes)
 	}
-	// Default skip TTS track for Chrome subtitle-only demos.
-	// Set REALTIME_TTS_DOWNLINK=opus to attach a browser-playable Opus send track.
+	// none (default): subtitles only, force mock TTS.
+	// pcm: real TTS PCM over DataChannel (Chrome-safe, no Opus encoder).
+	// opus: WebRTC Opus send track (encoder still stub/silence until wired).
 	downlink := strings.ToLower(strings.TrimSpace(getenv("REALTIME_TTS_DOWNLINK")))
-	skipTTS := downlink != "opus"
+	skipTTS := true
+	forceMock := true
 	codec := ""
-	if downlink == "opus" {
-		codec = "opus"
+	mode := "none"
+	switch downlink {
+	case "opus":
+		mode, skipTTS, forceMock, codec = "opus", false, false, "opus"
+	case "pcm", "datachannel", "dc":
+		mode, skipTTS, forceMock = "pcm", true, false
 	}
 	source := strings.TrimSpace(getenv("REALTIME_SOURCE_LANGUAGE"))
 	if source == "" {
@@ -68,15 +76,15 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 		target = "en-US"
 	}
 	return processConfig{
-		Addr: addr, TicketSecret: ticketSecret, SkipTTSTrack: skipTTS, DownlinkCodec: codec,
+		Addr: addr, TicketSecret: ticketSecret, SkipTTSTrack: skipTTS, ForceMockTTS: forceMock,
+		DownlinkMode: mode, DownlinkCodec: codec,
 		SourceLanguage: source, TargetLanguage: target,
 	}, nil
 }
 
-// applySubtitleOnlyOverrides keeps Aliyun TTS from running (and failing the
-// worker) while the local entrypoint is in subtitle-only / SkipTTSTrack mode.
+// applySubtitleOnlyOverrides keeps Aliyun TTS from running while downlink is none.
 func applySubtitleOnlyOverrides(cfg processConfig, providers config.ProviderConfig) config.ProviderConfig {
-	if !cfg.SkipTTSTrack {
+	if !cfg.ForceMockTTS {
 		return providers
 	}
 	providers.TTS.Provider = config.ProviderMock
@@ -143,10 +151,6 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	}
 	finalTurns := localruntime.DataChannelFinalTurnSink{Media: connections}
 	usage := &localruntime.MemoryUsageSink{}
-	var audioSink pipeline.AudioChunkSink = localruntime.DiscardAudioSink{}
-	if !cfg.SkipTTSTrack {
-		audioSink = localruntime.PlaybackAudioSink{Media: connections}
-	}
 
 	providerConfig, err := config.LoadProviderConfigFromEnvironment()
 	if err != nil {
@@ -158,14 +162,31 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		providerConfig.ASR.ServerVAD = false
 	}
 
+	var audioSink pipeline.AudioChunkSink = localruntime.DiscardAudioSink{}
+	switch cfg.DownlinkMode {
+	case "opus":
+		audioSink = localruntime.PlaybackAudioSink{Media: connections}
+	case "pcm":
+		sampleRate := providerConfig.TTS.SampleRate
+		if sampleRate <= 0 {
+			sampleRate = 24000
+		}
+		audioSink = &localruntime.DataChannelTTSAudioSink{Media: connections, SampleRate: sampleRate}
+	}
+
+	voiceID := strings.TrimSpace(providerConfig.TTS.Voice)
+	if voiceID == "" {
+		voiceID = "Cherry"
+	}
+
 	manager, err := runtime.NewManager(providerConfig, mockOfflineProviders(cfg.SourceLanguage), runtime.Dependencies{
 		FrameSources: localruntime.WebRTCFrameSources{
 			Media:          connections,
 			SourceLanguage: cfg.SourceLanguage,
 		},
 		NewSegmenter: func() (*vad.Segmenter, error) {
-			return vad.NewSegmenter(localruntime.EnergySpeechClassifier{}, vad.Options{
-				SilenceAfter: 400 * time.Millisecond,
+			return vad.NewSegmenter(localruntime.EnergySpeechClassifier{Threshold: 0.035}, vad.Options{
+				SilenceAfter: 800 * time.Millisecond,
 				MaxDuration:  12 * time.Second,
 			})
 		},
@@ -174,7 +195,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		Usage:      usage,
 		Audio:      audioSink,
 		Runtime:    runtimeBridge,
-		VoiceID:    "Cherry",
+		VoiceID:    voiceID,
 		Now:        now,
 	})
 	if err != nil {

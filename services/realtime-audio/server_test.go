@@ -57,7 +57,7 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 }
 
 func TestApplySubtitleOnlyOverridesForcesMockTTS(t *testing.T) {
-	cfg := processConfig{SkipTTSTrack: true}
+	cfg := processConfig{ForceMockTTS: true}
 	providers := config.ProviderConfig{
 		ASR:         config.ASRConfig{Provider: config.ProviderAliyun},
 		Translation: config.TranslationConfig{Provider: config.ProviderAliyun},
@@ -71,10 +71,29 @@ func TestApplySubtitleOnlyOverridesForcesMockTTS(t *testing.T) {
 		t.Fatalf("ASR/LLM should stay aliyun: %#v", got)
 	}
 
-	cfg.SkipTTSTrack = false
+	cfg.ForceMockTTS = false
 	got = applySubtitleOnlyOverrides(cfg, providers)
 	if got.TTS.Provider != config.ProviderAliyun {
-		t.Fatalf("TTS provider = %q, want aliyun when downlink enabled", got.TTS.Provider)
+		t.Fatalf("TTS provider = %q, want aliyun when audio downlink enabled", got.TTS.Provider)
+	}
+}
+
+func TestLoadProcessConfigPCMDownlinkKeepsRealTTS(t *testing.T) {
+	cfg, err := loadProcessConfig(func(key string) string {
+		switch key {
+		case "REALTIME_TICKET_SECRET":
+			return strings.Repeat("p", 32)
+		case "REALTIME_TTS_DOWNLINK":
+			return "pcm"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("loadProcessConfig() error = %v", err)
+	}
+	if cfg.DownlinkMode != "pcm" || !cfg.SkipTTSTrack || cfg.ForceMockTTS {
+		t.Fatalf("pcm downlink config = %#v", cfg)
 	}
 }
 

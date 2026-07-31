@@ -148,10 +148,13 @@ switch ($Service) {
   "realtime" {
     Assert-RealtimeEnv
     Write-Host "    Providers: ASR=$($env:ASR_PROVIDER) LLM=$($env:LLM_PROVIDER) TTS=$($env:TTS_PROVIDER)"
+    $srcLang = if ($env:REALTIME_SOURCE_LANGUAGE) { $env:REALTIME_SOURCE_LANGUAGE } else { "zh-CN" }
+    $tgtLang = if ($env:REALTIME_TARGET_LANGUAGE) { $env:REALTIME_TARGET_LANGUAGE } else { "en-US" }
+    Write-Host "    Languages: $srcLang → $tgtLang"
     if ($env:REALTIME_TTS_DOWNLINK) {
       Write-Host "    TTS downlink: $($env:REALTIME_TTS_DOWNLINK)"
     } else {
-      Write-Host "    TTS downlink: none (subtitles only)"
+      Write-Host "    TTS downlink: none (subtitles only; TTS forced mock)"
     }
     Write-Host "==> Starting realtime-audio control-plane..."
     Write-Host "    Keep this window open. Ctrl+C to stop."

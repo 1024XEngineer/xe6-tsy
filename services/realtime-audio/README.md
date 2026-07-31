@@ -52,14 +52,50 @@ The provider packages keep vendor protocol details outside `pipeline`:
 
 The adapters are constructed explicitly from typed configuration values.
 `config.LoadProviderConfigFromEnvironment` reads typed settings from the process environment, and
-`config.BuildProviders` selects each adapter independently. The service entrypoint does not yet invoke
-this assembly or load `.env` files automatically, so `.env.example` remains a configuration reference.
-Keep API keys in an ignored `.env`. The canonical selector keys are
-`ASR_PROVIDER`, `LLM_PROVIDER`, and `TTS_PROVIDER`; each defaults to `mock` and currently accepts
-`mock` or `aliyun`. Mock selection requires explicit offline provider instances, which prevents a
-production startup from silently constructing fake behavior. Building Aliyun providers validates
-credentials and endpoints but does not make a network request. Ordinary unit tests continue to use
-offline fakes and never call a third-party service.
+`config.BuildProviders` selects each adapter independently. The HTTP entrypoint (`main.go`) serves
+the `/realtime/v1` control-plane today and does **not** yet assemble ASR/LLM/TTS providers; media
+pipeline work still uses `NoopPipeline` via `localruntime`. The process also does not load `.env`
+files automatically — export variables (or use a launcher) before `go run .`. `.env.example`
+remains a configuration reference. Keep API keys in an ignored `.env`. The canonical selector keys
+are `ASR_PROVIDER`, `LLM_PROVIDER`, and `TTS_PROVIDER`; each defaults to `mock` and currently
+accepts `mock` or `aliyun`. Mock selection requires explicit offline provider instances, which
+prevents a production startup from silently constructing fake behavior. Building Aliyun providers
+validates credentials and endpoints but does not make a network request. Ordinary unit tests
+continue to use offline fakes and never call a third-party service.
+
+## Local HTTP control-plane
+
+From the repo root on Windows, start API + realtime together (loads root `.env`):
+
+```bat
+start-local.bat
+```
+
+Or PowerShell:
+
+```powershell
+.\start-local.ps1                # both (realtime child window + API foreground)
+.\start-local.ps1 -Service realtime
+.\start-local.ps1 -Service api
+```
+
+Manual start without the launcher (process env only — this service does not auto-load `.env`):
+
+```bash
+export REALTIME_ADDR=:8090
+export REALTIME_TICKET_SECRET='same-32+-byte-secret-as-api'
+cd services/realtime-audio && go run .
+```
+
+Required env:
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `REALTIME_ADDR` | `:8090` | Listen address |
+| `REALTIME_TICKET_SECRET` | _(required)_ | Raw secret (≥32 bytes), must match API `REALTIME_TICKET_SECRET` |
+
+Routes: `/realtime/v1/sessions/{id}/webrtc/config|offer`, `ice-candidates`, `start|stop`, `runtime`, `connection`.
+Local adapters live under `localruntime/` (`TrustSessionReader`, `NoopPipeline`, `StaticWebRTCConfig`) until business session reads and real pipelines are wired.
 
 `pipeline.NewPostgresFinalTurnSink(pool)` is the production final-turn sink adapter. It writes the
 validated immutable event into the API service's PostgreSQL `final_turn_outbox`; the API consumer
@@ -75,16 +111,12 @@ Official protocol references:
 - [Qwen DashScope API](https://help.aliyun.com/zh/model-studio/qwen-api-via-dashscope)
 - [OpenAI-compatible DashScope API](https://help.aliyun.com/zh/model-studio/compatibility-of-openai-with-dashscope)
 
-`webrtc` 规划通过 `/realtime/v1` 提供信令接口，并校验 `services/api` 签发的短期实时连接票据。
-当前仅提供服务层信令骨架，尚未注册公网 HTTP 路由。后续可以由 API Gateway 转发该路径，
-但 PeerConnection 和连接状态始终由本服务管理。
+`main.go` 通过 `/realtime/v1` 暴露信令与生命周期 HTTP，并校验 `services/api` 签发的短期
+实时连接票据。部署时可以由 API Gateway 转发该路径，但 PeerConnection 和连接状态始终由本服务管理。
 
-当前内存 manager 在 Offer 成功后产生初始的 `connecting` 快照，并支持读取当前连接及应用
-`new/connecting/connected/disconnected/failed/closed` 状态回调。Pion Adapter 尚未接入，
-因此骨架不会自动进入 `connected`，也不能作为 Pipeline 启动就绪依据。接入 Pion 后仍须以
-`connected` 作为启动条件。Adapter 可以在 manager 关闭前报告 `closed` transport 状态；
-manager 的 `Close` 本身不发布可查询的 `closed` 快照，成功后立即删除记录，后续查询返回
-`not_found`。
+当前入口使用 Pion transport factory + 内存 connection manager：Offer 成功后产生初始
+`connecting` 快照，并在 Pion 回调下迁移到 `connected` / `failed` / `closed`。API Start 仍应以
+`connected` 作为启动条件。manager 的 `Close` 成功后删除记录，后续查询返回 `not_found`。
 
 当前票据校验也是 `Open` 前的单次授权检查。接入正式会话生命周期时，必须在 `Open` 准入点
 重新校验可撤销的生命周期授权，或由 manager 强制校验 session generation/终止标记，使已通过

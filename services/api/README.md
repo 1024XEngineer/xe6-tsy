@@ -60,10 +60,11 @@ control-plane 客户端接入。
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
 
-当前仓库中的 `realtime-audio` 尚未提供完整可部署的 HTTP/Pion 运行入口。
+`services/realtime-audio` 提供本地可运行的 `/realtime/v1` HTTP 入口（`go run .`，默认
+`:8090`）；当前使用 Pion + `localruntime` 适配器，真实 ASR/TTS pipeline 仍为后续工作。
 `LINGOW_SESSION_RUNTIME` 默认 `disabled`；disabled 时 Session 路由明确返回 501，
-不会构造 Realtime client、adapter 或 EndRecoveryWorker。只有部署了兼容的 Realtime
-control-plane 服务后才能设置为 `enabled`。
+不会构造 Realtime client、adapter 或 EndRecoveryWorker。联调完整 Start 可用仓库根目录
+`start-local.bat`（同时拉起 API 与 realtime-audio），并将 API 侧设为 `enabled`。
 
 启用 Session runtime 时需要 `DATABASE_URL`、至少 32 字节的 `JWT_SECRET`、
 `REALTIME_BASE_URL` 和至少 32 字节的 `REALTIME_TICKET_SECRET`。`REALTIME_BASE_URL`

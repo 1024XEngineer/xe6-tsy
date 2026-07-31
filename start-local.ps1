@@ -151,6 +151,11 @@ switch ($Service) {
     $srcLang = if ($env:REALTIME_SOURCE_LANGUAGE) { $env:REALTIME_SOURCE_LANGUAGE } else { "zh-CN" }
     $tgtLang = if ($env:REALTIME_TARGET_LANGUAGE) { $env:REALTIME_TARGET_LANGUAGE } else { "en-US" }
     Write-Host "    Languages: $srcLang → $tgtLang"
+    if ($env:REALTIME_API_DATABASE) {
+      Write-Host "    API database link: $($env:REALTIME_API_DATABASE)"
+    } else {
+      Write-Host "    API database link: off (TrustSession + static languages + DC-only finals)"
+    }
     if ($env:REALTIME_TTS_DOWNLINK) {
       Write-Host "    TTS downlink: $($env:REALTIME_TTS_DOWNLINK)"
     } else {

@@ -65,8 +65,23 @@ continue to use offline fakes and never call a third-party service.
 
 ## Local HTTP control-plane
 
+From the repo root on Windows, start API + realtime together (loads root `.env`):
+
+```bat
+start-local.bat
+```
+
+Or PowerShell:
+
+```powershell
+.\start-local.ps1                # both (realtime child window + API foreground)
+.\start-local.ps1 -Service realtime
+.\start-local.ps1 -Service api
+```
+
+Manual start without the launcher (process env only — this service does not auto-load `.env`):
+
 ```bash
-# From repo root — process env only (this service does not auto-load .env)
 export REALTIME_ADDR=:8090
 export REALTIME_TICKET_SECRET='same-32+-byte-secret-as-api'
 cd services/realtime-audio && go run .

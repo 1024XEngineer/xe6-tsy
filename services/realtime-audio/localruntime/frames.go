@@ -21,10 +21,12 @@ import (
 type WebRTCFrameSources struct {
 	Media          MediaLookup
 	SourceLanguage string
+	// Languages optionally supplies the active pair source language per session.
+	Languages session.LanguageConfigReader
 }
 
 func (f WebRTCFrameSources) Open(
-	_ context.Context,
+	ctx context.Context,
 	snapshot session.SessionSnapshot,
 ) (runtime.AudioInput, error) {
 	if f.Media == nil {
@@ -35,6 +37,16 @@ func (f WebRTCFrameSources) Open(
 		return runtime.AudioInput{}, session.ErrSessionIDRequired
 	}
 	language := strings.TrimSpace(f.SourceLanguage)
+	if f.Languages != nil {
+		if cfg, err := f.Languages.GetCurrentConfig(ctx, sessionID); err == nil {
+			for _, pair := range cfg.LanguagePairs {
+				if source := strings.TrimSpace(pair.Source); source != "" {
+					language = source
+					break
+				}
+			}
+		}
+	}
 	if language == "" {
 		language = "zh-CN"
 	}

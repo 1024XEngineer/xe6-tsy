@@ -250,6 +250,20 @@ type recordsPhase4Turns struct {
 	foreign    pipeline.TurnContext
 }
 
+type phase4SpeakerReader struct {
+	delegate recordsv1.SpeakerAttributionReader
+}
+
+func (r phase4SpeakerReader) GetProvisionalAttribution(ctx context.Context, observation recordsv1.SpeakerObservation) (recordsv1.SpeakerAttribution, error) {
+	if observation.ProviderSpeakerID == "local-mic" {
+		return recordsv1.SpeakerAttribution{
+			SpeakerCode:       recordsv1.PendingSpeakerCode,
+			AttributionStatus: recordsv1.AttributionPending,
+		}, nil
+	}
+	return r.delegate.GetProvisionalAttribution(ctx, observation)
+}
+
 func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 	t.Helper()
 	databaseURL := recordsHTTPTestDatabaseURL(t)
@@ -348,7 +362,7 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 			Provider: "integration-tts",
 			Model:    "integration-tts-model",
 		}}),
-		Speakers:       recordsServices.Participants,
+		Speakers:       phase4SpeakerReader{delegate: recordsServices.Participants},
 		FinalTurns:     pipeline.NewPostgresFinalTurnSink(pool),
 		Usage:          phase4UsageSink{},
 		Audio:          phase4AudioSink{},

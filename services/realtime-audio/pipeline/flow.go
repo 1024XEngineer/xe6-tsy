@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
@@ -104,7 +105,17 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		result = mergeFinalResult(*eventResult, result)
 	default:
 	}
-	if result.Text == "" || result.SourceLanguage == "" {
+	if result.SourceLanguage == "" {
+		result.SourceLanguage = request.SourceLanguage
+	}
+	if strings.TrimSpace(result.Text) == "" {
+		// Energy VAD / Manual commit can produce empty cuts; keep listening.
+		if err := p.pipeline.reportListening(ctx, turn); err != nil {
+			return turn, err
+		}
+		return turn, nil
+	}
+	if result.SourceLanguage == "" {
 		return turn, p.pipeline.finishASRWithError(ctx, turn, ErrASRFinalRequired)
 	}
 	if err := p.pipeline.HandleASRFinal(ctx, turn, result); err != nil {

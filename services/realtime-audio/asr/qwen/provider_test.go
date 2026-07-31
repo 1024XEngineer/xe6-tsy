@@ -318,14 +318,14 @@ func (c *blockingWriteConn) Close() error {
 
 func (*blockingWriteConn) SetWriteDeadline(time.Time) error { return nil }
 
-func TestSessionUpdateEventOmitsTurnDetectionWhenDisabled(t *testing.T) {
+func TestSessionUpdateEventSetsNullTurnDetectionWhenDisabled(t *testing.T) {
 	event := sessionUpdateEvent("zh-CN", Config{SampleRate: 16000, DisableServerVAD: true})
 	session, ok := event["session"].(map[string]any)
 	if !ok {
 		t.Fatalf("session missing: %#v", event)
 	}
-	if _, exists := session["turn_detection"]; exists {
-		t.Fatalf("turn_detection present when DisableServerVAD=true: %#v", session)
+	if session["turn_detection"] != nil {
+		t.Fatalf("turn_detection = %#v, want JSON null", session["turn_detection"])
 	}
 
 	withVAD := sessionUpdateEvent("zh-CN", Config{
@@ -338,5 +338,83 @@ func TestSessionUpdateEventOmitsTurnDetectionWhenDisabled(t *testing.T) {
 	detection, ok := session["turn_detection"].(map[string]any)
 	if !ok || detection["type"] != "server_vad" {
 		t.Fatalf("turn_detection = %#v", session["turn_detection"])
+	}
+}
+
+func TestManualModeFinishSendsCommitBeforeSessionFinish(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	writes := make(chan string, 8)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var event map[string]any
+			if json.Unmarshal(data, &event) != nil {
+				continue
+			}
+			typ, _ := event["type"].(string)
+			writes <- typ
+			switch typ {
+			case "session.update":
+				_ = conn.WriteJSON(map[string]any{"type": "session.updated"})
+			case "input_audio_buffer.commit":
+				_ = conn.WriteJSON(map[string]any{"type": "input_audio_buffer.committed"})
+			case "session.finish":
+				_ = conn.WriteJSON(map[string]any{
+					"type": "conversation.item.input_audio_transcription.completed",
+					"language": "zh", "transcript": "你好",
+				})
+				_ = conn.WriteJSON(map[string]any{"type": "session.finished"})
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(Config{
+		APIKey: "test-key",
+		WebSocketURL: "ws" + strings.TrimPrefix(server.URL, "http"),
+		Model: "qwen3-asr-flash-realtime",
+		DisableServerVAD: true,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	stream, err := provider.StartStream(context.Background(), asr.StreamRequest{SourceLanguage: "zh-CN"})
+	if err != nil {
+		t.Fatalf("StartStream() error = %v", err)
+	}
+	if err := stream.PushAudio(context.Background(), []byte("pcm")); err != nil {
+		t.Fatalf("PushAudio() error = %v", err)
+	}
+	result, err := stream.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if result.Text != "你好" {
+		t.Fatalf("result = %#v", result)
+	}
+
+	var seen []string
+	timeout := time.After(2 * time.Second)
+	for len(seen) < 4 {
+		select {
+		case typ := <-writes:
+			seen = append(seen, typ)
+		case <-timeout:
+			t.Fatalf("writes = %v, want update/append/commit/finish", seen)
+		}
+	}
+	if seen[0] != "session.update" || seen[1] != "input_audio_buffer.append" ||
+		seen[2] != "input_audio_buffer.commit" || seen[3] != "session.finish" {
+		t.Fatalf("write order = %v", seen)
 	}
 }

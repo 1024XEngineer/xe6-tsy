@@ -96,7 +96,8 @@ func (p *Provider) StartStream(ctx context.Context, request asr.StreamRequest) (
 	s := &stream{
 		conn: conn, cancel: cancel, model: p.config.Model, provider: p.config.Provider,
 		sampleRate: p.config.SampleRate, sourceLanguage: request.SourceLanguage,
-		events: make(chan asr.Event, eventBufferSize+1), done: make(chan struct{}), readDone: make(chan struct{}),
+		manualMode: p.config.DisableServerVAD,
+		events:     make(chan asr.Event, eventBufferSize+1), done: make(chan struct{}), readDone: make(chan struct{}),
 	}
 	if err := s.write(streamCtx, sessionUpdateEvent(request.SourceLanguage, p.config)); err != nil {
 		cancel()
@@ -117,7 +118,11 @@ func sessionUpdateEvent(language string, config Config) map[string]any {
 		"sample_rate":               config.SampleRate,
 		"input_audio_transcription": transcription,
 	}
-	if !config.DisableServerVAD {
+	if config.DisableServerVAD {
+		// Manual mode: client owns utterance cuts via input_audio_buffer.commit.
+		// Explicit JSON null is required; omitting the field keeps server_vad.
+		session["turn_detection"] = nil
+	} else {
 		session["turn_detection"] = map[string]any{
 			"type":                "server_vad",
 			"threshold":           config.VADThreshold,
@@ -179,6 +184,7 @@ type stream struct {
 	provider       string
 	sampleRate     int
 	sourceLanguage string
+	manualMode     bool
 	events         chan asr.Event
 	done           chan struct{}
 	readDone       chan struct{}
@@ -218,6 +224,13 @@ func (s *stream) Finish(ctx context.Context) (asr.FinalResult, error) {
 		return result, err
 	}
 	s.finish.Do(func() {
+		if s.manualMode {
+			if err := s.write(ctx, map[string]any{"type": "input_audio_buffer.commit"}); err != nil {
+				s.setError(fmt.Errorf("commit ASR audio buffer: %w", err))
+				s.shutdown()
+				return
+			}
+		}
 		if err := s.write(ctx, map[string]any{"type": "session.finish"}); err != nil {
 			s.setError(err)
 			s.shutdown()

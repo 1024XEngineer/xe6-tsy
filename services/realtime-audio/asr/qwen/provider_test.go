@@ -318,6 +318,21 @@ func (c *blockingWriteConn) Close() error {
 
 func (*blockingWriteConn) SetWriteDeadline(time.Time) error { return nil }
 
+func TestSessionUpdateEventOmitsLanguageWhenEmpty(t *testing.T) {
+	event := sessionUpdateEvent("", Config{SampleRate: 16000, DisableServerVAD: true})
+	session, ok := event["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("session missing: %#v", event)
+	}
+	transcription, ok := session["input_audio_transcription"].(map[string]any)
+	if !ok {
+		t.Fatalf("transcription missing: %#v", session)
+	}
+	if _, present := transcription["language"]; present {
+		t.Fatalf("language should be omitted for auto-detect, got %#v", transcription)
+	}
+}
+
 func TestSessionUpdateEventSetsNullTurnDetectionWhenDisabled(t *testing.T) {
 	event := sessionUpdateEvent("zh-CN", Config{SampleRate: 16000, DisableServerVAD: true})
 	session, ok := event["session"].(map[string]any)

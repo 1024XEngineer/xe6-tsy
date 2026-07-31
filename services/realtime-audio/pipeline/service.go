@@ -120,6 +120,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err := s.publishUsage(ctx, turn, "asr", result.Provider, result.Model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
 		return fmt.Errorf("publish ASR usage: %w", err)
 	}
+	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
 	target, ok := targetLanguage(turn.LanguageConfig, result.SourceLanguage)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
@@ -313,8 +314,9 @@ func turnBounds(turn TurnContext, result asr.FinalResult, fallback time.Time) (t
 }
 
 func targetLanguage(config session.LanguageConfigSnapshot, source string) (string, bool) {
+	source = asr.NormalizeLanguage(source)
 	for _, pair := range config.LanguagePairs {
-		if pair.Source == source {
+		if asr.NormalizeLanguage(pair.Source) == source {
 			return pair.Target, true
 		}
 	}

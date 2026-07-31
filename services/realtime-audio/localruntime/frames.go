@@ -39,17 +39,11 @@ func (f WebRTCFrameSources) Open(
 	language := strings.TrimSpace(f.SourceLanguage)
 	if f.Languages != nil {
 		if cfg, err := f.Languages.GetCurrentConfig(ctx, sessionID); err == nil {
-			for _, pair := range cfg.LanguagePairs {
-				if source := strings.TrimSpace(pair.Source); source != "" {
-					language = source
-					break
-				}
-			}
+			language = resolveASRSourceLanguage(cfg)
 		}
 	}
-	if language == "" {
-		language = "zh-CN"
-	}
+	// Empty SourceLanguage means "auto-detect" for bilingual sessions.
+	// Do not force zh-CN here — that locks Qwen ASR to Chinese and drops English.
 	return runtime.AudioInput{
 		Source: &lazyWebRTCSource{
 			media:     f.Media,
@@ -57,6 +51,29 @@ func (f WebRTCFrameSources) Open(
 		},
 		SourceLanguage: language,
 	}, nil
+}
+
+// resolveASRSourceLanguage returns a forced ASR language only when the config
+// has a single unique source. Bilingual pairs leave the language empty so the
+// provider can auto-detect zh/en turn by turn.
+func resolveASRSourceLanguage(cfg session.LanguageConfigSnapshot) string {
+	unique := make([]string, 0, 2)
+	seen := map[string]struct{}{}
+	for _, pair := range cfg.LanguagePairs {
+		source := strings.TrimSpace(pair.Source)
+		if source == "" {
+			continue
+		}
+		if _, ok := seen[source]; ok {
+			continue
+		}
+		seen[source] = struct{}{}
+		unique = append(unique, source)
+	}
+	if len(unique) == 1 {
+		return unique[0]
+	}
+	return ""
 }
 
 type lazyWebRTCSource struct {

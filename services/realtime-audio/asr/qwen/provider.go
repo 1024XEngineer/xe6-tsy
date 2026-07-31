@@ -368,9 +368,9 @@ func (s *stream) handleEvent(data []byte) error {
 			s.emitEvent(asr.Event{Type: asr.EventPartial, Text: text})
 		}
 	case "conversation.item.input_audio_transcription.completed":
-		sourceLanguage := s.sourceLanguage
+		sourceLanguage := asr.NormalizeLanguage(s.sourceLanguage)
 		if sourceLanguage == "" {
-			sourceLanguage = event.Language
+			sourceLanguage = asr.NormalizeLanguage(event.Language)
 		}
 		result := asr.FinalResult{
 			Text: event.Transcript, SourceLanguage: sourceLanguage,

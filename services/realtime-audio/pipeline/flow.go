@@ -108,6 +108,7 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if result.SourceLanguage == "" {
 		result.SourceLanguage = request.SourceLanguage
 	}
+	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
 	if strings.TrimSpace(result.Text) == "" || isTrivialASRText(result.Text) {
 		// Energy VAD / Manual commit can produce empty or filler cuts; keep listening.
 		if err := p.pipeline.reportListening(ctx, turn); err != nil {

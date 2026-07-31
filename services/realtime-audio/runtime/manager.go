@@ -30,8 +30,9 @@ var (
 const failureReportTimeout = 5 * time.Second
 
 // AudioInput is the typed handoff from a WebRTC media adapter to the audio loop.
-// SourceLanguage belongs to the input track, not to the language configuration
-// reader; the latter is still read once by pipeline.TurnOpener for every Turn.
+// SourceLanguage is an optional ASR hint for the input track. Empty means the
+// provider should auto-detect (required for bilingual sessions). Language-config
+// pairs are still read once by pipeline.TurnOpener for every Turn.
 type AudioInput struct {
 	Source         segment.FrameSource
 	SourceLanguage string
@@ -212,7 +213,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		return fmt.Errorf("open audio input: %w", err)
 	}
 	owned := newCloseOnceSource(input.Source)
-	if input.Source == nil || input.SourceLanguage == "" {
+	if input.Source == nil {
 		closeErr := owned.closeContext(ctx)
 		return errors.Join(ErrAudioInputRequired, closeErr)
 	}

@@ -43,10 +43,12 @@ type MediaConfig struct {
 	DataChannelLabel string
 	SampleRate       int
 	Channels         int
-	// SkipTTSTrack disables PCM L16 TTS track attachment and the matching
-	// remote-offer codec check. Browser clients (Chrome) cannot negotiate
-	// audio/L16; the local HTTP entrypoint uses this for Opus-only signaling.
+	// SkipTTSTrack disables TTS track attachment and the matching remote-offer
+	// codec check. Browser clients (Chrome) cannot negotiate audio/L16.
 	SkipTTSTrack bool
+	// DownlinkCodec selects the TTS send codec when SkipTTSTrack is false.
+	// Empty / "L16" keeps the PCM L16 path; "opus" is the browser-safe path.
+	DownlinkCodec string
 }
 
 func (c MediaConfig) normalized() (MediaConfig, error) {
@@ -282,6 +284,11 @@ func (s *PionEventSink) terminalError() error {
 
 // Publish waits for DataChannel open and sends one JSON event in order.
 func (s *PionEventSink) Publish(ctx context.Context, event playback.Event) error {
+	return s.PublishJSON(ctx, event)
+}
+
+// PublishJSON waits for DataChannel open and sends one arbitrary JSON value.
+func (s *PionEventSink) PublishJSON(ctx context.Context, value any) error {
 	if s == nil || s.channel == nil {
 		return ErrMediaUnavailable
 	}
@@ -302,7 +309,7 @@ func (s *PionEventSink) Publish(ctx context.Context, event playback.Event) error
 		return s.terminalError()
 	default:
 	}
-	payload, err := json.Marshal(event)
+	payload, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("encode translation event: %w", err)
 	}
@@ -395,6 +402,7 @@ func (s *PionAudioSource) Attach(track pionRemoteTrack) error {
 }
 
 func (s *PionAudioSource) readLoop(track pionRemoteTrack) {
+	var lastCaptured time.Time
 	for {
 		packet, err := track.ReadRTP()
 		if err != nil {
@@ -405,17 +413,19 @@ func (s *PionAudioSource) readLoop(track pionRemoteTrack) {
 			return
 		}
 		pcm, err := s.decoder.Decode(packet.Payload)
-		if err != nil {
-			s.setError(err)
-			s.closeDone()
-			return
+		if err != nil || len(pcm) == 0 {
+			// Browser Opus comfort-noise / FEC / partial packets must not kill
+			// the whole realtime session; skip and keep reading.
+			continue
 		}
 		capturedAt := s.now()
+		if !lastCaptured.IsZero() && !capturedAt.After(lastCaptured) {
+			capturedAt = lastCaptured.Add(time.Millisecond)
+		}
+		lastCaptured = capturedAt
 		frame, err := audio.NewFrame(pcm, defaultASRSampleRate, capturedAt)
 		if err != nil {
-			s.setError(err)
-			s.closeDone()
-			return
+			continue
 		}
 		select {
 		case s.frames <- frame:

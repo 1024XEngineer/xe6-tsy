@@ -152,9 +152,14 @@ switch ($Service) {
     $tgtLang = if ($env:REALTIME_TARGET_LANGUAGE) { $env:REALTIME_TARGET_LANGUAGE } else { "en-US" }
     Write-Host "    Languages: $srcLang → $tgtLang"
     if ($env:REALTIME_API_DATABASE) {
-      Write-Host "    API database link: $($env:REALTIME_API_DATABASE)"
+      Write-Host "    API database link: $($env:REALTIME_API_DATABASE) (session/language/FinalTurn/speakers)"
     } else {
       Write-Host "    API database link: off (TrustSession + static languages + DC-only finals)"
+    }
+    if ($env:REALTIME_OUTBOX) {
+      Write-Host "    Usage outbox: $($env:REALTIME_OUTBOX)"
+    } else {
+      Write-Host "    Usage outbox: memory (set REALTIME_OUTBOX=valkey + REDIS_URL to persist)"
     }
     if ($env:REALTIME_TTS_DOWNLINK) {
       Write-Host "    TTS downlink: $($env:REALTIME_TTS_DOWNLINK)"

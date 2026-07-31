@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -269,13 +270,18 @@ func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider
 }
 
 func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, result asr.FinalResult, startedAt, endedAt time.Time) recordsv1.SpeakerAttribution {
-	if s.speakers == nil || result.ProviderSpeakerID == "" {
+	if s.speakers == nil {
 		return pendingSpeakerAttribution()
+	}
+	providerSpeakerID := strings.TrimSpace(result.ProviderSpeakerID)
+	if providerSpeakerID == "" {
+		// Single-mic demos have no diarization; still allocate a provisional participant.
+		providerSpeakerID = "local-mic"
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, s.speakerTimeout)
 	defer cancel()
 	attribution, err := s.speakers.GetProvisionalAttribution(lookupCtx, recordsv1.SpeakerObservation{
-		SessionID: turn.SessionID, TurnID: turn.ID, ProviderSpeakerID: result.ProviderSpeakerID,
+		SessionID: turn.SessionID, TurnID: turn.ID, ProviderSpeakerID: providerSpeakerID,
 		StartedAt: startedAt, EndedAt: endedAt,
 		AudioStartMS: result.AudioStart.Milliseconds(), AudioEndMS: result.AudioEnd.Milliseconds(),
 	})

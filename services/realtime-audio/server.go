@@ -156,6 +156,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	var languages session.LanguageConfigReader = staticLanguages
 	var sessions session.SessionReader = localruntime.TrustSessionReader{}
 	var durableFinalTurns recordsv1.FinalTurnSink
+	var speakers recordsv1.SpeakerAttributionReader
 	if apiDatabaseEnabled(os.Getenv) {
 		databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 		if databaseURL == "" {
@@ -170,13 +171,18 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			return nil, fmt.Errorf("ping DATABASE_URL for realtime records: %w", err)
 		}
 		slog.Info("realtime-audio linked to API database",
-			"final_turn_outbox", true, "session_reader", "postgres", "language_reader", "postgres")
+			"final_turn_outbox", true,
+			"session_reader", "postgres",
+			"language_reader", "postgres",
+			"speakers", "postgres",
+		)
 		sessions = localruntime.PostgresSessionReader{Pool: pool}
 		languages = localruntime.FallbackLanguageConfigReader{
 			Primary:  localruntime.PostgresLanguageConfigReader{Pool: pool, Now: now},
 			Fallback: staticLanguages,
 		}
 		durableFinalTurns = pipeline.NewPostgresFinalTurnSink(pool)
+		speakers = localruntime.PostgresSpeakerReader{Pool: pool}
 	}
 
 	liveFinalTurns := localruntime.DataChannelFinalTurnSink{Media: connections}
@@ -184,7 +190,15 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	if durableFinalTurns != nil {
 		finalTurns = localruntime.FanoutFinalTurnSink{Durable: durableFinalTurns, Live: liveFinalTurns}
 	}
-	usage := &localruntime.MemoryUsageSink{}
+	var usage pipeline.UsageFactSink = &localruntime.MemoryUsageSink{}
+	if usageOutboxEnabled(os.Getenv) {
+		sinks, err := runtime.OpenSinksFromEnv(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("open usage outbox: %w", err)
+		}
+		usage = sinks.Usage
+		slog.Info("realtime-audio usage outbox enabled", "backend", os.Getenv("REALTIME_OUTBOX"))
+	}
 
 	providerConfig, err := config.LoadProviderConfigFromEnvironment()
 	if err != nil {
@@ -227,6 +241,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		},
 		Languages:  languages,
 		FinalTurns: finalTurns,
+		Speakers:   speakers,
 		Usage:      usage,
 		Audio:      audioSink,
 		Runtime:    runtimeBridge,
@@ -274,6 +289,18 @@ func apiDatabaseEnabled(getenv func(string) string) bool {
 	}
 	switch strings.ToLower(strings.TrimSpace(getenv("REALTIME_API_DATABASE"))) {
 	case "1", "true", "yes", "enabled", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func usageOutboxEnabled(getenv func(string) string) bool {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	switch strings.ToLower(strings.TrimSpace(getenv("REALTIME_OUTBOX"))) {
+	case "valkey":
 		return true
 	default:
 		return false

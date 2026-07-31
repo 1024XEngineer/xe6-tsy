@@ -31,10 +31,12 @@ const (
 )
 
 type processConfig struct {
-	Addr          string
-	TicketSecret  string
-	SkipTTSTrack  bool
-	DownlinkCodec string
+	Addr           string
+	TicketSecret   string
+	SkipTTSTrack   bool
+	DownlinkCodec  string
+	SourceLanguage string
+	TargetLanguage string
 }
 
 func loadProcessConfig(getenv func(string) string) (processConfig, error) {
@@ -57,9 +59,28 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 	if downlink == "opus" {
 		codec = "opus"
 	}
+	source := strings.TrimSpace(getenv("REALTIME_SOURCE_LANGUAGE"))
+	if source == "" {
+		source = "zh-CN"
+	}
+	target := strings.TrimSpace(getenv("REALTIME_TARGET_LANGUAGE"))
+	if target == "" {
+		target = "en-US"
+	}
 	return processConfig{
 		Addr: addr, TicketSecret: ticketSecret, SkipTTSTrack: skipTTS, DownlinkCodec: codec,
+		SourceLanguage: source, TargetLanguage: target,
 	}, nil
+}
+
+// applySubtitleOnlyOverrides keeps Aliyun TTS from running (and failing the
+// worker) while the local entrypoint is in subtitle-only / SkipTTSTrack mode.
+func applySubtitleOnlyOverrides(cfg processConfig, providers config.ProviderConfig) config.ProviderConfig {
+	if !cfg.SkipTTSTrack {
+		return providers
+	}
+	providers.TTS.Provider = config.ProviderMock
+	return providers
 }
 
 func newControlPlaneHandler(ticketSecret string) (http.Handler, error) {
@@ -117,7 +138,9 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	}
 
 	runtimeBridge := &localruntime.LifecycleRuntimeBridge{}
-	languages := localruntime.StaticLanguageConfigReader{Source: "zh-CN", Target: "en-US", Now: now}
+	languages := localruntime.StaticLanguageConfigReader{
+		Source: cfg.SourceLanguage, Target: cfg.TargetLanguage, Now: now,
+	}
 	finalTurns := localruntime.DataChannelFinalTurnSink{Media: connections}
 	usage := &localruntime.MemoryUsageSink{}
 	var audioSink pipeline.AudioChunkSink = localruntime.DiscardAudioSink{}
@@ -125,10 +148,20 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		audioSink = localruntime.PlaybackAudioSink{Media: connections}
 	}
 
-	manager, err := runtime.NewManagerFromEnvironment(mockOfflineProviders(), runtime.Dependencies{
+	providerConfig, err := config.LoadProviderConfigFromEnvironment()
+	if err != nil {
+		return nil, fmt.Errorf("load provider config: %w", err)
+	}
+	providerConfig = applySubtitleOnlyOverrides(cfg, providerConfig)
+	// Local energy VAD owns utterance cuts; disable Qwen server_vad unless set.
+	if strings.TrimSpace(os.Getenv("ASR_SERVER_VAD")) == "" {
+		providerConfig.ASR.ServerVAD = false
+	}
+
+	manager, err := runtime.NewManager(providerConfig, mockOfflineProviders(cfg.SourceLanguage), runtime.Dependencies{
 		FrameSources: localruntime.WebRTCFrameSources{
 			Media:          connections,
-			SourceLanguage: "zh-CN",
+			SourceLanguage: cfg.SourceLanguage,
 		},
 		NewSegmenter: func() (*vad.Segmenter, error) {
 			return vad.NewSegmenter(localruntime.EnergySpeechClassifier{}, vad.Options{
@@ -179,18 +212,28 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	return handler, nil
 }
 
-func mockOfflineProviders() config.Providers {
+func mockOfflineProviders(sourceLanguage string) config.Providers {
+	sourceLanguage = strings.TrimSpace(sourceLanguage)
+	if sourceLanguage == "" {
+		sourceLanguage = "zh-CN"
+	}
+	sourceText := "你好"
+	translated := "Hello"
+	if !strings.HasPrefix(strings.ToLower(sourceLanguage), "zh") {
+		sourceText = "Hello"
+		translated = "你好"
+	}
 	return config.Providers{
 		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
 			Final: asr.FinalResult{
-				Text:           "你好",
-				SourceLanguage: "zh-CN",
+				Text:           sourceText,
+				SourceLanguage: sourceLanguage,
 				Provider:       "mock-asr",
 				Model:          "fake",
 			},
 		}),
 		Translation: &translate.FakeProvider{
-			Result: translate.Result{Text: "Hello", Provider: "mock-llm", Model: "fake"},
+			Result: translate.Result{Text: translated, Provider: "mock-llm", Model: "fake"},
 		},
 		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
 			Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{0, 0, 0, 0}}},

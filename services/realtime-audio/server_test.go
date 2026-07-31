@@ -11,6 +11,7 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 )
 
 func secretEnv(secret string) func(string) string {
@@ -39,6 +40,12 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	if cfg.Addr != defaultAddr {
 		t.Fatalf("Addr = %q, want %q", cfg.Addr, defaultAddr)
 	}
+	if !cfg.SkipTTSTrack {
+		t.Fatal("SkipTTSTrack = false, want true by default")
+	}
+	if cfg.SourceLanguage != "zh-CN" || cfg.TargetLanguage != "en-US" {
+		t.Fatalf("languages = %s→%s", cfg.SourceLanguage, cfg.TargetLanguage)
+	}
 
 	if _, err := loadProcessConfig(func(string) string { return "" }); err == nil {
 		t.Fatal("loadProcessConfig() error = nil, want secret validation error")
@@ -46,6 +53,28 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	t.Setenv("REALTIME_TICKET_SECRET", "")
 	if _, err := loadProcessConfig(nil); err == nil {
 		t.Fatal("loadProcessConfig(nil) error = nil, want secret validation error")
+	}
+}
+
+func TestApplySubtitleOnlyOverridesForcesMockTTS(t *testing.T) {
+	cfg := processConfig{SkipTTSTrack: true}
+	providers := config.ProviderConfig{
+		ASR:         config.ASRConfig{Provider: config.ProviderAliyun},
+		Translation: config.TranslationConfig{Provider: config.ProviderAliyun},
+		TTS:         config.TTSConfig{Provider: config.ProviderAliyun},
+	}
+	got := applySubtitleOnlyOverrides(cfg, providers)
+	if got.TTS.Provider != config.ProviderMock {
+		t.Fatalf("TTS provider = %q, want mock", got.TTS.Provider)
+	}
+	if got.ASR.Provider != config.ProviderAliyun || got.Translation.Provider != config.ProviderAliyun {
+		t.Fatalf("ASR/LLM should stay aliyun: %#v", got)
+	}
+
+	cfg.SkipTTSTrack = false
+	got = applySubtitleOnlyOverrides(cfg, providers)
+	if got.TTS.Provider != config.ProviderAliyun {
+		t.Fatalf("TTS provider = %q, want aliyun when downlink enabled", got.TTS.Provider)
 	}
 }
 

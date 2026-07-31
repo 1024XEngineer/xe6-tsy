@@ -93,7 +93,7 @@ Required env:
 | `REALTIME_ADDR` | `:8090` | Listen address |
 | `REALTIME_TICKET_SECRET` | _(required)_ | Raw secret (≥32 bytes), must match API `REALTIME_TICKET_SECRET` |
 | `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun` (same wiring; offline fakes injected for mock) |
-| `REALTIME_TTS_DOWNLINK` | `none` | `none` = subtitles only (forces mock TTS); `opus` = browser Opus TTS track |
+| `REALTIME_TTS_DOWNLINK` | `none` | `none` = subtitles only (forces mock TTS); `pcm` = TTS PCM over DataChannel; `opus` = WebRTC Opus track (stub) |
 | `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Local language pair until API-backed LanguageConfigReader |
 | `ASR_SERVER_VAD` | _(unset → false in entrypoint)_ | Set `true` to enable Qwen server_vad; local energy VAD is the default owner |
 

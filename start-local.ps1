@@ -156,6 +156,9 @@ switch ($Service) {
     } else {
       Write-Host "    TTS downlink: none (subtitles only; TTS forced mock)"
     }
+    if ($env:REALTIME_TTS_DOWNLINK -eq "pcm") {
+      Write-Host "    TTS audio: DataChannel PCM → browser Web Audio"
+    }
     Write-Host "==> Starting realtime-audio control-plane..."
     Write-Host "    Keep this window open. Ctrl+C to stop."
     Write-Host ""

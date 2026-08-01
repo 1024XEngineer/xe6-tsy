@@ -26,7 +26,7 @@
 | 账户、会话、语言、记录、用量、投递 | REST + JSON | `/api/v1` |
 | Realtime 生命周期与 WebRTC 信令 | REST + JSON | `/realtime/v1` |
 | 麦克风音频 | WebRTC Audio Track | PeerConnection |
-| 字幕、TTS 音频和播放事件 | WebRTC DataChannel | `translation` |
+| 字幕、TTS 音频和播放事件 | WebRTC DataChannel | `translation-events` |
 | Final Turn | PostgreSQL Outbox | `translation.final` |
 | Provider 用量 | Valkey/Redis Stream | `usage.recorded` |
 
@@ -326,6 +326,21 @@ channels = 1
   "account_id": "account_01J...",
   "status": "active",
   "runtime_state": "listening",
+  "audio_config": {
+    "codec": "opus",
+    "sample_rate_hz": 48000,
+    "channels": 1,
+    "echo_cancellation": true,
+    "noise_suppression": true,
+    "auto_gain_control": true
+  },
+  "capabilities": {
+    "webrtc": true,
+    "data_channel": true,
+    "microphone": true,
+    "speaker": true,
+    "speaker_diarization": true
+  },
   "current_turn_id": null,
   "current_playback_id": null,
   "last_error_code": null,
@@ -364,19 +379,19 @@ Ticket Claims：
 ```json
 {
   "session_id": "vs_01J...",
-  "expires_at": "2026-07-31T08:05:00Z",
+  "expires_at": "2026-07-31T09:00:00Z",
   "ice_servers": [
     {"urls": ["stun:stun.l.google.com:19302"]}
   ],
   "ice_transport_policy": "all",
   "data_channel": {
-    "label": "translation",
+    "label": "translation-events",
     "ordered": true
   },
   "audio": {
     "uplink_codec": "opus",
     "downlink_codec": "pcm",
-    "sample_rate_hz": 24000,
+    "sample_rate_hz": 48000,
     "channels": 1
   }
 }
@@ -389,6 +404,11 @@ none
 pcm
 opus
 ```
+
+- 未配置 `REALTIME_TTS_DOWNLINK` 时，默认 `downlink_codec=none`。
+- `pcm` 是 P0 浏览器演示推荐模式，不是代码默认值。
+- 静态 WebRTC Config 默认 TTL 为 1 小时。
+- `sample_rate_hz` 由当前 Downlink 模式和服务配置决定。
 
 ### 5.8 VoiceTurn
 
@@ -634,7 +654,7 @@ GET /api/v1/voice-sessions/{id}/state
 
 ```json
 {
-  "id": "vs_01J...",
+  "session_id": "vs_01J...",
   "status": "active",
   "runtime_state": "listening",
   "current_turn_id": null,
@@ -761,10 +781,13 @@ Idempotency-Key: offer-001
 
 ```json
 {
+  "sdp": "v=0\r\n...",
+  "type": "answer",
   "session_id": "vs_01J...",
   "connection_id": "rtc_01J...",
-  "sdp": "v=0\r\n...",
-  "type": "answer"
+  "data_channel_label": "translation-events",
+  "tts_track_id": "tts-audio",
+  "connection_state": "connecting"
 }
 ```
 
@@ -785,13 +808,17 @@ POST /realtime/v1/sessions/{session_id}/ice-candidates
 
 ```json
 {
+  "connection_id": "rtc_01J...",
   "candidates": [
     {
+      "candidate_id": "candidate_001",
       "candidate": "candidate:...",
       "sdp_mid": "0",
-      "sdp_mline_index": 0
+      "sdp_mline_index": 0,
+      "username_fragment": null
     }
-  ]
+  ],
+  "end_of_candidates": false
 }
 ```
 
@@ -799,9 +826,20 @@ POST /realtime/v1/sessions/{session_id}/ice-candidates
 
 ```json
 {
-  "accepted": 1
+  "connection_id": "rtc_01J...",
+  "accepted_candidate_ids": [
+    "candidate_001"
+  ],
+  "deduplicated_candidate_ids": [],
+  "end_of_candidates": false
 }
 ```
+
+规则：
+
+- 每条 ICE Candidate 必须包含稳定的 `candidate_id`。
+- 重复 Candidate 不重复处理，其 ID 返回在 `deduplicated_candidate_ids`。
+- `connection_id` 必须指向当前 Session 的当前连接。
 
 ### 7.5 Connection
 
@@ -830,10 +868,18 @@ Idempotency-Key: <start-operation-id>
 ```json
 {
   "operation_id": "op_01J...",
-  "trace_id": "req_01J...",
-  "started_by": "account_01J..."
+  "trace_id": "req_01J..."
 }
 ```
+
+身份规则：
+
+- Realtime 从已验证的 Realtime Ticket Claim 获取可信 `account_id`。
+- 请求体中的 `started_by` 不得作为鉴权、资源归属或权限判断依据。
+- 公共客户端不需要提交 `started_by`。
+- 当前 OpenAPI 中保留的可选 `started_by` 仅属于兼容性或审计字段。
+- 当服务端接收到 `started_by` 时，必须忽略它，或者校验它与 Ticket Claim 的 `account_id` 完全相同。
+- API Session 模块应单独保存本次操作 Actor，不得将 Actor 与 Session 的不可变 Owner 混用。
 
 响应：`RuntimeSnapshot`。
 
@@ -883,7 +929,7 @@ GET /realtime/v1/sessions/{session_id}/runtime
 
 ```json
 {
-  "label": "translation",
+  "label": "translation-events",
   "ordered": true
 }
 ```
@@ -947,17 +993,16 @@ GET /realtime/v1/sessions/{session_id}/runtime
 
 ### 8.4 Playback 事件
 
-公共字段：
+示例：
 
 ```json
 {
+  "event_id": "playback_01J..._playback.started_1",
   "type": "playback.started",
-  "event": "playback.started",
-  "event_id": "evt_01J...",
   "session_id": "vs_01J...",
   "turn_id": "turn_01J...",
   "playback_id": "playback_01J...",
-  "sequence": 1,
+  "sequence_no": 1,
   "occurred_at": "2026-07-31T08:03:04Z"
 }
 ```
@@ -975,22 +1020,18 @@ playback.cancelled
 
 ```json
 {
-  "reason": "barge_in"
+  "reason": "user_speaking"
 }
 ```
 
-建议 Reason：
-
-```text
-barge_in
-session_stopped
-provider_failed
-client_cancelled
-```
+- `translation.final` 和 `tts.audio` 当前同时包含 `type` 与 `event`。
+- Playback Event 当前直接序列化 `playback.Event`，只包含 `type`。
+- Playback 顺序字段使用 `sequence_no`，不是 `sequence`。
+- `reason` 当前是开放字符串。已使用的值包括 `user_speaking`，后续 Provider 失败或 Session 停止可以增加其他值。
 
 ### 8.5 顺序与恢复
 
-- 同一 Playback 的 `sequence` 单调递增；
+- 同一 Playback 的 `sequence_no` 单调递增；
 - 重复事件或分片幂等忽略；
 - 出现缺口时查询 `/state`、`/runtime` 或 `/connection`；
 - P0 不保证 DataChannel 断线重放；
@@ -1016,7 +1057,7 @@ event_id
 trace_id
 turn_id
 session_id
-participant_id?
+participant_id | null
 sequence_no
 source_language
 target_language
@@ -1024,12 +1065,16 @@ language_config_version
 source_text
 translated_text
 speaker_code
-speaker_confidence?
+speaker_label_snapshot | null
+speaker_confidence | null
 attribution_status
 started_at
 ended_at
 occurred_at
 ```
+
+`participant_id`、`speaker_label_snapshot` 和 `speaker_confidence`
+都是必需的 JSON Key，但它们的值允许为 `null`。
 
 规则：
 
@@ -1067,7 +1112,38 @@ diarization
 
 ## 10. 错误码
 
-### 10.1 HTTP 映射
+### 10.1 错误结构
+
+两套错误信封：
+
+#### 公共 API
+
+```json
+{
+  "error": {
+    "code": "session_state_conflict",
+    "message": "current session state does not allow this operation",
+    "request_id": "req_01J...",
+    "retryable": false,
+    "details": {
+      "current_status": "ended"
+    }
+  }
+}
+```
+
+#### Realtime
+
+```json
+{
+  "error": {
+    "code": "conflict",
+    "message": "conflict"
+  }
+}
+```
+
+### 10.2 HTTP 映射
 
 | HTTP | 语义 |
 | ---: | --- |
@@ -1082,17 +1158,87 @@ diarization
 | `501` | 当前部署未实现 |
 | `503` | 临时不可用 |
 
-### 10.2 稳定错误码
+### 10.3 Session 模块错误码
 
-| 范围 | 错误码 |
+| 错误码 |
+| --- |
+| `invalid_request` |
+| `unauthorized` |
+| `voice_session_not_found` |
+| `session_state_conflict` |
+| `idempotency_key_conflict` |
+| `session_start_in_progress` |
+| `language_config_not_ready` |
+| `webrtc_not_ready` |
+| `realtime_already_running` |
+| `unsupported_audio_config` |
+| `realtime_start_failed` |
+| `realtime_stop_failed` |
+| `runtime_state_unavailable` |
+| `webrtc_state_unavailable` |
+| `not_implemented` |
+
+### 10.4 Language 模块错误码
+
+| 错误码 |
+| --- |
+| `invalid_request` |
+| `unauthenticated` |
+| `forbidden` |
+| `session_not_found` |
+| `no_active_config` |
+| `version_conflict` |
+| `idempotency_conflict` |
+| `unsupported_language` |
+| `invalid_language_pair` |
+| `unsupported_source_language` |
+| `internal_error` |
+| `not_implemented` |
+
+Language 模块使用 `unauthenticated`，不是 `unauthorized`。使用 `session_not_found`，不是 `voice_session_not_found`。
+
+### 10.5 Realtime 模块错误码
+
+| HTTP | 错误码 |
 | --- | --- |
-| 通用 | `invalid_request` `unauthorized` `forbidden` `rate_limited` `not_implemented` `internal_error` `temporarily_unavailable` |
-| Session | `voice_session_not_found` `session_state_conflict` `session_start_in_progress` `idempotency_key_conflict` `unsupported_audio_config` |
-| Readiness | `language_config_not_ready` `webrtc_not_ready` |
-| Realtime | `realtime_start_failed` `realtime_stop_failed` `runtime_state_unavailable` `runtime_operation_conflict` |
-| Language | `no_active_config` `version_conflict` `idempotency_conflict` `unsupported_language` `invalid_language_pair` |
-| WebRTC | `realtime_ticket_required` `realtime_ticket_invalid` `webrtc_connection_not_found` `webrtc_connection_not_ready` `webrtc_connection_conflict` `invalid_webrtc_offer` `webrtc_unavailable` |
-| Records | `participant_not_found` `voice_turn_not_found` `invalid_attribution` `event_payload_conflict` |
+| 400 | `invalid_request` |
+| 400 | `tts_codec_unsupported` |
+| 401 | `unauthorized` |
+| 404 | `not_found` |
+| 404 | `webrtc_connection_not_found` |
+| 409 | `runtime_operation_conflict` |
+| 409 | `conflict` |
+| 503 | `replay_capacity_exhausted` |
+| 408 | `request_canceled` |
+| 504 | `request_timeout` |
+| 500 | `internal_error` |
+
+当前 Realtime 不返回以下细分码：
+
+```text
+realtime_ticket_required
+realtime_ticket_invalid
+invalid_webrtc_offer
+webrtc_connection_not_ready
+webrtc_connection_conflict
+```
+
+这些不能作为当前客户端分支判断依据。
+
+### 10.6 Records 模块错误码
+
+| 错误码 |
+| --- |
+| `invalid_request` |
+| `unauthenticated` |
+| `forbidden` |
+| `voice_session_not_found` |
+| `participant_not_found` |
+| `voice_turn_not_found` |
+| `invalid_attribution` |
+| `event_payload_conflict` |
+| `not_implemented` |
+| `internal_error` |
 
 ---
 
@@ -1132,9 +1278,10 @@ AudioConfig 和 Capabilities 合法
 
 ### 11.4 Owner 与 Actor
 
-- `voice_sessions.account_id` 是不可变 Owner；
+- `voice_sessions.account_id` = 不可变 Owner；
+- Ticket Claim `account_id` = Realtime 可信身份；
+- `started_by` = 不得由客户端自由声明为可信身份；
 - 注册账户可通过 Account Lineage 访问原匿名 Session；
-- `started_by` 表示本次 Actor；
 - Operation Ownership 必须与不可变 Owner 对齐；
 - Owner 和 Actor 不得混用。
 

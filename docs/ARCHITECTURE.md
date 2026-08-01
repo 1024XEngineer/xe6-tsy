@@ -271,9 +271,77 @@ realtime 没有确认启动成功，API 不能把 Session 写成 `active`；返�
 
 ### 7.2 需要播放时，说完一句听到一句译文
 
-一方开始说话后，系统一边听、一边在后台识别内容，但不会把尚未说完的半句话直接播放出来。检测到用户停顿并确认一句话结束后，系统才整理完整意思、翻译成另一种语言；如果这个说话方向选择了语音输出，再把译文播放给对方。
+一方开始说话后，系统一边接收声音、一边判断这句话是否说完，但不会把尚未说完的半句话直接播放出来。检测到用户停顿并确认一句话结束后，系统才识别并整理完整意思、翻译成另一种语言；如果这个说话方向选择了语音输出，再把译文播放给对方。
 
 这句已经确认的原文和译文会保存到历史记录，用量也只记一次。保存记录或统计用量即使暂时变慢，也不会要求用户停下来等待，下一轮对话仍然可以继续。
+
+#### 7.2.1 上行：用户说的话如何进入翻译
+
+WebRTC 连接建立后，终端不需要先录成完整文件，也不需要为每个音频片段重复调用 HTTP 接口。麦克风音频始终沿同一条 WebRTC 上行音轨发送，当前代码按以下步骤处理：
+
+1. 终端把麦克风音频编码成 Opus，以 RTP 包持续发送到 realtime-audio。
+2. Pion 收到远端音轨后持续读取 RTP 包。`PionAudioSource` 把 Opus 负载解码为 16 kHz、单声道、16 位 PCM 音频帧，并放入容量为 16 帧的内存缓冲，保证后续按顺序读取。
+3. `segment.Service` 把 PCM 帧逐个交给 VAD。VAD 在收音过程中判断开始说话、持续说话和句末，并把同一句话的帧暂存在内存中。
+4. VAD 确认句末后才交出完整语音段并创建业务 Turn。Turn 固定使用开始时读取的语言配置快照，然后通过 `ASR.StartStream` 建立一次识别流，再用 `PushAudio` 把这一语音段中的 PCM 块按顺序发给 ASR Provider。
+5. ASR 可以返回多次 partial 和一次 final。当前 Pipeline 会忽略语义尚不稳定的 partial；只有 final 原文才能触发翻译、Final Turn、用量记录和后续 TTS。
+
+所以当前实现中的“流式”有两层含义：WebRTC 音频包始终持续上行，ASR 接口也按音频块传输；但业务上仍采用句级 Turn，VAD 先确认一句话结束，再把已经收集的语音段分块送入 ASR，并不是收到一个 RTP 包就单独翻译一次。
+
+#### 7.2.2 下行：译文语音如何返回终端
+
+翻译得到 final 译文后，系统先可靠发布 Final Turn，再开始 TTS。这样即使语音合成或播放失败，已经确认的文字结果也不会丢失或被重新翻译。当前下发链路如下：
+
+1. Pipeline 调用 `TTS.StartStream`。TTS Provider 不必等整段语音全部生成完，而是持续返回带顺序号的 PCM 音频块；默认格式为 24 kHz、单声道、16 位 PCM。
+2. Pipeline 收到第一个真实音频块后，才把运行状态切换为 `playing`，并由 `playback.Service` 使用独立的 `playback_id` 管理本次播放。
+3. `PionAudioTrack.Write` 把每个 PCM 块继续切成 20 ms 的 RTP L16 包，维护连续的 RTP 序号和时间戳，再写入同一个 PeerConnection 上的下行音轨。
+4. 终端从下行音轨持续收包并播放，不需要轮询或等待完整音频文件。同时，`playback.started`、`playback.finished`、`playback.interrupted` 和 `playback.cancelled` 等 JSON 状态事件通过 DataChannel 顺序发送，终端据此更新界面。
+5. 播放期间有人重新说话时，媒体面只中止当前 `playback_id`，不关闭整条 WebRTC 连接和音轨，因此可以立即接收下一句话。
+
+```mermaid
+sequenceDiagram
+    participant Client as 终端
+    participant WebRTC as WebRTC媒体接入
+    participant VAD as VAD与句末检测
+    participant Pipeline as 识别翻译流水线
+    participant Provider as ASR翻译TTS
+
+    Client->>WebRTC: Opus RTP持续上行
+    WebRTC->>VAD: 解码后的PCM音频帧
+    VAD->>VAD: 累积同一句话并判断句末
+    VAD->>Pipeline: 完整语音段
+    loop 按音频块发送
+        Pipeline->>Provider: PushAudio
+    end
+    Provider-->>Pipeline: ASR partial与final
+    Pipeline->>Provider: final原文请求翻译与TTS
+    loop TTS边生成边返回
+        Provider-->>Pipeline: PCM音频块
+        Pipeline-->>Client: 20ms RTP L16下行包
+    end
+    Pipeline-->>Client: DataChannel播放状态事件
+```
+
+媒体数据和控制事件使用不同通道：
+
+| 数据 | 传输通道 | 当前内容与作用 |
+| --- | --- | --- |
+| 上行音频 | WebRTC 上行 Audio Track | Opus RTP，服务端解码后进入 VAD |
+| 下行音频 | WebRTC 下行 Audio Track | RTP L16，承载流式 TTS 播放音频 |
+| 播放状态 | WebRTC DataChannel | JSON 格式的 started、finished、interrupted、cancelled 事件 |
+| 最终文字与用量 | 可靠事件边界 | `translation.final`、`usage.recorded`，供 API 幂等保存和汇总 |
+
+对应的主要代码入口如下。这里列的是内部代码接口；终端只需要维护已经建立的 WebRTC 音轨和 DataChannel，不会直接调用这些 Go 方法。
+
+| 处理位置 | 内部接口 | 代码入口 |
+| --- | --- | --- |
+| 绑定上行音轨并解码 Opus | `OnTrack`、`PionAudioSource.readLoop` | `services/realtime-audio/webrtc/pion_factory.go:179`、`services/realtime-audio/webrtc/media.go:404` |
+| VAD 聚合完整语音段 | `segment.Service.Run` | `services/realtime-audio/segment/service.go:62` |
+| 分块发送到 ASR | `ASR.StartStream`、`PushAudio` | `services/realtime-audio/pipeline/flow.go:75`、`:91` |
+| 翻译并启动流式 TTS | `HandleASRFinal`、`TTS.StartStream` | `services/realtime-audio/pipeline/service.go:104`、`:176` |
+| 下发 TTS 音频 | `publishTTSChunks`、`PionAudioTrack.Write` | `services/realtime-audio/pipeline/service.go:202`、`services/realtime-audio/webrtc/media.go:126` |
+| 回传播放状态 | `playback.EventSink`、`PionEventSink.Publish` | `services/realtime-audio/playback/service.go:55`、`services/realtime-audio/webrtc/media.go:286` |
+
+partial 不触发翻译、计费、TTS 或持久化；只有句末确认后的 final 译文可以进入这些环节。FinalTurn 和 UsageFact 在跨服务交接时依靠幂等和可靠事件重试，音频本身不通过数据库中转。当前 DataChannel 已承载播放生命周期事件，但完整的 final 字幕事件仍需收敛到统一 contracts 并完成终端接入。
 
 ### 7.3 对方的话发到手机，我的话播放给对方
 
@@ -282,6 +350,8 @@ realtime 没有确认启动成功，API 不能把 Session 写成 `active`；返�
 轮到用户回答时，系统把用户的话翻译成对方的语言，并照常播放给对方。这样，对方不需要看用户的手机，用户也不会反复听到原本就是给自己看的译文。
 
 这不是一场对话的新状态，而是两个说话方向各自的输出选择。系统根据当前是谁在说话，决定译文是发到手机还是播放给对方；切换选择从下一句话开始，不改变正在处理的内容，也不影响对话记录。
+
+这是目标输出策略。当前 Pipeline 在 final 翻译后默认进入 TTS，“只把某个方向的译文发到手机并跳过 TTS”的配置、方向判断和终端 final 字幕事件尚未完整实现。
 
 ### 7.4 对方插话，系统立即让出声音
 

@@ -384,7 +384,7 @@ func TestManualModeFinishSendsCommitBeforeSessionFinish(t *testing.T) {
 				_ = conn.WriteJSON(map[string]any{"type": "input_audio_buffer.committed"})
 			case "session.finish":
 				_ = conn.WriteJSON(map[string]any{
-					"type": "conversation.item.input_audio_transcription.completed",
+					"type":     "conversation.item.input_audio_transcription.completed",
 					"language": "zh", "transcript": "你好",
 				})
 				_ = conn.WriteJSON(map[string]any{"type": "session.finished"})
@@ -395,9 +395,9 @@ func TestManualModeFinishSendsCommitBeforeSessionFinish(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(Config{
-		APIKey: "test-key",
-		WebSocketURL: "ws" + strings.TrimPrefix(server.URL, "http"),
-		Model: "qwen3-asr-flash-realtime",
+		APIKey:           "test-key",
+		WebSocketURL:     "ws" + strings.TrimPrefix(server.URL, "http"),
+		Model:            "qwen3-asr-flash-realtime",
 		DisableServerVAD: true,
 	})
 	if err != nil {

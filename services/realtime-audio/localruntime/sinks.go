@@ -46,17 +46,17 @@ type DataChannelFinalTurnSink struct {
 
 // FrontendTranslationFinal matches the lingow-voice-demo DataChannel listener.
 type FrontendTranslationFinal struct {
-	Type             string `json:"type"`
-	Event            string `json:"event"`
-	TurnID           string `json:"turn_id"`
-	ID               string `json:"id"`
-	SessionID        string `json:"session_id"`
-	SourceText       string `json:"source_text"`
-	TranslatedText   string `json:"translated_text"`
-	SourceLanguage   string `json:"source_language"`
-	TargetLanguage   string `json:"target_language"`
-	SequenceNo       int64  `json:"sequence"`
-	LanguageConfigV  int64  `json:"language_config_version"`
+	Type            string `json:"type"`
+	Event           string `json:"event"`
+	TurnID          string `json:"turn_id"`
+	ID              string `json:"id"`
+	SessionID       string `json:"session_id"`
+	SourceText      string `json:"source_text"`
+	TranslatedText  string `json:"translated_text"`
+	SourceLanguage  string `json:"source_language"`
+	TargetLanguage  string `json:"target_language"`
+	SequenceNo      int64  `json:"sequence"`
+	LanguageConfigV int64  `json:"language_config_version"`
 }
 
 func (s DataChannelFinalTurnSink) Publish(ctx context.Context, event recordsv1.FinalTurnEvent) error {

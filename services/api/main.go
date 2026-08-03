@@ -102,6 +102,7 @@ func run() error {
 		processConfig.JWTSecret,
 		processConfig.JWTIssuer,
 		processConfig.JWTAudience,
+		processConfig.RecordsSystemToken,
 	)
 	if err != nil {
 		return err
@@ -270,7 +271,7 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		accessTokenAudience = "lingow-client"
 	)
 
-	databaseURL, tokenSecret, err := recordsHTTPConfigurationFromEnv()
+	databaseURL, tokenSecret, systemToken, err := recordsHTTPConfigurationFromEnv()
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +285,7 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
 	}
 
-	dependencies, err := newRecordsHTTPDependenciesFromPool(ctx, pool, tokenSecret, accessTokenIssuer, accessTokenAudience)
+	dependencies, err := newRecordsHTTPDependenciesFromPool(ctx, pool, tokenSecret, accessTokenIssuer, accessTokenAudience, systemToken)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
@@ -299,7 +300,7 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 func newRecordsHTTPDependenciesFromPool(
 	ctx context.Context,
 	pool *pgxpool.Pool,
-	tokenSecret, issuer, audience string,
+	tokenSecret, issuer, audience, systemToken string,
 ) (*recordsHTTPDependencies, error) {
 	if pool == nil {
 		return nil, errors.New("records HTTP requires PostgreSQL pool")
@@ -352,9 +353,9 @@ func newRecordsHTTPDependenciesFromPool(
 			Participants: services.Participants,
 			Turns:        services.Turns,
 			Accounts:     recordswebapi.ContextAccountProvider{},
-			// No production system credential exists yet; PATCH routes stay fail-closed.
-			System: recordswebapi.ContextSystemAuthorizer{},
-			Logger: slog.Default(),
+			System:       recordswebapi.ContextSystemAuthorizer{},
+			SystemToken:  systemToken,
+			Logger:       slog.Default(),
 		}),
 		accounts:   accountUseCases,
 		tokens:     tokens,
@@ -372,19 +373,19 @@ func credentialDigesterFromEnv() (*accounts.CredentialDigester, error) {
 	return accounts.NewCredentialDigester(pepper)
 }
 
-func recordsHTTPConfigurationFromEnv() (string, string, error) {
+func recordsHTTPConfigurationFromEnv() (string, string, string, error) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
-		return "", "", fmt.Errorf("initialize records HTTP: DATABASE_URL is required")
+		return "", "", "", fmt.Errorf("initialize records HTTP: DATABASE_URL is required")
 	}
 	tokenSecret := os.Getenv("JWT_SECRET")
 	if tokenSecret == "" {
-		return "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET is required")
+		return "", "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET is required")
 	}
 	if len([]byte(tokenSecret)) < 32 {
-		return "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET must be at least 32 bytes")
+		return "", "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET must be at least 32 bytes")
 	}
-	return databaseURL, tokenSecret, nil
+	return databaseURL, tokenSecret, os.Getenv("LINGOW_RECORDS_SYSTEM_TOKEN"), nil
 }
 
 func buildMux(
@@ -424,13 +425,20 @@ func buildMuxWithServices(
 		})
 	}
 	if records != nil {
-		records.Register(mux, func(next http.Handler) http.Handler {
-			return records.Authenticate(tokens, next)
+		records.Register(mux, recordswebapi.RouteMiddleware{
+			Account: func(next http.Handler) http.Handler {
+				return records.Authenticate(tokens, next)
+			},
+			System: records.SystemAuthenticate,
 		})
 		return mux
 	}
-	recordswebapi.NewNotImplementedHandler(slog.Default()).Register(mux, func(next http.Handler) http.Handler {
-		return internalwebapi.Authenticate(tokens, next)
+	notImplemented := recordswebapi.NewNotImplementedHandler(slog.Default())
+	notImplemented.Register(mux, recordswebapi.RouteMiddleware{
+		Account: func(next http.Handler) http.Handler {
+			return internalwebapi.Authenticate(tokens, next)
+		},
+		System: notImplemented.SystemAuthenticate,
 	})
 	return mux
 }

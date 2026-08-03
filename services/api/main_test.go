@@ -218,6 +218,7 @@ func TestNewRecordsHTTPDependenciesFromPoolRequiresPool(t *testing.T) {
 		strings.Repeat("s", 32),
 		"lingow-api",
 		"lingow-client",
+		"",
 	)
 	if err == nil {
 		t.Fatal("newRecordsHTTPDependenciesFromPool() succeeded with nil pool")

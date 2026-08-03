@@ -199,7 +199,7 @@ func TestInternalErrorLogsCauseWithoutExposingIt(t *testing.T) {
 
 func TestRegisterAppliesAuthenticationToEveryRoute(t *testing.T) {
 	participantRepository := &participantRepository{}
-	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01"}}
+	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
 	owners := sessionOwners{ownerID: "acct_01"}
 	server := NewHandler(Dependencies{
 		Participants: participants.NewService(participantRepository, owners, nil),
@@ -209,10 +209,10 @@ func TestRegisterAppliesAuthenticationToEveryRoute(t *testing.T) {
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 
-	authenticatedCalls := 0
-	authenticate := func(next http.Handler) http.Handler {
+	accountCalls := 0
+	accountAuthenticate := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			authenticatedCalls++
+			accountCalls++
 			if request.Header.Get("Authorization") != "Bearer access-token" {
 				writer.WriteHeader(http.StatusUnauthorized)
 				return
@@ -221,36 +221,160 @@ func TestRegisterAppliesAuthenticationToEveryRoute(t *testing.T) {
 			next.ServeHTTP(writer, request.WithContext(ctx))
 		})
 	}
+	systemCalls := 0
+	systemAuthenticate := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			systemCalls++
+			if request.Header.Get(systemTokenHeader) != "system-token" {
+				writer.WriteHeader(http.StatusForbidden)
+				return
+			}
+			ctx := WithSystemActor(request.Context())
+			next.ServeHTTP(writer, request.WithContext(ctx))
+		})
+	}
 	mux := http.NewServeMux()
-	server.Register(mux, authenticate)
+	server.Register(mux, RouteMiddleware{
+		Account: accountAuthenticate,
+		System:  systemAuthenticate,
+	})
 
-	unauthenticated := httptest.NewRequest(http.MethodGet, "/api/v1/translation-history", nil)
-	if response := serve(mux, unauthenticated); response.Code != http.StatusUnauthorized {
+	noAuthorization := httptest.NewRequest(http.MethodGet, "/api/v1/translation-history", nil)
+	if response := serve(mux, noAuthorization); response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
 
-	tests := []struct {
+	accountOnly := []struct {
 		method     string
 		path       string
 		wantStatus int
 	}{
 		{method: http.MethodGet, path: "/api/v1/voice-sessions/vs_01/participants", wantStatus: http.StatusOK},
-		{method: http.MethodPatch, path: "/api/v1/voice-sessions/vs_01/participants/p_01", wantStatus: http.StatusForbidden},
 		{method: http.MethodGet, path: "/api/v1/voice-sessions/vs_01/turns", wantStatus: http.StatusOK},
 		{method: http.MethodGet, path: "/api/v1/voice-turns/vt_01", wantStatus: http.StatusOK},
-		{method: http.MethodPatch, path: "/api/v1/voice-turns/vt_01/attribution", wantStatus: http.StatusForbidden},
 		{method: http.MethodGet, path: "/api/v1/translation-history", wantStatus: http.StatusOK},
 	}
-	for _, test := range tests {
+	for _, test := range accountOnly {
 		request := httptest.NewRequest(test.method, test.path, nil)
 		request.Header.Set("Authorization", "Bearer access-token")
 		response := serve(mux, request)
 		if response.Code != test.wantStatus {
-			t.Fatalf("%s %s status = %d, want %d; body = %s", test.method, test.path, response.Code, test.wantStatus, response.Body.String())
+			t.Fatalf("account-only %s %s status = %d, want %d; body = %s", test.method, test.path, response.Code, test.wantStatus, response.Body.String())
 		}
 	}
-	if authenticatedCalls != len(tests)+1 {
-		t.Fatalf("authentication calls = %d, want %d", authenticatedCalls, len(tests)+1)
+
+	missingSystem := []struct {
+		method     string
+		path       string
+		wantStatus int
+	}{
+		{method: http.MethodPatch, path: "/api/v1/voice-sessions/vs_01/participants/p_01", wantStatus: http.StatusForbidden},
+		{method: http.MethodPatch, path: "/api/v1/voice-turns/vt_01/attribution", wantStatus: http.StatusForbidden},
+	}
+	for _, test := range missingSystem {
+		request := httptest.NewRequest(test.method, test.path, strings.NewReader(`{"participant_id":"p_01","attribution_status":"confirmed"}`))
+		request.Header.Set("Authorization", "Bearer access-token")
+		response := serve(mux, request)
+		if response.Code != test.wantStatus {
+			t.Fatalf("missing system %s %s status = %d, want %d; body = %s", test.method, test.path, response.Code, test.wantStatus, response.Body.String())
+		}
+	}
+
+	withSystem := []struct {
+		method     string
+		path       string
+		body       string
+		wantStatus int
+	}{
+		{method: http.MethodPatch, path: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"display_name":"A"}`, wantStatus: http.StatusOK},
+		{method: http.MethodPatch, path: "/api/v1/voice-turns/vt_01/attribution", body: `{"participant_id":"p_01","attribution_status":"confirmed"}`, wantStatus: http.StatusOK},
+	}
+	for _, test := range withSystem {
+		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+		request.Header.Set("Authorization", "Bearer access-token")
+		request.Header.Set(systemTokenHeader, "system-token")
+		response := serve(mux, request)
+		if response.Code != test.wantStatus {
+			t.Fatalf("with system %s %s status = %d, want %d; body = %s", test.method, test.path, response.Code, test.wantStatus, response.Body.String())
+		}
+	}
+}
+
+func TestSystemAuthenticateRejectsWithoutConfiguredToken(t *testing.T) {
+	participantRepository := &participantRepository{}
+	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
+	owners := sessionOwners{ownerID: "acct_01"}
+	server := NewHandler(Dependencies{
+		Participants: participants.NewService(participantRepository, owners, nil),
+		Turns:        turns.NewService(turnRepository, owners, nil),
+		Accounts:     ContextAccountProvider{},
+		System:       ContextSystemAuthorizer{},
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	mux := http.NewServeMux()
+	server.Register(mux, RouteMiddleware{
+		Account: func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				next.ServeHTTP(writer, request.WithContext(WithAccountID(request.Context(), "acct_01")))
+			})
+		},
+		System: server.SystemAuthenticate,
+	})
+
+	path := "/api/v1/voice-sessions/vs_01/participants/p_01"
+	request := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(`{"display_name":"A"}`))
+	request.Header.Set(systemTokenHeader, "any-token")
+	response := serve(mux, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("system authenticate status = %d, want %d; body = %s", response.Code, http.StatusForbidden, response.Body.String())
+	}
+}
+
+func TestSystemAuthenticateAcceptsConfiguredToken(t *testing.T) {
+	participantRepository := &participantRepository{updated: recordsv1.Participant{ID: "p_01", SessionID: "vs_01"}}
+	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
+	owners := sessionOwners{ownerID: "acct_01"}
+	server := NewHandler(Dependencies{
+		Participants: participants.NewService(participantRepository, owners, nil),
+		Turns:        turns.NewService(turnRepository, owners, nil),
+		Accounts:     ContextAccountProvider{},
+		System:       ContextSystemAuthorizer{},
+		SystemToken:  "records-system-token-secret-123456",
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	mux := http.NewServeMux()
+	server.Register(mux, RouteMiddleware{
+		Account: func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				next.ServeHTTP(writer, request.WithContext(WithAccountID(request.Context(), "acct_01")))
+			})
+		},
+		System: server.SystemAuthenticate,
+	})
+
+	tests := []struct {
+		name    string
+		token   string
+		path    string
+		body    string
+		want    int
+	}{
+		{name: "matching token", token: "records-system-token-secret-123456", path: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"display_name":"A"}`, want: http.StatusOK},
+		{name: "wrong token", token: "wrong-token", path: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"display_name":"A"}`, want: http.StatusForbidden},
+		{name: "missing header", path: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"display_name":"A"}`, want: http.StatusForbidden},
+		{name: "attribution matching token", token: "records-system-token-secret-123456", path: "/api/v1/voice-turns/vt_01/attribution", body: `{"participant_id":"p_01","attribution_status":"confirmed"}`, want: http.StatusOK},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPatch, test.path, strings.NewReader(test.body))
+			if test.token != "" {
+				request.Header.Set(systemTokenHeader, test.token)
+			}
+			response := serve(mux, request)
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d; body = %s", response.Code, test.want, response.Body.String())
+			}
+		})
 	}
 }
 
@@ -276,7 +400,10 @@ func newHandlerWithLogger(t *testing.T, participantRepository *participantReposi
 		Logger:       logger,
 	})
 	mux := http.NewServeMux()
-	handler.Register(mux, func(next http.Handler) http.Handler { return next })
+	handler.Register(mux, RouteMiddleware{
+		Account: func(next http.Handler) http.Handler { return next },
+		System:  func(next http.Handler) http.Handler { return next },
+	})
 	return mux
 }
 

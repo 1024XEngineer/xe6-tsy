@@ -3,6 +3,7 @@ package webapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,8 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 )
+
+const systemTokenHeader = "X-Lingow-System-Token"
 
 type systemActorContextKey struct{}
 
@@ -64,6 +67,7 @@ type Dependencies struct {
 	Turns        *turns.Service
 	Accounts     AccountProvider
 	System       SystemAuthorizer
+	SystemToken  string
 	Logger       *slog.Logger
 }
 
@@ -73,6 +77,7 @@ type Server struct {
 	turns        *turns.Service
 	accounts     AccountProvider
 	system       SystemAuthorizer
+	systemToken  string
 	logger       *slog.Logger
 	requestSeq   atomic.Uint64
 }
@@ -99,22 +104,37 @@ func NewHandler(dependencies Dependencies) *Server {
 		turns:        dependencies.Turns,
 		accounts:     dependencies.Accounts,
 		system:       dependencies.System,
+		systemToken:  dependencies.SystemToken,
 		logger:       dependencies.Logger,
 	}
 	return server
 }
 
-// Register attaches all voice-record routes behind the caller's authentication boundary.
-func (s *Server) Register(mux *http.ServeMux, authenticate func(http.Handler) http.Handler) {
-	if authenticate == nil {
-		panic("webapi authentication middleware is required")
+// RouteMiddleware carries the account and system authentication boundaries applied by Register.
+// Read routes require only the account middleware; PATCH routes require both so an internal
+// system credential can never substitute for a valid account or vice versa.
+type RouteMiddleware struct {
+	Account func(http.Handler) http.Handler
+	System  func(http.Handler) http.Handler
+}
+
+// Register attaches all voice-record routes behind the caller's authentication boundaries.
+func (s *Server) Register(mux *http.ServeMux, middleware RouteMiddleware) {
+	if middleware.Account == nil {
+		panic("webapi account authentication middleware is required")
 	}
-	mux.Handle("GET /api/v1/voice-sessions/{id}/participants", authenticate(http.HandlerFunc(s.listParticipants)))
-	mux.Handle("PATCH /api/v1/voice-sessions/{id}/participants/{participant_id}", authenticate(http.HandlerFunc(s.updateParticipant)))
-	mux.Handle("GET /api/v1/voice-sessions/{id}/turns", authenticate(http.HandlerFunc(s.listSessionTurns)))
-	mux.Handle("GET /api/v1/voice-turns/{id}", authenticate(http.HandlerFunc(s.getTurn)))
-	mux.Handle("PATCH /api/v1/voice-turns/{id}/attribution", authenticate(http.HandlerFunc(s.correctAttribution)))
-	mux.Handle("GET /api/v1/translation-history", authenticate(http.HandlerFunc(s.listHistory)))
+	if middleware.System == nil {
+		panic("webapi system authentication middleware is required")
+	}
+	patch := func(next http.Handler) http.Handler {
+		return middleware.Account(middleware.System(next))
+	}
+	mux.Handle("GET /api/v1/voice-sessions/{id}/participants", middleware.Account(http.HandlerFunc(s.listParticipants)))
+	mux.Handle("PATCH /api/v1/voice-sessions/{id}/participants/{participant_id}", patch(http.HandlerFunc(s.updateParticipant)))
+	mux.Handle("GET /api/v1/voice-sessions/{id}/turns", middleware.Account(http.HandlerFunc(s.listSessionTurns)))
+	mux.Handle("GET /api/v1/voice-turns/{id}", middleware.Account(http.HandlerFunc(s.getTurn)))
+	mux.Handle("PATCH /api/v1/voice-turns/{id}/attribution", patch(http.HandlerFunc(s.correctAttribution)))
+	mux.Handle("GET /api/v1/translation-history", middleware.Account(http.HandlerFunc(s.listHistory)))
 }
 
 // Authenticate applies the shared Bearer-token parser while preserving the
@@ -131,6 +151,25 @@ func (s *Server) Authenticate(tokens accounts.AccessTokenVerifier, next http.Han
 			return
 		}
 		next.ServeHTTP(writer, request.WithContext(ctx))
+	})
+}
+
+// SystemAuthenticate validates the X-Lingow-System-Token internal credential and marks the
+// request as a system actor. It is fail-closed: without a configured token, or when the header
+// is missing or does not match, the request is rejected with forbidden. The comparison is
+// constant-time and the configured token is never written to logs or error responses.
+func (s *Server) SystemAuthenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if s.systemToken == "" {
+			s.writeError(writer, recordsv1.ErrorForbidden, errors.New("system authentication is not configured"))
+			return
+		}
+		provided := request.Header.Get(systemTokenHeader)
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(s.systemToken)) != 1 {
+			s.writeError(writer, recordsv1.ErrorForbidden, errors.New("system authentication is required"))
+			return
+		}
+		next.ServeHTTP(writer, request.WithContext(WithSystemActor(request.Context())))
 	})
 }
 

@@ -286,6 +286,15 @@ func TestWaitForFakeProviderCallReturnsSettledError(t *testing.T) {
 	}
 }
 
+func TestWaitForFakeProviderCallHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	call := &fakeProviderCall{done: make(chan struct{})}
+	if err := waitForFakeProviderCall(ctx, call); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForFakeProviderCall() error = %v, want context.Canceled", err)
+	}
+}
+
 func validFakeRequest() SendRequest {
 	return SendRequest{
 		Message: Message{

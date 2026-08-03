@@ -14,7 +14,7 @@ export function VideoOrb() {
         loop
         muted
         playsInline
-        preload="auto"
+        preload="metadata"
         src="/media/loop.mp4"
         tabIndex={-1}
       />

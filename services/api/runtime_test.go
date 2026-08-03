@@ -379,6 +379,16 @@ func TestConfiguredRuntimeServeStopsWhenFinalTurnWorkerFails(t *testing.T) {
 	}
 }
 
+func TestConfiguredRuntimeServeSupervisesAttributionWorker(t *testing.T) {
+	runtime := newRuntimeBlockingServeFixture(t)
+	runtime.attributionWorker = failFastFinalTurnWorker{err: turns.ErrAttributionSettlement}
+
+	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	if err == nil || !errors.Is(err, turns.ErrAttributionSettlement) {
+		t.Fatalf("Serve() error = %v, want attribution settlement failure", err)
+	}
+}
+
 func TestRunFailFastBackgroundWorkerReportsWorkerError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

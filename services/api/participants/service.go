@@ -97,35 +97,6 @@ func (s *Service) ResolveProviderMapping(ctx context.Context, accountID string, 
 	return s.repository.FindOrCreate(ctx, observation)
 }
 
-// GetProvisionalAttribution implements the contracts port used by the realtime module. An absent
-// provider speaker ID intentionally yields pending attribution so realtime translation can finish
-// without waiting for a stable participant mapping.
-func (s *Service) GetProvisionalAttribution(ctx context.Context, observation recordsv1.SpeakerObservation) (recordsv1.SpeakerAttribution, error) {
-	if observation.SessionID == "" || observation.TurnID == "" {
-		return recordsv1.SpeakerAttribution{}, ErrInvalidRequest
-	}
-	if observation.ProviderSpeakerID == "" {
-		return recordsv1.SpeakerAttribution{AttributionStatus: recordsv1.AttributionPending}, nil
-	}
-
-	participant, err := s.repository.FindOrCreate(ctx, observation)
-	if err != nil {
-		return recordsv1.SpeakerAttribution{}, err
-	}
-	if participant.ID == "" || participant.SpeakerCode == "" {
-		return recordsv1.SpeakerAttribution{}, fmt.Errorf("participant repository returned an incomplete participant: %w", ErrInvalidRequest)
-	}
-
-	id := participant.ID
-	return recordsv1.SpeakerAttribution{
-		ParticipantID:     &id,
-		SpeakerCode:       participant.SpeakerCode,
-		DisplayName:       participant.DisplayName,
-		Confidence:        participant.Confidence,
-		AttributionStatus: recordsv1.AttributionProvisional,
-	}, nil
-}
-
 func (s *Service) requireOwner(ctx context.Context, accountID, sessionID string) error {
 	if accountID == "" || sessionID == "" {
 		return ErrInvalidRequest
@@ -142,5 +113,3 @@ func (s *Service) requireOwner(ctx context.Context, accountID, sessionID string)
 	}
 	return nil
 }
-
-var _ recordsv1.SpeakerAttributionReader = (*Service)(nil)

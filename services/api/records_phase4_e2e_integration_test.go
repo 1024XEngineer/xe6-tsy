@@ -250,20 +250,6 @@ type recordsPhase4Turns struct {
 	foreign    pipeline.TurnContext
 }
 
-type phase4SpeakerReader struct {
-	delegate recordsv1.SpeakerAttributionReader
-}
-
-func (r phase4SpeakerReader) GetProvisionalAttribution(ctx context.Context, observation recordsv1.SpeakerObservation) (recordsv1.SpeakerAttribution, error) {
-	if observation.ProviderSpeakerID == "local-mic" {
-		return recordsv1.SpeakerAttribution{
-			SpeakerCode:       recordsv1.PendingSpeakerCode,
-			AttributionStatus: recordsv1.AttributionPending,
-		}, nil
-	}
-	return r.delegate.GetProvisionalAttribution(ctx, observation)
-}
-
 func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 	t.Helper()
 	databaseURL := recordsHTTPTestDatabaseURL(t)
@@ -362,7 +348,7 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 			Provider: "integration-tts",
 			Model:    "integration-tts-model",
 		}}),
-		Speakers:       phase4SpeakerReader{delegate: recordsServices.Participants},
+		Speakers:       nil,
 		FinalTurns:     pipeline.NewPostgresFinalTurnSink(pool),
 		Usage:          phase4UsageSink{},
 		Audio:          phase4AudioSink{},
@@ -428,7 +414,26 @@ func (f *recordsPhase4Fixture) publishFinalTurns(t *testing.T) recordsPhase4Turn
 	if err := <-workerDone; err != nil {
 		t.Fatalf("final turn worker error = %v", err)
 	}
+
+	// The realtime producer never writes participant rows; the API attribution worker owns the
+	// mapping. Draining the three enqueued tasks (attributed turn resolves, the two turns without
+	// a provider key fail permanently) mirrors the production async chain.
+	f.resolveAttributionTasks(t)
 	return result
+}
+
+func (f *recordsPhase4Fixture) resolveAttributionTasks(t *testing.T) {
+	t.Helper()
+	store := recordstore.NewAttributionTaskStore(f.pool)
+	for range 3 {
+		delivery, err := store.Receive(t.Context())
+		if err != nil {
+			t.Fatalf("receive attribution task: %v", err)
+		}
+		if err := f.records.AttributionWorker.Process(t.Context(), delivery); err != nil {
+			t.Fatalf("attribution worker Process() error = %v", err)
+		}
+	}
 }
 
 func phase4Turn(sessionID, accountID, turnID, traceID string, sequenceNo int64, startedAt time.Time) pipeline.TurnContext {

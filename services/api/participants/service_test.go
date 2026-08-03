@@ -71,47 +71,6 @@ func TestUpdatePassesExplicitClearWithoutTouchingTurns(t *testing.T) {
 	}
 }
 
-func TestGetProvisionalAttributionReusesStableParticipant(t *testing.T) {
-	repository := &fakeRepository{}
-	service := NewService(repository, fakeSessionOwners{}, nil)
-	observation := recordsv1.SpeakerObservation{SessionID: "vs_01", TurnID: "vt_01", ProviderSpeakerID: "diar_01"}
-
-	first, err := service.GetProvisionalAttribution(context.Background(), observation)
-	if err != nil {
-		t.Fatalf("first attribution error = %v", err)
-	}
-	observation.TurnID = "vt_02"
-	second, err := service.GetProvisionalAttribution(context.Background(), observation)
-	if err != nil {
-		t.Fatalf("second attribution error = %v", err)
-	}
-
-	if first.ParticipantID == nil || second.ParticipantID == nil || *first.ParticipantID != *second.ParticipantID {
-		t.Fatalf("participant IDs = %#v, %#v", first.ParticipantID, second.ParticipantID)
-	}
-	if first.SpeakerCode != "speaker_01" || second.SpeakerCode != "speaker_01" {
-		t.Fatalf("speaker codes = %q, %q", first.SpeakerCode, second.SpeakerCode)
-	}
-	if first.AttributionStatus != recordsv1.AttributionProvisional {
-		t.Fatalf("attribution status = %q", first.AttributionStatus)
-	}
-}
-
-func TestGetProvisionalAttributionAllowsPending(t *testing.T) {
-	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
-
-	attribution, err := service.GetProvisionalAttribution(context.Background(), recordsv1.SpeakerObservation{
-		SessionID: "vs_01",
-		TurnID:    "vt_01",
-	})
-	if err != nil {
-		t.Fatalf("GetProvisionalAttribution() error = %v", err)
-	}
-	if attribution.ParticipantID != nil || attribution.AttributionStatus != recordsv1.AttributionPending {
-		t.Fatalf("attribution = %#v", attribution)
-	}
-}
-
 func TestResolveProviderMappingRequiresOwnerAndEvidence(t *testing.T) {
 	tests := []struct {
 		name        string

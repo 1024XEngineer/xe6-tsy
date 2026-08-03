@@ -10,11 +10,14 @@ export type TTSAudioEvent = {
   pcm: ArrayBuffer;
 };
 
+export type TTSAudioPlaybackListener = (playing: boolean) => void;
+
 type PendingPlayback = {
   sampleRateHz: number;
   channels: number;
   encoding: string;
   chunks: Map<number, ArrayBuffer>;
+  listener?: TTSAudioPlaybackListener;
 };
 
 let sharedContext: AudioContext | null = null;
@@ -105,27 +108,35 @@ async function playAssembled(event: {
   channels: number;
   encoding: string;
   pcm: ArrayBuffer;
-}): Promise<void> {
+}, listener?: TTSAudioPlaybackListener): Promise<void> {
+  listener?.(true);
   const ctx = getAudioContext(event.sampleRateHz);
-  if (ctx.state === "suspended") {
-    await ctx.resume().catch(() => undefined);
-  }
-  const audioBuffer = await toAudioBuffer(ctx, event);
-  await new Promise<void>((resolve, reject) => {
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(ctx.destination);
-    source.onended = () => resolve();
-    try {
-      source.start();
-    } catch (error) {
-      reject(error);
+  try {
+    if (ctx.state === "suspended") {
+      await ctx.resume().catch(() => undefined);
     }
-  });
+    const audioBuffer = await toAudioBuffer(ctx, event);
+    await new Promise<void>((resolve, reject) => {
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.onended = () => resolve();
+      try {
+        source.start();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  } finally {
+    listener?.(false);
+  }
 }
 
 /** Queue TTS clips so overlapping turns do not stomp each other. */
-export function enqueueTTSAudio(event: TTSAudioEvent): void {
+export function enqueueTTSAudio(
+  event: TTSAudioEvent,
+  listener?: TTSAudioPlaybackListener,
+): void {
   const playbackId = event.playbackId || "default";
   let pending = pendingByPlayback.get(playbackId);
   if (!pending) {
@@ -134,8 +145,11 @@ export function enqueueTTSAudio(event: TTSAudioEvent): void {
       channels: event.channels,
       encoding: event.encoding,
       chunks: new Map(),
+      listener,
     };
     pendingByPlayback.set(playbackId, pending);
+  } else if (!pending.listener && listener) {
+    pending.listener = listener;
   }
   pending.chunks.set(event.sequence || pending.chunks.size + 1, event.pcm);
   if (event.encoding) {
@@ -153,7 +167,7 @@ export function enqueueTTSAudio(event: TTSAudioEvent): void {
   };
   playChain = playChain
     .catch(() => undefined)
-    .then(() => playAssembled(assembled));
+    .then(() => playAssembled(assembled, pending.listener));
 }
 
 export function parseTTSAudioEvent(payload: unknown): TTSAudioEvent | null {

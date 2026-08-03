@@ -38,6 +38,7 @@ import {
 } from "../model/session";
 
 const POLL_INTERVAL_MS = 1200;
+const TTS_INPUT_RESUME_DELAY_MS = 300;
 
 export type SessionDebugInfo = {
   accountId: string | null;
@@ -281,6 +282,29 @@ export function useVoiceSession() {
       );
       const ticket = ticketResponse.ticket;
 
+      let ttsResumeTimer: ReturnType<typeof setTimeout> | null = null;
+      const setMicrophoneInputEnabled = (enabled: boolean) => {
+        const stream = webrtcRef.current?.localStream;
+        if (!stream) return;
+        if (ttsResumeTimer) {
+          clearTimeout(ttsResumeTimer);
+          ttsResumeTimer = null;
+        }
+        if (!enabled) {
+          for (const track of stream.getAudioTracks()) {
+            track.enabled = false;
+          }
+          return;
+        }
+        ttsResumeTimer = setTimeout(() => {
+          if (sessionIdRef.current !== session.id) return;
+          for (const track of stream.getAudioTracks()) {
+            track.enabled = true;
+          }
+          ttsResumeTimer = null;
+        }, TTS_INPUT_RESUME_DELAY_MS);
+      };
+
       setStatusMessage("正在建立 WebRTC");
       setHintMessage("请允许麦克风；随后交换 SDP/ICE。");
       try {
@@ -290,7 +314,7 @@ export function useVoiceSession() {
           onDataMessage: (payload) => {
             const audio = parseTTSAudioEvent(payload);
             if (audio) {
-              enqueueTTSAudio(audio);
+              enqueueTTSAudio(audio, setMicrophoneInputEnabled);
               return;
             }
             const event = parseTranslationFinal(payload);

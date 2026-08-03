@@ -15,17 +15,17 @@ describe("startVoiceSession", () => {
   });
 
   it("retries a transient start failure with the same idempotency key", async () => {
-    const fetchMock = vi
-      .fn<() => Promise<Response>>()
-      .mockResolvedValueOnce(
-        jsonResponse(
-          { error: { code: "realtime_start_failed", message: "temporary" } },
-          503,
-        ),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({ id: "vs-1", status: "active" }),
-      );
+    const responses = [
+      jsonResponse(
+        { error: { code: "realtime_start_failed", message: "temporary" } },
+        503,
+      ),
+      jsonResponse({ id: "vs-1", status: "active" }),
+    ];
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        responses.shift() ?? jsonResponse({}, 500),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(

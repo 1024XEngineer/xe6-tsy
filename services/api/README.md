@@ -104,8 +104,16 @@ API 启动语音记录和 Session 路由需要 `DATABASE_URL` 和至少 32 字�
 PostgreSQL participant/turn repositories 与账户 session scope。
 
 六条 records 路由统一经过 Bearer token 验证。GET 只读取当前账户拥有会话中的 final records；
-客户端账户字段和 `X-Account-ID` 不参与授权。当前仓库尚无可信 system actor 凭据契约，因此两个
-AI-only PATCH 路由在生产装配中保持 fail-closed，普通 Access Token 返回 `403 forbidden`。
+客户端账户字段和 `X-Account-ID` 不参与授权。两个 AI-only PATCH 路由要求账户 Bearer token 和
+`X-Lingow-System-Token` 双重认证；`LINGOW_RECORDS_SYSTEM_TOKEN` 未配置时 PATCH 保持
+fail-closed（`403 forbidden`），配置后由 `SystemAuthenticate` 做常量时间比对并在成功后标记为
+system actor。
+
+pending/provisional FinalTurn 在落库同一事务内入队一个 durable attribution task。API 启动时运行
+attribution worker：worker 领取任务，按持久化的 `provider_speaker_id` 通过账户范围的 participant
+service 建立稳定映射，再通过 turns service 确认或修正归属。没有 provider speaker key 的任务被永久
+标记失败（`no_provider_speaker_id`）而不是伪装成功；重试采用指数退避并在达到上限后停止。两个
+API runtime（普通与 `LINGOW_DELIVERY_RUNTIME=enabled`）都会启动该 worker。
 
 API 同时运行 PostgreSQL `final_turn_outbox` consumer。事件使用 `event_id` 和完整 payload hash
 保证发布重放一致，worker 通过 receipt lease 领取消息：成功写入后 Ack，临时存储错误 Nack 并延迟

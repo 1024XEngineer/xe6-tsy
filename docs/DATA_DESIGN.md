@@ -381,7 +381,35 @@ Final Turn 持久化表，保存每轮原文、译文、语言方向和说话人
 
 Turn 侧的 `speaker_code`、`display_name`、`provider_speaker_id`、`voice_profile_id` 是写入时快照，与可修正的 `participant_id` 有意冗余。该设计适用于需要保留“实时阶段识别结果”和最终归属的场景；如果产品只展示修正后的最终参与者，这组快照字段可作为简化候选。当前表只保存最终修正状态，不保存每一次修正历史。
 
-### 4.12 `final_turn_outbox`
+`voice_turns.provider_speaker_id` 在初始 FinalTurn 落库时由实时链路写入：`FinalTurnEvent.provider_speaker_id` 只有在 ASR/diarization 提供会话内稳定的 cluster key 时才填充，缺失时保持 `NULL`。异步归属 worker 依据该字段建立 participant 稳定映射；没有该字段的 turn 无法确定性归属，其任务被永久标记失败（`no_provider_speaker_id`）而不是伪造成功。当前仓库的 Qwen ASR adapter 不产生 speaker key，因此默认只保留 pending。
+
+### 4.12 `attribution_tasks`
+
+异步说话人归属的持久化工作队列。当 FinalTurn 以 `pending` 或 `provisional` 状态落库时，在同一事务内为每个 turn 创建一条任务（`turn_id` 唯一）。API 的 attribution worker 领取任务、解析归属并结算。
+
+| 字段 | 类型 | 空 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `task_id` | `TEXT` | 否 |  | 任务 ID，格式 `attr_<turn_id>` |
+| `turn_id` | `TEXT` | 否 |  | 目标 turn ID，唯一 |
+| `session_id` | `TEXT` | 否 |  | 会话 ID |
+| `account_id` | `TEXT` | 否 |  | 会话归属账户（合并链的当前 owner） |
+| `task_type` | `TEXT` | 否 |  | 当前只使用 `turn_attribution` |
+| `status` | `TEXT` | 否 | `pending` | `pending` / `processing` / `completed` / `failed` |
+| `available_at` | `TIMESTAMPTZ` | 否 |  | 最早可领取时间，重试时按指数退避后移 |
+| `receipt` | `TEXT` | 是 |  | 领取凭据，`processing` 时非空 |
+| `locked_until` | `TIMESTAMPTZ` | 是 |  | lease 到期时间，过期后任务可被重新领取 |
+| `attempts` | `INTEGER` | 否 | `0` | 已领取次数；超过上限后停止重试 |
+| `last_error` | `TEXT` | 是 |  | 最后一次失败原因，永久失败记录稳定错误码 |
+| `created_at` | `TIMESTAMPTZ` | 否 |  | 创建时间 |
+| `updated_at` | `TIMESTAMPTZ` | 否 |  | 更新时间 |
+
+处理语义：
+
+- worker 按 `FOR UPDATE SKIP LOCKED` 领取到期任务，成功写入后 Ack，临时错误按指数退避 Retry，缺少 provider speaker key 或超过尝试上限时 Fail。
+- 任务只在实时 FinalTurn 写入时入队；上线前的历史 unresolved turn 由 migration `000017` 幂等回填，并把旧的 `completed` 但 turn 仍 unresolved 的任务修复为 `pending`。
+- 没有 `provider_speaker_id` 的 turn 无法确定性归属，任务以 `no_provider_speaker_id` 永久失败，保证 unresolved 数据可审计。
+
+### 4.13 `final_turn_outbox`
 
 Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓库已实现 PostgreSQL sink 和 API consumer，但 realtime-audio 生产运行时默认使用内存 outbox；Valkey outbox 当前仅接受 `usage.recorded` 事件。因此该表目前是已实现但尚未接入默认 realtime 生产 composition 的持久化 schema，不应视为当前默认运行链路已经使用。`delivery_outbox` 负责 API 到外部消息渠道的出站投递，两者方向和幂等身份不同。
 

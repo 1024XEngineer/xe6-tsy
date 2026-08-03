@@ -168,7 +168,9 @@ type FinalTurnEvent struct {
 	SpeakerLabelSnapshot  *string `json:"speaker_label_snapshot"`
 	// ProviderSpeakerID is the stable provider or diarization cluster key for this session, not a
 	// global identity. It is optional: when absent the async resolver must not guess attribution.
-	ProviderSpeakerID *string           `json:"provider_speaker_id"`
+	// omitempty keeps the nil-field JSON identical to pre-provider payloads so replay hashes remain
+	// compatible across rolling deploys.
+	ProviderSpeakerID *string           `json:"provider_speaker_id,omitempty"`
 	SpeakerConfidence *float64          `json:"speaker_confidence"`
 	AttributionStatus AttributionStatus `json:"attribution_status"`
 	StartedAt         time.Time         `json:"started_at"`

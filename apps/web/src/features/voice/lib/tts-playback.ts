@@ -110,10 +110,17 @@ async function playAssembled(event: {
   pcm: ArrayBuffer;
 }, listener?: TTSAudioPlaybackListener): Promise<void> {
   listener?.(true);
-  const ctx = getAudioContext(event.sampleRateHz);
   try {
+    const ctx = getAudioContext(event.sampleRateHz);
     if (ctx.state === "suspended") {
-      await ctx.resume().catch(() => undefined);
+      try {
+        await ctx.resume();
+      } catch {
+        return;
+      }
+      if (ctx.state === "suspended") {
+        return;
+      }
     }
     const audioBuffer = await toAudioBuffer(ctx, event);
     await new Promise<void>((resolve, reject) => {

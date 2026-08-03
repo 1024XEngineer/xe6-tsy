@@ -2,6 +2,7 @@
 package webapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -412,7 +413,17 @@ func decodeParticipantUpdate(body io.Reader) (participants.Update, error) {
 const maxRequestBodyBytes = 1 << 20
 
 func decodeJSON(body io.Reader, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(body, maxRequestBodyBytes))
+	// Read up to limit+1 so a request with a complete JSON prefix followed by more data is
+	// detected instead of being hidden as an early EOF by io.LimitReader.
+	payload, err := io.ReadAll(io.LimitReader(body, maxRequestBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(payload) > maxRequestBodyBytes {
+		return errors.New("request body exceeds 1 MiB")
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err

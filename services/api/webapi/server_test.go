@@ -224,13 +224,22 @@ func TestCorrectAttributionRejectsOutOfRangeConfidence(t *testing.T) {
 }
 
 func TestPATCHRejectsOversizedBody(t *testing.T) {
-	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
-	handler := newHandler(t, &participantRepository{}, turnRepository, "acct_01")
-	oversized := strings.Repeat("p", maxRequestBodyBytes)
-	request := accountRequest(http.MethodPatch, "/api/v1/voice-turns/vt_01/attribution", strings.NewReader(`{"participant_id":"`+oversized+`","attribution_status":"confirmed"}`), "acct_01", true)
-	response := serve(handler, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("oversized body status = %d, want 400; body = %s", response.Code, response.Body.String())
+	validBody := `{"participant_id":"p_01","attribution_status":"confirmed"}`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "truncated JSON value", body: `{"participant_id":"` + strings.Repeat("p", maxRequestBodyBytes) + `","attribution_status":"confirmed"}`},
+		{name: "complete JSON followed by overflow", body: validBody + strings.Repeat(" ", maxRequestBodyBytes-len(validBody)+1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
+			handler := newHandler(t, &participantRepository{}, turnRepository, "acct_01")
+			request := accountRequest(http.MethodPatch, "/api/v1/voice-turns/vt_01/attribution", strings.NewReader(test.body), "acct_01", true)
+			response := serve(handler, request)
+			assertError(t, response, http.StatusBadRequest, recordsv1.ErrorInvalidRequest)
+		})
 	}
 }
 

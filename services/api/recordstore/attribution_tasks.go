@@ -117,11 +117,18 @@ func (d *attributionTaskDelivery) Retry(lastError string) error {
 }
 
 // retryBackoff grows exponentially with attempts and is capped so a poison task never busy-loops
-// the queue. The caller already bounds the retry count via the worker's max-attempt policy.
+// the queue and a large attempt count never overflows the shift. The caller already bounds the
+// retry count via the worker's max-attempt policy.
 func retryBackoff(attempts int) time.Duration {
-	delay := attributionTaskBackoff * time.Duration(1<<(attempts-1))
-	if delay > attributionTaskMaxBackoff {
-		return attributionTaskMaxBackoff
+	if attempts <= 1 {
+		return attributionTaskBackoff
+	}
+	delay := attributionTaskBackoff
+	for range attempts - 1 {
+		delay *= 2
+		if delay >= attributionTaskMaxBackoff {
+			return attributionTaskMaxBackoff
+		}
 	}
 	return delay
 }

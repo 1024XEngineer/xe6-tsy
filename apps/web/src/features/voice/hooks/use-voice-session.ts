@@ -391,18 +391,18 @@ export function useVoiceSession() {
       const failedAccessToken = accessTokenRef.current;
       cleanupMedia();
       stopPolling();
-      if (failedAccessToken && failedSessionId) {
-        await endVoiceSession(
-          failedAccessToken,
-          failedSessionId,
-          "operator_cancelled",
-        ).catch(() => undefined);
-      }
       sessionIdRef.current = null;
       runningRef.current = false;
       dispatch({ type: "END" });
       setStatusMessage("联调失败");
       setHintMessage(message);
+      if (failedAccessToken && failedSessionId) {
+        void endVoiceSession(
+          failedAccessToken,
+          failedSessionId,
+          "operator_cancelled",
+        ).catch(() => undefined);
+      }
     } finally {
       if (startAbortRef.current === startAbort) {
         startAbortRef.current = null;

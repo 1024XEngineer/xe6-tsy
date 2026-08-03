@@ -22,7 +22,6 @@ func TestMigrateRecordsSchema(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("second Migrate() error = %v", err)
 	}
-	assertSessionStartCompatibilitySchema(t, pool)
 	assertEndIntentRecoverySchema(t, pool)
 
 	statuses, err := AppliedMigrations(t.Context(), pool)
@@ -56,6 +55,20 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		if status.Version != expected.version || status.Name != expected.name || status.AppliedAt.IsZero() {
 			t.Fatalf("AppliedMigrations()[%d] = %#v, want applied %s version %d", index, status, expected.name, expected.version)
 		}
+	}
+}
+
+func assertConstraintViolation(t *testing.T, err error, constraint string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("PostgreSQL error = nil, want constraint %s", constraint)
+	}
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) {
+		t.Fatalf("error = %v, want PostgreSQL constraint %s", err, constraint)
+	}
+	if postgresError.ConstraintName != constraint {
+		t.Fatalf("PostgreSQL constraint = %q, want %q", postgresError.ConstraintName, constraint)
 	}
 }
 

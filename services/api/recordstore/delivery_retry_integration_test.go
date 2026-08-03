@@ -96,7 +96,7 @@ func TestDeliveryPostgresRetryKeyIsAccountWideViaUseCases(t *testing.T) {
 	insertDeliveryAccount(t, pool, "delivery_retry_concurrent_account", "anonymous", nil)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	seedDeliveryMessage(t, repository, "delivery_retry_concurrent_account", "delivery_retry_message_a", "create-a", now)
-	seedDeliveryMessage(t, repository, "delivery_retry_concurrent_account", "delivery_retry_message_b", "create-b", now.Add(time.Second))
+	seedDeliveryMessage(t, repository, "delivery_retry_concurrent_account", "delivery_retry_message_b", "create-b", now)
 
 	if _, err := useCases.Retry(t.Context(), "delivery_retry_concurrent_account", "delivery_retry_message_a", "shared-retry-key"); err != nil {
 		t.Fatalf("Retry(message_a) error = %v", err)

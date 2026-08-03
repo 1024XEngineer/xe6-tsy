@@ -9,6 +9,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
+	realtimeaudio "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
 var ErrInvalidDependency = errors.New("invalid realtime access dependency")
@@ -22,6 +23,41 @@ func NewLanguageConfigReader(reader languages.LanguageConfigReader) (sessions.La
 		return nil, ErrInvalidDependency
 	}
 	return languageConfigAdapter{reader: reader}, nil
+}
+
+type realtimeAudioLanguageConfigAdapter struct {
+	reader languages.LanguageConfigReader
+}
+
+// NewRealtimeAudioLanguageConfigReader preserves the full output route in the
+// turn-start snapshot consumed by the media-plane pipeline.
+func NewRealtimeAudioLanguageConfigReader(reader languages.LanguageConfigReader) (realtimeaudio.LanguageConfigReader, error) {
+	if reader == nil {
+		return nil, ErrInvalidDependency
+	}
+	return realtimeAudioLanguageConfigAdapter{reader: reader}, nil
+}
+
+func (a realtimeAudioLanguageConfigAdapter) GetCurrentConfig(ctx context.Context, sessionID string) (realtimeaudio.LanguageConfigSnapshot, error) {
+	snapshot, err := a.reader.GetCurrentConfig(ctx, sessionID)
+	if err != nil {
+		return realtimeaudio.LanguageConfigSnapshot{}, mapLanguageError(err)
+	}
+	if snapshot.SessionID != sessionID {
+		return realtimeaudio.LanguageConfigSnapshot{}, sessions.ErrLanguageConfigNotReady
+	}
+	pairs := make([]realtimeaudio.LanguagePair, 0, len(snapshot.LanguagePairs))
+	for _, pair := range snapshot.LanguagePairs {
+		pairs = append(pairs, realtimeaudio.LanguagePair{Source: pair.Source, Target: pair.Target})
+	}
+	routes := make([]realtimeaudio.OutputRoute, 0, len(snapshot.OutputRoutes))
+	for _, route := range snapshot.OutputRoutes {
+		routes = append(routes, realtimeaudio.OutputRoute{TargetLanguage: route.TargetLanguage, TTSEnabled: route.TTSEnabled, DeliveryEnabled: route.DeliveryEnabled})
+	}
+	return realtimeaudio.LanguageConfigSnapshot{
+		SessionID: snapshot.SessionID, Version: int64(snapshot.Version), LanguagePairs: pairs,
+		OutputRoutes: routes, Status: snapshot.Status, UpdatedAt: snapshot.UpdatedAt,
+	}, nil
 }
 
 func (a languageConfigAdapter) GetCurrentConfig(
@@ -322,7 +358,8 @@ func preserveBoundaryError(err error, boundary error) error {
 }
 
 var (
-	_ sessions.LanguageConfigReader   = languageConfigAdapter{}
-	_ sessions.WebRTCConnectionReader = webRTCConnectionAdapter{}
-	_ sessions.RealtimeLifecycle      = realtimeLifecycleAdapter{}
+	_ sessions.LanguageConfigReader      = languageConfigAdapter{}
+	_ realtimeaudio.LanguageConfigReader = realtimeAudioLanguageConfigAdapter{}
+	_ sessions.WebRTCConnectionReader    = webRTCConnectionAdapter{}
+	_ sessions.RealtimeLifecycle         = realtimeLifecycleAdapter{}
 )

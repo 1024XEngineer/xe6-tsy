@@ -21,6 +21,7 @@ import (
 	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
+	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
@@ -29,6 +30,7 @@ type recordsHTTPDependencies struct {
 	accounts   accounts.Service
 	tokens     accounts.AccessTokenVerifier
 	worker     finalTurnWorker
+	turns      *turns.Service
 	maintainer backgroundWorker
 	cleanup    func()
 }
@@ -314,6 +316,7 @@ func newRecordsHTTPDependenciesFromPool(
 		accounts:   accountUseCases,
 		tokens:     tokens,
 		worker:     services.FinalTurnWorker,
+		turns:      services.Turns,
 		maintainer: accounts.NewAuthMaintainer(accountRepository, 0, 0),
 		cleanup:    func() {},
 	}, nil

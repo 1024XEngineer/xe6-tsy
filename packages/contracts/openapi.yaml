@@ -121,7 +121,7 @@ paths:
       operationId: putMessagePreference
       security: [{ accountContext: [] }]
       parameters: [{ name: channel, in: path, required: true, schema: { $ref: '#/components/schemas/Channel' } }]
-      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [enabled], properties: { enabled: { type: boolean } } } } } }
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [enabled], properties: { enabled: { type: boolean }, destination_ref: { type: string, description: 'One verified automatic destination for this channel' } } } } } }
       responses:
         '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/Preference' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -476,8 +476,8 @@ components:
         updated_at: { type: string, format: date-time }
     Preference:
       type: object
-      required: [account_id, channel, enabled, verified, updated_at]
-      properties: { account_id: { type: string }, channel: { $ref: '#/components/schemas/Channel' }, enabled: { type: boolean }, verified: { type: boolean }, updated_at: { type: string, format: date-time } }
+      required: [account_id, channel, destination_ref, enabled, verified, updated_at]
+      properties: { account_id: { type: string }, channel: { $ref: '#/components/schemas/Channel' }, destination_ref: { type: string }, enabled: { type: boolean }, verified: { type: boolean }, updated_at: { type: string, format: date-time } }
     MessageTarget:
       type: object
       required: [destination_ref, channel, verified, updated_at]

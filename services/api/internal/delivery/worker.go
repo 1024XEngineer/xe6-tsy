@@ -224,6 +224,10 @@ func (w *Worker) handleClaimConflict(ctx context.Context, item QueueMessage, rea
 	}
 }
 
+// deliver performs the external side effect for a claimed Attempt. freshClaim
+// is true only for a worker-owned queued -> sending transition; a recovered
+// sending record may have called the provider already and needs stricter retry
+// rules to avoid duplicate user-visible messages.
 func (w *Worker) deliver(ctx context.Context, item QueueMessage, reader WorkerMessageReader, attempt DeliveryAttempt, freshClaim bool) error {
 	message, err := reader.GetMessageForWorker(ctx, attempt.MessageID)
 	if err != nil {
@@ -248,6 +252,9 @@ func (w *Worker) deliver(ctx context.Context, item QueueMessage, reader WorkerMe
 	default:
 		return w.completeFailedAndAck(ctx, item, attempt.ID, attempt.MessageID, messageFailureCode, fmt.Errorf("%w: unsupported message status %q", ErrInvalidQueueMessage, message.Status))
 	}
+	// Resolve and decrypt the destination only immediately before sending. The
+	// real provider target exists in memory for this call and must not be written
+	// to the persisted Message, queue payload, API response, or diagnostics.
 	destination, err := w.deps.Destinations.ResolveVerifiedDestination(ctx, message.AccountID, message.Channel, message.DestinationRef)
 	if err != nil {
 		if isPermanentDestinationError(err) {
@@ -259,6 +266,9 @@ func (w *Worker) deliver(ctx context.Context, item QueueMessage, reader WorkerMe
 		return w.completeFailedAndAck(ctx, item, attempt.ID, message.ID, destinationFailureCode, fmt.Errorf("%w: verified destination identity is invalid", ErrInvalidQueueMessage))
 	}
 
+	// The persisted Attempt ID is also the provider-side idempotency identity.
+	// IdempotentProvider adapters must pass it to provider deduplication so a
+	// worker can safely recover a send interrupted by a process crash.
 	sendErr := w.deps.Provider.Send(ctx, SendRequest{
 		Message:                message,
 		Attempt:                attempt,
@@ -290,6 +300,9 @@ func (w *Worker) deliver(ctx context.Context, item QueueMessage, reader WorkerMe
 		// replays an idempotent provider or records delivery_unknown.
 		return w.retry(ctx, item, fmt.Errorf("send delivery: %w", sendErr))
 	}
+	// Commit the database terminal state before acknowledging the queue. If the
+	// ACK is lost, a redelivery observes the terminal state and exits without a
+	// second provider call; ACKing first could lose the delivery result forever.
 	if err := w.deps.Repository.CompleteAttempt(ctx, attempt.ID, message.ID, AttemptStatusSucceeded, MessageStatusSent, nil); err != nil {
 		return w.retry(ctx, item, fmt.Errorf("record successful delivery: %w", err))
 	}

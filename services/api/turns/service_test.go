@@ -39,6 +39,20 @@ func TestConsumeFinalTurnIsIdempotentAndPreservesEvent(t *testing.T) {
 	}
 }
 
+func TestConsumeFinalTurnSchedulesOnlyAfterStoreCommit(t *testing.T) {
+	repository := &fakeRepository{}
+	scheduler := &recordingFinalTurnScheduler{checkStored: func() bool { return len(repository.events) == 1 }}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+	service.SetFinalTurnScheduler(scheduler)
+
+	if err := service.ConsumeFinalTurn(t.Context(), validEvent()); err != nil {
+		t.Fatalf("ConsumeFinalTurn() error = %v", err)
+	}
+	if scheduler.accountID != "acct_01" || !scheduler.storedBeforeCall || scheduler.calls != 1 {
+		t.Fatalf("scheduler = %#v", scheduler)
+	}
+}
+
 func TestConsumeFinalTurnRejectsConflictingIdempotencyKeys(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -378,6 +392,20 @@ func (r *fakeRepository) ReadFinalTurns(_ context.Context, accountID string, tur
 type fakeSessionOwners struct {
 	ownerID string
 	err     error
+}
+
+type recordingFinalTurnScheduler struct {
+	accountID        string
+	calls            int
+	storedBeforeCall bool
+	checkStored      func() bool
+}
+
+func (s *recordingFinalTurnScheduler) ScheduleFinalTurn(_ context.Context, accountID string, _ recordsv1.FinalTurnEvent) error {
+	s.accountID = accountID
+	s.calls++
+	s.storedBeforeCall = s.checkStored()
+	return nil
 }
 
 func (r fakeSessionOwners) AccountIDForSession(context.Context, string) (string, error) {

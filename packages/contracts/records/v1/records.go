@@ -163,6 +163,8 @@ type FinalTurnEvent struct {
 	LanguageConfigVersion int64             `json:"language_config_version"`
 	SourceText            string            `json:"source_text"`
 	TranslatedText        string            `json:"translated_text"`
+	TTSEnabled            bool              `json:"tts_enabled"`
+	DeliveryEnabled       bool              `json:"delivery_enabled"`
 	SpeakerCode           string            `json:"speaker_code"`
 	SpeakerLabelSnapshot  *string           `json:"speaker_label_snapshot"`
 	SpeakerConfidence     *float64          `json:"speaker_confidence"`

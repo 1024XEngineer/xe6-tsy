@@ -153,9 +153,10 @@ type CreateInput struct {
 
 // Preference combines a user's channel choice with authoritative verification state.
 type Preference struct {
-	AccountID string    `json:"account_id"`
-	Channel   Channel   `json:"channel"`
-	Enabled   bool      `json:"enabled"`
-	Verified  bool      `json:"verified"`
-	UpdatedAt time.Time `json:"updated_at"`
+	AccountID      string    `json:"account_id"`
+	Channel        Channel   `json:"channel"`
+	DestinationRef string    `json:"destination_ref"`
+	Enabled        bool      `json:"enabled"`
+	Verified       bool      `json:"verified"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }

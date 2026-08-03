@@ -6,7 +6,7 @@
 
 | 边界 | 行为 |
 | --- | --- |
-| HTTP | 四条 `/api/v1` 路由：目录 / 当前配置 / 创建切换 / 历史 |
+| HTTP | 四条 `/api/v1` 路由：目录 / 当前配置 / 创建切换 / 历史，支持按 target_language 配置输出路由 |
 | 内部端口 | `LanguageConfigReader`、`LanguageTargetResolver`（由 `Service` 实现） |
 | 存储 | Postgres（迁移 + `PostgresStore`）；单测用 `MemoryStore` |
 

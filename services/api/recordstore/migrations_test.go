@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 12 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 12", len(migrations))
+	if len(migrations) != 13 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 13", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -140,5 +140,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if !strings.Contains(wechatChannel.SQL, "channel IN ('email', 'wechat')") {
 		t.Fatal("wechat channel migration does not allow wechat channel")
+	}
+	autoDelivery := migrations[12]
+	if autoDelivery.Version != 13 || autoDelivery.Name != "auto_delivery_destination" || !strings.Contains(autoDelivery.SQL, "destination_ref") {
+		t.Fatalf("migration = %#v, want automatic destination column", autoDelivery)
 	}
 }

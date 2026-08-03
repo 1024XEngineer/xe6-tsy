@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/oklog/ulid/v2"
 )
@@ -52,6 +53,9 @@ func (u *UseCases) ConfigureWeChatBinding(client WeComIdentityClient) {
 	u.wecomIdentity = client
 }
 
+// Create accepts selected final Turns and creates an asynchronous delivery task.
+// It never calls SMTP or WeCom directly; success means the immutable Message,
+// first Attempt, and queue handoff were accepted, not that delivery completed.
 func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, error) {
 	if u.repository == nil {
 		return Message{}, domain.ErrNotImplemented
@@ -59,12 +63,17 @@ func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, erro
 	if input.AccountID == "" || input.IdempotencyKey == "" || len(input.IdempotencyKey) > MaxIdempotencyKeyLength || !IsSupportedChannel(input.Channel) || input.DestinationRef == "" || len(input.TurnIDs) == 0 || hasDuplicateTurnIDs(input.TurnIDs) {
 		return Message{}, domain.ErrInvalidArgument
 	}
+	// Resolve idempotency before reading turns or destinations. The same account,
+	// key, and business payload returns the original Message; a changed payload
+	// must conflict instead of creating a second delivery.
 	if existing, handled, err := u.resolveCreateIdempotency(ctx, input); handled || err != nil {
 		return existing, err
 	}
 	if u.turns == nil || u.destinations == nil {
 		return Message{}, domain.ErrInvalidArgument
 	}
+	// TurnReader checks account ownership and returns only persisted final records;
+	// partial ASR results and client-supplied bodies cannot enter delivery.
 	turns, err := u.turns.ReadFinalTurns(ctx, input.AccountID, input.TurnIDs)
 	if err != nil {
 		return Message{}, err
@@ -72,14 +81,25 @@ func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, erro
 	if len(turns) != len(input.TurnIDs) {
 		return Message{}, domain.ErrNotFound
 	}
+	// Validate the account-scoped destination, but persist only its opaque
+	// reference. Resolve and decrypt the real target immediately before provider
+	// invocation; never copy it into Message snapshots or API responses.
 	if _, err := u.destinations.ResolveVerifiedDestination(ctx, input.AccountID, input.Channel, input.DestinationRef); err != nil {
 		return Message{}, err
 	}
 	now := time.Now().UTC()
+	// Copy final Turns into a versioned immutable snapshot so retries keep the
+	// creation-time content even if attribution metadata changes later.
 	message := Message{ID: "msg_" + ulid.Make().String(), AccountID: input.AccountID, Channel: input.Channel, DestinationRef: input.DestinationRef, SnapshotVersion: 1, Turns: cloneTurns(turns), Status: MessageStatusQueued, Attempts: 1, CreatedAt: now, UpdatedAt: now}
 	attempt := DeliveryAttempt{ID: "attempt_" + ulid.Make().String(), MessageID: message.ID, AttemptNumber: 1, Status: AttemptStatusQueued, CreatedAt: now}
+	// The production repository writes Message, Attempt, and Outbox in one
+	// transaction. This database-to-queue boundary leaves a durable task after
+	// commit even if the API process crashes immediately afterward.
 	if err := u.repository.CreateMessage(ctx, CreateMessageRecord{Message: message, InitialAttempt: attempt, IdempotencyKey: input.IdempotencyKey}); err != nil {
 		if errors.Is(err, domain.ErrConflict) {
+			// Concurrent instances may both miss the lookup and race on insert. The
+			// database unique constraint chooses the winner; reread an identical
+			// request instead of returning a spurious failure.
 			if existing, handled, lookupErr := u.resolveCreateIdempotency(ctx, input); handled || lookupErr != nil {
 				return existing, lookupErr
 			}
@@ -92,6 +112,9 @@ func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, erro
 	}
 	u.createKeys[scopedIdempotencyKey(input.AccountID, input.IdempotencyKey)] = message.ID
 	u.keys.Unlock()
+	// The lightweight in-memory repository has no durable Outbox, so tests and
+	// compatibility adapters enqueue directly. Production Outbox repositories
+	// publish through OutboxDispatcher after commit.
 	if !isOutboxBacked(u.repository) && u.queue != nil {
 		if err := u.queue.Enqueue(ctx, attempt.ID, input.IdempotencyKey); err != nil {
 			return Message{}, err
@@ -211,16 +234,60 @@ func (u *UseCases) Preferences(ctx context.Context, accountID string) ([]Prefere
 }
 
 func (u *UseCases) PutPreference(ctx context.Context, accountID string, channel Channel, enabled bool) (Preference, error) {
+	return u.putPreference(ctx, accountID, channel, enabled, "")
+}
+
+// PutPreferenceForDestination enables a channel and pins its automatic
+// delivery target to one verified account destination.
+func (u *UseCases) PutPreferenceForDestination(ctx context.Context, accountID string, channel Channel, enabled bool, destinationRef string) (Preference, error) {
+	return u.putPreference(ctx, accountID, channel, enabled, destinationRef)
+}
+
+func (u *UseCases) putPreference(ctx context.Context, accountID string, channel Channel, enabled bool, destinationRef string) (Preference, error) {
 	if u.repository == nil {
 		return Preference{}, domain.ErrNotImplemented
 	}
 	if accountID == "" || !IsSupportedChannel(channel) {
 		return Preference{}, domain.ErrInvalidArgument
 	}
+	if destinationRef != "" && u.destinations != nil {
+		if _, err := u.destinations.ResolveVerifiedDestination(ctx, accountID, channel, destinationRef); err != nil {
+			return Preference{}, err
+		}
+	}
 	// Verification is authoritative data owned by the destination store. The
 	// repository derives it from the currently verified, non-revoked target;
 	// the preference endpoint must not manufacture a verified state.
-	return u.repository.PutPreference(ctx, Preference{AccountID: accountID, Channel: channel, Enabled: enabled, UpdatedAt: time.Now().UTC()})
+	return u.repository.PutPreference(ctx, Preference{AccountID: accountID, Channel: channel, DestinationRef: destinationRef, Enabled: enabled, UpdatedAt: time.Now().UTC()})
+}
+
+// ScheduleFinalTurn creates one independent message for each enabled channel
+// preference after the record-store consumer has committed the Final Turn.
+// Replays are harmless because Create uses the stable per-turn idempotency key.
+func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, event recordsv1.FinalTurnEvent) error {
+	if u == nil || u.repository == nil {
+		return domain.ErrNotImplemented
+	}
+	if accountID == "" || event.TurnID == "" || !event.DeliveryEnabled {
+		return nil
+	}
+	preferences, err := u.Preferences(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	for _, preference := range preferences {
+		if !preference.Enabled || !preference.Verified || preference.DestinationRef == "" || !IsSupportedChannel(preference.Channel) {
+			continue
+		}
+		key := fmt.Sprintf("auto:final_turn:%s:%s:%s", event.TurnID, preference.Channel, preference.DestinationRef)
+		if _, err := u.Create(ctx, CreateInput{
+			AccountID: accountID, IdempotencyKey: key, Channel: preference.Channel,
+			DestinationRef: preference.DestinationRef, TurnIDs: []string{event.TurnID},
+		}); err != nil {
+			return fmt.Errorf("schedule final turn %s for %s: %w", event.TurnID, preference.Channel, err)
+		}
+	}
+	return nil
 }
 
 func (u *UseCases) ListMessageTargets(ctx context.Context, accountID string, channel *Channel) ([]MessageTarget, error) {

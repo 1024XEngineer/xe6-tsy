@@ -237,7 +237,7 @@ func (r *PostgresRepository) SetAttemptStatus(ctx context.Context, id string, st
 }
 
 func (r *PostgresRepository) ListPreferences(ctx context.Context, accountID string) ([]Preference, error) {
-	rows, err := r.pool.Query(ctx, `SELECT DISTINCT ON (channel) account_id,channel,enabled,verified,updated_at FROM message_preferences WHERE account_id IN (SELECT account_id FROM lingow_account_lineage($1)) ORDER BY channel,(account_id=$1) DESC,updated_at DESC`, accountID)
+	rows, err := r.pool.Query(ctx, `SELECT DISTINCT ON (p.channel) p.account_id,p.channel,COALESCE(p.destination_ref,''),p.enabled,EXISTS (SELECT 1 FROM account_destinations d WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1)) AND d.channel=p.channel AND d.destination_ref=p.destination_ref AND d.verified_at IS NOT NULL AND d.revoked_at IS NULL),p.updated_at FROM message_preferences p WHERE p.account_id IN (SELECT account_id FROM lingow_account_lineage($1)) ORDER BY p.channel,(p.account_id=$1) DESC,p.updated_at DESC`, accountID)
 	if err != nil {
 		return nil, mapDeliveryError(err)
 	}
@@ -245,7 +245,7 @@ func (r *PostgresRepository) ListPreferences(ctx context.Context, accountID stri
 	result := make([]Preference, 0)
 	for rows.Next() {
 		var preference Preference
-		if err := rows.Scan(&preference.AccountID, &preference.Channel, &preference.Enabled, &preference.Verified, &preference.UpdatedAt); err != nil {
+		if err := rows.Scan(&preference.AccountID, &preference.Channel, &preference.DestinationRef, &preference.Enabled, &preference.Verified, &preference.UpdatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, preference)
@@ -256,26 +256,37 @@ func (r *PostgresRepository) ListPreferences(ctx context.Context, accountID stri
 func (r *PostgresRepository) PutPreference(ctx context.Context, preference Preference) (Preference, error) {
 	var stored Preference
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO message_preferences (account_id,channel,enabled,verified,updated_at)
+		INSERT INTO message_preferences (account_id,channel,destination_ref,enabled,verified,updated_at)
 		VALUES (
 			$1,
 			$2,
 			$3,
-			EXISTS (
-				SELECT 1
+			COALESCE(NULLIF($4, ''), (
+				SELECT d.destination_ref
 				FROM account_destinations d
 				WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1))
 				  AND d.channel=$2
 				  AND d.verified_at IS NOT NULL
 				  AND d.revoked_at IS NULL
+				ORDER BY d.verified_at DESC, d.destination_ref ASC
+				LIMIT 1
+			)),
+			EXISTS (
+				SELECT 1
+				FROM account_destinations d
+				WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1))
+				  AND d.channel=$2
+				  AND (NULLIF($4, '') IS NULL OR d.destination_ref=$4)
+				  AND d.verified_at IS NOT NULL
+				  AND d.revoked_at IS NULL
 			),
-			$4
+			$5
 		)
 		ON CONFLICT (account_id,channel) DO UPDATE
-		SET enabled=EXCLUDED.enabled,verified=EXCLUDED.verified,updated_at=EXCLUDED.updated_at
-		RETURNING account_id,channel,enabled,verified,updated_at`,
-		preference.AccountID, preference.Channel, preference.Enabled, preference.UpdatedAt,
-	).Scan(&stored.AccountID, &stored.Channel, &stored.Enabled, &stored.Verified, &stored.UpdatedAt)
+		SET destination_ref=EXCLUDED.destination_ref,enabled=EXCLUDED.enabled,verified=EXCLUDED.verified,updated_at=EXCLUDED.updated_at
+		RETURNING account_id,channel,COALESCE(destination_ref,''),enabled,verified,updated_at`,
+		preference.AccountID, preference.Channel, preference.Enabled, preference.DestinationRef, preference.UpdatedAt,
+	).Scan(&stored.AccountID, &stored.Channel, &stored.DestinationRef, &stored.Enabled, &stored.Verified, &stored.UpdatedAt)
 	if err != nil {
 		return Preference{}, mapDeliveryError(err)
 	}

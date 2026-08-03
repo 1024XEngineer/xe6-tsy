@@ -109,6 +109,7 @@ func (s *MemoryStore) CreateActiveConfig(_ context.Context, input CreateConfigIn
 		SessionID:          input.SessionID,
 		Version:            nextVersion,
 		LanguagePairs:      append([]LanguagePair(nil), input.LanguagePairs...),
+		OutputRoutes:       append([]OutputRoute(nil), input.OutputRoutes...),
 		Status:             StatusActive,
 		EffectiveFrom:      now,
 		CreatedBy:          input.CreatedBy,
@@ -168,6 +169,7 @@ func (s *MemoryStore) ListConfigs(_ context.Context, query ListConfigsQuery) ([]
 func cloneConfig(cfg LanguageConfig) LanguageConfig {
 	out := cfg
 	out.LanguagePairs = append([]LanguagePair(nil), cfg.LanguagePairs...)
+	out.OutputRoutes = append([]OutputRoute(nil), cfg.OutputRoutes...)
 	if cfg.EffectiveUntil != nil {
 		t := *cfg.EffectiveUntil
 		out.EffectiveUntil = &t

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
+	magnum "github.com/opd-ai/magnum"
 	"github.com/pion/webrtc/v4/pkg/media"
-	opus "github.com/tphakala/go-opus/opus"
 )
 
 const (
@@ -23,6 +23,28 @@ type opusSampleWriter interface {
 
 type opusPCMEncoder interface {
 	Encode(pcm []int16, packet []byte) (int, error)
+}
+
+type magnumOpusEncoder struct {
+	encoder *magnum.Encoder
+}
+
+func (e *magnumOpusEncoder) Encode(pcm []int16, packet []byte) (int, error) {
+	if e == nil || e.encoder == nil {
+		return 0, fmt.Errorf("Opus encoder is unavailable")
+	}
+	encoded, err := e.encoder.Encode(pcm)
+	if err != nil {
+		return 0, err
+	}
+	if len(encoded) == 0 {
+		return 0, fmt.Errorf("Opus encoder returned an empty packet")
+	}
+	if len(encoded) > len(packet) {
+		return 0, fmt.Errorf("Opus packet exceeds output buffer: %d > %d", len(encoded), len(packet))
+	}
+	copy(packet, encoded)
+	return len(encoded), nil
 }
 
 // OpusSampleTrack encodes signed 16-bit PCM into browser-compatible Opus samples.
@@ -50,20 +72,33 @@ func newOpusSampleTrack(track opusSampleWriter, config MediaConfig) (*OpusSample
 	if samplesPerFrame <= 0 {
 		return nil, ErrMediaConfigInvalid
 	}
-	encoder, err := opus.NewEncoder(opus.EncoderConfig{
-		SampleRate: normalized.SampleRate,
-		Channels:   normalized.Channels,
-		Bitrate:    32_000,
-	})
+	encoder, err := magnum.NewEncoderWithApplication(
+		normalized.SampleRate,
+		normalized.Channels,
+		magnum.ApplicationAudio,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create Opus encoder: %w", err)
+	}
+	encoder.SetBitrate(32_000)
+	switch normalized.SampleRate {
+	case 24_000, 48_000:
+		if err := encoder.EnableCELT(); err != nil {
+			return nil, fmt.Errorf("enable Opus CELT encoder: %w", err)
+		}
+	case 8_000, 16_000:
+		if err := encoder.EnableSILK(); err != nil {
+			return nil, fmt.Errorf("enable Opus SILK encoder: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported Opus sample rate: %d", normalized.SampleRate)
 	}
 	return &OpusSampleTrack{
 		track:           track,
 		sampleRate:      normalized.SampleRate,
 		channels:        normalized.Channels,
 		samplesPerFrame: samplesPerFrame,
-		encoder:         encoder,
+		encoder:         &magnumOpusEncoder{encoder: encoder},
 		stopped:         make(map[string]bool),
 	}, nil
 }

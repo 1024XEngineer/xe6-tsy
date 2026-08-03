@@ -218,7 +218,7 @@ func configurePionTTSTrack(transport *PionTransport) error {
 		if err != nil {
 			return fmt.Errorf("create Opus TTS track: %w", err)
 		}
-		opusTrack, err := newOpusSampleTrack(track)
+		opusTrack, err := newOpusSampleTrack(track, config)
 		if err != nil {
 			return err
 		}

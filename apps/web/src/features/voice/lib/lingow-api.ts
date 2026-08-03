@@ -1,5 +1,5 @@
 import { bilingualPairs, type VoiceSessionConfig } from "./languages";
-import { newIdempotencyKey, parseJson } from "./http";
+import { ApiError, newIdempotencyKey, parseJson } from "./http";
 
 export type AuthResult = {
   account: { id: string; kind: string; created_at: string };
@@ -158,15 +158,60 @@ export async function mintRealtimeTicket(
 export async function startVoiceSession(
   accessToken: string,
   sessionId: string,
+  idempotencyKey = newIdempotencyKey("start"),
+  signal?: AbortSignal,
 ): Promise<VoiceSession> {
-  const response = await fetch(
-    `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/start`,
-    {
-      method: "POST",
-      headers: authHeaders(accessToken, newIdempotencyKey("start")),
-    },
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    signal?.throwIfAborted();
+    try {
+      const response = await fetch(
+        `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/start`,
+        {
+          method: "POST",
+          headers: authHeaders(accessToken, idempotencyKey),
+          signal,
+        },
+      );
+      return await parseJson<VoiceSession>(response);
+    } catch (error) {
+      if (!isRetryableStartError(error) || attempt === 1) {
+        throw error;
+      }
+      await waitForRetry(signal, 250);
+    }
+  }
+  throw new Error("unreachable");
+}
+
+function waitForRetry(signal: AbortSignal | undefined, delayMs: number): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, delayMs));
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function isRetryableStartError(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  if (error.status === 503) return true;
+  return (
+    error.status === 409 &&
+    (error.code === "webrtc_not_ready" ||
+      error.code === "realtime_start_failed" ||
+      error.code === "session_start_in_progress")
   );
-  return parseJson<VoiceSession>(response);
 }
 
 export async function endVoiceSession(

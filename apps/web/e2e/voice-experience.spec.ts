@@ -136,17 +136,37 @@ test("keeps voice states legible with reduced motion", async ({ page }) => {
   await expect(page.getByText("轻触开始")).toBeVisible();
 });
 
-test("renders painted pixels for the idle voice canvas", async ({ page }) => {
-  const hasPaintedPixels = async (selector: string) =>
-    page.locator(selector).evaluate((canvas: HTMLCanvasElement) => {
-      const context = canvas.getContext("2d");
-      if (!context || canvas.width === 0 || canvas.height === 0) return false;
-      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-      return pixels.some((channel, index) => index % 4 === 3 && channel > 0);
-    });
-
+test("renders the idle voice video", async ({ page }) => {
   await page.goto("/");
+  const video = page.getByTestId("idle-voice-video");
+  await expect(video).toHaveAttribute("src", "/media/loop.mp4");
   await expect
-    .poll(() => hasPaintedPixels('[data-testid="idle-voice-ring"] canvas'))
+    .poll(() =>
+      video.evaluate((element: HTMLVideoElement) => {
+        if (
+          element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+          element.videoWidth === 0 ||
+          element.currentTime <= 0
+        ) {
+          return false;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = 32;
+        canvas.height = 32;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) return false;
+        context.drawImage(element, 0, 0, canvas.width, canvas.height);
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        for (let index = 0; index < pixels.length; index += 4) {
+          if (
+            pixels[index + 3] > 0 &&
+            pixels[index] + pixels[index + 1] + pixels[index + 2] > 8
+          ) {
+            return true;
+          }
+        }
+        return false;
+      }),
+    )
     .toBe(true);
 });

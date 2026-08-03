@@ -38,6 +38,7 @@ import {
 } from "../model/session";
 
 const POLL_INTERVAL_MS = 1200;
+const TTS_INPUT_RESUME_DELAY_MS = 300;
 
 export type SessionDebugInfo = {
   accountId: string | null;
@@ -140,6 +141,7 @@ export function useVoiceSession() {
   const sessionIdRef = useRef<string | null>(null);
   const webrtcRef = useRef<WebRTCSessionHandles | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startAbortRef = useRef<AbortController | null>(null);
 
   const updateConfig = useCallback((next: VoiceSessionConfig) => {
     const normalized = normalizeVoiceConfig(next);
@@ -213,6 +215,8 @@ export function useVoiceSession() {
 
   const end = useCallback(async () => {
     runningRef.current = false;
+    startAbortRef.current?.abort();
+    startAbortRef.current = null;
     stopPolling();
     cleanupMedia();
 
@@ -242,6 +246,8 @@ export function useVoiceSession() {
     if (runningRef.current) return;
 
     runningRef.current = true;
+    const startAbort = new AbortController();
+    startAbortRef.current = startAbort;
     dispatch({ type: "START" });
     setStatusMessage("正在匿名登录");
     setHintMessage("连接 xe6-tsy API…");
@@ -281,6 +287,31 @@ export function useVoiceSession() {
       );
       const ticket = ticketResponse.ticket;
 
+      let sessionStream: MediaStream | null = null;
+      let ttsResumeTimer: ReturnType<typeof setTimeout> | null = null;
+      const setMicrophoneInputEnabled = (enabled: boolean) => {
+        if (sessionIdRef.current !== session.id) return;
+        const stream = sessionStream;
+        if (!stream) return;
+        if (ttsResumeTimer) {
+          clearTimeout(ttsResumeTimer);
+          ttsResumeTimer = null;
+        }
+        if (!enabled) {
+          for (const track of stream.getAudioTracks()) {
+            track.enabled = false;
+          }
+          return;
+        }
+        ttsResumeTimer = setTimeout(() => {
+          if (sessionIdRef.current !== session.id) return;
+          for (const track of stream.getAudioTracks()) {
+            track.enabled = true;
+          }
+          ttsResumeTimer = null;
+        }, TTS_INPUT_RESUME_DELAY_MS);
+      };
+
       setStatusMessage("正在建立 WebRTC");
       setHintMessage("请允许麦克风；随后交换 SDP/ICE。");
       try {
@@ -290,7 +321,7 @@ export function useVoiceSession() {
           onDataMessage: (payload) => {
             const audio = parseTTSAudioEvent(payload);
             if (audio) {
-              enqueueTTSAudio(audio);
+              enqueueTTSAudio(audio, setMicrophoneInputEnabled);
               return;
             }
             const event = parseTranslationFinal(payload);
@@ -307,6 +338,7 @@ export function useVoiceSession() {
             });
           },
         });
+        sessionStream = webrtcRef.current.localStream;
       } catch (webrtcError) {
         const detail = errorMessage(webrtcError, "WebRTC 信令失败");
         throw new Error(
@@ -320,7 +352,12 @@ export function useVoiceSession() {
       setStatusMessage("正在启动传译");
       setHintMessage("WebRTC 已 connected，正在调用 API /start…");
       try {
-        await startVoiceSession(auth.tokens.access_token, session.id);
+        await startVoiceSession(
+          auth.tokens.access_token,
+          session.id,
+          undefined,
+          startAbort.signal,
+        );
       } catch (startError) {
         const detail = errorMessage(startError, "启动失败");
         throw new Error(
@@ -338,6 +375,7 @@ export function useVoiceSession() {
       );
       startPolling();
     } catch (error) {
+      if (startAbort.signal.aborted) return;
       const message = errorMessage(error, "无法启动会话");
       dispatch({ type: "ERROR", message });
       setStatusMessage("联调失败");
@@ -349,12 +387,25 @@ export function useVoiceSession() {
         accountId: accountIdRef.current,
       }));
 
-      // Keep REST artifacts visible for debugging; tear down media only.
+      const failedSessionId = sessionIdRef.current;
+      const failedAccessToken = accessTokenRef.current;
       cleanupMedia();
       stopPolling();
-      // If we never got a session id, fully reset running flag for retry.
-      if (!sessionIdRef.current) {
-        runningRef.current = false;
+      sessionIdRef.current = null;
+      runningRef.current = false;
+      dispatch({ type: "END" });
+      setStatusMessage("联调失败");
+      setHintMessage(message);
+      if (failedAccessToken && failedSessionId) {
+        void endVoiceSession(
+          failedAccessToken,
+          failedSessionId,
+          "operator_cancelled",
+        ).catch(() => undefined);
+      }
+    } finally {
+      if (startAbortRef.current === startAbort) {
+        startAbortRef.current = null;
       }
     }
   }, [cleanupMedia, startPolling, stopPolling]);
@@ -370,6 +421,8 @@ export function useVoiceSession() {
   useEffect(
     () => () => {
       runningRef.current = false;
+      startAbortRef.current?.abort();
+      startAbortRef.current = null;
       stopPolling();
       cleanupMedia();
     },

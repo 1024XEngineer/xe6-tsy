@@ -59,7 +59,7 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 	}
 	// none (default): subtitles only, force mock TTS.
 	// pcm: real TTS PCM over DataChannel (Chrome-safe, no Opus encoder).
-	// opus: WebRTC Opus send track (encoder still stub/silence until wired).
+	// opus: WebRTC Opus send track with pure-Go PCM encoding.
 	downlink := strings.ToLower(strings.TrimSpace(getenv("REALTIME_TTS_DOWNLINK")))
 	skipTTS := true
 	forceMock := true

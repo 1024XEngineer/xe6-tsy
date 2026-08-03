@@ -50,6 +50,14 @@ jobs:
       - name: Download Go modules
         run: go mod download
 
+      - name: Verify Go formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'The following Go files are not formatted:\n%s\n' "$unformatted"
+            exit 1
+          fi
+
       - name: Build Go code
         run: go build ./...
 

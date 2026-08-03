@@ -59,17 +59,6 @@ func (r *ProviderAttributionResolver) Resolve(ctx context.Context, input Attribu
 	}, nil
 }
 
-// SingleDecisionResolver returns one fixed decision and is used by tests to exercise the worker.
-type SingleDecisionResolver struct {
-	Decision *AttributionDecision
-	Err      error
-}
-
-// Resolve returns the fixed decision or error.
-func (r *SingleDecisionResolver) Resolve(context.Context, AttributionResolutionInput) (*AttributionDecision, error) {
-	return r.Decision, r.Err
-}
-
 // ServiceAttributionReader adapts the records services to the turn/participant reads the
 // attribution worker needs. Both reads enforce account ownership through the service boundary.
 type ServiceAttributionReader struct {

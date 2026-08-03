@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
-	opus "github.com/kazzmir/opus-go/opus"
 	"github.com/pion/webrtc/v4/pkg/media"
+	opus "github.com/tphakala/go-opus/opus"
 )
 
 const (
@@ -22,7 +22,7 @@ type opusSampleWriter interface {
 }
 
 type opusPCMEncoder interface {
-	Encode(pcm []int16, frameSize int, packet []byte) (int, error)
+	Encode(pcm []int16, packet []byte) (int, error)
 }
 
 // OpusSampleTrack encodes signed 16-bit PCM into browser-compatible Opus samples.
@@ -50,15 +50,13 @@ func newOpusSampleTrack(track opusSampleWriter, config MediaConfig) (*OpusSample
 	if samplesPerFrame <= 0 {
 		return nil, ErrMediaConfigInvalid
 	}
-	encoder, err := opus.NewEncoder(normalized.SampleRate, normalized.Channels, opus.ApplicationAudio)
+	encoder, err := opus.NewEncoder(opus.EncoderConfig{
+		SampleRate: normalized.SampleRate,
+		Channels:   normalized.Channels,
+		Bitrate:    32_000,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create Opus encoder: %w", err)
-	}
-	if err := encoder.SetBitrate(32_000); err != nil {
-		return nil, fmt.Errorf("configure Opus bitrate: %w", err)
-	}
-	if err := encoder.SetVBR(true); err != nil {
-		return nil, fmt.Errorf("configure Opus VBR: %w", err)
 	}
 	return &OpusSampleTrack{
 		track:           track,
@@ -103,7 +101,7 @@ func (t *OpusSampleTrack) Write(ctx context.Context, chunk pipeline.AudioChunk) 
 			pcm[index] = int16(binary.LittleEndian.Uint16(chunk.Data[offset+index*2:]))
 		}
 		packet := make([]byte, opusMaxPacketSize)
-		size, err := t.encoder.Encode(pcm, t.samplesPerFrame, packet)
+		size, err := t.encoder.Encode(pcm, packet)
 		if err != nil {
 			return fmt.Errorf("encode TTS PCM as Opus: %w", err)
 		}

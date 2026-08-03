@@ -51,6 +51,9 @@ type Service struct {
 	processor TurnProcessor
 }
 
+// finalizedEventQueueCapacity bounds audio-turn backlog while provider calls run.
+const finalizedEventQueueCapacity = 8
+
 func NewService(deps Dependencies) (*Service, error) {
 	if deps.Source == nil || deps.Segmenter == nil || deps.Processor == nil {
 		return nil, ErrDependencyRequired
@@ -75,35 +78,104 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		return ErrSessionIDRequired
 	}
 
-	var lastSeen time.Time
-	for {
-		frame, err := s.source.ReadFrame(ctx)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return s.flush(ctx, request, lastSeen)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	finalizedEvents := make(chan vad.Event, finalizedEventQueueCapacity)
+	processingErrors := make(chan error, 1)
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		for event := range finalizedEvents {
+			if err := s.handleEvents(runCtx, request, []vad.Event{event}); err != nil {
+				processingErrors <- err
+				cancel()
+				return
 			}
-			return fmt.Errorf("read audio frame: %w", err)
 		}
-		lastSeen = frame.CapturedAt
-		events, err := s.segmenter.Push(ctx, frame)
-		if err != nil {
-			return fmt.Errorf("segment audio frame: %w", err)
-		}
-		if err := s.handleEvents(ctx, request, events); err != nil {
+	}()
+	enqueueFinalized := func(event vad.Event) error {
+		select {
+		case finalizedEvents <- event:
+			return nil
+		case err := <-processingErrors:
 			return err
+		case <-runCtx.Done():
+			select {
+			case err := <-processingErrors:
+				return err
+			default:
+				return runCtx.Err()
+			}
 		}
 	}
+	var lastSeen time.Time
+	var loopErr error
+	for {
+		frame, err := s.source.ReadFrame(runCtx)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				events, flushErr := s.flush(runCtx, lastSeen)
+				if flushErr != nil {
+					loopErr = flushErr
+				} else {
+					for _, event := range events {
+						if event.Type == vad.EventFinal {
+							if err := enqueueFinalized(event); err != nil {
+								loopErr = err
+								break
+							}
+						}
+					}
+				}
+				break
+			}
+			loopErr = fmt.Errorf("read audio frame: %w", err)
+			break
+		}
+		lastSeen = frame.CapturedAt
+		events, err := s.segmenter.Push(runCtx, frame)
+		if err != nil {
+			loopErr = fmt.Errorf("segment audio frame: %w", err)
+			break
+		}
+		for _, event := range events {
+			if event.Type != vad.EventFinal {
+				continue
+			}
+			if err := enqueueFinalized(event); err != nil {
+				loopErr = err
+				break
+			}
+		}
+		if loopErr != nil {
+			break
+		}
+	}
+	if loopErr != nil {
+		cancel()
+	}
+	close(finalizedEvents)
+	<-workerDone
+	select {
+	case err := <-processingErrors:
+		if loopErr != nil && !errors.Is(loopErr, context.Canceled) {
+			return errors.Join(loopErr, err)
+		}
+		return err
+	default:
+	}
+	return loopErr
 }
 
-func (s *Service) flush(ctx context.Context, request Request, lastSeen time.Time) error {
+func (s *Service) flush(ctx context.Context, lastSeen time.Time) ([]vad.Event, error) {
 	if lastSeen.IsZero() {
-		return nil
+		return nil, nil
 	}
 	events, err := s.segmenter.Flush(ctx, lastSeen.Add(time.Nanosecond))
 	if err != nil {
-		return fmt.Errorf("flush audio segment: %w", err)
+		return nil, fmt.Errorf("flush audio segment: %w", err)
 	}
-	return s.handleEvents(ctx, request, events)
+	return events, nil
 }
 
 func (s *Service) handleEvents(ctx context.Context, request Request, events []vad.Event) error {

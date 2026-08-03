@@ -165,7 +165,6 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	var languages session.LanguageConfigReader = staticLanguages
 	var sessions session.SessionReader = localruntime.TrustSessionReader{}
 	var durableFinalTurns recordsv1.FinalTurnSink
-	var speakers recordsv1.SpeakerAttributionReader
 	if apiDatabaseEnabled(os.Getenv) {
 		databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 		if databaseURL == "" {
@@ -183,7 +182,6 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			"final_turn_outbox", true,
 			"session_reader", "postgres",
 			"language_reader", "postgres",
-			"speakers", "postgres",
 		)
 		sessions = localruntime.PostgresSessionReader{Pool: pool}
 		languages = localruntime.FallbackLanguageConfigReader{
@@ -191,7 +189,6 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			Fallback: staticLanguages,
 		}
 		durableFinalTurns = pipeline.NewPostgresFinalTurnSink(pool)
-		speakers = localruntime.PostgresSpeakerReader{Pool: pool}
 	}
 
 	liveFinalTurns := localruntime.DataChannelFinalTurnSink{Media: connections}
@@ -250,7 +247,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		},
 		Languages:  languages,
 		FinalTurns: finalTurns,
-		Speakers:   speakers,
+		Speakers:   nil,
 		Usage:      usage,
 		Audio:      audioSink,
 		Runtime:    runtimeBridge,

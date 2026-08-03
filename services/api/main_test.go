@@ -249,6 +249,24 @@ func TestNewRecordsHTTPDependenciesRequiresConfiguration(t *testing.T) {
 	}
 }
 
+func TestRecordsHTTPConfigurationFromEnvIncludesSystemToken(t *testing.T) {
+	databaseURL := "postgres://unused"
+	jwtSecret := strings.Repeat("s", 32)
+	systemToken := strings.Repeat("t", 32)
+
+	t.Setenv("DATABASE_URL", databaseURL)
+	t.Setenv("JWT_SECRET", jwtSecret)
+	t.Setenv("LINGOW_RECORDS_SYSTEM_TOKEN", systemToken)
+
+	gotDatabaseURL, gotJWTSecret, gotSystemToken, err := recordsHTTPConfigurationFromEnv()
+	if err != nil {
+		t.Fatalf("recordsHTTPConfigurationFromEnv() error = %v", err)
+	}
+	if gotDatabaseURL != databaseURL || gotJWTSecret != jwtSecret || gotSystemToken != systemToken {
+		t.Fatalf("records configuration = (%q, %q, %q)", gotDatabaseURL, gotJWTSecret, gotSystemToken)
+	}
+}
+
 func TestRunValidatesRecordsConfigurationBeforeDatabaseSetup(t *testing.T) {
 	t.Setenv("DATABASE_URL", "://invalid")
 	t.Setenv("JWT_SECRET", strings.Repeat("s", 31))

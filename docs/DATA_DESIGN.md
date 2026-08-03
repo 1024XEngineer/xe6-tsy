@@ -40,7 +40,7 @@ supported_languages 独立承载语言字典。
 - `services/realtime-audio` 拥有 WebRTC 音频、VAD、ASR、翻译、TTS、打断和运行时状态机，并通过当前配置的 outbox 发布实时事件。
 - PostgreSQL 保存长期业务事实；Redis/Valkey 保存队列、消费组、延迟重试调度和实时事件幂等状态。
 - Final Turn 与 UsageFact 都按事件幂等写入，避免实时链路重复投递造成重复计费或重复历史。
-- `voice_turns` 的文本、语言、时间、序号等事实字段写入后不可变；说话人归属允许通过 `participant_id`、`speaker_confidence`、`attribution_status`、`corrected_by`、`corrected_at` 修正。
+- `voice_turns` 的文本、语言、时间、序号等事实字段写入后不可变；说话人归属允许通过 `participant_id`、`speaker_confidence`、`attribution_status`、`corrected_by`、`corrected_at` 修正，说话人快照字段随归属修正同步为目标 participant 的当前值。
 - `lingow_usage_records` 完全不可更新；用量汇总通过实时聚合查询生成，仓库代码当前没有物化的 `voice_session_usage_summaries` 表。
 - `request_hash` 和 `request_fingerprint` 由应用层根据 canonical request 计算，用于同一幂等键重放时确认请求内容一致，不是业务对象的内容副本。
 
@@ -349,10 +349,10 @@ Final Turn 持久化表，保存每轮原文、译文、语言方向和说话人
 | `event_payload_hash` | `BYTEA` | 否 |  | 事件 payload SHA-256，长度 32 字节 |
 | `session_id` | `TEXT` | 否 |  | 会话 ID |
 | `participant_id` | `TEXT` | 是 |  | 当前归属参与者，分离结果前可为空 |
-| `speaker_code` | `TEXT` | 否 |  | 写入时的稳定说话人编号 |
-| `display_name` | `TEXT` | 是 |  | 写入时的展示名称快照 |
-| `provider_speaker_id` | `TEXT` | 是 |  | 供应商说话人 ID 快照 |
-| `voice_profile_id` | `TEXT` | 是 |  | 声纹档案引用快照 |
+| `speaker_code` | `TEXT` | 否 |  | 稳定说话人编号，归属修正时随目标 participant 刷新 |
+| `display_name` | `TEXT` | 是 |  | 展示名称快照，归属修正时随目标 participant 刷新 |
+| `provider_speaker_id` | `TEXT` | 是 |  | 供应商说话人 ID 快照，归属修正时随目标 participant 刷新 |
+| `voice_profile_id` | `TEXT` | 是 |  | 声纹档案引用快照，归属修正时随目标 participant 刷新 |
 | `sequence_no` | `BIGINT` | 否 |  | 会话内轮次序号，从 1 开始 |
 | `source_language` | `TEXT` | 否 |  | 实际识别语言 |
 | `target_language` | `TEXT` | 否 |  | 本轮目标语言，由实时转译模块按当前双语配置和识别语言确定 |
@@ -377,9 +377,9 @@ Final Turn 持久化表，保存每轮原文、译文、语言方向和说话人
 | `voice_turns_session_participant_foreign_key` | FK | `(session_id, participant_id) REFERENCES voice_session_participants(session_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT` |
 | `voice_turns_session_sequence_order_idx` | Index | `(session_id, sequence_no ASC, id ASC)` |
 | `voice_turns_history_created_order_idx` | Index | `(created_at DESC, id DESC)` |
-| `voice_turns_reject_immutable_updates` | Trigger | 禁止更新不可变字段 |
+| `voice_turns_reject_immutable_updates` | Trigger | 禁止更新文本、语言方向、时间、序号和身份键等不可变字段；说话人快照字段允许随归属修正更新 |
 
-Turn 侧的 `speaker_code`、`display_name`、`provider_speaker_id`、`voice_profile_id` 是写入时快照，与可修正的 `participant_id` 有意冗余。该设计适用于需要保留“实时阶段识别结果”和最终归属的场景；如果产品只展示修正后的最终参与者，这组快照字段可作为简化候选。当前表只保存最终修正状态，不保存每一次修正历史。
+Turn 侧的 `speaker_code`、`display_name`、`provider_speaker_id`、`voice_profile_id` 是归属快照：初始 FinalTurn 落库时与实时阶段识别结果一致，归属修正（`PATCH /api/v1/voice-turns/{id}/attribution`）时在同一 UPDATE 中跟随目标 participant 刷新，保证返回给调用方和渲染端的 `participant_id` 与说话人标签始终自洽。真正不可变的是转译快照（`source_text`、`translated_text`、语言方向、配置版本、时间、序号和身份键）。当前表只保存最终修正状态，不保存每一次修正历史。
 
 `voice_turns.provider_speaker_id` 在初始 FinalTurn 落库时由实时链路写入：`FinalTurnEvent.provider_speaker_id` 只有在 ASR/diarization 提供会话内稳定的 cluster key 时才填充，缺失时保持 `NULL`。异步归属 worker 依据该字段建立 participant 稳定映射；没有该字段的 turn 无法确定性归属，其任务被永久标记失败（`no_provider_speaker_id`）而不是伪造成功。当前仓库的 Qwen ASR adapter 不产生 speaker key，因此默认只保留 pending。
 
@@ -1241,10 +1241,6 @@ BEGIN
         OR NEW.event_id IS DISTINCT FROM OLD.event_id
         OR NEW.event_payload_hash IS DISTINCT FROM OLD.event_payload_hash
         OR NEW.session_id IS DISTINCT FROM OLD.session_id
-        OR NEW.speaker_code IS DISTINCT FROM OLD.speaker_code
-        OR NEW.display_name IS DISTINCT FROM OLD.display_name
-        OR NEW.provider_speaker_id IS DISTINCT FROM OLD.provider_speaker_id
-        OR NEW.voice_profile_id IS DISTINCT FROM OLD.voice_profile_id
         OR NEW.sequence_no IS DISTINCT FROM OLD.sequence_no
         OR NEW.source_language IS DISTINCT FROM OLD.source_language
         OR NEW.target_language IS DISTINCT FROM OLD.target_language

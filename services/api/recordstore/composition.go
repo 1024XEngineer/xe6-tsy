@@ -65,9 +65,10 @@ func NewServices(
 
 	turnService := turns.NewService(turnRepository, sessionOwner, nil)
 	finalTurnOutbox := NewFinalTurnOutbox(pool)
+	attributionResolver := turns.NewProviderAttributionResolver(participantService)
 	attributionWorker, err := turns.NewAttributionWorker(
 		NewAttributionTaskStore(pool),
-		turns.NewDefaultAttributionResolver(),
+		attributionResolver,
 		turns.NewServiceAttributionReader(turnService, participantService),
 		turnService,
 		slog.Default(),
@@ -81,6 +82,6 @@ func NewServices(
 		FinalTurns:          turns.NewFinalTurnReader(turnReader),
 		FinalTurnWorker:     turns.NewFinalTurnWorker(finalTurnOutbox, turns.NewFinalTurnHandler(turnService)),
 		AttributionWorker:   attributionWorker,
-		AttributionResolver: turns.NewDefaultAttributionResolver(),
+		AttributionResolver: attributionResolver,
 	}, nil
 }

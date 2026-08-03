@@ -13,6 +13,10 @@ import (
 // and requires the worker supervisor to restart the consumer.
 var ErrAttributionSettlement = errors.New("attribution task settlement failed")
 
+// maxAttributionAttempts bounds transient retries before a task is permanently failed. A task that
+// reaches this limit is recorded as failed so operators can inspect and replay it explicitly.
+const maxAttributionAttempts = 8
+
 // AttributionTaskDelivery exposes the claimed task and explicit settlement control.
 type AttributionTaskDelivery interface {
 	Task() AttributionTask
@@ -130,7 +134,7 @@ func (w *AttributionWorker) handle(ctx context.Context, delivery AttributionTask
 	task := delivery.Task()
 	decision, err := w.resolve(ctx, task)
 	if err != nil {
-		return w.retry(delivery, task, err)
+		return w.settleFailure(delivery, task, err)
 	}
 	if decision == nil || decision.ParticipantID == "" {
 		if err := delivery.Ack(); err != nil {
@@ -143,12 +147,26 @@ func (w *AttributionWorker) handle(ctx context.Context, delivery AttributionTask
 		AttributionStatus: decision.AttributionStatus,
 		SpeakerConfidence: decision.SpeakerConfidence,
 	}, decision.SpeakerConfidenceSet); err != nil {
-		return w.retry(delivery, task, fmt.Errorf("apply attribution decision: %w", err))
+		return w.settleFailure(delivery, task, fmt.Errorf("apply attribution decision: %w", err))
 	}
 	if err := delivery.Ack(); err != nil {
 		return fmt.Errorf("%w: ack attribution task: %w", ErrAttributionSettlement, err)
 	}
 	return nil
+}
+
+// settleFailure fails the task permanently when the cause is not retryable or the attempt limit is
+// reached, otherwise schedules a retry. Settlement errors still fail the worker supervisor.
+func (w *AttributionWorker) settleFailure(delivery AttributionTaskDelivery, task AttributionTask, cause error) error {
+	if errors.Is(cause, ErrAttributionNoEvidence) || task.Attempts >= maxAttributionAttempts {
+		w.logger.Error("attribution task failed permanently",
+			"task_id", task.TaskID, "turn_id", task.TurnID, "attempt", task.Attempts, "error", cause)
+		if err := delivery.Fail(cause.Error()); err != nil {
+			return fmt.Errorf("%w: fail attribution task: %w", ErrAttributionSettlement, errors.Join(cause, err))
+		}
+		return nil
+	}
+	return w.retry(delivery, task, cause)
 }
 
 func (w *AttributionWorker) resolve(ctx context.Context, task AttributionTask) (*AttributionDecision, error) {

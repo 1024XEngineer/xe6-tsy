@@ -21,6 +21,7 @@ const (
 	attributionTaskPollInterval  = 100 * time.Millisecond
 	attributionTaskSettleTimeout = 5 * time.Second
 	attributionTaskBackoff       = 1 * time.Second
+	attributionTaskMaxBackoff    = 2 * time.Minute
 )
 
 var (
@@ -111,8 +112,18 @@ func (d *attributionTaskDelivery) Ack() error {
 }
 
 func (d *attributionTaskDelivery) Retry(lastError string) error {
-	availableAt := time.Now().Add(attributionTaskBackoff)
+	availableAt := time.Now().Add(retryBackoff(d.task.Attempts))
 	return d.store.settle(d.task.TaskID, d.receipt, attributionTaskPending, &lastError, &availableAt)
+}
+
+// retryBackoff grows exponentially with attempts and is capped so a poison task never busy-loops
+// the queue. The caller already bounds the retry count via the worker's max-attempt policy.
+func retryBackoff(attempts int) time.Duration {
+	delay := attributionTaskBackoff * time.Duration(1<<(attempts-1))
+	if delay > attributionTaskMaxBackoff {
+		return attributionTaskMaxBackoff
+	}
+	return delay
 }
 
 func (d *attributionTaskDelivery) Fail(lastError string) error {

@@ -3,6 +3,7 @@ package turns
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -63,6 +64,45 @@ func TestAttributionWorkerRetriesResolutionError(t *testing.T) {
 	}
 	if delivery.acked {
 		t.Fatal("task was acked after resolver error")
+	}
+}
+
+func TestAttributionWorkerFailsPermanentlyOnNoEvidence(t *testing.T) {
+	delivery := &attributionDeliveryStub{task: taskFixture()}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{err: fmt.Errorf("%w: no key", ErrAttributionNoEvidence)},
+		&attributionApplierStub{},
+	)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !delivery.failed {
+		t.Fatal("task was not failed on permanent no-evidence error")
+	}
+	if delivery.retried || delivery.acked {
+		t.Fatal("permanent failure must neither retry nor ack")
+	}
+}
+
+func TestAttributionWorkerFailsWhenAttemptLimitReached(t *testing.T) {
+	delivery := &attributionDeliveryStub{task: taskFixture()}
+	delivery.task.Attempts = maxAttributionAttempts
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{err: errors.New("transient resolver outage")},
+		&attributionApplierStub{},
+	)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !delivery.failed {
+		t.Fatal("task was not failed when the attempt limit was reached")
+	}
+	if delivery.retried {
+		t.Fatal("task must not retry past the attempt limit")
 	}
 }
 

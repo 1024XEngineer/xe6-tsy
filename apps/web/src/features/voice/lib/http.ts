@@ -40,9 +40,12 @@ export async function readErrorMessage(
 
 export async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
+    const message = await readErrorMessage(response, "请求失败");
+    const code = message.match(/^\[([^\]]+)\]/)?.[1] ?? null;
     throw new ApiError(
-      await readErrorMessage(response, "请求失败"),
+      message,
       response.status,
+      code,
     );
   }
   if (response.status === 204) {

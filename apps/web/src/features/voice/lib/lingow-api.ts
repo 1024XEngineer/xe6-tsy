@@ -1,5 +1,5 @@
 import { bilingualPairs, type VoiceSessionConfig } from "./languages";
-import { newIdempotencyKey, parseJson } from "./http";
+import { ApiError, newIdempotencyKey, parseJson } from "./http";
 
 export type AuthResult = {
   account: { id: string; kind: string; created_at: string };
@@ -158,15 +158,37 @@ export async function mintRealtimeTicket(
 export async function startVoiceSession(
   accessToken: string,
   sessionId: string,
+  idempotencyKey = newIdempotencyKey("start"),
 ): Promise<VoiceSession> {
-  const response = await fetch(
-    `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/start`,
-    {
-      method: "POST",
-      headers: authHeaders(accessToken, newIdempotencyKey("start")),
-    },
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(
+        `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/start`,
+        {
+          method: "POST",
+          headers: authHeaders(accessToken, idempotencyKey),
+        },
+      );
+      return await parseJson<VoiceSession>(response);
+    } catch (error) {
+      if (!isRetryableStartError(error) || attempt === 1) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw new Error("unreachable");
+}
+
+function isRetryableStartError(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  if (error.status === 503) return true;
+  return (
+    error.status === 409 &&
+    (error.code === "webrtc_not_ready" ||
+      error.code === "realtime_start_failed" ||
+      error.code === "session_start_in_progress")
   );
-  return parseJson<VoiceSession>(response);
 }
 
 export async function endVoiceSession(

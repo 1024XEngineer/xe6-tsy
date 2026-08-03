@@ -349,13 +349,22 @@ export function useVoiceSession() {
         accountId: accountIdRef.current,
       }));
 
-      // Keep REST artifacts visible for debugging; tear down media only.
+      const failedSessionId = sessionIdRef.current;
+      const failedAccessToken = accessTokenRef.current;
       cleanupMedia();
       stopPolling();
-      // If we never got a session id, fully reset running flag for retry.
-      if (!sessionIdRef.current) {
-        runningRef.current = false;
+      if (failedAccessToken && failedSessionId) {
+        await endVoiceSession(
+          failedAccessToken,
+          failedSessionId,
+          "operator_cancelled",
+        ).catch(() => undefined);
       }
+      sessionIdRef.current = null;
+      runningRef.current = false;
+      dispatch({ type: "END" });
+      setStatusMessage("联调失败");
+      setHintMessage(message);
     }
   }, [cleanupMedia, startPolling, stopPolling]);
 

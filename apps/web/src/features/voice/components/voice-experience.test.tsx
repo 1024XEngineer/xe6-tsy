@@ -24,8 +24,15 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 describe("VoiceExperience", () => {
+  let failFirstStart = false;
+  let startRequests = 0;
+  let createdSessions = 0;
+
   beforeEach(() => {
     closeWebRTC.mockClear();
+    failFirstStart = false;
+    startRequests = 0;
+    createdSessions = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -51,9 +58,10 @@ describe("VoiceExperience", () => {
         }
 
         if (url.endsWith("/api/v1/voice-sessions") && method === "POST") {
+          createdSessions += 1;
           return jsonResponse(
             {
-              id: "vs-1",
+              id: `vs-${createdSessions}`,
               account_id: "acc-1",
               status: "created",
               created_at: "2026-07-31T00:00:00Z",
@@ -90,8 +98,15 @@ describe("VoiceExperience", () => {
         }
 
         if (url.includes("/start") && method === "POST") {
+          startRequests += 1;
+          if (failFirstStart && startRequests <= 2) {
+            return jsonResponse(
+              { error: { code: "realtime_start_failed", message: "temporary" } },
+              503,
+            );
+          }
           return jsonResponse({
-            id: "vs-1",
+            id: `vs-${createdSessions}`,
             account_id: "acc-1",
             status: "active",
             created_at: "2026-07-31T00:00:00Z",
@@ -235,5 +250,20 @@ describe("VoiceExperience", () => {
     });
     expect(screen.getByText("轻触开始")).toBeInTheDocument();
     expect(closeWebRTC).toHaveBeenCalled();
+  });
+
+  it("returns to a fresh start after a failed session startup", async () => {
+    failFirstStart = true;
+
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "开始语音会话" })).toBeVisible();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+    expect(createdSessions).toBe(2);
+    expect(startRequests).toBe(3);
   });
 });

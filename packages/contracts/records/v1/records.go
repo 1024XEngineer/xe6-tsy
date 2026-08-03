@@ -47,6 +47,7 @@ const (
 	ErrorParticipantAbsent  ErrorCode = "participant_not_found"
 	ErrorVoiceTurnAbsent    ErrorCode = "voice_turn_not_found"
 	ErrorInvalidAttribution ErrorCode = "invalid_attribution"
+	ErrorConflict           ErrorCode = "conflict"
 	ErrorNotImplemented     ErrorCode = "not_implemented"
 	ErrorInternal           ErrorCode = "internal_error"
 )

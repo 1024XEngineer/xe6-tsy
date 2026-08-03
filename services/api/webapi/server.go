@@ -253,12 +253,16 @@ func (s *Server) correctAttribution(writer http.ResponseWriter, request *http.Re
 		s.writeError(writer, recordsv1.ErrorForbidden, errors.New("system authorization is required"))
 		return
 	}
-	var body recordsv1.UpdateAttributionRequest
+	var body attributionUpdateBody
 	if err := decodeJSON(request.Body, &body); err != nil {
 		s.writeError(writer, recordsv1.ErrorInvalidRequest, err)
 		return
 	}
-	turn, err := s.turns.CorrectAttribution(request.Context(), accountID, request.PathValue("id"), body)
+	turn, err := s.turns.CorrectAttribution(request.Context(), accountID, request.PathValue("id"), recordsv1.UpdateAttributionRequest{
+		ParticipantID:     body.ParticipantID,
+		AttributionStatus: body.AttributionStatus,
+		SpeakerConfidence: body.SpeakerConfidence.Value,
+	}, body.SpeakerConfidence.Set)
 	if err != nil {
 		s.writeDomainError(writer, request, err)
 		return
@@ -305,6 +309,8 @@ func (s *Server) writeDomainError(writer http.ResponseWriter, request *http.Requ
 		s.writeError(writer, recordsv1.ErrorVoiceTurnAbsent, err)
 	case errors.Is(err, participants.ErrForbidden), errors.Is(err, turns.ErrForbidden):
 		s.writeError(writer, recordsv1.ErrorForbidden, err)
+	case errors.Is(err, participants.ErrConflict):
+		s.writeError(writer, recordsv1.ErrorConflict, err)
 	case errors.Is(err, turns.ErrInvalidAttribution):
 		s.writeError(writer, recordsv1.ErrorInvalidAttribution, err)
 	case errors.Is(err, participants.ErrInvalidRequest), errors.Is(err, turns.ErrInvalidRequest):
@@ -324,6 +330,8 @@ func (s *Server) writeError(writer http.ResponseWriter, code recordsv1.ErrorCode
 		status = http.StatusUnauthorized
 	case recordsv1.ErrorForbidden:
 		status = http.StatusForbidden
+	case recordsv1.ErrorConflict:
+		status = http.StatusConflict
 	case recordsv1.ErrorVoiceSessionAbsent, recordsv1.ErrorParticipantAbsent, recordsv1.ErrorVoiceTurnAbsent:
 		status = http.StatusNotFound
 	case recordsv1.ErrorNotImplemented:
@@ -357,10 +365,31 @@ func (value *optionalString) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type optionalFloat struct {
+	Set   bool
+	Value *float64
+}
+
+func (value *optionalFloat) UnmarshalJSON(data []byte) error {
+	value.Set = true
+	var decoded *float64
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	value.Value = decoded
+	return nil
+}
+
 type participantUpdateBody struct {
 	DisplayName       optionalString `json:"display_name"`
 	ProviderSpeakerID optionalString `json:"provider_speaker_id"`
 	VoiceProfileID    optionalString `json:"voice_profile_id"`
+}
+
+type attributionUpdateBody struct {
+	ParticipantID     string                      `json:"participant_id"`
+	AttributionStatus recordsv1.AttributionStatus `json:"attribution_status"`
+	SpeakerConfidence optionalFloat               `json:"speaker_confidence"`
 }
 
 func decodeParticipantUpdate(body io.Reader) (participants.Update, error) {
@@ -378,8 +407,12 @@ func decodeParticipantUpdate(body io.Reader) (participants.Update, error) {
 	}, nil
 }
 
+// maxRequestBodyBytes bounds request bodies so oversized payloads fail fast instead of being read
+// into memory. It matches the limit used by the other public API routes.
+const maxRequestBodyBytes = 1 << 20
+
 func decodeJSON(body io.Reader, target any) error {
-	decoder := json.NewDecoder(body)
+	decoder := json.NewDecoder(io.LimitReader(body, maxRequestBodyBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err

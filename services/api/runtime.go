@@ -102,6 +102,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		processConfig.JWTSecret,
 		processConfig.JWTIssuer,
 		processConfig.JWTAudience,
+		processConfig.RecordsSystemToken,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("initialize configured records HTTP: %w", err)

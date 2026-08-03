@@ -2,7 +2,9 @@
 package webapi
 
 import (
+	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +20,8 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 )
+
+const systemTokenHeader = "X-Lingow-System-Token"
 
 type systemActorContextKey struct{}
 
@@ -64,6 +68,7 @@ type Dependencies struct {
 	Turns        *turns.Service
 	Accounts     AccountProvider
 	System       SystemAuthorizer
+	SystemToken  string
 	Logger       *slog.Logger
 }
 
@@ -73,6 +78,7 @@ type Server struct {
 	turns        *turns.Service
 	accounts     AccountProvider
 	system       SystemAuthorizer
+	systemToken  string
 	logger       *slog.Logger
 	requestSeq   atomic.Uint64
 }
@@ -99,22 +105,37 @@ func NewHandler(dependencies Dependencies) *Server {
 		turns:        dependencies.Turns,
 		accounts:     dependencies.Accounts,
 		system:       dependencies.System,
+		systemToken:  dependencies.SystemToken,
 		logger:       dependencies.Logger,
 	}
 	return server
 }
 
-// Register attaches all voice-record routes behind the caller's authentication boundary.
-func (s *Server) Register(mux *http.ServeMux, authenticate func(http.Handler) http.Handler) {
-	if authenticate == nil {
-		panic("webapi authentication middleware is required")
+// RouteMiddleware carries the account and system authentication boundaries applied by Register.
+// Read routes require only the account middleware; PATCH routes require both so an internal
+// system credential can never substitute for a valid account or vice versa.
+type RouteMiddleware struct {
+	Account func(http.Handler) http.Handler
+	System  func(http.Handler) http.Handler
+}
+
+// Register attaches all voice-record routes behind the caller's authentication boundaries.
+func (s *Server) Register(mux *http.ServeMux, middleware RouteMiddleware) {
+	if middleware.Account == nil {
+		panic("webapi account authentication middleware is required")
 	}
-	mux.Handle("GET /api/v1/voice-sessions/{id}/participants", authenticate(http.HandlerFunc(s.listParticipants)))
-	mux.Handle("PATCH /api/v1/voice-sessions/{id}/participants/{participant_id}", authenticate(http.HandlerFunc(s.updateParticipant)))
-	mux.Handle("GET /api/v1/voice-sessions/{id}/turns", authenticate(http.HandlerFunc(s.listSessionTurns)))
-	mux.Handle("GET /api/v1/voice-turns/{id}", authenticate(http.HandlerFunc(s.getTurn)))
-	mux.Handle("PATCH /api/v1/voice-turns/{id}/attribution", authenticate(http.HandlerFunc(s.correctAttribution)))
-	mux.Handle("GET /api/v1/translation-history", authenticate(http.HandlerFunc(s.listHistory)))
+	if middleware.System == nil {
+		panic("webapi system authentication middleware is required")
+	}
+	patch := func(next http.Handler) http.Handler {
+		return middleware.Account(middleware.System(next))
+	}
+	mux.Handle("GET /api/v1/voice-sessions/{id}/participants", middleware.Account(http.HandlerFunc(s.listParticipants)))
+	mux.Handle("PATCH /api/v1/voice-sessions/{id}/participants/{participant_id}", patch(http.HandlerFunc(s.updateParticipant)))
+	mux.Handle("GET /api/v1/voice-sessions/{id}/turns", middleware.Account(http.HandlerFunc(s.listSessionTurns)))
+	mux.Handle("GET /api/v1/voice-turns/{id}", middleware.Account(http.HandlerFunc(s.getTurn)))
+	mux.Handle("PATCH /api/v1/voice-turns/{id}/attribution", patch(http.HandlerFunc(s.correctAttribution)))
+	mux.Handle("GET /api/v1/translation-history", middleware.Account(http.HandlerFunc(s.listHistory)))
 }
 
 // Authenticate applies the shared Bearer-token parser while preserving the
@@ -131,6 +152,25 @@ func (s *Server) Authenticate(tokens accounts.AccessTokenVerifier, next http.Han
 			return
 		}
 		next.ServeHTTP(writer, request.WithContext(ctx))
+	})
+}
+
+// SystemAuthenticate validates the X-Lingow-System-Token internal credential and marks the
+// request as a system actor. It is fail-closed: without a configured token, or when the header
+// is missing or does not match, the request is rejected with forbidden. The comparison is
+// constant-time and the configured token is never written to logs or error responses.
+func (s *Server) SystemAuthenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if s.systemToken == "" {
+			s.writeError(writer, recordsv1.ErrorForbidden, errors.New("system authentication is not configured"))
+			return
+		}
+		provided := request.Header.Get(systemTokenHeader)
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(s.systemToken)) != 1 {
+			s.writeError(writer, recordsv1.ErrorForbidden, errors.New("system authentication is required"))
+			return
+		}
+		next.ServeHTTP(writer, request.WithContext(WithSystemActor(request.Context())))
 	})
 }
 
@@ -214,12 +254,16 @@ func (s *Server) correctAttribution(writer http.ResponseWriter, request *http.Re
 		s.writeError(writer, recordsv1.ErrorForbidden, errors.New("system authorization is required"))
 		return
 	}
-	var body recordsv1.UpdateAttributionRequest
+	var body attributionUpdateBody
 	if err := decodeJSON(request.Body, &body); err != nil {
 		s.writeError(writer, recordsv1.ErrorInvalidRequest, err)
 		return
 	}
-	turn, err := s.turns.CorrectAttribution(request.Context(), accountID, request.PathValue("id"), body)
+	turn, err := s.turns.CorrectAttribution(request.Context(), accountID, request.PathValue("id"), recordsv1.UpdateAttributionRequest{
+		ParticipantID:     body.ParticipantID,
+		AttributionStatus: body.AttributionStatus,
+		SpeakerConfidence: body.SpeakerConfidence.Value,
+	}, body.SpeakerConfidence.Set)
 	if err != nil {
 		s.writeDomainError(writer, request, err)
 		return
@@ -266,6 +310,8 @@ func (s *Server) writeDomainError(writer http.ResponseWriter, request *http.Requ
 		s.writeError(writer, recordsv1.ErrorVoiceTurnAbsent, err)
 	case errors.Is(err, participants.ErrForbidden), errors.Is(err, turns.ErrForbidden):
 		s.writeError(writer, recordsv1.ErrorForbidden, err)
+	case errors.Is(err, participants.ErrConflict):
+		s.writeError(writer, recordsv1.ErrorConflict, err)
 	case errors.Is(err, turns.ErrInvalidAttribution):
 		s.writeError(writer, recordsv1.ErrorInvalidAttribution, err)
 	case errors.Is(err, participants.ErrInvalidRequest), errors.Is(err, turns.ErrInvalidRequest):
@@ -285,6 +331,8 @@ func (s *Server) writeError(writer http.ResponseWriter, code recordsv1.ErrorCode
 		status = http.StatusUnauthorized
 	case recordsv1.ErrorForbidden:
 		status = http.StatusForbidden
+	case recordsv1.ErrorConflict:
+		status = http.StatusConflict
 	case recordsv1.ErrorVoiceSessionAbsent, recordsv1.ErrorParticipantAbsent, recordsv1.ErrorVoiceTurnAbsent:
 		status = http.StatusNotFound
 	case recordsv1.ErrorNotImplemented:
@@ -318,10 +366,31 @@ func (value *optionalString) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type optionalFloat struct {
+	Set   bool
+	Value *float64
+}
+
+func (value *optionalFloat) UnmarshalJSON(data []byte) error {
+	value.Set = true
+	var decoded *float64
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	value.Value = decoded
+	return nil
+}
+
 type participantUpdateBody struct {
 	DisplayName       optionalString `json:"display_name"`
 	ProviderSpeakerID optionalString `json:"provider_speaker_id"`
 	VoiceProfileID    optionalString `json:"voice_profile_id"`
+}
+
+type attributionUpdateBody struct {
+	ParticipantID     string                      `json:"participant_id"`
+	AttributionStatus recordsv1.AttributionStatus `json:"attribution_status"`
+	SpeakerConfidence optionalFloat               `json:"speaker_confidence"`
 }
 
 func decodeParticipantUpdate(body io.Reader) (participants.Update, error) {
@@ -339,8 +408,22 @@ func decodeParticipantUpdate(body io.Reader) (participants.Update, error) {
 	}, nil
 }
 
+// maxRequestBodyBytes bounds request bodies so oversized payloads fail fast instead of being read
+// into memory. It matches the limit used by the other public API routes.
+const maxRequestBodyBytes = 1 << 20
+
 func decodeJSON(body io.Reader, target any) error {
-	decoder := json.NewDecoder(body)
+	// Read up to limit+1 so a request with a complete JSON prefix followed by more data is
+	// detected instead of being hidden as an early EOF by io.LimitReader.
+	payload, err := io.ReadAll(io.LimitReader(body, maxRequestBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(payload) > maxRequestBodyBytes {
+		return errors.New("request body exceeds 1 MiB")
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err

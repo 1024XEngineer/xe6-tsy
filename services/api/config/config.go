@@ -20,6 +20,7 @@ const (
 	defaultRealtimeHTTPTimeout  = 5 * time.Second
 	maxRealtimeHTTPTimeout      = 5 * time.Second
 	minRealtimeTicketSecretSize = 32
+	minRecordsSystemTokenSize   = 32
 )
 
 // Config contains only process configuration. Secrets are kept as strings at
@@ -57,6 +58,7 @@ type Config struct {
 	WeComCorpID           string
 	WeComCorpSecret       string
 	WeComAgentID          string
+	RecordsSystemToken    string
 }
 
 // Load reads the process environment and validates only the configuration
@@ -109,6 +111,7 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		WeComCorpID:           value("LINGOW_WECOM_CORP_ID", ""),
 		WeComCorpSecret:       value("LINGOW_WECOM_CORP_SECRET", ""),
 		WeComAgentID:          value("LINGOW_WECOM_AGENT_ID", ""),
+		RecordsSystemToken:    value("LINGOW_RECORDS_SYSTEM_TOKEN", ""),
 	}
 	sessionRuntimeMode := strings.ToLower(value("LINGOW_SESSION_RUNTIME", "disabled"))
 	switch sessionRuntimeMode {
@@ -166,6 +169,9 @@ func validateCore(config Config) error {
 	}
 	if len([]byte(config.JWTSecret)) < 32 {
 		return fmt.Errorf("%w: JWT_SECRET must contain at least 32 bytes", domain.ErrInvalidArgument)
+	}
+	if config.RecordsSystemToken != "" && len([]byte(config.RecordsSystemToken)) < minRecordsSystemTokenSize {
+		return fmt.Errorf("%w: LINGOW_RECORDS_SYSTEM_TOKEN must contain at least %d bytes when configured", domain.ErrInvalidArgument, minRecordsSystemTokenSize)
 	}
 	return nil
 }
@@ -348,6 +354,9 @@ func (c Config) redacted() Config {
 	}
 	if c.WeComCorpSecret != "" {
 		c.WeComCorpSecret = "[redacted]"
+	}
+	if c.RecordsSystemToken != "" {
+		c.RecordsSystemToken = "[redacted]"
 	}
 	return c
 }

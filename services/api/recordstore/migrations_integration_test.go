@@ -46,6 +46,7 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{12, "enable_wechat_channel"},
 		{13, "session_failed_terminal_timestamp"},
 		{14, "end_intent_recovery"},
+		{15, "attribution_snapshot_updates"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))
@@ -392,6 +393,12 @@ func testTurnConstraints(t *testing.T, pool *pgxpool.Pool) {
 	}
 	if _, err := pool.Exec(t.Context(), "UPDATE voice_turns SET attribution_status = 'confirmed', speaker_confidence = 0.9 WHERE id = 'turn_01'"); err != nil {
 		t.Fatalf("updating attribution fields: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), "UPDATE voice_turns SET speaker_code = 'speaker_02' WHERE id = 'turn_01'"); err != nil {
+		t.Fatalf("updating speaker snapshot field: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), "UPDATE voice_turns SET source_text = 'edited' WHERE id = 'turn_01'"); err == nil {
+		t.Fatal("updating source_text after snapshot update succeeded, want an error")
 	}
 }
 

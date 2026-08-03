@@ -96,7 +96,7 @@ func (w *ParticipantWriter) Update(
 		return recordsv1.Participant{}, participants.ErrParticipantNotFound
 	}
 	if errors.Is(MapError(err), domain.ErrConflict) {
-		return recordsv1.Participant{}, participants.ErrInvalidRequest
+		return recordsv1.Participant{}, participants.ErrConflict
 	}
 	if err != nil {
 		return recordsv1.Participant{}, fmt.Errorf("update participant mapping: %w", err)

@@ -16,6 +16,7 @@ var (
 	ErrParticipantNotFound = errors.New("participant not found")
 	ErrForbidden           = errors.New("voice session belongs to another account")
 	ErrInvalidRequest      = errors.New("invalid participant request")
+	ErrConflict            = errors.New("participant mapping conflicts with existing data")
 )
 
 // Repository persists session participants. Implementations must reject a participant ID that

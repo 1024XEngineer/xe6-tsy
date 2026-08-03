@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 14 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 14", len(migrations))
+	if len(migrations) != 15 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 15", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -176,5 +176,23 @@ func TestEmbeddedMigrations(t *testing.T) {
 		if !strings.Contains(endRecovery.SQL, expected) {
 			t.Fatalf("end-recovery migration does not contain %q", expected)
 		}
+	}
+
+	attributionSnapshot := migrations[14]
+	if attributionSnapshot.Version != 15 || attributionSnapshot.Name != "attribution_snapshot_updates" {
+		t.Fatalf("migration = %#v, want version 15 named attribution_snapshot_updates", attributionSnapshot)
+	}
+	for _, expected := range []string{
+		"CREATE OR REPLACE FUNCTION recordstore_reject_voice_turn_immutable_updates",
+		"NEW.sequence_no IS DISTINCT FROM OLD.sequence_no",
+		"NEW.source_text IS DISTINCT FROM OLD.source_text",
+		"NEW.translated_text IS DISTINCT FROM OLD.translated_text",
+	} {
+		if !strings.Contains(attributionSnapshot.SQL, expected) {
+			t.Fatalf("attribution-snapshot migration does not contain %q", expected)
+		}
+	}
+	if strings.Contains(attributionSnapshot.SQL, "NEW.speaker_code IS DISTINCT FROM OLD.speaker_code") {
+		t.Fatal("attribution-snapshot migration must allow speaker snapshot field updates")
 	}
 }

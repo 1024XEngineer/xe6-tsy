@@ -33,14 +33,18 @@ type Repository interface {
 }
 
 // AttributionUpdate contains only the mutable part of a final turn. CorrectedBy and CorrectedAt
-// are assigned by Service and cannot be supplied by a public HTTP client.
+// are assigned by Service and cannot be supplied by a public HTTP client. AccountID authorizes
+// the correction inside the repository write transaction so ownership and the write share one
+// atomic boundary. SpeakerConfidenceSet distinguishes an absent field from an explicit null.
 type AttributionUpdate struct {
-	TurnID            string
-	ParticipantID     string
-	AttributionStatus recordsv1.AttributionStatus
-	SpeakerConfidence *float64
-	CorrectedBy       string
-	CorrectedAt       time.Time
+	AccountID            string
+	TurnID               string
+	ParticipantID        string
+	AttributionStatus    recordsv1.AttributionStatus
+	SpeakerConfidence    *float64
+	SpeakerConfidenceSet bool
+	CorrectedBy          string
+	CorrectedAt          time.Time
 }
 
 // Service implements the records module ports and public record operations. Final-turn producers
@@ -98,20 +102,24 @@ func (s *Service) Get(ctx context.Context, accountID, turnID string) (recordsv1.
 	return turn, nil
 }
 
-func (s *Service) CorrectAttribution(ctx context.Context, accountID, turnID string, request recordsv1.UpdateAttributionRequest) (recordsv1.VoiceTurn, error) {
+func (s *Service) CorrectAttribution(ctx context.Context, accountID, turnID string, request recordsv1.UpdateAttributionRequest, speakerConfidenceSet bool) (recordsv1.VoiceTurn, error) {
 	if !validAttributionRequest(turnID, request) {
 		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
 	}
-	if _, err := s.Get(ctx, accountID, turnID); err != nil {
-		return recordsv1.VoiceTurn{}, err
+	if request.SpeakerConfidence != nil && (*request.SpeakerConfidence < 0 || *request.SpeakerConfidence > 1) {
+		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
 	}
+	// Account ownership is enforced inside the repository write transaction so the
+	// authorization check and the attribution update share one atomic boundary.
 	return s.repository.CorrectAttribution(ctx, AttributionUpdate{
-		TurnID:            turnID,
-		ParticipantID:     request.ParticipantID,
-		AttributionStatus: request.AttributionStatus,
-		SpeakerConfidence: request.SpeakerConfidence,
-		CorrectedBy:       recordsv1.CorrectedBySystem,
-		CorrectedAt:       s.now().UTC(),
+		AccountID:            accountID,
+		TurnID:               turnID,
+		ParticipantID:        request.ParticipantID,
+		AttributionStatus:    request.AttributionStatus,
+		SpeakerConfidence:    request.SpeakerConfidence,
+		SpeakerConfidenceSet: speakerConfidenceSet,
+		CorrectedBy:          recordsv1.CorrectedBySystem,
+		CorrectedAt:          s.now().UTC(),
 	})
 }
 

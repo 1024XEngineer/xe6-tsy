@@ -169,7 +169,7 @@ func TestCorrectAttributionPreservesImmutableTurnFields(t *testing.T) {
 		ParticipantID:     participantID,
 		AttributionStatus: recordsv1.AttributionCorrected,
 		SpeakerConfidence: &confidence,
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("CorrectAttribution() error = %v", err)
 	}
@@ -184,25 +184,81 @@ func TestCorrectAttributionPreservesImmutableTurnFields(t *testing.T) {
 	}
 }
 
+func TestCorrectAttributionConfidenceThreeState(t *testing.T) {
+	now := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		set            bool
+		value          *float64
+		wantSet        bool
+		wantConfidence *float64
+	}{
+		{name: "absent preserves existing", set: false, wantSet: false, wantConfidence: nil},
+		{name: "explicit null clears", set: true, wantSet: true, wantConfidence: nil},
+		{name: "number updates", set: true, value: ptrFloat64(0.91), wantSet: true, wantConfidence: ptrFloat64(0.91)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &fakeRepository{
+				turn:                 recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
+				participantInSession: true,
+			}
+			service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, func() time.Time { return now })
+
+			_, err := service.CorrectAttribution(context.Background(), "acct_01", "vt_01", recordsv1.UpdateAttributionRequest{
+				ParticipantID:     "p_01",
+				AttributionStatus: recordsv1.AttributionConfirmed,
+				SpeakerConfidence: test.value,
+			}, test.set)
+			if err != nil {
+				t.Fatalf("CorrectAttribution() error = %v", err)
+			}
+			if repository.lastUpdate.SpeakerConfidenceSet != test.wantSet {
+				t.Fatalf("SpeakerConfidenceSet = %v, want %v", repository.lastUpdate.SpeakerConfidenceSet, test.wantSet)
+			}
+			if !equalFloat(repository.lastUpdate.SpeakerConfidence, test.wantConfidence) {
+				t.Fatalf("SpeakerConfidence = %v, want %v", repository.lastUpdate.SpeakerConfidence, test.wantConfidence)
+			}
+		})
+	}
+}
+
+func TestCorrectAttributionRejectsOutOfRangeConfidence(t *testing.T) {
+	outOfRange := 1.5
+	repository := &fakeRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+
+	_, err := service.CorrectAttribution(context.Background(), "acct_01", "vt_01", recordsv1.UpdateAttributionRequest{
+		ParticipantID:     "p_01",
+		AttributionStatus: recordsv1.AttributionConfirmed,
+		SpeakerConfidence: &outOfRange,
+	}, true)
+	if !errors.Is(err, ErrInvalidAttribution) {
+		t.Fatalf("CorrectAttribution() error = %v, want invalid attribution", err)
+	}
+}
+
 func TestCorrectAttributionRejectsInvalidTarget(t *testing.T) {
 	tests := []struct {
 		name        string
 		accountID   string
 		request     recordsv1.UpdateAttributionRequest
 		participant bool
+		missingTurn bool
 		wantErr     error
 	}{
 		{name: "invalid status", accountID: "acct_01", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionPending}, wantErr: ErrInvalidAttribution},
 		{name: "participant belongs to another session", accountID: "acct_01", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionConfirmed}, wantErr: ErrInvalidAttribution},
 		{name: "cross account", accountID: "acct_02", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionConfirmed}, participant: true, wantErr: ErrTurnNotFound},
+		{name: "missing turn", accountID: "acct_01", request: recordsv1.UpdateAttributionRequest{ParticipantID: "p_01", AttributionStatus: recordsv1.AttributionConfirmed}, participant: true, missingTurn: true, wantErr: ErrTurnNotFound},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			repository := &fakeRepository{ownedAccountID: "acct_01", turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: test.participant}
+			repository := &fakeRepository{ownedAccountID: "acct_01", turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: test.participant, missingTurn: test.missingTurn}
 			service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
 
-			_, err := service.CorrectAttribution(context.Background(), test.accountID, "vt_01", test.request)
+			_, err := service.CorrectAttribution(context.Background(), test.accountID, "vt_01", test.request, false)
 			if !errors.Is(err, test.wantErr) {
 				t.Fatalf("CorrectAttribution() error = %v, want %v", err, test.wantErr)
 			}
@@ -296,6 +352,7 @@ type fakeRepository struct {
 	listResponse         recordsv1.VoiceTurnListResponse
 	historyResponse      recordsv1.VoiceTurnListResponse
 	participantInSession bool
+	missingTurn          bool
 	lastUpdate           AttributionUpdate
 	snapshots            []recordsv1.FinalTurnSnapshot
 	readAccountID        string
@@ -352,6 +409,12 @@ func (r *fakeRepository) ListHistory(context.Context, string, recordsv1.ListTurn
 }
 
 func (r *fakeRepository) CorrectAttribution(_ context.Context, update AttributionUpdate) (recordsv1.VoiceTurn, error) {
+	if r.missingTurn {
+		return recordsv1.VoiceTurn{}, ErrTurnNotFound
+	}
+	if r.ownedAccountID != "" && update.AccountID != r.ownedAccountID {
+		return recordsv1.VoiceTurn{}, ErrTurnNotFound
+	}
 	if !r.participantInSession {
 		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
 	}
@@ -359,7 +422,9 @@ func (r *fakeRepository) CorrectAttribution(_ context.Context, update Attributio
 	updated := r.turn
 	updated.ParticipantID = &update.ParticipantID
 	updated.AttributionStatus = update.AttributionStatus
-	updated.SpeakerConfidence = update.SpeakerConfidence
+	if update.SpeakerConfidenceSet {
+		updated.SpeakerConfidence = update.SpeakerConfidence
+	}
 	updated.CorrectedBy = &update.CorrectedBy
 	updated.CorrectedAt = &update.CorrectedAt
 	return updated, nil
@@ -382,4 +447,15 @@ type fakeSessionOwners struct {
 
 func (r fakeSessionOwners) AccountIDForSession(context.Context, string) (string, error) {
 	return r.ownerID, r.err
+}
+
+func ptrFloat64(value float64) *float64 {
+	return &value
+}
+
+func equalFloat(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }

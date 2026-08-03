@@ -244,6 +244,7 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 		strings.Repeat("j", 32),
 		"lingow-api",
 		"lingow-client",
+		"records-system-token-secret-123456",
 	)
 	if err != nil {
 		t.Fatalf("newRecordsHTTPDependenciesFromPool() error = %v", err)
@@ -507,6 +508,7 @@ func TestSessionProductionCompositionRecoversFailedEndIntent(t *testing.T) {
 		strings.Repeat("j", 32),
 		"lingow-api",
 		"lingow-client",
+		"records-system-token-secret-123456",
 	)
 	if err != nil {
 		t.Fatalf("newRecordsHTTPDependenciesFromPool() error = %v", err)

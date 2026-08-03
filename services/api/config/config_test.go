@@ -140,6 +140,7 @@ func TestConfigFormattingRedactsSecrets(t *testing.T) {
 		DestinationKey:       "destination-key-secret",
 		SMTPPassword:         "smtp-secret",
 		WeComCorpSecret:      "wecom-secret",
+		RecordsSystemToken:   "records-system-token-secret-123456",
 	}
 	formatted := fmt.Sprintf("%#v %v", config, config)
 	for _, secret := range []string{
@@ -150,10 +151,42 @@ func TestConfigFormattingRedactsSecrets(t *testing.T) {
 		"destination-key-secret",
 		"smtp-secret",
 		"wecom-secret",
+		"records-system-token-secret-123456",
 	} {
 		if strings.Contains(formatted, secret) {
 			t.Fatalf("formatted config leaked secret %q: %s", secret, formatted)
 		}
+	}
+}
+
+func TestLoadAcceptsMissingRecordsSystemToken(t *testing.T) {
+	config, err := LoadFrom(mapCoreEnv(map[string]string{}))
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if config.RecordsSystemToken != "" {
+		t.Fatalf("RecordsSystemToken = %q, want empty", config.RecordsSystemToken)
+	}
+}
+
+func TestLoadAcceptsConfiguredRecordsSystemToken(t *testing.T) {
+	config, err := LoadFrom(mapCoreEnv(map[string]string{
+		"LINGOW_RECORDS_SYSTEM_TOKEN": "records-system-token-secret-123456",
+	}))
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if config.RecordsSystemToken != "records-system-token-secret-123456" {
+		t.Fatalf("RecordsSystemToken = %q, want configured value", config.RecordsSystemToken)
+	}
+}
+
+func TestLoadRejectsShortRecordsSystemToken(t *testing.T) {
+	_, err := LoadFrom(mapCoreEnv(map[string]string{
+		"LINGOW_RECORDS_SYSTEM_TOKEN": "short",
+	}))
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
 	}
 }
 

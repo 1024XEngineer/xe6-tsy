@@ -44,11 +44,13 @@ func (f WebRTCFrameSources) Open(
 	}
 	// Empty SourceLanguage means "auto-detect" for bilingual sessions.
 	// Do not force zh-CN here — that locks Qwen ASR to Chinese and drops English.
+	// TEMPORARY: wrapDebugInboundWAV dumps inbound PCM to WAV (hardcoded in debug_inbound_wav.go).
+	// Delete debug_inbound_wav.go and this wrap when the debug dump is retired.
 	return runtime.AudioInput{
-		Source: &lazyWebRTCSource{
+		Source: wrapDebugInboundWAV(&lazyWebRTCSource{
 			media:     f.Media,
 			sessionID: sessionID,
-		},
+		}, sessionID),
 		SourceLanguage: language,
 	}, nil
 }

@@ -9,6 +9,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/kazzmir/opus-go v1.3.0
 	github.com/pion/opus v0.1.0
 	github.com/pion/rtp v1.10.5
 	github.com/pion/sdp/v3 v3.0.19

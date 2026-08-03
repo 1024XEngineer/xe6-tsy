@@ -112,6 +112,66 @@ func TestGetProvisionalAttributionAllowsPending(t *testing.T) {
 	}
 }
 
+func TestResolveProviderMappingRequiresOwnerAndEvidence(t *testing.T) {
+	tests := []struct {
+		name        string
+		accountID   string
+		ownerID     string
+		ownerErr    error
+		observation recordsv1.SpeakerObservation
+		wantErr     error
+	}{
+		{
+			name:        "owner with provider key",
+			accountID:   "acct_01",
+			ownerID:     "acct_01",
+			observation: recordsv1.SpeakerObservation{SessionID: "vs_01", TurnID: "vt_01", ProviderSpeakerID: "diar_01"},
+		},
+		{
+			name:        "another account forbidden",
+			accountID:   "acct_02",
+			ownerID:     "acct_01",
+			observation: recordsv1.SpeakerObservation{SessionID: "vs_01", TurnID: "vt_01", ProviderSpeakerID: "diar_01"},
+			wantErr:     ErrForbidden,
+		},
+		{
+			name:        "missing provider key invalid",
+			accountID:   "acct_01",
+			ownerID:     "acct_01",
+			observation: recordsv1.SpeakerObservation{SessionID: "vs_01", TurnID: "vt_01"},
+			wantErr:     ErrInvalidRequest,
+		},
+		{
+			name:        "missing session invalid",
+			accountID:   "acct_01",
+			ownerID:     "acct_01",
+			observation: recordsv1.SpeakerObservation{TurnID: "vt_01", ProviderSpeakerID: "diar_01"},
+			wantErr:     ErrInvalidRequest,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &fakeRepository{}
+			service := NewService(repository, fakeSessionOwners{ownerID: test.ownerID, err: test.ownerErr}, nil)
+
+			participant, err := service.ResolveProviderMapping(context.Background(), test.accountID, test.observation)
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("ResolveProviderMapping() error = %v, want %v", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveProviderMapping() error = %v", err)
+			}
+			if participant.ID == "" || participant.SpeakerCode == "" {
+				t.Fatalf("ResolveProviderMapping() participant = %#v", participant)
+			}
+		})
+	}
+}
+
 type fakeRepository struct {
 	listResponse  recordsv1.ParticipantListResponse
 	updated       recordsv1.Participant

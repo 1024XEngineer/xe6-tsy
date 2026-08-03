@@ -107,6 +107,12 @@ Local adapters live under `localruntime/` (`TrustSessionReader`, `StaticLanguage
 validated immutable event into the API service's PostgreSQL `final_turn_outbox`; the API consumer
 worker owns receipt settlement and persistence into `voice_turns`.
 
+Speaker evidence: the pipeline copies a non-empty `asr.FinalResult.ProviderSpeakerID` into the
+FinalTurn event as `provider_speaker_id`. When the ASR/diarization provider returns no speaker key,
+the turn stays `pending` and no participant is created; there is no implicit `local-mic` fallback,
+because a missing cluster key is not evidence of a single speaker. The API async attribution worker
+uses this persisted key to build the stable participant mapping and confirm/correct the turn.
+
 Official protocol references:
 
 - [Qwen ASR realtime interaction](https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process)

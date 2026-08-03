@@ -50,7 +50,7 @@ func TestPostgresSpeakerReaderValidation(t *testing.T) {
 			name:        "nil pool without beginTx",
 			reader:      PostgresSpeakerReader{},
 			ctx:         context.Background(),
-			observation: recordsv1.SpeakerObservation{SessionID: "s1", TurnID: "t1"},
+			observation: recordsv1.SpeakerObservation{SessionID: "s1", TurnID: "t1", ProviderSpeakerID: "mic-a"},
 			wantErr:     "postgres speaker reader pool is required",
 		},
 	}
@@ -125,14 +125,13 @@ func TestPostgresSpeakerReaderFindOrCreatePaths(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		tx          *scriptedSpeakerTx
-		beginErr    error
-		providerID  string
-		wantCode    string
-		wantPartID  string
-		wantErr     string
-		wantDefault bool
+		name       string
+		tx         *scriptedSpeakerTx
+		beginErr   error
+		providerID string
+		wantCode   string
+		wantPartID string
+		wantErr    string
 	}{
 		{
 			name: "returns existing participant",
@@ -144,21 +143,21 @@ func TestPostgresSpeakerReaderFindOrCreatePaths(t *testing.T) {
 			wantPartID: "p-existing",
 		},
 		{
-			name: "inserts when missing and defaults empty provider",
+			name: "inserts when missing",
 			tx: &scriptedSpeakerTx{
 				findErr:  pgx.ErrNoRows,
 				ordinal:  2,
 				inserted: inserted,
 			},
-			providerID:  "",
-			wantCode:    "speaker_02",
-			wantPartID:  "p-new",
-			wantDefault: true,
+			providerID: "mic-a",
+			wantCode:   "speaker_02",
+			wantPartID: "p-new",
 		},
 		{
-			name:     "begin failure",
-			beginErr: errors.New("begin boom"),
-			wantErr:  "begin participant allocation",
+			name:       "begin failure",
+			beginErr:   errors.New("begin boom"),
+			providerID: "mic-a",
+			wantErr:    "begin participant allocation",
 		},
 		{
 			name: "lock failure",
@@ -220,14 +219,10 @@ func TestPostgresSpeakerReaderFindOrCreatePaths(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var capturedProvider string
 			reader := PostgresSpeakerReader{
 				beginTx: func(ctx context.Context) (speakerTx, error) {
 					if tt.beginErr != nil {
 						return nil, tt.beginErr
-					}
-					tt.tx.onFindArgs = func(_ string, provider string) {
-						capturedProvider = provider
 					}
 					return tt.tx, nil
 				},
@@ -252,13 +247,25 @@ func TestPostgresSpeakerReaderFindOrCreatePaths(t *testing.T) {
 			if got.AttributionStatus != recordsv1.AttributionProvisional {
 				t.Fatalf("AttributionStatus = %q", got.AttributionStatus)
 			}
-			if tt.wantDefault && capturedProvider != defaultLocalProviderSpeakerID {
-				t.Fatalf("provider = %q, want default %q", capturedProvider, defaultLocalProviderSpeakerID)
-			}
 			if tt.tx != nil && !tt.tx.rolledBack {
 				t.Fatal("expected deferred Rollback to run")
 			}
 		})
+	}
+}
+
+func TestPostgresSpeakerReaderKeepsPendingWithoutProviderKey(t *testing.T) {
+	t.Parallel()
+	reader := PostgresSpeakerReader{}
+	got, err := reader.GetProvisionalAttribution(context.Background(), recordsv1.SpeakerObservation{
+		SessionID: "session-1",
+		TurnID:    "turn-1",
+	})
+	if err != nil {
+		t.Fatalf("GetProvisionalAttribution() error = %v", err)
+	}
+	if got.ParticipantID != nil || got.AttributionStatus != recordsv1.AttributionPending {
+		t.Fatalf("attribution = %#v, want pending", got)
 	}
 }
 

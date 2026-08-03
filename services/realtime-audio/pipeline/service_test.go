@@ -117,7 +117,7 @@ func TestPipelineMissingSpeakerReaderProducesPendingAttribution(t *testing.T) {
 	}
 }
 
-func TestPipelineDefaultsMissingProviderSpeakerIDWhenReaderWired(t *testing.T) {
+func TestPipelineKeepsPendingWithoutProviderSpeakerID(t *testing.T) {
 	finalSink := &recordingFinalSink{}
 	speakers := &fixedSpeakerReader{participantID: "participant-1"}
 	service := NewPipelineService(PipelineDependencies{
@@ -132,11 +132,37 @@ func TestPipelineDefaultsMissingProviderSpeakerIDWhenReaderWired(t *testing.T) {
 		t.Fatalf("HandleASRFinal() error = %v", err)
 	}
 	event := finalSink.events[0]
-	if event.ParticipantID == nil || *event.ParticipantID != "participant-1" || event.AttributionStatus != recordsv1.AttributionProvisional {
+	if event.ParticipantID != nil || event.AttributionStatus != recordsv1.AttributionPending {
 		t.Fatalf("FinalTurn attribution = %#v", event)
 	}
-	if speakers.observation.ProviderSpeakerID != "local-mic" {
-		t.Fatalf("ProviderSpeakerID = %q, want local-mic default", speakers.observation.ProviderSpeakerID)
+	if event.ProviderSpeakerID != nil {
+		t.Fatalf("ProviderSpeakerID = %v, want nil without evidence", *event.ProviderSpeakerID)
+	}
+	if speakers.observation.ProviderSpeakerID != "" {
+		t.Fatalf("speaker reader called with provider %q, want no lookup without evidence", speakers.observation.ProviderSpeakerID)
+	}
+}
+
+func TestPipelineCarriesProviderSpeakerIDIntoFinalTurn(t *testing.T) {
+	finalSink := &recordingFinalSink{}
+	speakers := &fixedSpeakerReader{participantID: "participant-1"}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+		Speakers:   speakers, FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
+		Runtime: &recordingRuntimeReporter{},
+	})
+	if err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", ProviderSpeakerID: "diar_01", Provider: "mock-asr", Model: "v1",
+	}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	event := finalSink.events[0]
+	if event.ProviderSpeakerID == nil || *event.ProviderSpeakerID != "diar_01" {
+		t.Fatalf("ProviderSpeakerID = %v, want diar_01", event.ProviderSpeakerID)
+	}
+	if event.ParticipantID == nil || *event.ParticipantID != "participant-1" {
+		t.Fatalf("FinalTurn participant = %v, want participant-1", event.ParticipantID)
 	}
 }
 

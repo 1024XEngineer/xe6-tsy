@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 15 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 15", len(migrations))
+	if len(migrations) != 17 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 17", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -194,5 +194,36 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if strings.Contains(attributionSnapshot.SQL, "NEW.speaker_code IS DISTINCT FROM OLD.speaker_code") {
 		t.Fatal("attribution-snapshot migration must allow speaker snapshot field updates")
+	}
+
+	attributionTasks := migrations[15]
+	if attributionTasks.Version != 16 || attributionTasks.Name != "attribution_tasks" {
+		t.Fatalf("migration = %#v, want version 16 named attribution_tasks", attributionTasks)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE attribution_tasks",
+		"task_type IN ('participant_mapping', 'turn_attribution')",
+		"status IN ('pending', 'processing', 'completed', 'failed')",
+		"CONSTRAINT attribution_tasks_turn_id_key UNIQUE (turn_id)",
+		"CREATE INDEX attribution_tasks_available_idx",
+		"CREATE INDEX attribution_tasks_lease_idx",
+	} {
+		if !strings.Contains(attributionTasks.SQL, expected) {
+			t.Fatalf("attribution-tasks migration does not contain %q", expected)
+		}
+	}
+
+	backfill := migrations[16]
+	if backfill.Version != 17 || backfill.Name != "backfill_attribution_tasks" {
+		t.Fatalf("migration = %#v, want version 17 named backfill_attribution_tasks", backfill)
+	}
+	for _, expected := range []string{
+		"INSERT INTO attribution_tasks",
+		"no_provider_speaker_id",
+		"ON CONFLICT (turn_id) DO NOTHING",
+	} {
+		if !strings.Contains(backfill.SQL, expected) {
+			t.Fatalf("backfill migration does not contain %q", expected)
+		}
 	}
 }

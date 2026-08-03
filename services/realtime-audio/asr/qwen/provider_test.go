@@ -356,6 +356,80 @@ func TestSessionUpdateEventSetsNullTurnDetectionWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestStreamCloseShutsDownOnce(t *testing.T) {
+	conn := &countingCloseConn{closed: make(chan struct{})}
+	events := make(chan asr.Event, eventBufferSize+1)
+	done := make(chan struct{})
+	readDone := make(chan struct{})
+	close(readDone)
+	canceled := make(chan struct{})
+	var cancelOnce sync.Once
+	stream := &stream{
+		conn:     conn,
+		cancel:   func() { cancelOnce.Do(func() { close(canceled) }) },
+		events:   events,
+		done:     done,
+		readDone: readDone,
+	}
+
+	if err := stream.Close(); err != nil {
+		t.Fatalf("first Close() error = %v", err)
+	}
+	select {
+	case <-canceled:
+	default:
+		t.Fatal("Close() did not cancel the stream context")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("Close() did not close the done channel")
+	}
+	if _, open := <-events; open {
+		t.Fatal("Close() left the events channel open")
+	}
+
+	if err := stream.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if conn.closeCount != 1 {
+		t.Fatalf("connection close count = %d, want 1", conn.closeCount)
+	}
+}
+
+func TestStreamSetErrorKeepsFirstError(t *testing.T) {
+	first := errors.New("first error")
+	second := errors.New("second error")
+	stream := &stream{}
+
+	stream.setError(first)
+	stream.setError(second)
+
+	if _, got := stream.finalResult(); !errors.Is(got, first) {
+		t.Fatalf("finalResult() error = %v, want first error", got)
+	}
+}
+
+type countingCloseConn struct {
+	closed     chan struct{}
+	closeCount int
+}
+
+func (*countingCloseConn) WriteMessage(int, []byte) error { return nil }
+func (*countingCloseConn) ReadMessage() (int, []byte, error) {
+	return 0, nil, errors.New("not implemented")
+}
+func (c *countingCloseConn) Close() error {
+	c.closeCount++
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+func (*countingCloseConn) SetWriteDeadline(time.Time) error { return nil }
+
 func TestManualModeFinishSendsCommitBeforeSessionFinish(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	writes := make(chan string, 8)

@@ -42,6 +42,7 @@ func (w *TurnWriter) StoreFinalTurn(ctx context.Context, event recordsv1.FinalTu
 		event.ParticipantID,
 		event.SpeakerCode,
 		event.SpeakerLabelSnapshot,
+		event.ProviderSpeakerID,
 		event.SequenceNo,
 		event.SourceLanguage,
 		event.TargetLanguage,
@@ -61,12 +62,31 @@ func (w *TurnWriter) StoreFinalTurn(ctx context.Context, event recordsv1.FinalTu
 		if err := verifyFinalTurnReplay(ctx, tx, event, payloadHash); err != nil {
 			return err
 		}
+	} else if needsAsyncAttribution(event.AttributionStatus) {
+		// Enqueue one durable attribution task in the same transaction so a pending or
+		// provisional turn is guaranteed to be considered by the async resolver.
+		if err := w.enqueueAttribution(ctx, tx, event.TurnID, event.SessionID); err != nil {
+			return err
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit final turn transaction: %w", err)
 	}
 	return nil
+}
+
+// enqueueAttribution inserts one async attribution task for the stored turn. The account is
+// resolved from the owning session inside the insert so the task is always account-scoped.
+func (w *TurnWriter) enqueueAttribution(ctx context.Context, tx pgx.Tx, turnID, sessionID string) error {
+	if err := NewAttributionTaskStore(w.pool).Enqueue(ctx, tx, turnID, sessionID); err != nil {
+		return fmt.Errorf("enqueue attribution task: %w", err)
+	}
+	return nil
+}
+
+func needsAsyncAttribution(status recordsv1.AttributionStatus) bool {
+	return status == recordsv1.AttributionPending || status == recordsv1.AttributionProvisional
 }
 
 func verifyFinalTurnReplay(
@@ -109,14 +129,14 @@ func verifyFinalTurnReplay(
 const insertFinalTurnQuery = `
 INSERT INTO voice_turns (
     id, event_id, event_payload_hash, session_id, participant_id,
-    speaker_code, display_name, sequence_no, source_language, target_language,
+    speaker_code, display_name, provider_speaker_id, sequence_no, source_language, target_language,
     language_config_version, source_text, translated_text, speaker_confidence,
     attribution_status, started_at, ended_at, created_at
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
-    $11, $12, $13, $14,
-    $15, $16, $17, $18
+    $11, $12, $13, $14, $15,
+    $16, $17, $18, $19
 )
 ON CONFLICT DO NOTHING`
 

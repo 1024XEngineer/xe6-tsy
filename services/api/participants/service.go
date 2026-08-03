@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -80,6 +81,20 @@ func (s *Service) Update(ctx context.Context, accountID, sessionID, participantI
 	}
 	update.UpdatedAt = s.now().UTC()
 	return s.repository.Update(ctx, sessionID, participantID, update)
+}
+
+// ResolveProviderMapping maps a session-scoped provider speaker key to the stable participant for
+// the session. It is the internal service boundary used by the async attribution worker: it enforces
+// account ownership and never fabricates a mapping when the provider key is absent. The mapping is
+// deterministic and reusable across turns; it does not rewrite existing voice turns.
+func (s *Service) ResolveProviderMapping(ctx context.Context, accountID string, observation recordsv1.SpeakerObservation) (recordsv1.Participant, error) {
+	if strings.TrimSpace(observation.ProviderSpeakerID) == "" {
+		return recordsv1.Participant{}, ErrInvalidRequest
+	}
+	if err := s.requireOwner(ctx, accountID, observation.SessionID); err != nil {
+		return recordsv1.Participant{}, err
+	}
+	return s.repository.FindOrCreate(ctx, observation)
 }
 
 // GetProvisionalAttribution implements the contracts port used by the realtime module. An absent

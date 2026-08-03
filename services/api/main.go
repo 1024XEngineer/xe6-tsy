@@ -34,13 +34,14 @@ const (
 )
 
 type recordsHTTPDependencies struct {
-	handler    *recordswebapi.Server
-	accounts   accounts.Service
-	tokens     accounts.AccessTokenVerifier
-	worker     finalTurnWorker
-	maintainer backgroundWorker
-	pool       *pgxpool.Pool
-	cleanup    func()
+	handler           *recordswebapi.Server
+	accounts          accounts.Service
+	tokens            accounts.AccessTokenVerifier
+	worker            finalTurnWorker
+	attributionWorker backgroundWorker
+	maintainer        backgroundWorker
+	pool              *pgxpool.Pool
+	cleanup           func()
 }
 
 type languageHTTPDependencies struct {
@@ -167,6 +168,12 @@ func run() error {
 
 	workers := []namedBackgroundWorker{
 		{name: "final turn worker", run: records.worker.Run},
+	}
+	if records.attributionWorker != nil {
+		workers = append(workers, namedBackgroundWorker{
+			name: "attribution worker",
+			run:  records.attributionWorker.Run,
+		})
 	}
 	if sessionRecovery != nil {
 		workers = append(workers, namedBackgroundWorker{
@@ -357,11 +364,12 @@ func newRecordsHTTPDependenciesFromPool(
 			SystemToken:  systemToken,
 			Logger:       slog.Default(),
 		}),
-		accounts:   accountUseCases,
-		tokens:     tokens,
-		worker:     services.FinalTurnWorker,
-		maintainer: accounts.NewAuthMaintainer(accountRepository, 0, 0),
-		cleanup:    func() {},
+		accounts:          accountUseCases,
+		tokens:            tokens,
+		worker:            services.FinalTurnWorker,
+		attributionWorker: services.AttributionWorker,
+		maintainer:        accounts.NewAuthMaintainer(accountRepository, 0, 0),
+		cleanup:           func() {},
 	}, nil
 }
 

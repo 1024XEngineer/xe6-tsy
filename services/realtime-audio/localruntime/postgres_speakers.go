@@ -13,8 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const defaultLocalProviderSpeakerID = "local-mic"
-
 // speakerTx is the transaction surface findOrCreate needs. pgx.Tx satisfies it;
 // tests inject fakes through PostgresSpeakerReader.beginTx without a live DB.
 type speakerTx interface {
@@ -52,12 +50,17 @@ func (r PostgresSpeakerReader) GetProvisionalAttribution(
 	if strings.TrimSpace(observation.SessionID) == "" || strings.TrimSpace(observation.TurnID) == "" {
 		return recordsv1.SpeakerAttribution{}, fmt.Errorf("session_id and turn_id are required")
 	}
-	if r.Pool == nil && r.beginTx == nil {
-		return recordsv1.SpeakerAttribution{}, fmt.Errorf("postgres speaker reader pool is required")
-	}
 	providerID := strings.TrimSpace(observation.ProviderSpeakerID)
 	if providerID == "" {
-		providerID = defaultLocalProviderSpeakerID
+		// Without a stable provider key there is no evidence to map a speaker; keep attribution
+		// pending instead of fabricating a single-speaker identity.
+		return recordsv1.SpeakerAttribution{
+			SpeakerCode:       recordsv1.PendingSpeakerCode,
+			AttributionStatus: recordsv1.AttributionPending,
+		}, nil
+	}
+	if r.Pool == nil && r.beginTx == nil {
+		return recordsv1.SpeakerAttribution{}, fmt.Errorf("postgres speaker reader pool is required")
 	}
 	participant, err := r.findOrCreate(ctx, observation.SessionID, providerID)
 	if err != nil {

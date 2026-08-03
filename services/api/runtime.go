@@ -44,6 +44,7 @@ type configuredRuntime struct {
 	sessionRecovery       backgroundWorker
 	recordsHandler        *recordswebapi.Server
 	finalTurnWorker       finalTurnWorker
+	attributionWorker     backgroundWorker
 	authMaintainer        backgroundWorker
 }
 
@@ -222,6 +223,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		sessionRecovery:       sessionRecovery,
 		recordsHandler:        records.handler,
 		finalTurnWorker:       records.worker,
+		attributionWorker:     records.attributionWorker,
 		authMaintainer:        records.maintainer,
 	}
 	closeOnError = false
@@ -335,6 +337,10 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	}
 	components.Add(1)
 	go runFailFastBackgroundWorker(componentCtx, "final turn worker", r.finalTurnWorker.Run, errs, &components)
+	if r.attributionWorker != nil {
+		components.Add(1)
+		go runFailFastBackgroundWorker(componentCtx, "attribution worker", r.attributionWorker.Run, errs, &components)
+	}
 	if r.sessionRecovery != nil {
 		components.Add(1)
 		go runFailFastBackgroundWorker(componentCtx, "session end recovery worker", r.sessionRecovery.Run, errs, &components)

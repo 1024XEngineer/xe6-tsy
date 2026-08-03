@@ -2,6 +2,7 @@ package recordstore
 
 import (
 	"fmt"
+	"log/slog"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
@@ -12,10 +13,12 @@ import (
 // ServiceComposition contains the records services and the validated final-turn reader used by
 // downstream delivery. The database pool and session adapters remain owned by the composition root.
 type ServiceComposition struct {
-	Participants    *participants.Service
-	Turns           *turns.Service
-	FinalTurns      *turns.FinalTurnReader
-	FinalTurnWorker *turns.FinalTurnWorker
+	Participants        *participants.Service
+	Turns               *turns.Service
+	FinalTurns          *turns.FinalTurnReader
+	FinalTurnWorker     *turns.FinalTurnWorker
+	AttributionWorker   *turns.AttributionWorker
+	AttributionResolver turns.AttributionResolver
 }
 
 // NewServices composes records domain services over the PostgreSQL read/write adapters.
@@ -49,6 +52,7 @@ func NewServices(
 	if err != nil {
 		return nil, fmt.Errorf("create records services: %w", err)
 	}
+	participantService := participants.NewService(participantRepository, sessionOwner, nil)
 
 	turnReader, err := NewTurnReadRepository(pool, cursors, sessionScope)
 	if err != nil {
@@ -61,10 +65,22 @@ func NewServices(
 
 	turnService := turns.NewService(turnRepository, sessionOwner, nil)
 	finalTurnOutbox := NewFinalTurnOutbox(pool)
+	attributionWorker, err := turns.NewAttributionWorker(
+		NewAttributionTaskStore(pool),
+		turns.NewDefaultAttributionResolver(),
+		turns.NewServiceAttributionReader(turnService, participantService),
+		turnService,
+		slog.Default(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create records services: %w", err)
+	}
 	return &ServiceComposition{
-		Participants:    participants.NewService(participantRepository, sessionOwner, nil),
-		Turns:           turnService,
-		FinalTurns:      turns.NewFinalTurnReader(turnReader),
-		FinalTurnWorker: turns.NewFinalTurnWorker(finalTurnOutbox, turns.NewFinalTurnHandler(turnService)),
+		Participants:        participantService,
+		Turns:               turnService,
+		FinalTurns:          turns.NewFinalTurnReader(turnReader),
+		FinalTurnWorker:     turns.NewFinalTurnWorker(finalTurnOutbox, turns.NewFinalTurnHandler(turnService)),
+		AttributionWorker:   attributionWorker,
+		AttributionResolver: turns.NewDefaultAttributionResolver(),
 	}, nil
 }

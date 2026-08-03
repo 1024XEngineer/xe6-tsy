@@ -22,10 +22,7 @@ describe("startVoiceSession", () => {
       ),
       jsonResponse({ id: "vs-1", status: "active" }),
     ];
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        responses.shift() ?? jsonResponse({}, 500),
-    );
+    const fetchMock = vi.fn(async () => responses.shift() ?? jsonResponse({}, 500));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
@@ -34,9 +31,10 @@ describe("startVoiceSession", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(
-      fetchMock.mock.calls.map(([, init]) =>
-        new Headers(init?.headers).get("Idempotency-Key"),
-      ),
+      (fetchMock.mock.calls as unknown as Array<[
+        RequestInfo | URL,
+        RequestInit | undefined,
+      ]>).map(([, init]) => new Headers(init?.headers).get("Idempotency-Key")),
     ).toEqual(["start-fixed", "start-fixed"]);
   });
 });

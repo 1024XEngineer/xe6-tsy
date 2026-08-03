@@ -393,6 +393,12 @@ func testTurnConstraints(t *testing.T, pool *pgxpool.Pool) {
 	if _, err := pool.Exec(t.Context(), "UPDATE voice_turns SET attribution_status = 'confirmed', speaker_confidence = 0.9 WHERE id = 'turn_01'"); err != nil {
 		t.Fatalf("updating attribution fields: %v", err)
 	}
+	if _, err := pool.Exec(t.Context(), "UPDATE voice_turns SET speaker_code = 'speaker_02' WHERE id = 'turn_01'"); err != nil {
+		t.Fatalf("updating speaker snapshot field: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), "UPDATE voice_turns SET source_text = 'edited' WHERE id = 'turn_01'"); err == nil {
+		t.Fatal("updating source_text after snapshot update succeeded, want an error")
+	}
 }
 
 func insertParticipant(ctx context.Context, pool *pgxpool.Pool, id, sessionID, speakerCode string, providerSpeakerID *string) error {

@@ -10,8 +10,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CorrectAttribution locks the turn and verifies the target participant in the same transaction.
-// The database trigger independently rejects any update to the immutable translation snapshot.
+// CorrectAttribution locks the turn and verifies account ownership, session membership, and the
+// target participant in the same transaction. The database trigger independently rejects any
+// update to the immutable translation snapshot; the speaker snapshot fields follow the target
+// participant so a corrected turn never shows a participant that contradicts its speaker labels.
 func (w *TurnWriter) CorrectAttribution(
 	ctx context.Context,
 	update turns.AttributionUpdate,
@@ -29,6 +31,14 @@ func (w *TurnWriter) CorrectAttribution(
 		return recordsv1.VoiceTurn{}, fmt.Errorf("lock turn for attribution correction: %w", err)
 	}
 
+	var sessionOwned bool
+	if err := tx.QueryRow(ctx, accountOwnsSessionQuery, sessionID, update.AccountID).Scan(&sessionOwned); err != nil {
+		return recordsv1.VoiceTurn{}, fmt.Errorf("check attribution session ownership: %w", err)
+	}
+	if !sessionOwned {
+		return recordsv1.VoiceTurn{}, turns.ErrTurnNotFound
+	}
+
 	var participantExists bool
 	if err := tx.QueryRow(ctx, participantBelongsQuery, update.ParticipantID, sessionID).Scan(&participantExists); err != nil {
 		return recordsv1.VoiceTurn{}, fmt.Errorf("check attribution participant: %w", err)
@@ -41,6 +51,7 @@ func (w *TurnWriter) CorrectAttribution(
 		update.TurnID,
 		update.ParticipantID,
 		update.AttributionStatus,
+		update.SpeakerConfidenceSet,
 		update.SpeakerConfidence,
 		update.CorrectedBy,
 		update.CorrectedAt.UTC(),
@@ -61,6 +72,15 @@ SELECT EXISTS (
     WHERE id = $1 AND session_id = $2
 )`
 
+const accountOwnsSessionQuery = `
+SELECT EXISTS (
+    SELECT 1
+    FROM voice_sessions AS sessions
+    JOIN lingow_accounts AS owner ON owner.id = sessions.account_id
+    WHERE sessions.id = $1
+      AND COALESCE(owner.merged_into, owner.id) = $2
+)`
+
 const lockTurnForAttributionQuery = `
 SELECT session_id
 FROM voice_turns
@@ -68,18 +88,25 @@ WHERE id = $1
 FOR UPDATE`
 
 const correctAttributionQuery = `
-UPDATE voice_turns
+UPDATE voice_turns AS turn
 SET participant_id = $2,
+    speaker_code = target.speaker_code,
+    display_name = target.display_name,
+    provider_speaker_id = target.provider_speaker_id,
+    voice_profile_id = target.voice_profile_id,
     attribution_status = $3,
-    speaker_confidence = $4,
-    corrected_by = $5,
-    corrected_at = $6
-WHERE id = $1
-RETURNING id, session_id, participant_id, speaker_code, display_name,
-          provider_speaker_id, voice_profile_id, sequence_no, source_language,
-          target_language, language_config_version, source_text, translated_text,
-          speaker_confidence, attribution_status, corrected_by, started_at, ended_at,
-          corrected_at, created_at`
+    speaker_confidence = CASE WHEN $4 THEN $5 ELSE turn.speaker_confidence END,
+    corrected_by = $6,
+    corrected_at = $7
+FROM voice_session_participants AS target
+WHERE turn.id = $1
+  AND target.id = $2
+  AND target.session_id = turn.session_id
+RETURNING turn.id, turn.session_id, turn.participant_id, turn.speaker_code, turn.display_name,
+          turn.provider_speaker_id, turn.voice_profile_id, turn.sequence_no, turn.source_language,
+          turn.target_language, turn.language_config_version, turn.source_text, turn.translated_text,
+          turn.speaker_confidence, turn.attribution_status, turn.corrected_by, turn.started_at,
+          turn.ended_at, turn.corrected_at, turn.created_at`
 
 func scanVoiceTurn(row rowScanner) (recordsv1.VoiceTurn, error) {
 	var turn recordsv1.VoiceTurn

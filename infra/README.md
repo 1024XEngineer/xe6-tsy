@@ -6,15 +6,6 @@
 
 - `docker-compose.yml`：PostgreSQL 16 与 Redis/Valkey 7，供 API 与 realtime-audio 本地联调。
 
-Compose 使用仓库相邻的本地绑定目录保存数据：
-
-- `../../database/postgres`：PostgreSQL 数据目录
-- `../../database/redis`：Redis 数据目录
-
-在本项目中，这两个目录对应 `D:/Code/Company/七牛云-方言同声传译/new_product/database`，不会使用 Compose named volume。
-Docker 镜像层和 Docker Desktop 的虚拟磁盘仍由 Docker Desktop 管理；如需迁移镜像缓存，
-请在 Docker Desktop 设置中调整磁盘镜像位置。
-
 ## 本地启动（Member5 控制面）
 
 1. 启动依赖：

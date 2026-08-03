@@ -159,14 +159,17 @@ export async function startVoiceSession(
   accessToken: string,
   sessionId: string,
   idempotencyKey = newIdempotencyKey("start"),
+  signal?: AbortSignal,
 ): Promise<VoiceSession> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    signal?.throwIfAborted();
     try {
       const response = await fetch(
         `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/start`,
         {
           method: "POST",
           headers: authHeaders(accessToken, idempotencyKey),
+          signal,
         },
       );
       return await parseJson<VoiceSession>(response);
@@ -174,10 +177,30 @@ export async function startVoiceSession(
       if (!isRetryableStartError(error) || attempt === 1) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await waitForRetry(signal, 250);
     }
   }
   throw new Error("unreachable");
+}
+
+function waitForRetry(signal: AbortSignal | undefined, delayMs: number): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, delayMs));
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function isRetryableStartError(error: unknown): boolean {

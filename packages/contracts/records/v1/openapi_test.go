@@ -45,6 +45,26 @@ func TestOpenAPIDefinesRecordModuleContract(t *testing.T) {
 	}
 }
 
+func TestOpenAPIRequiresAccountContextByDefault(t *testing.T) {
+	specPath := filepath.Join("..", "..", "openapi", "voice-records.v1.yaml")
+	spec, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatalf("read OpenAPI spec: %v", err)
+	}
+
+	text := string(spec)
+	pathsIndex := strings.Index(text, "paths:")
+	if pathsIndex == -1 {
+		t.Fatal("OpenAPI spec is missing paths")
+	}
+
+	preamble := text[:pathsIndex]
+	if !strings.Contains(preamble, "security:") ||
+		!strings.Contains(preamble, "- accountContext: []") {
+		t.Fatal("OpenAPI spec must require accountContext by default")
+	}
+}
+
 func TestOpenAPIPatchRequiresBothAccountAndSystemSecurity(t *testing.T) {
 	specPath := filepath.Join("..", "..", "openapi", "voice-records.v1.yaml")
 	spec, err := os.ReadFile(specPath)

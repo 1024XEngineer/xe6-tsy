@@ -3,6 +3,8 @@ info:
   title: Lingow Voice Record API
   version: 1.0.0
   description: Public read and system-attribution APIs for final translation records.
+security:
+  - accountContext: []
 paths:
   /api/v1/voice-sessions/{id}/participants:
     get:

@@ -130,6 +130,48 @@ func TestTurnWriterCorrectAttributionPreservesConfidenceWhenAbsent(t *testing.T)
 	}
 }
 
+func TestTurnWriterCorrectAttributionClearsConfidenceWhenExplicitNull(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	insertOwnedSession(t, pool, "session_01", "acct_01")
+	participant, err := NewParticipantWriter(pool).FindOrCreate(t.Context(), recordsv1.SpeakerObservation{
+		SessionID:         "session_01",
+		TurnID:            "turn_01",
+		ProviderSpeakerID: "cluster_01",
+	})
+	if err != nil {
+		t.Fatalf("FindOrCreate() error = %v", err)
+	}
+	writer := NewTurnWriter(pool)
+	event := finalTurnEvent("event_01", "turn_01", "session_01", 1)
+	event.ParticipantID = nil
+	event.AttributionStatus = recordsv1.AttributionPending
+	existingConfidence := 0.4
+	event.SpeakerConfidence = &existingConfidence
+	if err := writer.StoreFinalTurn(t.Context(), event); err != nil {
+		t.Fatalf("StoreFinalTurn() error = %v", err)
+	}
+
+	updated, err := writer.CorrectAttribution(t.Context(), turns.AttributionUpdate{
+		AccountID:            "acct_01",
+		TurnID:               event.TurnID,
+		ParticipantID:        participant.ID,
+		AttributionStatus:    recordsv1.AttributionConfirmed,
+		SpeakerConfidence:    nil,
+		SpeakerConfidenceSet: true,
+		CorrectedBy:          recordsv1.CorrectedBySystem,
+		CorrectedAt:          event.OccurredAt.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CorrectAttribution() error = %v", err)
+	}
+	if updated.SpeakerConfidence != nil {
+		t.Fatalf("speaker_confidence = %v, want explicit null", *updated.SpeakerConfidence)
+	}
+}
+
 func TestTurnWriterCorrectAttributionRejectsCrossSessionParticipant(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {

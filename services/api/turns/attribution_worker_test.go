@@ -15,9 +15,9 @@ func TestAttributionWorkerAppliesDecisionAndAcks(t *testing.T) {
 	worker, ctx := newAttributionWorkerStub(t,
 		&attributionSourceStub{deliveries: []AttributionTaskDelivery{&attributionDeliveryStub{task: taskFixture()}}},
 		&fixedDecisionResolver{decision: &AttributionDecision{
-			ParticipantID:       "p_02",
-			AttributionStatus:   recordsv1.AttributionCorrected,
-			SpeakerConfidence:   ptrFloat64(0.91),
+			ParticipantID:        "p_02",
+			AttributionStatus:    recordsv1.AttributionCorrected,
+			SpeakerConfidence:    ptrFloat64(0.91),
 			SpeakerConfidenceSet: true,
 		}},
 		applier,

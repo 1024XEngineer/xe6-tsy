@@ -55,9 +55,9 @@ func TestAttributionTaskFlow(t *testing.T) {
 	worker, err := turns.NewAttributionWorker(
 		store,
 		&turns.SingleDecisionResolver{Decision: &turns.AttributionDecision{
-			ParticipantID:       participant.ID,
-			AttributionStatus:   recordsv1.AttributionConfirmed,
-			SpeakerConfidence:   confidencePtr(0.9),
+			ParticipantID:        participant.ID,
+			AttributionStatus:    recordsv1.AttributionConfirmed,
+			SpeakerConfidence:    confidencePtr(0.9),
 			SpeakerConfidenceSet: true,
 		}},
 		turns.NewServiceAttributionReader(services.Turns, services.Participants),

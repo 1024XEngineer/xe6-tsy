@@ -56,9 +56,9 @@ type AttributionResolutionInput struct {
 // AttributionDecision is the resolver output applied through the records services. ParticipantID
 // nil keeps the current turn attribution; when set it is corrected with the given status.
 type AttributionDecision struct {
-	ParticipantID      string
-	AttributionStatus  recordsv1.AttributionStatus
-	SpeakerConfidence  *float64
+	ParticipantID        string
+	AttributionStatus    recordsv1.AttributionStatus
+	SpeakerConfidence    *float64
 	SpeakerConfidenceSet bool
 }
 

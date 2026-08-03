@@ -63,6 +63,6 @@ func (r *ServiceAttributionReader) ListParticipants(ctx context.Context, account
 }
 
 var (
-	_ AttributionReader = (*ServiceAttributionReader)(nil)
+	_ AttributionReader  = (*ServiceAttributionReader)(nil)
 	_ AttributionApplier = (*Service)(nil)
 )

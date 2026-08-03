@@ -127,12 +127,35 @@ async function playAssembled(event: {
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
-      source.onended = () => resolve();
+      let settled = false;
+      let fallbackTimer: number | null = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (fallbackTimer !== null) {
+          window.clearTimeout(fallbackTimer);
+        }
+        resolve();
+      };
+      source.onended = finish;
       try {
         source.start();
       } catch (error) {
         reject(error);
+        return;
       }
+      const durationMs =
+        Number.isFinite(audioBuffer.duration) && audioBuffer.duration > 0
+          ? Math.ceil(audioBuffer.duration * 1000) + 250
+          : 1000;
+      fallbackTimer = window.setTimeout(() => {
+        try {
+          source.stop();
+        } catch {
+          // The source may already be stopped by the browser.
+        }
+        finish();
+      }, durationMs);
     });
   } finally {
     listener?.(false);

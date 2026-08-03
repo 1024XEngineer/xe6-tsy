@@ -46,6 +46,7 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{12, "enable_wechat_channel"},
 		{13, "session_failed_terminal_timestamp"},
 		{14, "end_intent_recovery"},
+		{15, "attribution_snapshot_updates"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))

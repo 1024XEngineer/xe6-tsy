@@ -218,7 +218,8 @@ func TestTurnWriterCorrectAttributionRejectsForeignAccount(t *testing.T) {
 func insertOwnedSession(t *testing.T, pool *pgxpool.Pool, sessionID, accountID string) {
 	t.Helper()
 	if _, err := pool.Exec(t.Context(), `
-		INSERT INTO lingow_accounts (id, kind) VALUES ($1, 'anonymous')`, accountID); err != nil {
+		INSERT INTO lingow_accounts (id, kind) VALUES ($1, 'anonymous')
+		ON CONFLICT (id) DO NOTHING`, accountID); err != nil {
 		t.Fatalf("insert owned account: %v", err)
 	}
 	if _, err := pool.Exec(t.Context(), `

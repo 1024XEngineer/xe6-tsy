@@ -149,14 +149,19 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	}
 	startedAt, endedAt := turnBounds(turn, result, s.now())
 	attribution := s.resolveSpeaker(ctx, turn, result, startedAt, endedAt)
+	var providerSpeakerID *string
+	if id := strings.TrimSpace(result.ProviderSpeakerID); id != "" {
+		providerSpeakerID = &id
+	}
 	finalEvent := FinalTurnEvent{
 		EventVersion: recordsv1.FinalTurnEventVersion,
 		EventID:      "final_" + turn.ID, TraceID: turn.TraceID, SessionID: turn.SessionID, TurnID: turn.ID,
 		SequenceNo: turn.SequenceNo, SourceLanguage: result.SourceLanguage, TargetLanguage: target,
 		SourceText: result.Text, TranslatedText: translationResult.Text, SpeakerCode: attribution.SpeakerCode,
-		SpeakerLabelSnapshot: attribution.DisplayName, SpeakerConfidence: attribution.Confidence,
-		AttributionStatus: attribution.AttributionStatus, LanguageConfigVersion: turn.LanguageConfig.Version,
-		StartedAt: startedAt, EndedAt: endedAt, OccurredAt: s.now(),
+		SpeakerLabelSnapshot: attribution.DisplayName, ProviderSpeakerID: providerSpeakerID,
+		SpeakerConfidence: attribution.Confidence, AttributionStatus: attribution.AttributionStatus,
+		LanguageConfigVersion: turn.LanguageConfig.Version,
+		StartedAt:             startedAt, EndedAt: endedAt, OccurredAt: s.now(),
 	}
 	finalEvent.ParticipantID = attribution.ParticipantID
 	if err := finalEvent.Validate(); err != nil {
@@ -275,8 +280,9 @@ func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, 
 	}
 	providerSpeakerID := strings.TrimSpace(result.ProviderSpeakerID)
 	if providerSpeakerID == "" {
-		// Single-mic demos have no diarization; still allocate a provisional participant.
-		providerSpeakerID = "local-mic"
+		// Without a stable provider or diarization key there is no evidence to map a speaker;
+		// keep the turn pending instead of fabricating a single-speaker identity.
+		return pendingSpeakerAttribution()
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, s.speakerTimeout)
 	defer cancel()

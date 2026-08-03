@@ -152,25 +152,28 @@ type ListTurnsQuery struct {
 // all three values and its payload unchanged; an existing key with a different payload is a
 // conflict rather than an overwrite.
 type FinalTurnEvent struct {
-	EventVersion          int               `json:"event_version"`
-	EventID               string            `json:"event_id"`
-	TraceID               string            `json:"trace_id"`
-	TurnID                string            `json:"turn_id"`
-	SessionID             string            `json:"session_id"`
-	ParticipantID         *string           `json:"participant_id"`
-	SequenceNo            int64             `json:"sequence_no"`
-	SourceLanguage        string            `json:"source_language"`
-	TargetLanguage        string            `json:"target_language"`
-	LanguageConfigVersion int64             `json:"language_config_version"`
-	SourceText            string            `json:"source_text"`
-	TranslatedText        string            `json:"translated_text"`
-	SpeakerCode           string            `json:"speaker_code"`
-	SpeakerLabelSnapshot  *string           `json:"speaker_label_snapshot"`
-	SpeakerConfidence     *float64          `json:"speaker_confidence"`
-	AttributionStatus     AttributionStatus `json:"attribution_status"`
-	StartedAt             time.Time         `json:"started_at"`
-	EndedAt               time.Time         `json:"ended_at"`
-	OccurredAt            time.Time         `json:"occurred_at"`
+	EventVersion          int     `json:"event_version"`
+	EventID               string  `json:"event_id"`
+	TraceID               string  `json:"trace_id"`
+	TurnID                string  `json:"turn_id"`
+	SessionID             string  `json:"session_id"`
+	ParticipantID         *string `json:"participant_id"`
+	SequenceNo            int64   `json:"sequence_no"`
+	SourceLanguage        string  `json:"source_language"`
+	TargetLanguage        string  `json:"target_language"`
+	LanguageConfigVersion int64   `json:"language_config_version"`
+	SourceText            string  `json:"source_text"`
+	TranslatedText        string  `json:"translated_text"`
+	SpeakerCode           string  `json:"speaker_code"`
+	SpeakerLabelSnapshot  *string `json:"speaker_label_snapshot"`
+	// ProviderSpeakerID is the stable provider or diarization cluster key for this session, not a
+	// global identity. It is optional: when absent the async resolver must not guess attribution.
+	ProviderSpeakerID *string           `json:"provider_speaker_id"`
+	SpeakerConfidence *float64          `json:"speaker_confidence"`
+	AttributionStatus AttributionStatus `json:"attribution_status"`
+	StartedAt         time.Time         `json:"started_at"`
+	EndedAt           time.Time         `json:"ended_at"`
+	OccurredAt        time.Time         `json:"occurred_at"`
 }
 
 // Validate enforces the required v1 fields before a FinalTurn enters durable delivery.

@@ -42,6 +42,7 @@ func (w *TurnWriter) StoreFinalTurn(ctx context.Context, event recordsv1.FinalTu
 		event.ParticipantID,
 		event.SpeakerCode,
 		event.SpeakerLabelSnapshot,
+		event.ProviderSpeakerID,
 		event.SequenceNo,
 		event.SourceLanguage,
 		event.TargetLanguage,
@@ -128,14 +129,14 @@ func verifyFinalTurnReplay(
 const insertFinalTurnQuery = `
 INSERT INTO voice_turns (
     id, event_id, event_payload_hash, session_id, participant_id,
-    speaker_code, display_name, sequence_no, source_language, target_language,
+    speaker_code, display_name, provider_speaker_id, sequence_no, source_language, target_language,
     language_config_version, source_text, translated_text, speaker_confidence,
     attribution_status, started_at, ended_at, created_at
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
-    $11, $12, $13, $14,
-    $15, $16, $17, $18
+    $11, $12, $13, $14, $15,
+    $16, $17, $18, $19
 )
 ON CONFLICT DO NOTHING`
 

@@ -72,6 +72,37 @@ func TestFinalTurnEventJSONPreservesNullableAttribution(t *testing.T) {
 	}
 }
 
+func TestFinalTurnEventCarriesProviderSpeakerID(t *testing.T) {
+	event := validFinalTurnEvent()
+	providerID := "diar_01"
+	event.ProviderSpeakerID = &providerID
+
+	body, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal final turn event: %v", err)
+	}
+
+	var actual map[string]any
+	if err := json.Unmarshal(body, &actual); err != nil {
+		t.Fatalf("unmarshal final turn event: %v", err)
+	}
+	if got, want := actual["provider_speaker_id"], providerID; got != want {
+		t.Fatalf("provider_speaker_id = %v, want %q", got, want)
+	}
+
+	event.ProviderSpeakerID = nil
+	body, err = json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal final turn event without provider id: %v", err)
+	}
+	if err := json.Unmarshal(body, &actual); err != nil {
+		t.Fatalf("unmarshal final turn event without provider id: %v", err)
+	}
+	if actual["provider_speaker_id"] != nil {
+		t.Fatalf("provider_speaker_id = %v, want null", actual["provider_speaker_id"])
+	}
+}
+
 func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 	valid := validFinalTurnEvent()
 	if err := valid.Validate(); err != nil {

@@ -49,6 +49,12 @@ func TestAsyncAPIFinalTurnContract(t *testing.T) {
 	if !allowsNull(t, mapValue(t, properties, "speaker_label_snapshot")) {
 		t.Fatal("speaker_label_snapshot must allow null")
 	}
+	if !allowsNull(t, mapValue(t, properties, "provider_speaker_id")) {
+		t.Fatal("provider_speaker_id must allow null")
+	}
+	if required["provider_speaker_id"] {
+		t.Fatal("provider_speaker_id must not be required")
+	}
 	statuses := stringSet(t, mapValue(t, schemas, "AttributionStatus")["enum"])
 	if got, want := len(statuses), 4; got != want {
 		t.Fatalf("AttributionStatus enum length = %d, want %d", got, want)
@@ -83,6 +89,7 @@ func TestAsyncAPIFinalTurnPayloadExamples(t *testing.T) {
 		"translated_text":         "translation",
 		"speaker_code":            "speaker_01",
 		"speaker_label_snapshot":  nil,
+		"provider_speaker_id":     "diar_01",
 		"speaker_confidence":      nil,
 		"attribution_status":      string(AttributionPending),
 		"started_at":              "2026-07-27T08:00:00Z",

@@ -437,7 +437,7 @@ Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓
 | `final_turn_outbox_lease_idx` | Partial Index | `(locked_until ASC, created_at ASC, event_id ASC) WHERE status = 'processing'` |
 | `final_turn_outbox_reject_payload_updates` | Trigger | 禁止更新 payload 身份与内容字段 |
 
-### 4.13 `lingow_usage_records`
+### 4.14 `lingow_usage_records`
 
 用量事实表。实时转译模块提交 UsageFact，API 幂等写入该表。会话和账户维度汇总由代码查询聚合，没有单独 summary 表。
 
@@ -473,7 +473,7 @@ Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓
 | `lingow_usage_records_account_occurred_idx` | Index | `(account_id, occurred_at ASC, event_id ASC)` |
 | `lingow_usage_records_reject_updates` | Trigger | 禁止更新任何用量事实 |
 
-### 4.14 `account_destinations`
+### 4.15 `account_destinations`
 
 账户消息投递目标表。当前仓库支持 `email` 和 `wechat`。
 
@@ -490,7 +490,7 @@ Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓
 | `created_at` | `TIMESTAMPTZ` | 否 | `CURRENT_TIMESTAMP` | 创建时间 |
 | `updated_at` | `TIMESTAMPTZ` | 否 | `CURRENT_TIMESTAMP` | 更新时间 |
 
-### 4.15 `message_preferences`
+### 4.16 `message_preferences`
 
 账户消息偏好表。
 
@@ -502,7 +502,7 @@ Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓
 | `verified` | `BOOLEAN` | 否 | `FALSE` | 是否已验证 |
 | `updated_at` | `TIMESTAMPTZ` | 否 | `CURRENT_TIMESTAMP` | 更新时间 |
 
-### 4.16 `outbound_messages`
+### 4.17 `outbound_messages`
 
 异步消息快照表。它保存不可变的发送内容快照，状态和尝试次数可随投递推进更新。
 
@@ -531,7 +531,7 @@ Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓
 | `outbound_messages_account_created_order_idx` | Index | `(account_id, created_at DESC, id DESC)` |
 | `outbound_messages_reject_snapshot_updates` | Trigger | 禁止更新消息身份与内容快照字段 |
 
-### 4.17 `delivery_attempts`
+### 4.18 `delivery_attempts`
 
 消息投递尝试表。
 
@@ -547,7 +547,7 @@ Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓
 | `finished_at` | `TIMESTAMPTZ` | 是 |  | 完成时间 |
 | `created_at` | `TIMESTAMPTZ` | 否 | `CURRENT_TIMESTAMP` | 创建时间 |
 
-### 4.18 `delivery_outbox`
+### 4.19 `delivery_outbox`
 
 投递 outbox 表。每个 `attempt_id` 只能对应一条 outbox 记录。
 
@@ -565,7 +565,7 @@ Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓
 | `last_error` | `TEXT` | 是 |  | 最近错误 |
 | `created_at` | `TIMESTAMPTZ` | 否 | `CURRENT_TIMESTAMP` | 创建时间 |
 
-### 4.19 `delivery_retry_requests`
+### 4.20 `delivery_retry_requests`
 
 人工重试幂等请求表，避免消息创建幂等键与重试幂等键混用。
 

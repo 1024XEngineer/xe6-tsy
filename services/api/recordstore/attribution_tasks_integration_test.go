@@ -154,6 +154,11 @@ func TestAttributionBackfillCoversLegacyTurns(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+
+	// Simulate a database that has applied through migration 16 before the async worker shipped.
+	if _, err := pool.Exec(t.Context(), `DELETE FROM recordstore_schema_migrations WHERE version = 17`); err != nil {
+		t.Fatalf("reset backfill migration state: %v", err)
+	}
 	insertOwnedSession(t, pool, "session_01", "acct_01")
 
 	providerID := "cluster_01"
@@ -173,7 +178,7 @@ func TestAttributionBackfillCoversLegacyTurns(t *testing.T) {
 		t.Fatalf("set provider speaker id: %v", err)
 	}
 	if err := Migrate(t.Context(), pool); err != nil {
-		t.Fatalf("re-run Migrate() error = %v", err)
+		t.Fatalf("apply backfill migration: %v", err)
 	}
 
 	var status string

@@ -92,8 +92,8 @@ func TestMember5DeliveryAcceptanceFromHTTPToProvider(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("provider requests = %d, want 1", len(requests))
 	}
-	if requests[0].Destination.ProviderTarget != fixture.targetEmail {
-		t.Fatalf("provider target = %q, want %q", requests[0].Destination.ProviderTarget, fixture.targetEmail)
+	if *fixture.providerTarget != fixture.targetEmail {
+		t.Fatalf("provider target = %q, want %q", *fixture.providerTarget, fixture.targetEmail)
 	}
 	if requests[0].Message.AccountID != auth.Account.ID {
 		t.Fatalf("provider message account = %q, want %q", requests[0].Message.AccountID, auth.Account.ID)
@@ -184,6 +184,7 @@ type member5DeliveryE2EFixture struct {
 	worker         *delivery.Worker
 	repository     *delivery.PostgresRepository
 	provider       *delivery.FakeEmailProvider
+	providerTarget *string
 	pool           *pgxpool.Pool
 	destinationKey []byte
 	targetEmail    string
@@ -246,7 +247,13 @@ func newMember5DeliveryE2EFixture(t *testing.T) *member5DeliveryE2EFixture {
 	accountService := accounts.NewPersistentUseCases(accountRepository, tokens, tokens, accounts.VerificationSenderFromEnv(), digester)
 	usageService := usage.NewPersistentUseCases(usage.NewPostgresRepository(pool), accountRepository)
 
-	provider := delivery.NewFakeEmailProvider(delivery.FakeEmailProviderConfig{})
+	providerTarget := new(string)
+	provider := delivery.NewFakeEmailProvider(delivery.FakeEmailProviderConfig{
+		SendFunc: func(_ context.Context, request delivery.SendRequest) error {
+			*providerTarget = request.Destination.ProviderTarget
+			return nil
+		},
+	})
 	worker := delivery.NewConfiguredWorker(queue, delivery.WorkerDependencies{
 		Repository:   repository,
 		Destinations: destinationReader,
@@ -271,6 +278,7 @@ func newMember5DeliveryE2EFixture(t *testing.T) *member5DeliveryE2EFixture {
 		worker:         worker,
 		repository:     repository,
 		provider:       provider,
+		providerTarget: providerTarget,
 		pool:           pool,
 		destinationKey: destinationKey,
 		targetEmail:    targetEmail,

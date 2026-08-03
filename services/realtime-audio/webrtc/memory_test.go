@@ -294,6 +294,30 @@ func TestMemoryConnectionManagerRejectsInvalidRequests(t *testing.T) {
 		want error
 	}{
 		{name: "empty session", run: func() error { _, err := manager.Open(context.Background(), OpenConnectionRequest{}); return err }, want: ErrSessionIDRequired},
+		{name: "missing idempotency key", run: func() error {
+			request := validOpenConnectionRequest()
+			request.IdempotencyKey = ""
+			_, err := manager.Open(context.Background(), request)
+			return err
+		}, want: ErrIdempotencyKeyRequired},
+		{name: "missing offer SDP", run: func() error {
+			request := validOpenConnectionRequest()
+			request.Offer.SDP = ""
+			_, err := manager.Open(context.Background(), request)
+			return err
+		}, want: ErrOfferSDPRequired},
+		{name: "invalid offer type", run: func() error {
+			request := validOpenConnectionRequest()
+			request.Offer.Type = "answer"
+			_, err := manager.Open(context.Background(), request)
+			return err
+		}, want: ErrOfferTypeInvalid},
+		{name: "missing creation time", run: func() error {
+			request := validOpenConnectionRequest()
+			request.CreatedAt = time.Time{}
+			_, err := manager.Open(context.Background(), request)
+			return err
+		}, want: ErrInvalidDependency},
 		{name: "missing candidate connection", run: func() error {
 			_, err := manager.AddCandidates(context.Background(), "session-1", CandidateRequest{})
 			return err

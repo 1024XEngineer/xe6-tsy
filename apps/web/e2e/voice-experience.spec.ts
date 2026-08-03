@@ -136,17 +136,11 @@ test("keeps voice states legible with reduced motion", async ({ page }) => {
   await expect(page.getByText("轻触开始")).toBeVisible();
 });
 
-test("renders painted pixels for the idle voice canvas", async ({ page }) => {
-  const hasPaintedPixels = async (selector: string) =>
-    page.locator(selector).evaluate((canvas: HTMLCanvasElement) => {
-      const context = canvas.getContext("2d");
-      if (!context || canvas.width === 0 || canvas.height === 0) return false;
-      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-      return pixels.some((channel, index) => index % 4 === 3 && channel > 0);
-    });
-
+test("renders the idle voice video", async ({ page }) => {
   await page.goto("/");
+  const video = page.getByTestId("idle-voice-video");
+  await expect(video).toHaveAttribute("src", "/media/loop.mp4");
   await expect
-    .poll(() => hasPaintedPixels('[data-testid="idle-voice-ring"] canvas'))
+    .poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState >= 2))
     .toBe(true);
 });

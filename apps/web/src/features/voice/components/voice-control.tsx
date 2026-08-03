@@ -4,8 +4,8 @@ import { motion } from "motion/react";
 
 import type { SessionPhase } from "../model/session";
 import styles from "../voice.module.css";
-import { AuroraOrb } from "./aurora-orb";
 import { AuroraStrands } from "./aurora-strands";
+import { VideoOrb } from "./video-orb";
 
 export function VoiceControl({
   phase,
@@ -33,7 +33,7 @@ export function VoiceControl({
           key="idle"
           transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1] }}
         >
-          <AuroraOrb />
+          <VideoOrb />
         </motion.span>
       ) : (
         <motion.span

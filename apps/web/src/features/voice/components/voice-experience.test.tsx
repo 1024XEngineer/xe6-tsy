@@ -158,7 +158,17 @@ describe("VoiceExperience", () => {
     expect(screen.getByRole("button", { name: "设置" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /语音会话/ })).toHaveLength(1);
     expect(screen.getByText("轻触开始")).toBeInTheDocument();
-    expect(screen.getByTestId("idle-voice-ring")).toBeInTheDocument();
+    const idleVideo = screen.getByTestId("idle-voice-video");
+    expect(idleVideo).toHaveAttribute("src", "/media/loop.mp4");
+    expect(idleVideo).toHaveAttribute("autoplay");
+    expect(idleVideo).toHaveAttribute("loop");
+    expect(idleVideo).toHaveAttribute("playsinline");
+    expect(idleVideo).not.toHaveAttribute("controls");
+    expect(idleVideo).toHaveAttribute("disablepictureinpicture");
+    expect(idleVideo).toHaveAttribute(
+      "controlslist",
+      "nodownload nofullscreen noremoteplayback",
+    );
     expect(screen.queryByTestId("active-voice-strands")).toBeNull();
   });
 
@@ -187,6 +197,7 @@ describe("VoiceExperience", () => {
       expect(screen.getByText("正在聆听")).toBeInTheDocument();
     });
     expect(screen.getByTestId("active-voice-strands")).toBeInTheDocument();
+    expect(screen.queryByTestId("idle-voice-video")).toBeNull();
 
     await waitFor(() => {
       expect(

@@ -348,13 +348,11 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 			Provider: "integration-tts",
 			Model:    "integration-tts-model",
 		}}),
-		Speakers:       nil,
-		FinalTurns:     pipeline.NewPostgresFinalTurnSink(pool),
-		Usage:          phase4UsageSink{},
-		Audio:          phase4AudioSink{},
-		Runtime:        phase4RuntimeReporter{},
-		SpeakerTimeout: 5 * time.Second,
-		Now:            func() time.Time { return fixture.currentTime },
+		FinalTurns: pipeline.NewPostgresFinalTurnSink(pool),
+		Usage:      phase4UsageSink{},
+		Audio:      phase4AudioSink{},
+		Runtime:    phase4RuntimeReporter{},
+		Now:        func() time.Time { return fixture.currentTime },
 	})
 	return fixture
 }

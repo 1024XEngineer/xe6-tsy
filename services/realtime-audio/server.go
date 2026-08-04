@@ -247,7 +247,6 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		},
 		Languages:  languages,
 		FinalTurns: finalTurns,
-		Speakers:   nil,
 		Usage:      usage,
 		Audio:      audioSink,
 		Runtime:    runtimeBridge,

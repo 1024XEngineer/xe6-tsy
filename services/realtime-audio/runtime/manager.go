@@ -62,18 +62,16 @@ type RuntimeReporter interface {
 
 // Dependencies contains member-3-owned adapters and downstream sinks.
 type Dependencies struct {
-	FrameSources   FrameSourceFactory
-	NewSegmenter   SegmenterFactory
-	Languages      session.LanguageConfigReader
-	Speakers       recordsv1.SpeakerAttributionReader
-	FinalTurns     recordsv1.FinalTurnSink
-	Usage          pipeline.UsageFactSink
-	Audio          pipeline.AudioChunkSink
-	Runtime        RuntimeReporter
-	Allocator      pipeline.TurnAllocator
-	SpeakerTimeout time.Duration
-	VoiceID        string
-	Now            func() time.Time
+	FrameSources FrameSourceFactory
+	NewSegmenter SegmenterFactory
+	Languages    session.LanguageConfigReader
+	FinalTurns   recordsv1.FinalTurnSink
+	Usage        pipeline.UsageFactSink
+	Audio        pipeline.AudioChunkSink
+	Runtime      RuntimeReporter
+	Allocator    pipeline.TurnAllocator
+	VoiceID      string
+	Now          func() time.Time
 }
 
 // Manager owns one processing context per started realtime session.
@@ -134,16 +132,14 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 	}
 	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages)
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
-		Translator:     providers.Translation,
-		TTS:            providers.TTS,
-		Speakers:       deps.Speakers,
-		FinalTurns:     deps.FinalTurns,
-		Usage:          deps.Usage,
-		Audio:          deps.Audio,
-		Runtime:        deps.Runtime,
-		SpeakerTimeout: deps.SpeakerTimeout,
-		VoiceID:        deps.VoiceID,
-		Now:            deps.Now,
+		Translator: providers.Translation,
+		TTS:        providers.TTS,
+		FinalTurns: deps.FinalTurns,
+		Usage:      deps.Usage,
+		Audio:      deps.Audio,
+		Runtime:    deps.Runtime,
+		VoiceID:    deps.VoiceID,
+		Now:        deps.Now,
 	})
 	return &Manager{
 		processor: pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{

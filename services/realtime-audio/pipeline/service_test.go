@@ -23,9 +23,8 @@ func TestPipelineFinalFlowCarriesTurnID(t *testing.T) {
 	finalSink := &recordingFinalSink{}
 	usageSink := &recordingUsageSink{}
 	audioSink := &recordingAudioSink{}
-	speakerReader := &fixedSpeakerReader{participantID: "participant-1"}
 	service := NewPipelineService(PipelineDependencies{
-		Translator: translator, TTS: ttsProvider, Speakers: speakerReader,
+		Translator: translator, TTS: ttsProvider,
 		FinalTurns: finalSink, Usage: usageSink, Audio: audioSink, Runtime: &recordingRuntimeReporter{}, VoiceID: "voice-1",
 		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
 	})
@@ -43,17 +42,17 @@ func TestPipelineFinalFlowCarriesTurnID(t *testing.T) {
 	if requests := ttsProvider.Requests(); len(requests) != 1 || requests[0].TurnID != turn.ID || requests[0].VoiceID != "voice-1" {
 		t.Fatalf("TTS requests = %#v", requests)
 	}
-	if len(finalSink.events) != 1 || finalSink.events[0].EventVersion != recordsv1.FinalTurnEventVersion || finalSink.events[0].TurnID != turn.ID || finalSink.events[0].TargetLanguage != "en-US" || finalSink.events[0].LanguageConfigVersion != 3 || finalSink.events[0].AttributionStatus != recordsv1.AttributionProvisional {
+	if len(finalSink.events) != 1 || finalSink.events[0].EventVersion != recordsv1.FinalTurnEventVersion || finalSink.events[0].TurnID != turn.ID || finalSink.events[0].TargetLanguage != "en-US" || finalSink.events[0].LanguageConfigVersion != 3 || finalSink.events[0].AttributionStatus != recordsv1.AttributionPending {
 		t.Fatalf("FinalTurn events = %#v", finalSink.events)
 	}
-	if finalSink.events[0].SpeakerCode != "speaker-1" || finalSink.events[0].SpeakerLabelSnapshot == nil || *finalSink.events[0].SpeakerLabelSnapshot != "Speaker 1" {
+	if finalSink.events[0].ParticipantID != nil || finalSink.events[0].SpeakerCode != recordsv1.PendingSpeakerCode || finalSink.events[0].SpeakerLabelSnapshot != nil {
 		t.Fatalf("FinalTurn speaker snapshot = %#v", finalSink.events[0])
 	}
 	if finalSink.events[0].StartedAt != turn.StartedAt || finalSink.events[0].EndedAt != turn.StartedAt.Add(time.Second) {
 		t.Fatalf("FinalTurn bounds = %v..%v", finalSink.events[0].StartedAt, finalSink.events[0].EndedAt)
 	}
-	if speakerReader.observation.TurnID != turn.ID || speakerReader.observation.AudioStartMS != 30000 || speakerReader.observation.AudioEndMS != 31000 {
-		t.Fatalf("speaker observation = %#v", speakerReader.observation)
+	if finalSink.events[0].ProviderSpeakerID == nil || *finalSink.events[0].ProviderSpeakerID != "speaker-1" {
+		t.Fatalf("FinalTurn provider speaker evidence = %#v", finalSink.events[0])
 	}
 	if len(usageSink.facts) != 3 || usageSink.facts[0].TurnID != turn.ID || usageSink.facts[1].TurnID != turn.ID || usageSink.facts[2].TurnID != turn.ID || usageSink.facts[0].EventVersion != 1 {
 		t.Fatalf("UsageFacts = %#v", usageSink.facts)
@@ -104,29 +103,7 @@ func TestPipelineSkipsTTSAcrossDisabledOutputRoute(t *testing.T) {
 	}
 }
 
-func TestPipelineSpeakerTimeoutProducesPendingAttribution(t *testing.T) {
-	service := NewPipelineService(PipelineDependencies{
-		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
-		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
-		Speakers:   blockingSpeakerReader{}, FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
-		Runtime:        &recordingRuntimeReporter{},
-		SpeakerTimeout: 5 * time.Millisecond,
-	})
-	started := time.Now()
-	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", ProviderSpeakerID: "speaker-1", Provider: "mock-asr", Model: "v1"})
-	if err != nil {
-		t.Fatalf("HandleASRFinal() error = %v", err)
-	}
-	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
-		t.Fatalf("speaker lookup blocked pipeline for %v", elapsed)
-	}
-	event := service.finalTurns.(*recordingFinalSink).events[0]
-	if event.ParticipantID != nil || event.AttributionStatus != recordsv1.AttributionPending || event.SpeakerCode != recordsv1.PendingSpeakerCode {
-		t.Fatalf("FinalTurn attribution = %#v", event)
-	}
-}
-
-func TestPipelineMissingSpeakerReaderProducesPendingAttribution(t *testing.T) {
+func TestPipelineAlwaysProducesPendingAttribution(t *testing.T) {
 	finalSink := &recordingFinalSink{}
 	service := NewPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
@@ -147,11 +124,10 @@ func TestPipelineMissingSpeakerReaderProducesPendingAttribution(t *testing.T) {
 
 func TestPipelineKeepsPendingWithoutProviderSpeakerID(t *testing.T) {
 	finalSink := &recordingFinalSink{}
-	speakers := &fixedSpeakerReader{participantID: "participant-1"}
 	service := NewPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
-		Speakers:   speakers, FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
+		FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
 		Runtime: &recordingRuntimeReporter{},
 	})
 	if err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
@@ -166,18 +142,14 @@ func TestPipelineKeepsPendingWithoutProviderSpeakerID(t *testing.T) {
 	if event.ProviderSpeakerID != nil {
 		t.Fatalf("ProviderSpeakerID = %v, want nil without evidence", *event.ProviderSpeakerID)
 	}
-	if speakers.observation.ProviderSpeakerID != "" {
-		t.Fatalf("speaker reader called with provider %q, want no lookup without evidence", speakers.observation.ProviderSpeakerID)
-	}
 }
 
 func TestPipelineCarriesProviderSpeakerIDIntoFinalTurn(t *testing.T) {
 	finalSink := &recordingFinalSink{}
-	speakers := &fixedSpeakerReader{participantID: "participant-1"}
 	service := NewPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
-		Speakers:   speakers, FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
+		FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
 		Runtime: &recordingRuntimeReporter{},
 	})
 	if err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
@@ -189,8 +161,8 @@ func TestPipelineCarriesProviderSpeakerIDIntoFinalTurn(t *testing.T) {
 	if event.ProviderSpeakerID == nil || *event.ProviderSpeakerID != "diar_01" {
 		t.Fatalf("ProviderSpeakerID = %v, want diar_01", event.ProviderSpeakerID)
 	}
-	if event.ParticipantID == nil || *event.ParticipantID != "participant-1" {
-		t.Fatalf("FinalTurn participant = %v, want participant-1", event.ParticipantID)
+	if event.ParticipantID != nil || event.AttributionStatus != recordsv1.AttributionPending || event.SpeakerCode != recordsv1.PendingSpeakerCode {
+		t.Fatalf("FinalTurn attribution = %#v", event)
 	}
 }
 
@@ -616,28 +588,6 @@ func (r stateFailingRuntimeReporter) SetProcessingState(_ context.Context, updat
 	return nil
 }
 
-type fixedSpeakerReader struct {
-	participantID string
-	observation   recordsv1.SpeakerObservation
-}
-
-func (r *fixedSpeakerReader) GetProvisionalAttribution(_ context.Context, observation recordsv1.SpeakerObservation) (recordsv1.SpeakerAttribution, error) {
-	r.observation = observation
-	label := "Speaker 1"
-	confidence := .9
-	return recordsv1.SpeakerAttribution{
-		ParticipantID: &r.participantID, SpeakerCode: "speaker-1", DisplayName: &label,
-		Confidence: &confidence, AttributionStatus: recordsv1.AttributionProvisional,
-	}, nil
-}
-
-type blockingSpeakerReader struct{}
-
-func (blockingSpeakerReader) GetProvisionalAttribution(ctx context.Context, _ recordsv1.SpeakerObservation) (recordsv1.SpeakerAttribution, error) {
-	<-ctx.Done()
-	return recordsv1.SpeakerAttribution{}, ctx.Err()
-}
-
 type blockingTTSProvider struct {
 	stream  *blockingTTSStream
 	started chan struct{}
@@ -669,6 +619,5 @@ var _ UsageFactSink = (*recordingUsageSink)(nil)
 var _ AudioChunkSink = (*recordingAudioSink)(nil)
 var _ session.RuntimeStateReporter = (*recordingRuntimeReporter)(nil)
 var _ session.RuntimeStateReporter = stateFailingRuntimeReporter{}
-var _ recordsv1.SpeakerAttributionReader = (*fixedSpeakerReader)(nil)
 var _ tts.Provider = (*blockingTTSProvider)(nil)
 var _ tts.Stream = (*blockingTTSStream)(nil)

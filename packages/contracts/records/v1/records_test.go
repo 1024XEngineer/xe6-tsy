@@ -17,12 +17,6 @@ type finalTurnConsumerStub struct{}
 
 func (finalTurnConsumerStub) ConsumeFinalTurn(context.Context, FinalTurnEvent) error { return nil }
 
-type speakerAttributionReaderStub struct{}
-
-func (speakerAttributionReaderStub) GetProvisionalAttribution(context.Context, SpeakerObservation) (SpeakerAttribution, error) {
-	return SpeakerAttribution{}, nil
-}
-
 type turnReaderStub struct{}
 
 func (turnReaderStub) ReadFinalTurns(context.Context, string, []string) ([]FinalTurnSnapshot, error) {
@@ -36,11 +30,10 @@ func (sessionOwnerReaderStub) AccountIDForSession(context.Context, string) (stri
 }
 
 var (
-	_ FinalTurnSink            = finalTurnSinkStub{}
-	_ FinalTurnConsumer        = finalTurnConsumerStub{}
-	_ SpeakerAttributionReader = speakerAttributionReaderStub{}
-	_ TurnReader               = turnReaderStub{}
-	_ SessionOwnerReader       = sessionOwnerReaderStub{}
+	_ FinalTurnSink      = finalTurnSinkStub{}
+	_ FinalTurnConsumer  = finalTurnConsumerStub{}
+	_ TurnReader         = turnReaderStub{}
+	_ SessionOwnerReader = sessionOwnerReaderStub{}
 )
 
 func TestFinalTurnEventJSONPreservesNullableAttribution(t *testing.T) {

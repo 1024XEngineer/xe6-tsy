@@ -838,8 +838,16 @@
 .historySessionList,
 .historyTranscript {
   max-height: min(22rem, 46dvh);
+  overflow-x: hidden;
   overflow-y: auto;
   border-top: 1px solid rgb(255 255 255 / 11%);
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.historySessionList::-webkit-scrollbar,
+.historyTranscript::-webkit-scrollbar {
+  display: none;
 }
 
 .historySessionRow {

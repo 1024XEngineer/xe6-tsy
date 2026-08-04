@@ -608,7 +608,7 @@ func TestTargetLanguageMatchesRussianProviderShortCode(t *testing.T) {
 		{Source: "zh-CN", Target: "ru-RU"},
 		{Source: "ru-RU", Target: "zh-CN"},
 	}}
-	if target, ok := targetLanguage(config, "ru"); !ok || target != "zh-CN" {
+	if target, _, ok := targetRoute(config, "ru"); !ok || target != "zh-CN" {
 		t.Fatalf("targetLanguage(ru) = %q, %v; want zh-CN, true", target, ok)
 	}
 }

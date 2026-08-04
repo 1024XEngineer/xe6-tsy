@@ -5,12 +5,14 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 
 import type { SessionDebugInfo } from "../hooks/use-voice-session";
+import { getOrCreateAuthSession } from "../lib/auth-session";
 import {
   SUPPORTED_LANGUAGES,
   languageLabel,
   type LanguageCode,
   type VoiceSessionConfig,
 } from "../lib/languages";
+import { listSupportedLanguages } from "../lib/lingow-api";
 import styles from "../voice.module.css";
 import { HistorySettings } from "./history-settings";
 import { OptionWheel } from "./option-wheel";
@@ -84,11 +86,15 @@ function SettingsDetail({
   voiceConfig,
   onConfigChange,
   debug,
+  languageOptions,
+  languageLoading,
 }: {
   selectedId: SettingId;
   voiceConfig: VoiceSessionConfig;
   onConfigChange: (next: VoiceSessionConfig) => void;
   debug: SessionDebugInfo;
+  languageOptions: readonly LanguageCode[];
+  languageLoading: boolean;
 }) {
   switch (selectedId) {
     case "language":
@@ -99,7 +105,7 @@ function SettingsDetail({
             onChange={(sourceLanguage) =>
               onConfigChange({ ...voiceConfig, sourceLanguage })
             }
-            options={SUPPORTED_LANGUAGES}
+            options={languageOptions}
             value={voiceConfig.sourceLanguage}
           />
           <SelectRow
@@ -107,11 +113,13 @@ function SettingsDetail({
             onChange={(targetLanguage) =>
               onConfigChange({ ...voiceConfig, targetLanguage })
             }
-            options={SUPPORTED_LANGUAGES}
+            options={languageOptions}
             value={voiceConfig.targetLanguage}
           />
           <p>
-            会写入双向 language-configs（互为逆方向）。下次开始会话生效。
+            {languageLoading
+              ? "正在同步 ASR / TTS 支持的语言..."
+              : "保存后，下一次会话会按此语言对开启双向翻译。"}
           </p>
         </div>
       );
@@ -169,9 +177,33 @@ export function SettingsPanel({
   debug: SessionDebugInfo;
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [languageOptions, setLanguageOptions] = useState<LanguageCode[]>(SUPPORTED_LANGUAGES);
+  const [languageLoading, setLanguageLoading] = useState(true);
   const panelRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const selected = SETTINGS_ITEMS[selectedIndex];
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        await getOrCreateAuthSession();
+        const result = await listSupportedLanguages();
+        const options = result.languages
+          .filter((language) => language.supports_as_source && language.supports_as_target)
+          .map((language) => language.language_code)
+          .filter((code, index, all) => all.indexOf(code) === index);
+        if (!cancelled && options.length > 0) setLanguageOptions(options);
+      } catch {
+        // Keep the local catalog available while the API is unavailable.
+      } finally {
+        if (!cancelled) setLanguageLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const selectedValue =
     selected.id === "language"
@@ -293,6 +325,8 @@ export function SettingsPanel({
                 <div className={styles.settingsDetailControls}>
                   <SettingsDetail
                     debug={debug}
+                    languageLoading={languageLoading}
+                    languageOptions={languageOptions}
                     onConfigChange={onConfigChange}
                     selectedId={selected.id}
                     voiceConfig={voiceConfig}

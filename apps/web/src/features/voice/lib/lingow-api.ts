@@ -73,6 +73,18 @@ export type VoiceTurnListResponse = {
   next_cursor: string | null;
 };
 
+export type SupportedLanguage = {
+  language_code: string;
+  display_name: string;
+  display_name_en: string;
+  supports_as_source: boolean;
+  supports_as_target: boolean;
+};
+
+export type SupportedLanguageListResponse = {
+  languages: SupportedLanguage[];
+};
+
 export type UsageStageTotal = {
   service_type: "asr" | "translation" | "tts" | "diarization" | string;
   input_tokens: number;
@@ -222,6 +234,13 @@ export async function listVoiceSessions(
     cache: "no-store",
   });
   return parseJson<VoiceSessionListResponse>(response);
+}
+
+export async function listSupportedLanguages(): Promise<SupportedLanguageListResponse> {
+  const response = await fetch("/api/v1/languages?active=true", {
+    cache: "no-store",
+  });
+  return parseJson<SupportedLanguageListResponse>(response);
 }
 
 export async function getAccountUsageSummary(

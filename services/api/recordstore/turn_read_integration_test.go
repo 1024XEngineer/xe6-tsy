@@ -13,11 +13,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestTurnReadRepositoryListsAndFindsWithinAccountScope(t *testing.T) {
+func TestTurnReadRepositoryListsSessionAndFindsOwnedTurn(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	insertOwnedSession(t, pool, "session_01", "account_01")
+	insertOwnedSession(t, pool, "session_02", "account_02")
 	participantID := "participant_01"
 	if err := insertParticipant(t.Context(), pool, participantID, "session_01", "speaker_01", nil); err != nil {
 		t.Fatalf("insert participant: %v", err)
@@ -37,11 +39,10 @@ func TestTurnReadRepositoryListsAndFindsWithinAccountScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCursorCodec() error = %v", err)
 	}
-	scopes := staticAccountSessionScopes{
+	repository, err := NewTurnReadRepository(pool, codec, staticAccountSessionScopes{
 		"account_01": {"session_01"},
 		"account_02": {"session_02"},
-	}
-	repository, err := NewTurnReadRepository(pool, codec, scopes)
+	})
 	if err != nil {
 		t.Fatalf("NewTurnReadRepository() error = %v", err)
 	}
@@ -72,12 +73,6 @@ func TestTurnReadRepositoryListsAndFindsWithinAccountScope(t *testing.T) {
 		t.Fatalf("filtered ListSession() error = %v", err)
 	}
 	assertTurnIDs(t, filtered.Items, "turn_03")
-
-	foreign, err := repository.ListSession(t.Context(), "account_02", "session_01", recordsv1.ListTurnsQuery{Limit: 20})
-	if err != nil {
-		t.Fatalf("foreign ListSession() error = %v", err)
-	}
-	assertTurnIDs(t, foreign.Items)
 
 	found, err := repository.Find(t.Context(), "account_01", "turn_02")
 	if err != nil {

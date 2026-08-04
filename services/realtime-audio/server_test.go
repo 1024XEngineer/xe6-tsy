@@ -209,7 +209,9 @@ func TestRunShutsDownAfterStart(t *testing.T) {
 	go func() {
 		done <- run(ctx, secretEnv(strings.Repeat("u", 32)), func(server *http.Server) error {
 			close(started)
-			<-ctx.Done()
+			shutdownStarted := make(chan struct{})
+			server.RegisterOnShutdown(func() { close(shutdownStarted) })
+			<-shutdownStarted
 			return http.ErrServerClosed
 		})
 	}()
@@ -239,6 +241,24 @@ func TestRunReturnsListenError(t *testing.T) {
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("run() error = %v, want %v", err, want)
+	}
+}
+
+func TestRunAcceptsListenerExit(t *testing.T) {
+	err := run(context.Background(), secretEnv(strings.Repeat("w", 32)), func(*http.Server) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func TestRunAcceptsServerClosedListenerExit(t *testing.T) {
+	err := run(context.Background(), secretEnv(strings.Repeat("x", 32)), func(*http.Server) error {
+		return http.ErrServerClosed
+	})
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
 	}
 }
 

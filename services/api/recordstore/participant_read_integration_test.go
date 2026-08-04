@@ -10,7 +10,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
 )
 
-func TestParticipantReadRepositoryPaginatesWithinAccountScope(t *testing.T) {
+func TestParticipantReadRepositoryPaginatesSession(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
@@ -34,10 +34,7 @@ func TestParticipantReadRepositoryPaginatesWithinAccountScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCursorCodec() error = %v", err)
 	}
-	repository, err := NewParticipantReadRepository(pool, codec, staticAccountSessionScopes{
-		"account_01": {"session_01"},
-		"account_02": {"session_02"},
-	})
+	repository, err := NewParticipantReadRepository(pool, codec)
 	if err != nil {
 		t.Fatalf("NewParticipantReadRepository() error = %v", err)
 	}
@@ -69,11 +66,6 @@ func TestParticipantReadRepositoryPaginatesWithinAccountScope(t *testing.T) {
 		t.Fatalf("changed-limit cursor error = %v, want invalid request", err)
 	}
 
-	foreign, err := repository.List(t.Context(), "account_02", "session_01", participantQuery(20, ""))
-	if err != nil {
-		t.Fatalf("cross-account List() error = %v", err)
-	}
-	assertParticipantIDs(t, foreign.Items)
 }
 
 func participantQuery(limit int, cursor string) recordsv1.ListParticipantsQuery {

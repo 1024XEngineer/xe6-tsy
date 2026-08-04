@@ -195,6 +195,64 @@ func TestMemoryConnectionManagerRejectsInvalidTransportResults(t *testing.T) {
 	}
 }
 
+func TestMemoryConnectionManagerAllowsRetryAfterTransportCreationFailure(t *testing.T) {
+	createErr := errors.New("create failed")
+	transport := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
+	factory := &sequenceTransportFactory{
+		transports: []ConnectionTransport{nil, transport},
+		errors:     []error{createErr, nil},
+	}
+	manager := NewMemoryConnectionManager(factory)
+	request := validOpenConnectionRequest()
+
+	if _, err := manager.Open(context.Background(), request); !errors.Is(err, createErr) {
+		t.Fatalf("failed Open() error = %v, want %v", err, createErr)
+	}
+	if _, err := manager.GetCurrent(context.Background(), request.SessionID); !errors.Is(err, ErrConnectionNotFound) {
+		t.Fatalf("GetCurrent() after failed Open() error = %v, want %v", err, ErrConnectionNotFound)
+	}
+
+	connection, err := manager.Open(context.Background(), request)
+	if err != nil {
+		t.Fatalf("retry Open() error = %v", err)
+	}
+	if connection.ID == "" || factory.calls != 2 {
+		t.Fatalf("connection = %#v, factory calls = %d", connection, factory.calls)
+	}
+}
+
+func TestMemoryConnectionManagerCancelsWaitingIdempotentOpen(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	factory := &fakeTransportFactory{
+		transport: &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}},
+		started:   started,
+		release:   release,
+	}
+	manager := NewMemoryConnectionManager(factory)
+	request := validOpenConnectionRequest()
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Open(context.Background(), request)
+		firstDone <- err
+	}()
+	<-started
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.Open(canceled, request); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waiting Open() error = %v, want %v", err, context.Canceled)
+	}
+	if factory.createCalls != 1 {
+		t.Fatalf("factory calls while waiting = %d, want 1", factory.createCalls)
+	}
+
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Open() error = %v", err)
+	}
+}
+
 func TestMemoryConnectionManagerCandidatesAreIdempotent(t *testing.T) {
 	transport := &fakeTransport{answer: SessionDescription{SDP: "answer-sdp", Type: "answer"}}
 	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: transport})
@@ -280,6 +338,65 @@ func TestMemoryConnectionManagerRejectsChangedCandidateForID(t *testing.T) {
 	}
 	if len(transport.candidates) != 1 {
 		t.Fatalf("transport candidates = %#v, want one candidate", transport.candidates)
+	}
+}
+
+func TestMemoryConnectionManagerRetriesCandidateAfterTransportFailure(t *testing.T) {
+	candidateErr := errors.New("candidate failed")
+	transport := &fakeTransport{
+		answer:       SessionDescription{SDP: "answer-sdp", Type: "answer"},
+		candidateErr: candidateErr,
+	}
+	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: transport})
+	connection, err := manager.Open(context.Background(), validOpenConnectionRequest())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	request := CandidateRequest{
+		ConnectionID: connection.ID,
+		Candidates:   []ICECandidate{{ID: "candidate-1", Candidate: "candidate:1"}},
+	}
+
+	if _, err := manager.AddCandidates(context.Background(), connection.SessionID, request); !errors.Is(err, candidateErr) {
+		t.Fatalf("failed AddCandidates() error = %v, want %v", err, candidateErr)
+	}
+	if len(transport.candidates) != 0 {
+		t.Fatalf("transport candidates after failure = %#v", transport.candidates)
+	}
+
+	transport.candidateErr = nil
+	response, err := manager.AddCandidates(context.Background(), connection.SessionID, request)
+	if err != nil {
+		t.Fatalf("retry AddCandidates() error = %v", err)
+	}
+	if got, want := response.AcceptedCandidateIDs, []string{"candidate-1"}; !sameStrings(got, want) {
+		t.Fatalf("accepted = %#v, want %#v", got, want)
+	}
+}
+
+func TestMemoryConnectionManagerRetriesCandidateCompletionAfterTransportFailure(t *testing.T) {
+	endErr := errors.New("end candidates failed")
+	transport := &fakeTransport{
+		answer: SessionDescription{SDP: "answer-sdp", Type: "answer"},
+		endErr: endErr,
+	}
+	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: transport})
+	connection, err := manager.Open(context.Background(), validOpenConnectionRequest())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	request := CandidateRequest{ConnectionID: connection.ID, EndOfCandidates: true}
+
+	if _, err := manager.AddCandidates(context.Background(), connection.SessionID, request); !errors.Is(err, endErr) {
+		t.Fatalf("failed AddCandidates() error = %v, want %v", err, endErr)
+	}
+	transport.endErr = nil
+	response, err := manager.AddCandidates(context.Background(), connection.SessionID, request)
+	if err != nil {
+		t.Fatalf("retry AddCandidates() error = %v", err)
+	}
+	if !response.EndOfCandidates || transport.endCandidatesCalls != 2 {
+		t.Fatalf("response = %#v, end candidate calls = %d", response, transport.endCandidatesCalls)
 	}
 }
 
@@ -768,13 +885,17 @@ type blockingTransportFactory struct {
 
 type sequenceTransportFactory struct {
 	transports []ConnectionTransport
+	errors     []error
 	calls      int
 }
 
 func (f *sequenceTransportFactory) Create(_ context.Context, _, _ string, _ ConnectionStateHandler) (ConnectionTransport, error) {
-	transport := f.transports[f.calls]
+	index := f.calls
 	f.calls++
-	return transport, nil
+	if len(f.errors) > index && f.errors[index] != nil {
+		return nil, f.errors[index]
+	}
+	return f.transports[index], nil
 }
 
 func (f *blockingTransportFactory) Create(_ context.Context, _, _ string, _ ConnectionStateHandler) (ConnectionTransport, error) {

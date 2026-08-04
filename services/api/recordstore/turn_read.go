@@ -46,11 +46,6 @@ func (r *TurnReadRepository) ListSession(
 	if accountID == "" || sessionID == "" || !validRecordPageSize(query.Limit) {
 		return recordsv1.VoiceTurnListResponse{}, turns.ErrInvalidRequest
 	}
-	ownedSessionIDs, err := r.sessions.SessionIDsForAccount(ctx, accountID)
-	if err != nil {
-		return recordsv1.VoiceTurnListResponse{}, fmt.Errorf("read account session scope: %w", err)
-	}
-
 	scope := sessionTurnsCursorScope(accountID, sessionID, query)
 	var after Cursor
 	if query.Cursor != "" {
@@ -63,7 +58,6 @@ func (r *TurnReadRepository) ListSession(
 
 	rows, err := r.pool.Query(ctx, listSessionTurnsQuery,
 		sessionID,
-		ownedSessionIDs,
 		query.ParticipantID,
 		query.SpeakerCode,
 		query.AttributionStatus,
@@ -114,12 +108,7 @@ func (r *TurnReadRepository) Find(ctx context.Context, accountID, turnID string)
 	if accountID == "" || turnID == "" {
 		return recordsv1.VoiceTurn{}, turns.ErrInvalidRequest
 	}
-	ownedSessionIDs, err := r.sessions.SessionIDsForAccount(ctx, accountID)
-	if err != nil {
-		return recordsv1.VoiceTurn{}, fmt.Errorf("read account session scope: %w", err)
-	}
-
-	turn, err := scanReadVoiceTurn(r.pool.QueryRow(ctx, findTurnQuery, turnID, ownedSessionIDs))
+	turn, err := scanReadVoiceTurn(r.pool.QueryRow(ctx, findTurnQuery, turnID, accountID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return recordsv1.VoiceTurn{}, turns.ErrTurnNotFound
 	}
@@ -153,21 +142,27 @@ const listSessionTurnsQuery = `
 SELECT ` + voiceTurnColumns + `
 FROM voice_turns
 WHERE session_id = $1
-  AND session_id = ANY($2::text[])
-  AND ($3 = '' OR participant_id = $3)
-  AND ($4 = '' OR speaker_code = $4)
-  AND ($5 = '' OR attribution_status = $5)
-  AND ($6 = '' OR source_language = $6)
-  AND ($7 = '' OR target_language = $7)
-  AND ($8 = 0 OR (sequence_no, id) > ($8, $9))
+  AND ($2 = '' OR participant_id = $2)
+  AND ($3 = '' OR speaker_code = $3)
+  AND ($4 = '' OR attribution_status = $4)
+  AND ($5 = '' OR source_language = $5)
+  AND ($6 = '' OR target_language = $6)
+  AND ($7 = 0 OR (sequence_no, id) > ($7, $8))
 ORDER BY sequence_no ASC, id ASC
-LIMIT $10`
+LIMIT $9`
 
 const findTurnQuery = `
 SELECT ` + voiceTurnColumns + `
-FROM voice_turns
-WHERE id = $1
-  AND session_id = ANY($2::text[])`
+FROM voice_turns AS turn
+WHERE turn.id = $1
+  AND turn.session_id IN (
+      SELECT sessions.id
+      FROM voice_sessions AS sessions
+      WHERE sessions.account_id IN (
+          SELECT account_id
+          FROM lingow_account_lineage($2)
+      )
+  )`
 
 type voiceTurnReadScanner interface {
 	Scan(dest ...any) error

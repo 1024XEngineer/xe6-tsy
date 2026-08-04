@@ -59,34 +59,20 @@ func (r *ProviderAttributionResolver) Resolve(ctx context.Context, input Attribu
 	}, nil
 }
 
-// ServiceAttributionReader adapts the records services to the turn/participant reads the
-// attribution worker needs. Both reads enforce account ownership through the service boundary.
+// ServiceAttributionReader adapts the records turn service to the attribution worker's read
+// boundary. Participant resolution is delegated to the provider-key mapping service.
 type ServiceAttributionReader struct {
-	turns        *Service
-	participants interface {
-		List(ctx context.Context, accountID, sessionID string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error)
-	}
+	turns *Service
 }
 
 // NewServiceAttributionReader binds the records services as the worker's read boundary.
-func NewServiceAttributionReader(turnsService *Service, participantService interface {
-	List(ctx context.Context, accountID, sessionID string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error)
-}) *ServiceAttributionReader {
-	return &ServiceAttributionReader{turns: turnsService, participants: participantService}
+func NewServiceAttributionReader(turnsService *Service) *ServiceAttributionReader {
+	return &ServiceAttributionReader{turns: turnsService}
 }
 
 // GetTurn returns one turn owned by the account.
 func (r *ServiceAttributionReader) GetTurn(ctx context.Context, accountID, turnID string) (recordsv1.VoiceTurn, error) {
 	return r.turns.Get(ctx, accountID, turnID)
-}
-
-// ListParticipants returns the session participants owned by the account.
-func (r *ServiceAttributionReader) ListParticipants(ctx context.Context, accountID, sessionID string) ([]recordsv1.Participant, error) {
-	response, err := r.participants.List(ctx, accountID, sessionID, recordsv1.ListParticipantsQuery{Limit: 100})
-	if err != nil {
-		return nil, err
-	}
-	return response.Items, nil
 }
 
 var (

@@ -1,13 +1,15 @@
 import { bilingualPairs, type VoiceSessionConfig } from "./languages";
 import { ApiError, newIdempotencyKey, parseJson } from "./http";
 
+export type AuthTokens = {
+  access_token: string;
+  refresh_token: string;
+  expires_at: string;
+};
+
 export type AuthResult = {
   account: { id: string; kind: string; created_at: string };
-  tokens: {
-    access_token: string;
-    refresh_token: string;
-    expires_at: string;
-  };
+  tokens: AuthTokens;
 };
 
 export type VoiceSession = {
@@ -17,6 +19,11 @@ export type VoiceSession = {
   created_at: string;
   started_at?: string | null;
   ended_at?: string | null;
+};
+
+export type VoiceSessionListResponse = {
+  sessions: VoiceSession[];
+  next_cursor: string | null;
 };
 
 export type RuntimeState =
@@ -64,6 +71,34 @@ export type VoiceTurn = {
 export type VoiceTurnListResponse = {
   items: VoiceTurn[];
   next_cursor: string | null;
+};
+
+export type SupportedLanguage = {
+  language_code: string;
+  display_name: string;
+  display_name_en: string;
+  supports_as_source: boolean;
+  supports_as_target: boolean;
+};
+
+export type SupportedLanguageListResponse = {
+  languages: SupportedLanguage[];
+};
+
+export type UsageStageTotal = {
+  service_type: "asr" | "translation" | "tts" | "diarization" | string;
+  input_tokens: number;
+  output_tokens: number;
+  audio_duration_ms: number;
+  cost_amount: string;
+  currency: string;
+};
+
+export type UsageSummary = {
+  account_id: string;
+  period_start: string;
+  period_end: string;
+  totals: UsageStageTotal[];
 };
 
 function authHeaders(accessToken: string, idempotencyKey?: string): HeadersInit {
@@ -183,6 +218,61 @@ export async function startVoiceSession(
   throw new Error("unreachable");
 }
 
+export async function listVoiceSessions(
+  accessToken: string,
+  query: {
+    limit?: number;
+    cursor?: string;
+    status?: VoiceSession["status"];
+  } = {},
+): Promise<VoiceSessionListResponse> {
+  const params = new URLSearchParams({ limit: String(query.limit ?? 20) });
+  if (query.cursor) params.set("cursor", query.cursor);
+  if (query.status) params.set("status", query.status);
+  const response = await fetch(`/api/v1/voice-sessions?${params}`, {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<VoiceSessionListResponse>(response);
+}
+
+export async function listSupportedLanguages(
+  accessToken: string,
+): Promise<SupportedLanguageListResponse> {
+  const response = await fetch("/api/v1/languages?active=true", {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<SupportedLanguageListResponse>(response);
+}
+
+export async function getAccountUsageSummary(
+  accessToken: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<UsageSummary> {
+  const params = new URLSearchParams({
+    period_start: periodStart,
+    period_end: periodEnd,
+  });
+  const response = await fetch(`/api/v1/usage/summary?${params}`, {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<UsageSummary>(response);
+}
+
+export async function refreshAccountTokens(
+  refreshToken: string,
+): Promise<AuthTokens> {
+  const response = await fetch("/api/v1/auth/token/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  return parseJson<AuthTokens>(response);
+}
+
 function waitForRetry(signal: AbortSignal | undefined, delayMs: number): Promise<void> {
   if (!signal) return new Promise((resolve) => setTimeout(resolve, delayMs));
   return new Promise((resolve, reject) => {
@@ -251,8 +341,10 @@ export async function listSessionTurns(
   accessToken: string,
   sessionId: string,
   limit = 50,
+  cursor?: string,
 ): Promise<VoiceTurnListResponse> {
   const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
   const response = await fetch(
     `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/turns?${params}`,
     {

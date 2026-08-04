@@ -49,7 +49,7 @@ The provider packages keep vendor protocol details outside `pipeline`:
 
 - `asr/qwen` uses the Qwen realtime WebSocket endpoint. It sends `session.update`, streams PCM through `input_audio_buffer.append`, and sends `session.finish` before waiting for `session.finished`.
 - `translate/qwen` uses the OpenAI-compatible `POST /chat/completions` endpoint with `qwen3.6-flash`. Thinking is disabled by default for turn-level latency.
-- `tts/qwen` uses the Qwen3-TTS-Flash `POST /services/aigc/multimodal-generation/generation` endpoint with `X-DashScope-SSE: enable`, decoding Base64 audio deltas into the local `tts.Stream` port.
+- `tts/qwen` supports both Qwen3-TTS-Flash (`/services/aigc/multimodal-generation/generation`, `language_type`) and CosyVoice v3/v3.5 (`/services/audio/tts/SpeechSynthesizer`, `instruction`). CosyVoice instructions are generated from the target BCP-47 language so multilingual pairs can use the same stream port. For CosyVoice v3.5, configure a compatible designed voice with `TTS_VOICE`.
 
 The adapters are constructed explicitly from typed configuration values.
 `config.LoadProviderConfigFromEnvironment` reads typed settings from the process environment, and

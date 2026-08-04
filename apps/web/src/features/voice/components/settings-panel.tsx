@@ -5,21 +5,37 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 
 import type { SessionDebugInfo } from "../hooks/use-voice-session";
+import { getOrCreateAuthSession } from "../lib/auth-session";
 import {
   SUPPORTED_LANGUAGES,
   languageLabel,
   type LanguageCode,
   type VoiceSessionConfig,
 } from "../lib/languages";
+import { listSupportedLanguages } from "../lib/lingow-api";
 import styles from "../voice.module.css";
+import { HistoryPreview, HistorySettings } from "./history-settings";
 import { OptionWheel } from "./option-wheel";
+import { UsageSettings } from "./usage-settings";
 
 const SETTINGS_ITEMS = [
   {
     id: "language",
-    label: "语言对",
+    label: "默认语言对",
     value: "zh-CN / en-US",
-    description: "会话双语配置",
+    description: "下次会话使用的双向语言",
+  },
+  {
+    id: "history",
+    label: "历史会话",
+    value: "查看记录",
+    description: "按会话查看翻译记录",
+  },
+  {
+    id: "usage",
+    label: "用量管理",
+    value: "本月分钟数",
+    description: "查看本月免费用量",
   },
   {
     id: "session",
@@ -36,15 +52,18 @@ const SETTINGS_ITEMS = [
 ] as const;
 
 type SettingId = (typeof SETTINGS_ITEMS)[number]["id"];
+const HISTORY_INDEX = SETTINGS_ITEMS.findIndex((item) => item.id === "history");
 
 function SelectRow({
   label,
   options,
+  labels,
   value,
   onChange,
 }: {
   label: string;
   options: readonly LanguageCode[];
+  labels: Readonly<Record<string, string>>;
   value: LanguageCode;
   onChange: (value: LanguageCode) => void;
 }) {
@@ -57,7 +76,7 @@ function SelectRow({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {languageLabel(option)} ({option})
+            {labels[option] ?? languageLabel(option)} ({option})
           </option>
         ))}
       </select>
@@ -70,11 +89,19 @@ function SettingsDetail({
   voiceConfig,
   onConfigChange,
   debug,
+  languageOptions,
+  languageLoading,
+  languageLabels,
+  onOpenHistory,
 }: {
   selectedId: SettingId;
   voiceConfig: VoiceSessionConfig;
   onConfigChange: (next: VoiceSessionConfig) => void;
   debug: SessionDebugInfo;
+  languageOptions: readonly LanguageCode[];
+  languageLoading: boolean;
+  languageLabels: Readonly<Record<string, string>>;
+  onOpenHistory: (session: import("../lib/lingow-api").VoiceSession) => void;
 }) {
   switch (selectedId) {
     case "language":
@@ -85,7 +112,8 @@ function SettingsDetail({
             onChange={(sourceLanguage) =>
               onConfigChange({ ...voiceConfig, sourceLanguage })
             }
-            options={SUPPORTED_LANGUAGES}
+            options={languageOptions}
+            labels={languageLabels}
             value={voiceConfig.sourceLanguage}
           />
           <SelectRow
@@ -93,11 +121,14 @@ function SettingsDetail({
             onChange={(targetLanguage) =>
               onConfigChange({ ...voiceConfig, targetLanguage })
             }
-            options={SUPPORTED_LANGUAGES}
+            options={languageOptions}
+            labels={languageLabels}
             value={voiceConfig.targetLanguage}
           />
           <p>
-            会写入双向 language-configs（互为逆方向）。下次开始会话生效。
+            {languageLoading
+              ? "正在同步 ASR / TTS 支持的语言..."
+              : "保存后，下一次会话会按此语言对开启双向翻译。"}
           </p>
         </div>
       );
@@ -122,6 +153,10 @@ function SettingsDetail({
           </div>
         </div>
       );
+    case "history":
+      return <HistoryPreview onOpen={onOpenHistory} />;
+    case "usage":
+      return <UsageSettings />;
     case "about":
       return (
         <div className={styles.aboutView}>
@@ -151,13 +186,50 @@ export function SettingsPanel({
   debug: SessionDebugInfo;
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [historySessionId, setHistorySessionId] = useState<string | null>(null);
+  const [languageOptions, setLanguageOptions] = useState<LanguageCode[]>(SUPPORTED_LANGUAGES);
+  const [languageLoading, setLanguageLoading] = useState(true);
+  const [languageLabels, setLanguageLabels] = useState<Record<string, string>>({});
   const panelRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const selected = SETTINGS_ITEMS[selectedIndex];
+  const historyWorkspaceOpen = selected.id === "history" && historySessionId !== null;
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const auth = await getOrCreateAuthSession();
+        const result = await listSupportedLanguages(auth.tokens.access_token);
+        const options = result.languages
+          .filter((language) => language.supports_as_source && language.supports_as_target)
+          .map((language) => language.language_code)
+          .filter((code, index, all) => all.indexOf(code) === index);
+        if (!cancelled && options.length > 0) {
+          setLanguageOptions(options);
+          setLanguageLabels(
+            Object.fromEntries(
+              result.languages.map((language) => [
+                language.language_code,
+                language.display_name || language.display_name_en,
+              ]),
+            ),
+          );
+        }
+      } catch {
+        // Keep the local catalog available while the API is unavailable.
+      } finally {
+        if (!cancelled) setLanguageLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const selectedValue =
     selected.id === "language"
-      ? `${voiceConfig.sourceLanguage} / ${voiceConfig.targetLanguage}`
+      ? `${languageLabel(voiceConfig.sourceLanguage)} / ${languageLabel(voiceConfig.targetLanguage)}`
       : selected.id === "session"
         ? debug.sessionId
           ? debug.sessionId.slice(0, 18)
@@ -234,8 +306,8 @@ export function SettingsPanel({
           </button>
         </header>
 
-        <div className={styles.settingsContent}>
-          <section aria-label="设置导航" className={styles.settingsNavigation}>
+        <div className={historyWorkspaceOpen ? styles.settingsContentHistory : styles.settingsContent}>
+          {!historyWorkspaceOpen ? <section aria-label="设置导航" className={styles.settingsNavigation}>
             <div className={styles.settingsCount}>
               <span>{String(selectedIndex + 1).padStart(2, "0")}</span>
               <i />
@@ -250,15 +322,23 @@ export function SettingsPanel({
                 fontSize={2.42}
                 inset={96}
                 items={SETTINGS_ITEMS.map((item) => item.label)}
-                onChange={(index) => setSelectedIndex(index)}
+                onChange={(index) => {
+                  setSelectedIndex(index);
+                  if (index !== HISTORY_INDEX) setHistorySessionId(null);
+                }}
                 spacing={1.5}
                 tilt={7.2}
               />
             </div>
-          </section>
+          </section> : null}
 
-          <section aria-live="polite" className={styles.settingsDetail}>
-            <AnimatePresence mode="wait">
+          <section aria-live="polite" className={historyWorkspaceOpen ? styles.settingsDetailHistory : styles.settingsDetail}>
+            {historyWorkspaceOpen ? (
+              <HistorySettings
+                initialSessionId={historySessionId}
+                onExit={() => setHistorySessionId(null)}
+              />
+            ) : <AnimatePresence mode="wait">
               <motion.div
                 animate={{ opacity: 1, y: 0 }}
                 className={styles.settingsDetailInner}
@@ -275,13 +355,17 @@ export function SettingsPanel({
                 <div className={styles.settingsDetailControls}>
                   <SettingsDetail
                     debug={debug}
+                    languageLoading={languageLoading}
+                    languageOptions={languageOptions}
+                    languageLabels={languageLabels}
                     onConfigChange={onConfigChange}
+                    onOpenHistory={(session) => setHistorySessionId(session.id)}
                     selectedId={selected.id}
                     voiceConfig={voiceConfig}
                   />
                 </div>
               </motion.div>
-            </AnimatePresence>
+            </AnimatePresence>}
           </section>
         </div>
 

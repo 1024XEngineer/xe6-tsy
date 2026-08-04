@@ -122,6 +122,41 @@ func TestAttributionWorkerRetriesApplyError(t *testing.T) {
 	}
 }
 
+func TestAttributionWorkerUsesCurrentSessionOwner(t *testing.T) {
+	delivery := &attributionDeliveryStub{task: AttributionTask{
+		TaskID: "attr_vt_01", TurnID: "vt_01", SessionID: "vs_01", AccountID: "acct_old",
+		TaskType: "turn_attribution", Attempts: 1,
+	}}
+	reader := &attributionReaderStub{
+		turn:  recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
+		parts: []recordsv1.Participant{{ID: "p_01"}},
+	}
+	applier := &attributionApplierStub{updated: recordsv1.VoiceTurn{ID: "vt_01"}}
+	worker, err := NewAttributionWorker(
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{decision: &AttributionDecision{ParticipantID: "p_02", AttributionStatus: recordsv1.AttributionConfirmed}},
+		attributionOwnerStub{accountID: "acct_new"},
+		reader,
+		applier,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatalf("NewAttributionWorker() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	if err := worker.Process(ctx, delivery); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if reader.getAccountID != "acct_new" || reader.listAccountID != "acct_new" {
+		t.Fatalf("reader account IDs get=%q list=%q, want acct_new", reader.getAccountID, reader.listAccountID)
+	}
+	if applier.accountID != "acct_new" {
+		t.Fatalf("applier account ID = %q, want acct_new", applier.accountID)
+	}
+}
+
 func TestAttributionWorkerAcksStaleDecision(t *testing.T) {
 	delivery := &attributionDeliveryStub{task: taskFixture()}
 	worker, ctx := newAttributionWorkerStub(t,
@@ -163,7 +198,7 @@ func newAttributionWorkerStub(t *testing.T, source AttributionTaskSource, resolv
 		turn:  recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
 		parts: []recordsv1.Participant{{ID: "p_01"}},
 	}
-	worker, err := NewAttributionWorker(source, resolver, reader, applier, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	worker, err := NewAttributionWorker(source, resolver, attributionOwnerStub{accountID: "acct_01"}, reader, applier, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("NewAttributionWorker() error = %v", err)
 	}
@@ -232,26 +267,41 @@ func (r *fixedDecisionResolver) Resolve(context.Context, AttributionResolutionIn
 }
 
 type attributionReaderStub struct {
-	turn  recordsv1.VoiceTurn
-	parts []recordsv1.Participant
-	err   error
+	turn          recordsv1.VoiceTurn
+	parts         []recordsv1.Participant
+	err           error
+	getAccountID  string
+	listAccountID string
 }
 
-func (r *attributionReaderStub) GetTurn(context.Context, string, string) (recordsv1.VoiceTurn, error) {
+func (r *attributionReaderStub) GetTurn(_ context.Context, accountID string, _ string) (recordsv1.VoiceTurn, error) {
+	r.getAccountID = accountID
 	return r.turn, r.err
 }
 
-func (r *attributionReaderStub) ListParticipants(context.Context, string, string) ([]recordsv1.Participant, error) {
+func (r *attributionReaderStub) ListParticipants(_ context.Context, accountID string, _ string) ([]recordsv1.Participant, error) {
+	r.listAccountID = accountID
 	return r.parts, r.err
 }
 
-type attributionApplierStub struct {
-	updated recordsv1.VoiceTurn
-	err     error
-	calls   []recordsv1.UpdateAttributionRequest
+type attributionOwnerStub struct {
+	accountID string
+	err       error
 }
 
-func (a *attributionApplierStub) CorrectAttributionIfUnresolved(_ context.Context, _, _ string, request recordsv1.UpdateAttributionRequest, _ bool) (recordsv1.VoiceTurn, error) {
+func (r attributionOwnerStub) AccountIDForSession(context.Context, string) (string, error) {
+	return r.accountID, r.err
+}
+
+type attributionApplierStub struct {
+	updated   recordsv1.VoiceTurn
+	err       error
+	accountID string
+	calls     []recordsv1.UpdateAttributionRequest
+}
+
+func (a *attributionApplierStub) CorrectAttributionIfUnresolved(_ context.Context, accountID, _ string, request recordsv1.UpdateAttributionRequest, _ bool) (recordsv1.VoiceTurn, error) {
+	a.accountID = accountID
 	a.calls = append(a.calls, request)
 	if a.err != nil {
 		return recordsv1.VoiceTurn{}, a.err

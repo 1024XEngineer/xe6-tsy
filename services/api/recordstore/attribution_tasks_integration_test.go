@@ -52,6 +52,7 @@ func TestAttributionTaskFlow(t *testing.T) {
 	worker, err := turns.NewAttributionWorker(
 		store,
 		services.AttributionResolver,
+		sessionOwnerStub{accountID: "acct_01"},
 		turns.NewServiceAttributionReader(services.Turns, services.Participants),
 		services.Turns,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -121,6 +122,7 @@ func TestAttributionTaskFailsWithoutProviderEvidence(t *testing.T) {
 	worker, err := turns.NewAttributionWorker(
 		store,
 		services.AttributionResolver,
+		sessionOwnerStub{accountID: "acct_01"},
 		turns.NewServiceAttributionReader(services.Turns, services.Participants),
 		services.Turns,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -146,6 +148,63 @@ func TestAttributionTaskFailsWithoutProviderEvidence(t *testing.T) {
 	}
 	if lastError == "" {
 		t.Fatal("failed task must record an error")
+	}
+}
+
+func TestAttributionTaskWorkerUsesCanonicalOwnerAfterAccountMerge(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	insertOwnedSession(t, pool, "session_01", "acct_old")
+	providerID := "cluster_01"
+	event := finalTurnEvent("event_merged_01", "turn_merged_01", "session_01", 1)
+	event.ParticipantID = nil
+	event.ProviderSpeakerID = &providerID
+	event.AttributionStatus = recordsv1.AttributionPending
+	if err := NewTurnWriter(pool).StoreFinalTurn(t.Context(), event); err != nil {
+		t.Fatalf("StoreFinalTurn() error = %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+INSERT INTO lingow_accounts (id, kind) VALUES ('acct_new', 'anonymous');
+UPDATE lingow_accounts SET merged_into = 'acct_new' WHERE id = 'acct_old'`); err != nil {
+		t.Fatalf("merge account fixture: %v", err)
+	}
+
+	owner := NewCanonicalSessionOwner(databaseCanonicalOwner{pool: pool})
+	services, err := NewServices(pool, make([]byte, 32), owner, &postgresSessionScopeStub{pool: pool})
+	if err != nil {
+		t.Fatalf("NewServices() error = %v", err)
+	}
+	store := NewAttributionTaskStore(pool)
+	worker, err := turns.NewAttributionWorker(
+		store,
+		services.AttributionResolver,
+		owner,
+		turns.NewServiceAttributionReader(services.Turns, services.Participants),
+		services.Turns,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatalf("NewAttributionWorker() error = %v", err)
+	}
+	delivery, err := store.Receive(t.Context())
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	if delivery.Task().AccountID != "acct_old" {
+		t.Fatalf("task account ID = %q, want enqueue audit owner acct_old", delivery.Task().AccountID)
+	}
+	if err := worker.Process(t.Context(), delivery); err != nil {
+		t.Fatalf("worker Process() error = %v", err)
+	}
+
+	corrected, err := services.Turns.Get(t.Context(), "acct_new", event.TurnID)
+	if err != nil {
+		t.Fatalf("Get(corrected) error = %v", err)
+	}
+	if corrected.ParticipantID == nil || corrected.AttributionStatus != recordsv1.AttributionConfirmed {
+		t.Fatalf("corrected turn = %#v, want confirmed participant", corrected)
 	}
 }
 
@@ -259,4 +318,24 @@ func (s *postgresSessionScopeStub) SessionIDsForAccount(ctx context.Context, acc
 		return nil, err
 	}
 	return reader.SessionIDsForAccount(ctx, accountID)
+}
+
+type databaseCanonicalOwner struct {
+	pool *pgxpool.Pool
+}
+
+func (o databaseCanonicalOwner) AccountIDForSession(ctx context.Context, sessionID string) (string, error) {
+	var accountID string
+	if err := o.pool.QueryRow(ctx, `SELECT account_id FROM voice_sessions WHERE id = $1`, sessionID).Scan(&accountID); err != nil {
+		return "", MapError(err)
+	}
+	return accountID, nil
+}
+
+func (o databaseCanonicalOwner) CanonicalAccountID(ctx context.Context, accountID string) (string, error) {
+	var canonicalID string
+	if err := o.pool.QueryRow(ctx, `SELECT COALESCE(merged_into, id) FROM lingow_accounts WHERE id = $1`, accountID).Scan(&canonicalID); err != nil {
+		return "", MapError(err)
+	}
+	return canonicalID, nil
 }

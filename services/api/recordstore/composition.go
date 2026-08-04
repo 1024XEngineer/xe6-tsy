@@ -69,6 +69,7 @@ func NewServices(
 	attributionWorker, err := turns.NewAttributionWorker(
 		NewAttributionTaskStore(pool),
 		attributionResolver,
+		sessionOwner,
 		turns.NewServiceAttributionReader(turnService, participantService),
 		turnService,
 		slog.Default(),

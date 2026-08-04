@@ -211,7 +211,7 @@ func (s *realtimeStream) run() {
 			s.sequence++
 			s.totalBytes += int64(len(audio))
 			select {
-			case s.chunks <- tts.AudioChunk{SequenceNo: s.sequence, Data: audio}:
+			case s.chunks <- tts.AudioChunk{SequenceNo: s.sequence, Encoding: "pcm_s16le", Data: audio}:
 			case <-s.ctx.Done():
 				return
 			}

@@ -163,18 +163,33 @@ func (s *AttributionTaskStore) settle(taskID, receipt, status string, lastError 
 var _ turns.AttributionTaskSource = (*AttributionTaskStore)(nil)
 
 const insertAttributionTaskQuery = `
-WITH inserted AS (
-    INSERT INTO attribution_tasks (task_id, turn_id, session_id, account_id, task_type)
-    SELECT $1, $2, $3, COALESCE(owner.merged_into, owner.id), 'turn_attribution'
+WITH RECURSIVE target_session AS (
+    SELECT sessions.id, sessions.account_id
     FROM voice_sessions AS sessions
-    JOIN lingow_accounts AS owner ON owner.id = sessions.account_id
     WHERE sessions.id = $3
+), canonical_owner AS (
+    SELECT account.id, account.merged_into, ARRAY[account.id] AS visited
+    FROM lingow_accounts AS account
+    JOIN target_session AS session ON session.account_id = account.id
+
+    UNION ALL
+
+    SELECT parent.id, parent.merged_into, current.visited || parent.id
+    FROM lingow_accounts AS parent
+    JOIN canonical_owner AS current ON parent.id = current.merged_into
+    WHERE NOT parent.id = ANY(current.visited)
+), inserted AS (
+    INSERT INTO attribution_tasks (task_id, turn_id, session_id, account_id, task_type)
+    SELECT $1, $2, session.id, owner.id, 'turn_attribution'
+    FROM target_session AS session
+    JOIN canonical_owner AS owner ON owner.merged_into IS NULL
     ON CONFLICT (turn_id) DO NOTHING
     RETURNING task_id
 ), existing AS (
-    SELECT task_id
-    FROM attribution_tasks
-    WHERE turn_id = $2
+    SELECT task.task_id
+    FROM attribution_tasks AS task
+    JOIN target_session AS session ON session.id = task.session_id
+    WHERE task.turn_id = $2
 )
 SELECT task_id FROM inserted
 UNION ALL

@@ -257,6 +257,51 @@ func TestTurnWriterCorrectAttributionRejectsForeignAccount(t *testing.T) {
 	}
 }
 
+func TestTurnWriterCorrectAttributionAcceptsTwoHopCanonicalOwner(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	insertOwnedSession(t, pool, "session_01", "acct_old")
+	if _, err := pool.Exec(t.Context(), `
+INSERT INTO lingow_accounts (id, kind) VALUES
+    ('acct_mid', 'anonymous'),
+    ('acct_new', 'anonymous');
+UPDATE lingow_accounts SET merged_into = 'acct_mid' WHERE id = 'acct_old';
+UPDATE lingow_accounts SET merged_into = 'acct_new' WHERE id = 'acct_mid'`); err != nil {
+		t.Fatalf("insert two-hop account merge fixture: %v", err)
+	}
+	participant, err := NewParticipantWriter(pool).FindOrCreate(t.Context(), recordsv1.SpeakerObservation{
+		SessionID:         "session_01",
+		TurnID:            "turn_01",
+		ProviderSpeakerID: "cluster_01",
+	})
+	if err != nil {
+		t.Fatalf("FindOrCreate() error = %v", err)
+	}
+	event := finalTurnEvent("event_01", "turn_01", "session_01", 1)
+	event.ParticipantID = nil
+	event.AttributionStatus = recordsv1.AttributionPending
+	if err := NewTurnWriter(pool).StoreFinalTurn(t.Context(), event); err != nil {
+		t.Fatalf("StoreFinalTurn() error = %v", err)
+	}
+
+	updated, err := NewTurnWriter(pool).CorrectAttribution(t.Context(), turns.AttributionUpdate{
+		AccountID:         "acct_new",
+		TurnID:            event.TurnID,
+		ParticipantID:     participant.ID,
+		AttributionStatus: recordsv1.AttributionConfirmed,
+		CorrectedBy:       recordsv1.CorrectedBySystem,
+		CorrectedAt:       event.OccurredAt.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("CorrectAttribution() error = %v", err)
+	}
+	if updated.ParticipantID == nil || *updated.ParticipantID != participant.ID {
+		t.Fatalf("updated participant ID = %v, want %q", updated.ParticipantID, participant.ID)
+	}
+}
+
 func TestTurnWriterCorrectAttributionOnlyIfUnresolvedRejectsStaleDecision(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {

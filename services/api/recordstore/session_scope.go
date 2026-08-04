@@ -24,8 +24,10 @@ func (r *PostgresSessionScopeReader) SessionIDsForAccount(ctx context.Context, a
 	rows, err := r.pool.Query(ctx, `
 		SELECT sessions.id
 		FROM voice_sessions AS sessions
-		JOIN lingow_accounts AS owner ON owner.id = sessions.account_id
-		WHERE COALESCE(owner.merged_into, owner.id) = $1`, accountID)
+		WHERE sessions.account_id IN (
+			SELECT account_id
+			FROM lingow_account_lineage($1)
+		)`, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("query account session scope: %w", err)
 	}

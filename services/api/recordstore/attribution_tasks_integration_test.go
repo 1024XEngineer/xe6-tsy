@@ -166,8 +166,11 @@ func TestAttributionTaskWorkerUsesCanonicalOwnerAfterAccountMerge(t *testing.T) 
 		t.Fatalf("StoreFinalTurn() error = %v", err)
 	}
 	if _, err := pool.Exec(t.Context(), `
-INSERT INTO lingow_accounts (id, kind) VALUES ('acct_new', 'anonymous');
-UPDATE lingow_accounts SET merged_into = 'acct_new' WHERE id = 'acct_old'`); err != nil {
+INSERT INTO lingow_accounts (id, kind) VALUES
+    ('acct_mid', 'anonymous'),
+    ('acct_new', 'anonymous');
+UPDATE lingow_accounts SET merged_into = 'acct_mid' WHERE id = 'acct_old';
+UPDATE lingow_accounts SET merged_into = 'acct_new' WHERE id = 'acct_mid'`); err != nil {
 		t.Fatalf("merge account fixture: %v", err)
 	}
 
@@ -205,6 +208,30 @@ UPDATE lingow_accounts SET merged_into = 'acct_new' WHERE id = 'acct_old'`); err
 	}
 	if corrected.ParticipantID == nil || corrected.AttributionStatus != recordsv1.AttributionConfirmed {
 		t.Fatalf("corrected turn = %#v, want confirmed participant", corrected)
+	}
+}
+
+func TestAttributionTaskEnqueueRejectsExistingTaskForAnotherSession(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	insertOwnedSession(t, pool, "session_target", "acct_01")
+	insertOwnedSession(t, pool, "session_stale", "acct_01")
+	if _, err := pool.Exec(t.Context(), `
+INSERT INTO attribution_tasks (task_id, turn_id, session_id, account_id, task_type)
+VALUES ('attr_turn_stale', 'turn_stale', 'session_stale', 'acct_01', 'turn_attribution')`); err != nil {
+		t.Fatalf("insert stale attribution task: %v", err)
+	}
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(t.Context())
+
+	err = NewAttributionTaskStore(pool).Enqueue(t.Context(), tx, "turn_stale", "session_target")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Enqueue() error = %v, want not found", err)
 	}
 }
 
@@ -471,7 +498,22 @@ func (o databaseCanonicalOwner) AccountIDForSession(ctx context.Context, session
 
 func (o databaseCanonicalOwner) CanonicalAccountID(ctx context.Context, accountID string) (string, error) {
 	var canonicalID string
-	if err := o.pool.QueryRow(ctx, `SELECT COALESCE(merged_into, id) FROM lingow_accounts WHERE id = $1`, accountID).Scan(&canonicalID); err != nil {
+	if err := o.pool.QueryRow(ctx, `
+WITH RECURSIVE ancestors AS (
+    SELECT id, merged_into, ARRAY[id] AS visited
+    FROM lingow_accounts
+    WHERE id = $1
+
+    UNION ALL
+
+    SELECT parent.id, parent.merged_into, child.visited || parent.id
+    FROM lingow_accounts AS parent
+    JOIN ancestors AS child ON parent.id = child.merged_into
+    WHERE NOT parent.id = ANY(child.visited)
+)
+SELECT id FROM ancestors
+WHERE merged_into IS NULL
+LIMIT 1`, accountID).Scan(&canonicalID); err != nil {
 		return "", MapError(err)
 	}
 	return canonicalID, nil

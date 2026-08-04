@@ -80,9 +80,11 @@ const accountOwnsSessionQuery = `
 SELECT EXISTS (
     SELECT 1
     FROM voice_sessions AS sessions
-    JOIN lingow_accounts AS owner ON owner.id = sessions.account_id
     WHERE sessions.id = $1
-      AND COALESCE(owner.merged_into, owner.id) = $2
+      AND sessions.account_id IN (
+          SELECT account_id
+          FROM lingow_account_lineage($2)
+      )
 )`
 
 const lockTurnForAttributionQuery = `

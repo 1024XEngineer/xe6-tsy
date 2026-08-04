@@ -123,7 +123,7 @@ components:
         speaker_code:
           type: string
           minLength: 1
-          description: A temporary speaker code. When attribution_status is pending and no speaker is available, this is speaker_pending.
+          description: The participant speaker code when attributed; speaker_pending when attribution_status is pending and participant_id is null. Realtime production emits pending evidence-only events.
         speaker_label_snapshot:
           type: [string, 'null']
         provider_speaker_id:

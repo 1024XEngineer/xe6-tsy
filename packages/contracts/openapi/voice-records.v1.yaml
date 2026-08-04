@@ -309,7 +309,7 @@ components:
           type: string
         speaker_code:
           type: string
-          description: A temporary speaker code. When attribution_status is pending and no speaker is available, this is speaker_pending.
+          description: A stable session-scoped participant code, such as speaker_01.
         display_name:
           type: [string, 'null']
         provider_speaker_id:
@@ -349,6 +349,7 @@ components:
           type: [string, 'null']
         speaker_code:
           type: string
+          description: The participant speaker code when attributed; speaker_pending when attribution_status is pending and participant_id is null.
         display_name:
           type: [string, 'null']
         provider_speaker_id:

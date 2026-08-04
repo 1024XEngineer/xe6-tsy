@@ -18,6 +18,8 @@ func TestTurnReadRepositoryListsSessionAndFindsOwnedTurn(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	insertOwnedSession(t, pool, "session_01", "account_01")
+	insertOwnedSession(t, pool, "session_02", "account_02")
 	participantID := "participant_01"
 	if err := insertParticipant(t.Context(), pool, participantID, "session_01", "speaker_01", nil); err != nil {
 		t.Fatalf("insert participant: %v", err)

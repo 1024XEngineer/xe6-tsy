@@ -203,9 +203,10 @@ describe("VoiceExperience", () => {
     expect(screen.getByRole("option", { name: "默认语言对" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "联调会话" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "历史会话" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "用量管理" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "关于" })).toBeInTheDocument();
     expect(screen.getByText("01")).toBeInTheDocument();
-    expect(screen.getByText("04")).toBeInTheDocument();
+    expect(screen.getByText("05")).toBeInTheDocument();
   });
 
   it("connects through xe6-tsy APIs and shows the newest bilingual turn", async () => {

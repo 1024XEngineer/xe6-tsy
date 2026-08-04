@@ -14,6 +14,7 @@ import {
 import styles from "../voice.module.css";
 import { HistorySettings } from "./history-settings";
 import { OptionWheel } from "./option-wheel";
+import { UsageSettings } from "./usage-settings";
 
 const SETTINGS_ITEMS = [
   {
@@ -27,6 +28,12 @@ const SETTINGS_ITEMS = [
     label: "历史会话",
     value: "查看记录",
     description: "按会话查看翻译记录",
+  },
+  {
+    id: "usage",
+    label: "用量管理",
+    value: "本月分钟数",
+    description: "查看本月免费用量",
   },
   {
     id: "session",
@@ -131,6 +138,8 @@ function SettingsDetail({
       );
     case "history":
       return <HistorySettings />;
+    case "usage":
+      return <UsageSettings />;
     case "about":
       return (
         <div className={styles.aboutView}>

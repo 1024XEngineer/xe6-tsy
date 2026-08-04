@@ -1,13 +1,15 @@
 import { bilingualPairs, type VoiceSessionConfig } from "./languages";
 import { ApiError, newIdempotencyKey, parseJson } from "./http";
 
+export type AuthTokens = {
+  access_token: string;
+  refresh_token: string;
+  expires_at: string;
+};
+
 export type AuthResult = {
   account: { id: string; kind: string; created_at: string };
-  tokens: {
-    access_token: string;
-    refresh_token: string;
-    expires_at: string;
-  };
+  tokens: AuthTokens;
 };
 
 export type VoiceSession = {
@@ -181,6 +183,17 @@ export async function startVoiceSession(
     }
   }
   throw new Error("unreachable");
+}
+
+export async function refreshAccountTokens(
+  refreshToken: string,
+): Promise<AuthTokens> {
+  const response = await fetch("/api/v1/auth/token/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  return parseJson<AuthTokens>(response);
 }
 
 function waitForRetry(signal: AbortSignal | undefined, delayMs: number): Promise<void> {

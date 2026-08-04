@@ -27,12 +27,15 @@ describe("VoiceExperience", () => {
   let failFirstStart = false;
   let startRequests = 0;
   let createdSessions = 0;
+  let anonymousRequests = 0;
 
   beforeEach(() => {
     closeWebRTC.mockClear();
     failFirstStart = false;
     startRequests = 0;
     createdSessions = 0;
+    anonymousRequests = 0;
+    localStorage.clear();
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -40,6 +43,7 @@ describe("VoiceExperience", () => {
         const method = init?.method ?? "GET";
 
         if (url.includes("/api/v1/auth/anonymous") && method === "POST") {
+          anonymousRequests += 1;
           return jsonResponse(
             {
               account: {
@@ -50,7 +54,7 @@ describe("VoiceExperience", () => {
               tokens: {
                 access_token: "access-1",
                 refresh_token: "refresh-1",
-                expires_at: "2026-07-31T01:00:00Z",
+                expires_at: "2099-07-31T01:00:00Z",
               },
             },
             201,
@@ -250,6 +254,21 @@ describe("VoiceExperience", () => {
     });
     expect(screen.getByText("轻触开始")).toBeInTheDocument();
     expect(closeWebRTC).toHaveBeenCalled();
+  });
+
+  it("reuses the same anonymous account for later sessions", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "结束语音会话" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "开始语音会话" })).toBeVisible(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    await waitFor(() => expect(createdSessions).toBe(2));
+
+    expect(anonymousRequests).toBe(1);
   });
 
   it("returns to a fresh start after a failed session startup", async () => {

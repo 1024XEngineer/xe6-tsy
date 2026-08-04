@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import {
-  createAnonymousAccount,
   createLanguageConfig,
   createVoiceSession,
   endVoiceSession,
@@ -14,6 +13,7 @@ import {
   type RuntimeState,
   type VoiceTurn,
 } from "../lib/lingow-api";
+import { getOrCreateAuthSession } from "../lib/auth-session";
 import {
   DEFAULT_VOICE_CONFIG,
   formatActivePair,
@@ -259,7 +259,7 @@ export function useVoiceSession() {
     });
 
     try {
-      const auth = await createAnonymousAccount();
+      const auth = await getOrCreateAuthSession();
       accessTokenRef.current = auth.tokens.access_token;
       accountIdRef.current = auth.account.id;
       setDebug((prev) => ({ ...prev, accountId: auth.account.id }));

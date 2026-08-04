@@ -28,24 +28,35 @@ func TestProviderStreamsQwenRealtimeAudio(t *testing.T) {
 		if r.URL.Query().Get("model") != "qwen3-tts-flash-realtime" {
 			t.Errorf("model = %q", r.URL.Query().Get("model"))
 		}
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			t.Errorf("read session update: %v", err)
-			return
+		eventIDs := make(map[string]struct{})
+		readEvent := func(label string) map[string]any {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				t.Errorf("read %s: %v", label, err)
+				return nil
+			}
+			var event map[string]any
+			if err := json.Unmarshal(data, &event); err != nil {
+				t.Errorf("decode %s: %v", label, err)
+				return nil
+			}
+			id, ok := event["event_id"].(string)
+			if !ok || id == "" {
+				t.Errorf("%s event_id = %#v", label, event["event_id"])
+			} else if _, exists := eventIDs[id]; exists {
+				t.Errorf("duplicate event_id %q", id)
+			} else {
+				eventIDs[id] = struct{}{}
+			}
+			return event
 		}
-		var update map[string]any
-		if err := json.Unmarshal(data, &update); err != nil {
-			t.Errorf("decode update: %v", err)
-		}
+		update := readEvent("session update")
 		session, _ := update["session"].(map[string]any)
-		if update["type"] != "session.update" || session["voice"] != "Cherry" || session["language_type"] != "Auto" {
+		if update["type"] != "session.update" || session["voice"] != "Cherry" || session["language_type"] != "Auto" || session["sample_rate"] != float64(realtimeSampleRate) {
 			t.Errorf("update = %#v", update)
 		}
 		for i := 0; i < 2; i++ {
-			if _, _, err := conn.ReadMessage(); err != nil {
-				t.Errorf("read text event: %v", err)
-				return
-			}
+			readEvent("text event")
 		}
 		for _, audio := range [][]byte{{1, 2}, {3, 4}} {
 			payload := map[string]any{"type": "response.audio.delta", "delta": base64.StdEncoding.EncodeToString(audio)}
@@ -54,16 +65,16 @@ func TestProviderStreamsQwenRealtimeAudio(t *testing.T) {
 		}
 		done, _ := json.Marshal(map[string]any{"type": "response.done"})
 		_ = conn.WriteMessage(websocket.TextMessage, done)
-		if _, _, err := conn.ReadMessage(); err != nil {
-			t.Errorf("read session finish: %v", err)
-			return
+		readEvent("session finish")
+		if len(eventIDs) != 4 {
+			t.Errorf("event IDs = %d, want 4", len(eventIDs))
 		}
 		finished, _ := json.Marshal(map[string]any{"type": "session.finished"})
 		_ = conn.WriteMessage(websocket.TextMessage, finished)
 	}))
 	defer server.Close()
 
-	provider, err := NewProvider(Config{APIKey: "test-key", BaseURL: "ws" + strings.TrimPrefix(server.URL, "http"), Model: "qwen3-tts-flash-realtime"})
+	provider, err := NewProvider(Config{APIKey: "test-key", BaseURL: "ws" + strings.TrimPrefix(server.URL, "http"), Model: "qwen3-tts-flash-realtime", SampleRate: 16000})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)
 	}

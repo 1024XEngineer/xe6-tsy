@@ -21,6 +21,7 @@ import (
 
 const defaultModel = "qwen3-tts-flash"
 const realtimeModel = "qwen3-tts-flash-realtime"
+const realtimeSampleRate = 24000
 
 var (
 	ErrAPIKeyRequired     = errors.New("Qwen TTS API key is required")
@@ -69,6 +70,9 @@ func NewProvider(config Config) (*Provider, error) {
 	}
 	if config.SampleRate <= 0 {
 		config.SampleRate = 24000
+	}
+	if isRealtimeModel(config.Model) {
+		config.SampleRate = realtimeSampleRate
 	}
 	if config.HTTPClient == nil {
 		config.HTTPClient = http.DefaultClient
@@ -135,6 +139,7 @@ type realtimeStream struct {
 	err        error
 	sequence   int64
 	totalBytes int64
+	eventSeq   uint64
 }
 
 func (s *realtimeStream) Chunks() <-chan tts.AudioChunk { return s.chunks }
@@ -153,9 +158,11 @@ func (s *realtimeStream) sendSession() error {
 	return nil
 }
 
-func (s *realtimeStream) write(value any) error {
+func (s *realtimeStream) write(value map[string]any) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	s.eventSeq++
+	value["event_id"] = fmt.Sprintf("event_%d", s.eventSeq)
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err

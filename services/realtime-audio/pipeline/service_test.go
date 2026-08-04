@@ -603,6 +603,16 @@ type blockingTTSStream struct {
 	closed chan struct{}
 }
 
+func TestTargetLanguageMatchesRussianProviderShortCode(t *testing.T) {
+	config := session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{
+		{Source: "zh-CN", Target: "ru-RU"},
+		{Source: "ru-RU", Target: "zh-CN"},
+	}}
+	if target, ok := targetLanguage(config, "ru"); !ok || target != "zh-CN" {
+		t.Fatalf("targetLanguage(ru) = %q, %v; want zh-CN, true", target, ok)
+	}
+}
+
 func (s *blockingTTSStream) Chunks() <-chan tts.AudioChunk { return s.chunks }
 
 func (*blockingTTSStream) Finish(context.Context) (tts.Result, error) {

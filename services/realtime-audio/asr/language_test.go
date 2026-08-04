@@ -13,6 +13,14 @@ func TestNormalizeLanguage(t *testing.T) {
 		{"en-US", "en-US"},
 		{"en_GB", "en-GB"},
 		{"yue", "zh-HK"},
+		{"ru", "ru-RU"},
+		{"ja", "ja-JP"},
+		{"ko", "ko-KR"},
+		{"fr", "fr-FR"},
+		{"de", "de-DE"},
+		{"pt", "pt-BR"},
+		{"it", "it-IT"},
+		{"es", "es-ES"},
 	}
 	for _, test := range tests {
 		if got := NormalizeLanguage(test.in); got != test.want {

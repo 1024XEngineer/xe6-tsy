@@ -33,6 +33,22 @@ func NormalizeLanguage(code string) string {
 			return "en-GB"
 		}
 		return "en-US"
+	case "ja":
+		return "ja-JP"
+	case "ko":
+		return "ko-KR"
+	case "fr":
+		return "fr-FR"
+	case "de":
+		return "de-DE"
+	case "ru":
+		return "ru-RU"
+	case "pt":
+		return "pt-BR"
+	case "it":
+		return "it-IT"
+	case "es":
+		return "es-ES"
 	}
 	if region != "" {
 		return strings.ToLower(primary) + "-" + strings.ToUpper(region)

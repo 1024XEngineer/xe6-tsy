@@ -18,6 +18,7 @@ var (
 	ErrForbidden           = errors.New("voice session belongs to another account")
 	ErrInvalidRequest      = errors.New("invalid voice turn request")
 	ErrInvalidAttribution  = errors.New("invalid voice turn attribution")
+	ErrStaleAttribution    = errors.New("stale attribution decision")
 )
 
 // Repository persists final turns. StoreFinalTurn must atomically deduplicate a FinalTurnEvent by
@@ -35,7 +36,8 @@ type Repository interface {
 // AttributionUpdate contains only the mutable part of a final turn. CorrectedBy and CorrectedAt
 // are assigned by Service and cannot be supplied by a public HTTP client. AccountID authorizes
 // the correction inside the repository write transaction so ownership and the write share one
-// atomic boundary. SpeakerConfidenceSet distinguishes an absent field from an explicit null.
+// atomic boundary. OnlyIfUnresolved prevents async decisions from overwriting newer corrections.
+// SpeakerConfidenceSet distinguishes an absent field from an explicit null.
 type AttributionUpdate struct {
 	AccountID            string
 	TurnID               string
@@ -43,6 +45,7 @@ type AttributionUpdate struct {
 	AttributionStatus    recordsv1.AttributionStatus
 	SpeakerConfidence    *float64
 	SpeakerConfidenceSet bool
+	OnlyIfUnresolved     bool
 	CorrectedBy          string
 	CorrectedAt          time.Time
 }
@@ -140,6 +143,16 @@ func (s *Service) Get(ctx context.Context, accountID, turnID string) (recordsv1.
 }
 
 func (s *Service) CorrectAttribution(ctx context.Context, accountID, turnID string, request recordsv1.UpdateAttributionRequest, speakerConfidenceSet bool) (recordsv1.VoiceTurn, error) {
+	return s.correctAttribution(ctx, accountID, turnID, request, speakerConfidenceSet, false)
+}
+
+// CorrectAttributionIfUnresolved applies an asynchronous attribution decision only while the turn
+// is still pending/provisional. Explicit system PATCH calls use CorrectAttribution instead.
+func (s *Service) CorrectAttributionIfUnresolved(ctx context.Context, accountID, turnID string, request recordsv1.UpdateAttributionRequest, speakerConfidenceSet bool) (recordsv1.VoiceTurn, error) {
+	return s.correctAttribution(ctx, accountID, turnID, request, speakerConfidenceSet, true)
+}
+
+func (s *Service) correctAttribution(ctx context.Context, accountID, turnID string, request recordsv1.UpdateAttributionRequest, speakerConfidenceSet bool, onlyIfUnresolved bool) (recordsv1.VoiceTurn, error) {
 	if !validAttributionRequest(turnID, request) {
 		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
 	}
@@ -155,6 +168,7 @@ func (s *Service) CorrectAttribution(ctx context.Context, accountID, turnID stri
 		AttributionStatus:    request.AttributionStatus,
 		SpeakerConfidence:    request.SpeakerConfidence,
 		SpeakerConfidenceSet: speakerConfidenceSet,
+		OnlyIfUnresolved:     onlyIfUnresolved,
 		CorrectedBy:          recordsv1.CorrectedBySystem,
 		CorrectedAt:          s.now().UTC(),
 	})

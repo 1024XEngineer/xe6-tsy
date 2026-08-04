@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,6 +48,47 @@ func TestServiceProcessesOnlyFinalizedUtterances(t *testing.T) {
 	}
 	if source.closeCalls != 1 {
 		t.Fatalf("source close calls = %d, want 1", source.closeCalls)
+	}
+}
+
+func TestServiceKeepsReadingWhileTurnProcessingIsBusy(t *testing.T) {
+	base := time.Unix(100, 0)
+	source := &trackingSource{exhausted: make(chan struct{}), frames: []audio.Frame{
+		testFrame(t, 1, base),
+		testFrame(t, 0, base.Add(300*time.Millisecond)),
+		testFrame(t, 1, base.Add(400*time.Millisecond)),
+		testFrame(t, 0, base.Add(700*time.Millisecond)),
+	}}
+	processor := &blockingProcessor{started: make(chan struct{}), release: make(chan struct{})}
+	service := newTestService(t, source, processor)
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- service.Run(context.Background(), Request{SessionID: "session-1"})
+	}()
+
+	select {
+	case <-processor.started:
+	case <-time.After(time.Second):
+		t.Fatal("first Turn did not start")
+	}
+	select {
+	case <-source.exhausted:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("audio source stopped being read while first Turn was processing")
+	}
+	close(processor.release)
+
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not finish after releasing the first Turn")
+	}
+	if got := processor.calls(); got != 2 {
+		t.Fatalf("processed Turns = %d, want 2", got)
 	}
 }
 
@@ -201,6 +243,64 @@ func (s *fakeSource) Close() error {
 type fakeProcessor struct {
 	requests []pipeline.TurnProcessRequest
 	err      error
+}
+
+type blockingProcessor struct {
+	mu      sync.Mutex
+	count   int
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *blockingProcessor) ProcessAudio(_ context.Context, _ pipeline.TurnProcessRequest) (pipeline.TurnContext, error) {
+	p.mu.Lock()
+	p.count++
+	count := p.count
+	p.mu.Unlock()
+	if count == 1 {
+		close(p.started)
+		<-p.release
+	}
+	return pipeline.TurnContext{ID: "turn", SessionID: "session-1"}, nil
+}
+
+func (p *blockingProcessor) calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.count
+}
+
+type trackingSource struct {
+	mu        sync.Mutex
+	frames    []audio.Frame
+	exhausted chan struct{}
+	closed    bool
+}
+
+func (s *trackingSource) ReadFrame(ctx context.Context) (audio.Frame, error) {
+	if err := ctx.Err(); err != nil {
+		return audio.Frame{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.frames) == 0 {
+		select {
+		case <-s.exhausted:
+		default:
+			close(s.exhausted)
+		}
+		return audio.Frame{}, io.EOF
+	}
+	frame := s.frames[0].Clone()
+	s.frames = s.frames[1:]
+	return frame, nil
+}
+
+func (s *trackingSource) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+	return nil
 }
 
 func (p *fakeProcessor) ProcessAudio(_ context.Context, request pipeline.TurnProcessRequest) (pipeline.TurnContext, error) {

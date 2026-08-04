@@ -47,6 +47,12 @@ type AttributionResolver interface {
 	Resolve(ctx context.Context, input AttributionResolutionInput) (*AttributionDecision, error)
 }
 
+// AttributionOwnerReader resolves the current canonical account that owns a session. Tasks keep the
+// enqueue-time account as audit data; the worker uses this reader for authorization-sensitive reads.
+type AttributionOwnerReader interface {
+	AccountIDForSession(ctx context.Context, sessionID string) (string, error)
+}
+
 // AttributionResolutionInput carries the persisted turn and its session participants so a
 // resolver can use surrounding context without reading storage directly.
 type AttributionResolutionInput struct {
@@ -74,7 +80,7 @@ type AttributionReader interface {
 
 // AttributionApplier persists a resolver decision through the records services.
 type AttributionApplier interface {
-	CorrectAttribution(ctx context.Context, accountID, turnID string, request recordsv1.UpdateAttributionRequest, speakerConfidenceSet bool) (recordsv1.VoiceTurn, error)
+	CorrectAttributionIfUnresolved(ctx context.Context, accountID, turnID string, request recordsv1.UpdateAttributionRequest, speakerConfidenceSet bool) (recordsv1.VoiceTurn, error)
 }
 
 // AttributionWorker drains durable attribution tasks, resolving each with the resolver and
@@ -83,6 +89,7 @@ type AttributionApplier interface {
 type AttributionWorker struct {
 	source   AttributionTaskSource
 	resolver AttributionResolver
+	owners   AttributionOwnerReader
 	reader   AttributionReader
 	applier  AttributionApplier
 	logger   *slog.Logger
@@ -92,15 +99,16 @@ type AttributionWorker struct {
 func NewAttributionWorker(
 	source AttributionTaskSource,
 	resolver AttributionResolver,
+	owners AttributionOwnerReader,
 	reader AttributionReader,
 	applier AttributionApplier,
 	logger *slog.Logger,
 ) (*AttributionWorker, error) {
-	if source == nil || resolver == nil || reader == nil || applier == nil || logger == nil {
+	if source == nil || resolver == nil || owners == nil || reader == nil || applier == nil || logger == nil {
 		return nil, errors.New("attribution worker dependencies are required")
 	}
 	return &AttributionWorker{
-		source: source, resolver: resolver, reader: reader, applier: applier, logger: logger,
+		source: source, resolver: resolver, owners: owners, reader: reader, applier: applier, logger: logger,
 	}, nil
 }
 
@@ -132,7 +140,11 @@ func (w *AttributionWorker) Process(ctx context.Context, delivery AttributionTas
 
 func (w *AttributionWorker) handle(ctx context.Context, delivery AttributionTaskDelivery) error {
 	task := delivery.Task()
-	decision, err := w.resolve(ctx, task)
+	accountID, err := w.owners.AccountIDForSession(ctx, task.SessionID)
+	if err != nil {
+		return w.settleFailure(delivery, task, fmt.Errorf("resolve owner for session %s: %w", task.SessionID, err))
+	}
+	decision, err := w.resolve(ctx, task, accountID)
 	if err != nil {
 		return w.settleFailure(delivery, task, err)
 	}
@@ -142,11 +154,17 @@ func (w *AttributionWorker) handle(ctx context.Context, delivery AttributionTask
 		}
 		return nil
 	}
-	if _, err := w.applier.CorrectAttribution(ctx, task.AccountID, task.TurnID, recordsv1.UpdateAttributionRequest{
+	if _, err := w.applier.CorrectAttributionIfUnresolved(ctx, accountID, task.TurnID, recordsv1.UpdateAttributionRequest{
 		ParticipantID:     decision.ParticipantID,
 		AttributionStatus: decision.AttributionStatus,
 		SpeakerConfidence: decision.SpeakerConfidence,
 	}, decision.SpeakerConfidenceSet); err != nil {
+		if errors.Is(err, ErrStaleAttribution) {
+			if ackErr := delivery.Ack(); ackErr != nil {
+				return fmt.Errorf("%w: ack stale attribution task: %w", ErrAttributionSettlement, errors.Join(err, ackErr))
+			}
+			return nil
+		}
 		return w.settleFailure(delivery, task, fmt.Errorf("apply attribution decision: %w", err))
 	}
 	if err := delivery.Ack(); err != nil {
@@ -169,17 +187,17 @@ func (w *AttributionWorker) settleFailure(delivery AttributionTaskDelivery, task
 	return w.retry(delivery, task, cause)
 }
 
-func (w *AttributionWorker) resolve(ctx context.Context, task AttributionTask) (*AttributionDecision, error) {
-	turn, err := w.reader.GetTurn(ctx, task.AccountID, task.TurnID)
+func (w *AttributionWorker) resolve(ctx context.Context, task AttributionTask, accountID string) (*AttributionDecision, error) {
+	turn, err := w.reader.GetTurn(ctx, accountID, task.TurnID)
 	if err != nil {
 		return nil, fmt.Errorf("read turn %s: %w", task.TurnID, err)
 	}
-	participants, err := w.reader.ListParticipants(ctx, task.AccountID, task.SessionID)
+	participants, err := w.reader.ListParticipants(ctx, accountID, task.SessionID)
 	if err != nil {
 		return nil, fmt.Errorf("list participants for turn %s: %w", task.TurnID, err)
 	}
 	decision, err := w.resolver.Resolve(ctx, AttributionResolutionInput{
-		AccountID:    task.AccountID,
+		AccountID:    accountID,
 		SessionID:    task.SessionID,
 		TurnID:       task.TurnID,
 		Turn:         turn,

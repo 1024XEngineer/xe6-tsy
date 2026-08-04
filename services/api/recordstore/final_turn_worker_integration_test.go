@@ -15,6 +15,7 @@ func TestFinalTurnWorkerPersistsAndAcknowledgesDurableEvent(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	insertOwnedSession(t, pool, "session_worker_01", "acct_01")
 	services, err := NewServices(pool, []byte("cursor-signing-key"), sessionOwnerFake{}, sessionScopeFake{})
 	if err != nil {
 		t.Fatalf("NewServices() error = %v", err)

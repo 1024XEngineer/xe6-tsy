@@ -46,6 +46,17 @@ func TestFinalTurnOutboxHonorsCancelledAppendContext(t *testing.T) {
 	}
 }
 
+func TestFinalTurnOutboxRejectsInvalidEventPayload(t *testing.T) {
+	event := finalTurnEventForOutboxTest()
+	event.SourceText = ""
+	outbox := NewFinalTurnOutbox(new(pgxpool.Pool))
+
+	err := outbox.Append(t.Context(), recordsv1.FinalTurnTopic, event.EventID, event)
+	if err == nil {
+		t.Fatal("Append() invalid event payload succeeded")
+	}
+}
+
 func finalTurnEventForOutboxTest() recordsv1.FinalTurnEvent {
 	startedAt := time.Date(2026, time.July, 29, 10, 0, 0, 0, time.UTC)
 	return recordsv1.FinalTurnEvent{

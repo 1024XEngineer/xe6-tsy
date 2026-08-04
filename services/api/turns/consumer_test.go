@@ -3,6 +3,7 @@ package turns
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -94,6 +95,75 @@ func TestFinalTurnHandlerRejectsTransientErrorWhenAttemptLimitReached(t *testing
 	}
 	if delivery.lastError != consumeErr.Error() {
 		t.Fatalf("last error = %q, want %q", delivery.lastError, consumeErr.Error())
+	}
+}
+
+func TestFinalTurnHandlerNacksTransientErrorBelowAttemptLimit(t *testing.T) {
+	consumeErr := errors.New("database unavailable")
+	delivery := &deliveryStub{event: validEvent(), attempts: maxFinalTurnAttempts - 1}
+	handler := NewFinalTurnHandler(&consumerStub{err: consumeErr})
+
+	err := handler.Handle(t.Context(), delivery)
+	if !errors.Is(err, consumeErr) {
+		t.Fatalf("Handle() error = %v, want consume error", err)
+	}
+	if delivery.acks != 0 || delivery.nacks != 1 || delivery.rejects != 0 {
+		t.Fatalf("calls ack=%d nack=%d reject=%d", delivery.acks, delivery.nacks, delivery.rejects)
+	}
+}
+
+func TestFinalTurnHandlerReturnsExhaustedRejectFailure(t *testing.T) {
+	consumeErr := errors.New("database unavailable")
+	rejectErr := errors.New("dead-letter unavailable")
+	delivery := &deliveryStub{event: validEvent(), attempts: maxFinalTurnAttempts, rejectErr: rejectErr}
+	handler := NewFinalTurnHandler(&consumerStub{err: consumeErr})
+
+	err := handler.Handle(t.Context(), delivery)
+	if !errors.Is(err, consumeErr) || !errors.Is(err, rejectErr) {
+		t.Fatalf("Handle() error = %v, want consume and reject errors", err)
+	}
+	if delivery.acks != 0 || delivery.nacks != 0 || delivery.rejects != 1 {
+		t.Fatalf("calls ack=%d nack=%d reject=%d", delivery.acks, delivery.nacks, delivery.rejects)
+	}
+}
+
+func TestFinalTurnHandlerRejectsWrappedPermanentErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		consumeErr error
+	}{
+		{name: "wrapped invalid event", consumeErr: fmt.Errorf("consume: %w", ErrInvalidRequest)},
+		{name: "wrapped conflict", consumeErr: fmt.Errorf("store: %w", domain.ErrConflict)},
+		{name: "wrapped missing dependency", consumeErr: fmt.Errorf("scope: %w", domain.ErrNotFound)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			delivery := &deliveryStub{event: validEvent()}
+			handler := NewFinalTurnHandler(&consumerStub{err: test.consumeErr})
+
+			err := handler.Handle(t.Context(), delivery)
+			if !errors.Is(err, test.consumeErr) {
+				t.Fatalf("Handle() error = %v, want consume error", err)
+			}
+			if delivery.acks != 0 || delivery.nacks != 0 || delivery.rejects != 1 {
+				t.Fatalf("calls ack=%d nack=%d reject=%d", delivery.acks, delivery.nacks, delivery.rejects)
+			}
+		})
+	}
+}
+
+func TestFinalTurnHandlerRejectsPermanentErrorWhenRejectFailsAndWrapsConsumeError(t *testing.T) {
+	consumeErr := fmt.Errorf("consume: %w", ErrInvalidRequest)
+	rejectErr := errors.New("dead-letter unavailable")
+	delivery := &deliveryStub{event: validEvent(), rejectErr: rejectErr}
+	handler := NewFinalTurnHandler(&consumerStub{err: consumeErr})
+
+	err := handler.Handle(t.Context(), delivery)
+	if !errors.Is(err, ErrInvalidRequest) || !errors.Is(err, rejectErr) {
+		t.Fatalf("Handle() error = %v, want invalid request and reject errors", err)
+	}
+	if delivery.acks != 0 || delivery.nacks != 0 || delivery.rejects != 1 {
+		t.Fatalf("calls ack=%d nack=%d reject=%d", delivery.acks, delivery.nacks, delivery.rejects)
 	}
 }
 

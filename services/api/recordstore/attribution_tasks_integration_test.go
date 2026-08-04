@@ -257,6 +257,143 @@ func TestAttributionTaskEnqueueIsIdempotentForExistingTurnTask(t *testing.T) {
 	}
 }
 
+func TestAttributionTaskAckMarksTaskCompleted(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	seedAttributionTask(t, pool, "event_ack_01", "turn_ack_01", "session_ack_01", 1)
+	delivery, err := NewAttributionTaskStore(pool).Receive(t.Context())
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	if delivery.Task().Attempts != 1 {
+		t.Fatalf("Task().Attempts = %d, want 1", delivery.Task().Attempts)
+	}
+	if err := delivery.Ack(); err != nil {
+		t.Fatalf("Ack() error = %v", err)
+	}
+	var status string
+	if err := pool.QueryRow(t.Context(), `SELECT status FROM attribution_tasks WHERE turn_id = 'turn_ack_01'`).Scan(&status); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("task status = %q, want completed", status)
+	}
+}
+
+func TestAttributionTaskRetrySchedulesAndRecordsError(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	seedAttributionTask(t, pool, "event_retry_01", "turn_retry_01", "session_retry_01", 1)
+	delivery, err := NewAttributionTaskStore(pool).Receive(t.Context())
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	before := time.Now()
+	if err := delivery.Retry("transient failure"); err != nil {
+		t.Fatalf("Retry() error = %v", err)
+	}
+	var (
+		status      string
+		lastError   *string
+		availableAt time.Time
+	)
+	if err := pool.QueryRow(t.Context(), `
+SELECT status, last_error, available_at
+FROM attribution_tasks
+WHERE turn_id = 'turn_retry_01'`).Scan(&status, &lastError, &availableAt); err != nil {
+		t.Fatalf("read retried task: %v", err)
+	}
+	if status != "pending" || lastError == nil || *lastError != "transient failure" {
+		t.Fatalf("retried task status=%q last_error=%v", status, lastError)
+	}
+	if !availableAt.After(before) {
+		t.Fatalf("available_at = %v, want after %v", availableAt, before)
+	}
+}
+
+func TestAttributionTaskFailMarksTaskFailed(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	seedAttributionTask(t, pool, "event_fail_01", "turn_fail_01", "session_fail_01", 1)
+	delivery, err := NewAttributionTaskStore(pool).Receive(t.Context())
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	if err := delivery.Fail("no provider speaker key"); err != nil {
+		t.Fatalf("Fail() error = %v", err)
+	}
+	var (
+		status    string
+		lastError *string
+	)
+	if err := pool.QueryRow(t.Context(), `
+SELECT status, last_error
+FROM attribution_tasks
+WHERE turn_id = 'turn_fail_01'`).Scan(&status, &lastError); err != nil {
+		t.Fatalf("read failed task: %v", err)
+	}
+	if status != "failed" || lastError == nil || *lastError != "no provider speaker key" {
+		t.Fatalf("failed task status=%q last_error=%v", status, lastError)
+	}
+}
+
+func TestAttributionTaskStaleReceiptSettlementIsNoop(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	seedAttributionTask(t, pool, "event_stale_01", "turn_stale_01", "session_stale_01", 1)
+	store := NewAttributionTaskStore(pool)
+	first, err := store.Receive(t.Context())
+	if err != nil {
+		t.Fatalf("first Receive() error = %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+UPDATE attribution_tasks SET locked_until = CURRENT_TIMESTAMP
+WHERE turn_id = 'turn_stale_01'`); err != nil {
+		t.Fatalf("expire first lease: %v", err)
+	}
+	second, err := store.Receive(t.Context())
+	if err != nil {
+		t.Fatalf("second Receive() error = %v", err)
+	}
+	if err := second.Ack(); err != nil {
+		t.Fatalf("second Ack() error = %v", err)
+	}
+	if err := first.Ack(); err != nil {
+		t.Fatalf("stale first Ack() error = %v", err)
+	}
+}
+
+func TestAttributionTaskReceiveReturnsOnCancelledContext(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := NewAttributionTaskStore(pool).Receive(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Receive() error = %v, want context canceled", err)
+	}
+}
+
+func seedAttributionTask(t *testing.T, pool *pgxpool.Pool, eventID, turnID, sessionID string, sequenceNo int64) {
+	t.Helper()
+	insertOwnedSession(t, pool, sessionID, "acct_01")
+	event := finalTurnEvent(eventID, turnID, sessionID, sequenceNo)
+	event.ParticipantID = nil
+	event.AttributionStatus = recordsv1.AttributionPending
+	if err := NewTurnWriter(pool).StoreFinalTurn(t.Context(), event); err != nil {
+		t.Fatalf("StoreFinalTurn() error = %v", err)
+	}
+}
+
 // TestAttributionBackfillCoversLegacyTurns verifies the backfill migration creates one task per
 // pre-existing unresolved turn and repairs tasks acked while the turn stayed unresolved.
 func TestAttributionBackfillCoversLegacyTurns(t *testing.T) {

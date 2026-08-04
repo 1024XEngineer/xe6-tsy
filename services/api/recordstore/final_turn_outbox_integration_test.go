@@ -3,6 +3,7 @@
 package recordstore
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -181,5 +182,17 @@ func TestFinalTurnOutboxAcceptsStaleReceiptAfterAnotherWorkerSettles(t *testing.
 	}
 	if err := first.Ack(); err != nil {
 		t.Fatalf("stale first Ack() error = %v", err)
+	}
+}
+
+func TestFinalTurnOutboxReceiveReturnsOnCancelledContext(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := NewFinalTurnOutbox(pool).Receive(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Receive() error = %v, want context canceled", err)
 	}
 }

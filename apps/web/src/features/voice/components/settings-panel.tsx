@@ -56,11 +56,13 @@ type SettingId = (typeof SETTINGS_ITEMS)[number]["id"];
 function SelectRow({
   label,
   options,
+  labels,
   value,
   onChange,
 }: {
   label: string;
   options: readonly LanguageCode[];
+  labels: Readonly<Record<string, string>>;
   value: LanguageCode;
   onChange: (value: LanguageCode) => void;
 }) {
@@ -73,7 +75,7 @@ function SelectRow({
       >
         {options.map((option) => (
           <option key={option} value={option}>
-            {languageLabel(option)} ({option})
+            {labels[option] ?? languageLabel(option)} ({option})
           </option>
         ))}
       </select>
@@ -88,6 +90,7 @@ function SettingsDetail({
   debug,
   languageOptions,
   languageLoading,
+  languageLabels,
   onExitHistory,
 }: {
   selectedId: SettingId;
@@ -96,6 +99,7 @@ function SettingsDetail({
   debug: SessionDebugInfo;
   languageOptions: readonly LanguageCode[];
   languageLoading: boolean;
+  languageLabels: Readonly<Record<string, string>>;
   onExitHistory: () => void;
 }) {
   switch (selectedId) {
@@ -108,6 +112,7 @@ function SettingsDetail({
               onConfigChange({ ...voiceConfig, sourceLanguage })
             }
             options={languageOptions}
+            labels={languageLabels}
             value={voiceConfig.sourceLanguage}
           />
           <SelectRow
@@ -116,6 +121,7 @@ function SettingsDetail({
               onConfigChange({ ...voiceConfig, targetLanguage })
             }
             options={languageOptions}
+            labels={languageLabels}
             value={voiceConfig.targetLanguage}
           />
           <p>
@@ -181,6 +187,7 @@ export function SettingsPanel({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [languageOptions, setLanguageOptions] = useState<LanguageCode[]>(SUPPORTED_LANGUAGES);
   const [languageLoading, setLanguageLoading] = useState(true);
+  const [languageLabels, setLanguageLabels] = useState<Record<string, string>>({});
   const panelRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const selected = SETTINGS_ITEMS[selectedIndex];
@@ -195,7 +202,17 @@ export function SettingsPanel({
           .filter((language) => language.supports_as_source && language.supports_as_target)
           .map((language) => language.language_code)
           .filter((code, index, all) => all.indexOf(code) === index);
-        if (!cancelled && options.length > 0) setLanguageOptions(options);
+        if (!cancelled && options.length > 0) {
+          setLanguageOptions(options);
+          setLanguageLabels(
+            Object.fromEntries(
+              result.languages.map((language) => [
+                language.language_code,
+                language.display_name || language.display_name_en,
+              ]),
+            ),
+          );
+        }
       } catch {
         // Keep the local catalog available while the API is unavailable.
       } finally {
@@ -315,6 +332,7 @@ export function SettingsPanel({
                 debug={debug}
                 languageLoading={languageLoading}
                 languageOptions={languageOptions}
+                languageLabels={languageLabels}
                 onConfigChange={onConfigChange}
                 onExitHistory={() => setSelectedIndex(0)}
                 selectedId={selected.id}
@@ -339,6 +357,7 @@ export function SettingsPanel({
                     debug={debug}
                     languageLoading={languageLoading}
                     languageOptions={languageOptions}
+                    languageLabels={languageLabels}
                     onExitHistory={() => setSelectedIndex(0)}
                     onConfigChange={onConfigChange}
                     selectedId={selected.id}

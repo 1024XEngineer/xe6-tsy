@@ -149,7 +149,7 @@ export function HistorySettings({
     return () => window.clearTimeout(requestId);
   }, [loadSessions]);
 
-  const openSession = async (session: VoiceSession) => {
+  const openSession = useCallback(async (session: VoiceSession) => {
     setSelected(session);
     setTurns([]);
     setDetailLoading(true);
@@ -174,13 +174,15 @@ export function HistorySettings({
     } finally {
       setDetailLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     if (!initialSessionId || selected || loading) return;
     const session = sessions.find((item) => item.id === initialSessionId);
-    if (session) void openSession(session);
-  }, [initialSessionId, loading, selected, sessions]);
+    if (!session) return;
+    const requestId = window.setTimeout(() => void openSession(session), 0);
+    return () => window.clearTimeout(requestId);
+  }, [initialSessionId, loading, openSession, selected, sessions]);
 
   return (
     <div className={styles.historyWorkspace}>

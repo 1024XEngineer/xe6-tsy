@@ -87,6 +87,14 @@ describe("HistorySettings", () => {
     );
   });
 
+  it("opens the requested initial historical session after loading", async () => {
+    render(<HistorySettings initialSessionId="vs-history-20260804" />);
+
+    expect(
+      await screen.findByText("Welcome to the main venue."),
+    ).toBeInTheDocument();
+  });
+
   it("loads every page of sessions and turns", async () => {
     vi.stubGlobal(
       "fetch",

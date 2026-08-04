@@ -17,6 +17,7 @@ func TestRecordReadIndexesMatchKeysetOrder(t *testing.T) {
 		"voice_session_participants_session_speaker_order_idx": {"session_id", "speaker_code", "id"},
 		"voice_turns_session_sequence_order_idx":               {"session_id", "sequence_no", "id"},
 		"voice_turns_history_created_order_idx":                {"created_at DESC", "id DESC"},
+		"voice_turns_session_history_order_idx":                {"session_id", "created_at DESC", "id DESC"},
 	}
 	rows, err := pool.Query(t.Context(), `
 		SELECT indexname, indexdef

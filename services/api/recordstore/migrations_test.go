@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 18 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 18", len(migrations))
+	if len(migrations) != 19 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 19", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -239,4 +239,13 @@ func TestEmbeddedMigrations(t *testing.T) {
 			t.Fatalf("dead-letter migration does not contain %q", expected)
 		}
 	}
+
+	historyIndexes := migrations[18]
+	if historyIndexes.Version != 19 || historyIndexes.Name != "record_history_indexes" {
+		t.Fatalf("migration = %#v, want version 19 named record_history_indexes", historyIndexes)
+	}
+	if !strings.Contains(historyIndexes.SQL, "voice_turns_session_history_order_idx") {
+		t.Fatal("history index migration does not create voice_turns_session_history_order_idx")
+	}
+
 }

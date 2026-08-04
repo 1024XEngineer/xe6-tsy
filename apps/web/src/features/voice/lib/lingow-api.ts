@@ -21,6 +21,11 @@ export type VoiceSession = {
   ended_at?: string | null;
 };
 
+export type VoiceSessionListResponse = {
+  sessions: VoiceSession[];
+  next_cursor: string | null;
+};
+
 export type RuntimeState =
   | "stopped"
   | "starting"
@@ -183,6 +188,24 @@ export async function startVoiceSession(
     }
   }
   throw new Error("unreachable");
+}
+
+export async function listVoiceSessions(
+  accessToken: string,
+  query: {
+    limit?: number;
+    cursor?: string;
+    status?: VoiceSession["status"];
+  } = {},
+): Promise<VoiceSessionListResponse> {
+  const params = new URLSearchParams({ limit: String(query.limit ?? 20) });
+  if (query.cursor) params.set("cursor", query.cursor);
+  if (query.status) params.set("status", query.status);
+  const response = await fetch(`/api/v1/voice-sessions?${params}`, {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<VoiceSessionListResponse>(response);
 }
 
 export async function refreshAccountTokens(

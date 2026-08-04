@@ -1,7 +1,6 @@
 package recordstore
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -59,7 +58,7 @@ func (w *TurnWriter) StoreFinalTurn(ctx context.Context, event recordsv1.FinalTu
 		return fmt.Errorf("insert final turn: %w", MapError(err))
 	}
 	if result.RowsAffected() == 0 {
-		if err := verifyFinalTurnReplay(ctx, tx, event, payloadHash); err != nil {
+		if err := verifyFinalTurnReplay(ctx, tx, event); err != nil {
 			return err
 		}
 	} else if needsAsyncAttribution(event.AttributionStatus) {
@@ -93,7 +92,6 @@ func verifyFinalTurnReplay(
 	ctx context.Context,
 	tx pgx.Tx,
 	event recordsv1.FinalTurnEvent,
-	payloadHash recordsv1.FinalTurnPayloadHash,
 ) error {
 	rows, err := tx.Query(ctx, finalTurnReplayQuery,
 		event.EventID,
@@ -113,7 +111,11 @@ func verifyFinalTurnReplay(
 		if err := rows.Scan(&storedHash); err != nil {
 			return fmt.Errorf("scan final turn replay: %w", err)
 		}
-		if !bytes.Equal(storedHash, payloadHash[:]) {
+		matches, err := recordsv1.FinalTurnEventPayloadHashMatches(event, storedHash)
+		if err != nil {
+			return fmt.Errorf("hash final turn replay: %w", err)
+		}
+		if !matches {
 			return fmt.Errorf("final turn idempotency key reused with another payload: %w", domain.ErrConflict)
 		}
 	}

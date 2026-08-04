@@ -64,6 +64,25 @@ func TestFinalTurnOutboxReplaysIdenticalPayloadAndRejectsConflict(t *testing.T) 
 	}
 }
 
+func TestFinalTurnOutboxReplaysLegacyHashWithRouteFields(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	outbox := NewFinalTurnOutbox(pool)
+	legacyEvent := finalTurnEvent("event_legacy", "turn_legacy", "session_legacy", 1)
+	if err := outbox.Append(t.Context(), recordsv1.FinalTurnTopic, legacyEvent.EventID, legacyEvent); err != nil {
+		t.Fatalf("append legacy FinalTurn() error = %v", err)
+	}
+
+	currentEvent := legacyEvent
+	currentEvent.TTSEnabled = true
+	currentEvent.DeliveryEnabled = true
+	if err := outbox.Append(t.Context(), recordsv1.FinalTurnTopic, currentEvent.EventID, currentEvent); err != nil {
+		t.Fatalf("replay current FinalTurn() error = %v", err)
+	}
+}
+
 func TestFinalTurnOutboxRoutesInvalidPayloadToReject(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {

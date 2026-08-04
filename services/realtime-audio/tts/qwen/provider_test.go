@@ -8,11 +8,78 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
+	"github.com/gorilla/websocket"
 )
+
+func TestProviderStreamsQwenRealtimeAudio(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		if r.URL.Query().Get("model") != "qwen3-tts-flash-realtime" {
+			t.Errorf("model = %q", r.URL.Query().Get("model"))
+		}
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read session update: %v", err)
+			return
+		}
+		var update map[string]any
+		if err := json.Unmarshal(data, &update); err != nil {
+			t.Errorf("decode update: %v", err)
+		}
+		session, _ := update["session"].(map[string]any)
+		if update["type"] != "session.update" || session["voice"] != "Cherry" || session["language_type"] != "Auto" {
+			t.Errorf("update = %#v", update)
+		}
+		for i := 0; i < 2; i++ {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				t.Errorf("read text event: %v", err)
+				return
+			}
+		}
+		for _, audio := range [][]byte{{1, 2}, {3, 4}} {
+			payload := map[string]any{"type": "response.audio.delta", "delta": base64.StdEncoding.EncodeToString(audio)}
+			encoded, _ := json.Marshal(payload)
+			_ = conn.WriteMessage(websocket.TextMessage, encoded)
+		}
+		done, _ := json.Marshal(map[string]any{"type": "response.done"})
+		_ = conn.WriteMessage(websocket.TextMessage, done)
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(Config{APIKey: "test-key", BaseURL: "ws" + strings.TrimPrefix(server.URL, "http"), Model: "qwen3-tts-flash-realtime"})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	stream, err := provider.StartStream(context.Background(), tts.Request{Text: "hello", TargetLanguage: "fr-FR"})
+	if err != nil {
+		t.Fatalf("StartStream() error = %v", err)
+	}
+	var chunks []tts.AudioChunk
+	for chunk := range stream.Chunks() {
+		chunks = append(chunks, chunk)
+	}
+	result, err := stream.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if len(chunks) != 2 || string(chunks[1].Data) != string([]byte{3, 4}) {
+		t.Fatalf("chunks = %#v", chunks)
+	}
+	if result.Model != "qwen3-tts-flash-realtime" || result.AudioDuration <= 0 {
+		t.Fatalf("result = %#v", result)
+	}
+}
 
 func TestProviderStreamsQwenTTSAudio(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

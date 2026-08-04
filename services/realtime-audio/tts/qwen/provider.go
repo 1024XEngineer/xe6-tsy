@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
+	"github.com/gorilla/websocket"
 )
 
 const defaultModel = "qwen3-tts-flash"
+const realtimeModel = "qwen3-tts-flash-realtime"
 
 var (
 	ErrAPIKeyRequired     = errors.New("Qwen TTS API key is required")
@@ -40,6 +42,7 @@ type Config struct {
 	Timeout    time.Duration
 	// AudioURLAllowlist contains exact hostnames accepted for URL-only audio responses.
 	AudioURLAllowlist []string
+	Dialer            *websocket.Dialer
 }
 
 // Provider starts Qwen TTS streaming requests.
@@ -70,6 +73,9 @@ func NewProvider(config Config) (*Provider, error) {
 	if config.HTTPClient == nil {
 		config.HTTPClient = http.DefaultClient
 	}
+	if config.Dialer == nil {
+		config.Dialer = websocket.DefaultDialer
+	}
 	if config.Timeout <= 0 {
 		config.Timeout = 30 * time.Second
 	}
@@ -83,6 +89,9 @@ func (p *Provider) StartStream(ctx context.Context, request tts.Request) (tts.St
 	if strings.TrimSpace(request.Text) == "" {
 		return nil, errors.New("TTS text is required")
 	}
+	if isRealtimeModel(p.config.Model) {
+		return p.startRealtimeStream(ctx, request)
+	}
 	streamCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	s := &stream{
 		ctx: streamCtx, cancel: cancel, config: p.config,
@@ -90,6 +99,170 @@ func (p *Provider) StartStream(ctx context.Context, request tts.Request) (tts.St
 	}
 	go s.run()
 	return s, nil
+}
+
+func (p *Provider) startRealtimeStream(ctx context.Context, request tts.Request) (tts.Stream, error) {
+	endpoint, err := realtimeEndpoint(p.config.BaseURL, p.config.Model)
+	if err != nil {
+		return nil, err
+	}
+	conn, _, err := p.config.Dialer.DialContext(ctx, endpoint, http.Header{"Authorization": []string{"Bearer " + p.config.APIKey}})
+	if err != nil {
+		return nil, fmt.Errorf("connect Qwen TTS realtime: %w", err)
+	}
+	streamCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
+	s := &realtimeStream{ctx: streamCtx, cancel: cancel, conn: conn, config: p.config, request: request, chunks: make(chan tts.AudioChunk, 16), done: make(chan struct{})}
+	if err := s.sendSession(); err != nil {
+		cancel()
+		_ = conn.Close()
+		return nil, fmt.Errorf("configure Qwen TTS realtime session: %w", err)
+	}
+	go s.run()
+	return s, nil
+}
+
+type realtimeStream struct {
+	ctx        context.Context
+	cancel     context.CancelFunc
+	conn       *websocket.Conn
+	config     Config
+	request    tts.Request
+	chunks     chan tts.AudioChunk
+	done       chan struct{}
+	writeMu    sync.Mutex
+	stateMu    sync.Mutex
+	result     tts.Result
+	err        error
+	sequence   int64
+	totalBytes int64
+}
+
+func (s *realtimeStream) Chunks() <-chan tts.AudioChunk { return s.chunks }
+
+func (s *realtimeStream) sendSession() error {
+	voice := firstNonEmpty(s.request.VoiceID, s.config.Voice)
+	for _, event := range []map[string]any{
+		{"type": "session.update", "session": map[string]any{"voice": voice, "language_type": "Auto", "response_format": "pcm", "sample_rate": s.config.SampleRate, "mode": "server_commit"}},
+		{"type": "input_text_buffer.append", "text": s.request.Text},
+		{"type": "input_text_buffer.commit"},
+	} {
+		if err := s.write(event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *realtimeStream) write(value any) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if err := s.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *realtimeStream) run() {
+	defer func() {
+		if s.ctx.Err() != nil && s.err == nil {
+			s.setError(s.ctx.Err())
+		}
+		if s.err == nil {
+			if s.sequence == 0 {
+				s.setError(ErrNoAudio)
+			} else {
+				s.stateMu.Lock()
+				s.result = tts.Result{Provider: s.config.Provider, Model: s.config.Model, AudioDuration: pcmDuration(s.totalBytes, s.config.SampleRate)}
+				s.stateMu.Unlock()
+			}
+		}
+		s.cancel()
+		_ = s.conn.Close()
+		close(s.chunks)
+		close(s.done)
+	}()
+	for {
+		_, data, err := s.conn.ReadMessage()
+		if err != nil {
+			if s.ctx.Err() == nil {
+				s.setError(fmt.Errorf("read Qwen TTS realtime event: %w", err))
+			}
+			return
+		}
+		var event realtimeEvent
+		if err := json.Unmarshal(data, &event); err != nil {
+			s.setError(fmt.Errorf("decode Qwen TTS realtime event: %w", err))
+			return
+		}
+		switch event.Type {
+		case "response.audio.delta":
+			audio, err := base64.StdEncoding.DecodeString(event.Delta)
+			if err != nil {
+				s.setError(fmt.Errorf("decode Qwen TTS realtime audio: %w", err))
+				return
+			}
+			if len(audio) == 0 {
+				continue
+			}
+			s.sequence++
+			s.totalBytes += int64(len(audio))
+			select {
+			case s.chunks <- tts.AudioChunk{SequenceNo: s.sequence, Data: audio}:
+			case <-s.ctx.Done():
+				return
+			}
+		case "error":
+			s.setError(fmt.Errorf("Qwen TTS realtime failed: %s", firstNonEmpty(event.Error.Message, event.Message, event.Error.Code)))
+			return
+		case "response.done", "session.finished":
+			return
+		}
+	}
+}
+
+func (s *realtimeStream) Finish(ctx context.Context) (tts.Result, error) {
+	select {
+	case <-s.done:
+		return s.finalResult()
+	default:
+	}
+	select {
+	case <-s.done:
+		return s.finalResult()
+	case <-ctx.Done():
+		s.cancel()
+		_ = s.conn.Close()
+		return tts.Result{}, ctx.Err()
+	}
+}
+
+func (s *realtimeStream) Close() error { s.cancel(); _ = s.conn.Close(); <-s.done; return nil }
+
+func (s *realtimeStream) setError(err error) {
+	s.stateMu.Lock()
+	if s.err == nil {
+		s.err = err
+	}
+	s.stateMu.Unlock()
+}
+func (s *realtimeStream) finalResult() (tts.Result, error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.result, s.err
+}
+
+type realtimeEvent struct {
+	Type    string `json:"type"`
+	Delta   string `json:"delta"`
+	Message string `json:"message"`
+	Error   struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
 }
 
 type stream struct {
@@ -322,6 +495,38 @@ func ttsEndpoint(base, model string) string {
 		return base
 	}
 	return base + "/services/aigc/multimodal-generation/generation"
+}
+
+func isRealtimeModel(model string) bool {
+	return strings.EqualFold(strings.TrimSpace(model), realtimeModel)
+}
+
+func realtimeEndpoint(raw, model string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || (u.Scheme != "ws" && u.Scheme != "wss" && u.Scheme != "http" && u.Scheme != "https") {
+		return "", ErrEndpointRequired
+	}
+	if u.Scheme == "http" {
+		u.Scheme = "ws"
+	}
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	}
+	path := strings.TrimSuffix(u.Path, "/")
+	if !strings.HasSuffix(path, "/api-ws/v1/realtime") {
+		for _, suffix := range []string{"/compatible-mode/v1", "/api/v1"} {
+			if strings.HasSuffix(path, suffix) {
+				path = strings.TrimSuffix(path, suffix)
+				break
+			}
+		}
+		path += "/api-ws/v1/realtime"
+	}
+	u.Path = path
+	query := u.Query()
+	query.Set("model", model)
+	u.RawQuery = query.Encode()
+	return u.String(), nil
 }
 
 func isCosyVoiceModel(model string) bool {

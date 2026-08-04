@@ -333,7 +333,7 @@ func TestPostgresAuthMaintenancePurgesExpiredState(t *testing.T) {
 		digester.CodeHash("challenge_expired", "123456"),
 		now.Add(-time.Hour),
 		now.Add(-2*time.Hour),
-		now.Add(-90*24*time.Hour),
+		now.Add(-30*time.Minute),
 	); err != nil {
 		t.Fatalf("insert stale challenge: %v", err)
 	}

@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 13 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 13", len(migrations))
+	if len(migrations) != 18 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 18", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -141,8 +141,93 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if !strings.Contains(wechatChannel.SQL, "channel IN ('email', 'wechat')") {
 		t.Fatal("wechat channel migration does not allow wechat channel")
 	}
-	autoDelivery := migrations[12]
-	if autoDelivery.Version != 13 || autoDelivery.Name != "auto_delivery_destination" || !strings.Contains(autoDelivery.SQL, "destination_ref") {
+	failedTerminalTimestamp := migrations[12]
+	if failedTerminalTimestamp.Version != 13 ||
+		failedTerminalTimestamp.Name != "session_failed_terminal_timestamp" {
+		t.Fatalf(
+			"migration = %#v, want version 13 named session_failed_terminal_timestamp",
+			failedTerminalTimestamp,
+		)
+	}
+	for _, expected := range []string{
+		"SET ended_at = started_at",
+		"status = 'failed'",
+		"ended_at IS NOT NULL",
+		"ended_at >= started_at",
+	} {
+		if !strings.Contains(failedTerminalTimestamp.SQL, expected) {
+			t.Fatalf("failed-terminal migration does not contain %q", expected)
+		}
+	}
+
+	endRecovery := migrations[13]
+	if endRecovery.Version != 14 || endRecovery.Name != "end_intent_recovery" {
+		t.Fatalf("migration = %#v, want version 14 named end_intent_recovery", endRecovery)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN trace_id",
+		"ADD COLUMN retry_count",
+		"ADD COLUMN next_attempt_at",
+		"ADD COLUMN recovery_owner",
+		"LEAST(requested_at, clock_timestamp())",
+		"voice_session_end_intents_recovery_due_idx",
+	} {
+		if !strings.Contains(endRecovery.SQL, expected) {
+			t.Fatalf("end-recovery migration does not contain %q", expected)
+		}
+	}
+
+	attributionSnapshot := migrations[14]
+	if attributionSnapshot.Version != 15 || attributionSnapshot.Name != "attribution_snapshot_updates" {
+		t.Fatalf("migration = %#v, want version 15 named attribution_snapshot_updates", attributionSnapshot)
+	}
+	for _, expected := range []string{
+		"CREATE OR REPLACE FUNCTION recordstore_reject_voice_turn_immutable_updates",
+		"NEW.sequence_no IS DISTINCT FROM OLD.sequence_no",
+		"NEW.source_text IS DISTINCT FROM OLD.source_text",
+		"NEW.translated_text IS DISTINCT FROM OLD.translated_text",
+	} {
+		if !strings.Contains(attributionSnapshot.SQL, expected) {
+			t.Fatalf("attribution-snapshot migration does not contain %q", expected)
+		}
+	}
+	if strings.Contains(attributionSnapshot.SQL, "NEW.speaker_code IS DISTINCT FROM OLD.speaker_code") {
+		t.Fatal("attribution-snapshot migration must allow speaker snapshot field updates")
+	}
+
+	attributionTasks := migrations[15]
+	if attributionTasks.Version != 16 || attributionTasks.Name != "attribution_tasks" {
+		t.Fatalf("migration = %#v, want version 16 named attribution_tasks", attributionTasks)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE attribution_tasks",
+		"task_type IN ('participant_mapping', 'turn_attribution')",
+		"status IN ('pending', 'processing', 'completed', 'failed')",
+		"CONSTRAINT attribution_tasks_turn_id_key UNIQUE (turn_id)",
+		"CREATE INDEX attribution_tasks_available_idx",
+		"CREATE INDEX attribution_tasks_lease_idx",
+	} {
+		if !strings.Contains(attributionTasks.SQL, expected) {
+			t.Fatalf("attribution-tasks migration does not contain %q", expected)
+		}
+	}
+
+	backfill := migrations[16]
+	if backfill.Version != 17 || backfill.Name != "backfill_attribution_tasks" {
+		t.Fatalf("migration = %#v, want version 17 named backfill_attribution_tasks", backfill)
+	}
+	for _, expected := range []string{
+		"INSERT INTO attribution_tasks",
+		"no_provider_speaker_id",
+		"ON CONFLICT (turn_id) DO NOTHING",
+	} {
+		if !strings.Contains(backfill.SQL, expected) {
+			t.Fatalf("backfill migration does not contain %q", expected)
+		}
+	}
+
+	autoDelivery := migrations[17]
+	if autoDelivery.Version != 18 || autoDelivery.Name != "auto_delivery_destination" || !strings.Contains(autoDelivery.SQL, "destination_ref") {
 		t.Fatalf("migration = %#v, want automatic destination column", autoDelivery)
 	}
 }

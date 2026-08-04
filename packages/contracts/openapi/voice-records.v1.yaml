@@ -3,6 +3,8 @@ info:
   title: Lingow Voice Record API
   version: 1.0.0
   description: Public read and system-attribution APIs for final translation records.
+security:
+  - accountContext: []
 paths:
   /api/v1/voice-sessions/{id}/participants:
     get:
@@ -30,6 +32,9 @@ paths:
       parameters:
         - $ref: '#/components/parameters/VoiceSessionID'
         - $ref: '#/components/parameters/ParticipantID'
+      security:
+        - accountContext: []
+          systemContext: []
       requestBody:
         required: true
         content:
@@ -51,6 +56,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/ParticipantNotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /api/v1/voice-sessions/{id}/turns:
     get:
       operationId: listSessionVoiceTurns
@@ -101,6 +108,9 @@ paths:
       operationId: updateVoiceTurnAttribution
       parameters:
         - $ref: '#/components/parameters/VoiceTurnID'
+      security:
+        - accountContext: []
+          systemContext: []
       requestBody:
         required: true
         content:
@@ -109,7 +119,7 @@ paths:
               $ref: '#/components/schemas/UpdateAttributionRequest'
       responses:
         '200':
-          description: Voice turn with corrected attribution.
+          description: Voice turn with corrected attribution. The speaker snapshot fields (speaker_code, display_name, provider_speaker_id, voice_profile_id) reflect the target participant.
           content:
             application/json:
               schema:
@@ -259,6 +269,23 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: The update conflicts with an existing unique mapping, for example a provider_speaker_id already assigned to another participant in the same session.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  securitySchemes:
+    accountContext:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token establishing the account identity; the resource must belong to this account.
+    systemContext:
+      type: apiKey
+      in: header
+      name: X-Lingow-System-Token
+      description: Internal bearer credential proving the caller is a system task. Both accountContext and systemContext must be satisfied on PATCH routes. When the server has no system token configured, PATCH routes fail closed with forbidden.
   schemas:
     AttributionStatus:
       type: string
@@ -403,6 +430,9 @@ components:
           enum: [confirmed, corrected]
         speaker_confidence:
           type: [number, 'null']
+          minimum: 0
+          maximum: 1
+          description: Optional correction confidence. When omitted, the stored value is preserved; when null, the stored value is cleared; when a number, the stored value is replaced.
       additionalProperties: false
     ErrorCode:
       type: string
@@ -414,6 +444,7 @@ components:
         - participant_not_found
         - voice_turn_not_found
         - invalid_attribution
+        - conflict
         - not_implemented
         - internal_error
     APIError:

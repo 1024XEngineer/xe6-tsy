@@ -317,3 +317,193 @@ func (c *blockingWriteConn) Close() error {
 }
 
 func (*blockingWriteConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestSessionUpdateEventOmitsLanguageWhenEmpty(t *testing.T) {
+	event := sessionUpdateEvent("", Config{SampleRate: 16000, DisableServerVAD: true})
+	session, ok := event["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("session missing: %#v", event)
+	}
+	transcription, ok := session["input_audio_transcription"].(map[string]any)
+	if !ok {
+		t.Fatalf("transcription missing: %#v", session)
+	}
+	if _, present := transcription["language"]; present {
+		t.Fatalf("language should be omitted for auto-detect, got %#v", transcription)
+	}
+}
+
+func TestSessionUpdateEventSetsNullTurnDetectionWhenDisabled(t *testing.T) {
+	event := sessionUpdateEvent("zh-CN", Config{SampleRate: 16000, DisableServerVAD: true})
+	session, ok := event["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("session missing: %#v", event)
+	}
+	if session["turn_detection"] != nil {
+		t.Fatalf("turn_detection = %#v, want JSON null", session["turn_detection"])
+	}
+
+	withVAD := sessionUpdateEvent("zh-CN", Config{
+		SampleRate: 16000, VADThreshold: 0.2, SilenceDuration: 400 * time.Millisecond,
+	})
+	session, ok = withVAD["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("session missing: %#v", withVAD)
+	}
+	detection, ok := session["turn_detection"].(map[string]any)
+	if !ok || detection["type"] != "server_vad" {
+		t.Fatalf("turn_detection = %#v", session["turn_detection"])
+	}
+}
+
+func TestStreamCloseShutsDownOnce(t *testing.T) {
+	conn := &countingCloseConn{closed: make(chan struct{})}
+	events := make(chan asr.Event, eventBufferSize+1)
+	done := make(chan struct{})
+	readDone := make(chan struct{})
+	close(readDone)
+	canceled := make(chan struct{})
+	var cancelOnce sync.Once
+	stream := &stream{
+		conn:     conn,
+		cancel:   func() { cancelOnce.Do(func() { close(canceled) }) },
+		events:   events,
+		done:     done,
+		readDone: readDone,
+	}
+
+	if err := stream.Close(); err != nil {
+		t.Fatalf("first Close() error = %v", err)
+	}
+	select {
+	case <-canceled:
+	default:
+		t.Fatal("Close() did not cancel the stream context")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("Close() did not close the done channel")
+	}
+	if _, open := <-events; open {
+		t.Fatal("Close() left the events channel open")
+	}
+
+	if err := stream.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if conn.closeCount != 1 {
+		t.Fatalf("connection close count = %d, want 1", conn.closeCount)
+	}
+}
+
+func TestStreamSetErrorKeepsFirstError(t *testing.T) {
+	first := errors.New("first error")
+	second := errors.New("second error")
+	stream := &stream{}
+
+	stream.setError(first)
+	stream.setError(second)
+
+	if _, got := stream.finalResult(); !errors.Is(got, first) {
+		t.Fatalf("finalResult() error = %v, want first error", got)
+	}
+}
+
+type countingCloseConn struct {
+	closed     chan struct{}
+	closeCount int
+}
+
+func (*countingCloseConn) WriteMessage(int, []byte) error { return nil }
+func (*countingCloseConn) ReadMessage() (int, []byte, error) {
+	return 0, nil, errors.New("not implemented")
+}
+func (c *countingCloseConn) Close() error {
+	c.closeCount++
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+func (*countingCloseConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestManualModeFinishSendsCommitBeforeSessionFinish(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	writes := make(chan string, 8)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var event map[string]any
+			if json.Unmarshal(data, &event) != nil {
+				continue
+			}
+			typ, _ := event["type"].(string)
+			writes <- typ
+			switch typ {
+			case "session.update":
+				_ = conn.WriteJSON(map[string]any{"type": "session.updated"})
+			case "input_audio_buffer.commit":
+				_ = conn.WriteJSON(map[string]any{"type": "input_audio_buffer.committed"})
+			case "session.finish":
+				_ = conn.WriteJSON(map[string]any{
+					"type":     "conversation.item.input_audio_transcription.completed",
+					"language": "zh", "transcript": "你好",
+				})
+				_ = conn.WriteJSON(map[string]any{"type": "session.finished"})
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(Config{
+		APIKey:           "test-key",
+		WebSocketURL:     "ws" + strings.TrimPrefix(server.URL, "http"),
+		Model:            "qwen3-asr-flash-realtime",
+		DisableServerVAD: true,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	stream, err := provider.StartStream(context.Background(), asr.StreamRequest{SourceLanguage: "zh-CN"})
+	if err != nil {
+		t.Fatalf("StartStream() error = %v", err)
+	}
+	if err := stream.PushAudio(context.Background(), []byte("pcm")); err != nil {
+		t.Fatalf("PushAudio() error = %v", err)
+	}
+	result, err := stream.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if result.Text != "你好" {
+		t.Fatalf("result = %#v", result)
+	}
+
+	var seen []string
+	timeout := time.After(2 * time.Second)
+	for len(seen) < 4 {
+		select {
+		case typ := <-writes:
+			seen = append(seen, typ)
+		case <-timeout:
+			t.Fatalf("writes = %v, want update/append/commit/finish", seen)
+		}
+	}
+	if seen[0] != "session.update" || seen[1] != "input_audio_buffer.append" ||
+		seen[2] != "input_audio_buffer.commit" || seen[3] != "session.finish" {
+		t.Fatalf("write order = %v", seen)
+	}
+}

@@ -49,6 +49,9 @@ func OpenRuntimeFromEnv(ctx context.Context) (*Runtime, error) {
 			return nil, fmt.Errorf("initialize realtime outbox: %w", err)
 		}
 		stream := os.Getenv("USAGE_STREAM")
+		if stream == "" {
+			stream = os.Getenv("LINGOW_USAGE_STREAM")
+		}
 		writer, err := NewValkeyWriter(client, stream)
 		if err != nil {
 			client.Close()

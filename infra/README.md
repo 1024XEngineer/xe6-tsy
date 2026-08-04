@@ -43,7 +43,7 @@ POST /api/v1/account/message-targets/email/bind
 
 4. 生产 email 发送配置 `LINGOW_DELIVERY_PROVIDER=smtp` 与 `LINGOW_SMTP_*`（本地可用 MailHog：`host=localhost port=1025`）。
 
-5. 在 `services/api` 目录启动 API；enabled 路径会同时监督 delivery outbox/worker、usage stream consumer、records FinalTurnWorker。
+5. 在 `services/api` 目录启动 API；enabled 路径会同时监督 delivery outbox/worker、usage stream consumer、records FinalTurnWorker 与 AttributionWorker。
 
 ## 后续
 

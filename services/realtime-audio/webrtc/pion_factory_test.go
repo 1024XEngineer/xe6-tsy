@@ -67,6 +67,36 @@ func TestValidateTTSAudioOfferRequiresConfiguredL16Codec(t *testing.T) {
 	}
 }
 
+func TestValidateTTSAudioOfferAcceptsOpusWhenConfigured(t *testing.T) {
+	config, err := (MediaConfig{DownlinkCodec: "opus"}).normalized()
+	if err != nil {
+		t.Fatalf("MediaConfig.normalized() error = %v", err)
+	}
+	if err := validateTTSAudioOffer(opusOfferSDP(), config); err != nil {
+		t.Fatalf("validateTTSAudioOffer(opus) error = %v", err)
+	}
+	if err := validateTTSAudioOffer(l16OfferSDP(24_000), config); !errors.Is(err, ErrTTSCodecUnsupported) {
+		t.Fatalf("validateTTSAudioOffer(L16) error = %v, want ErrTTSCodecUnsupported", err)
+	}
+}
+
+func TestPionTransportSkipsTTSCodecCheckWhenConfigured(t *testing.T) {
+	config, err := (MediaConfig{SkipTTSTrack: true}).normalized()
+	if err != nil {
+		t.Fatalf("MediaConfig.normalized() error = %v", err)
+	}
+	transport := &PionTransport{
+		mediaConnection: &mediaPeerRecorder{},
+		mediaConfig:     config,
+	}
+	if err := transport.validateTTSAudioOffer(opusOfferSDP()); err != nil {
+		t.Fatalf("transport.validateTTSAudioOffer() error = %v", err)
+	}
+	if !transport.skipTTSTrack() {
+		t.Fatal("skipTTSTrack() = false")
+	}
+}
+
 func TestPionTransportRejectsOfferWithoutTTSCodecBeforeAddingTrack(t *testing.T) {
 	peer := &mediaPeerRecorder{fakePionPeerConnection: &fakePionPeerConnection{
 		answer: pion.SessionDescription{Type: pion.SDPTypeAnswer, SDP: "answer-sdp"}, gatherComplete: closedChannel(),

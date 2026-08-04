@@ -13,10 +13,12 @@ import (
 const (
 	defaultCompensationTimeout        = 5 * time.Second
 	defaultStartReconciliationTimeout = 5 * time.Second
+	defaultEndAttemptTimeout          = 5 * time.Second
+	defaultEndRecoveryLeaseDuration   = 10 * time.Second
 )
 
-// Dependencies contains the boundaries required by Create, Query, and Start.
-// Logger is optional and defaults to a discard sink.
+// Dependencies contains the boundaries and time budgets required by session
+// lifecycle requests and recovery. Logger is optional and discards by default.
 type Dependencies struct {
 	Repository                 Repository
 	LanguageConfigs            LanguageConfigReader
@@ -27,6 +29,8 @@ type Dependencies struct {
 	Logger                     *slog.Logger
 	CompensationTimeout        time.Duration
 	StartReconciliationTimeout time.Duration
+	EndAttemptTimeout          time.Duration
+	EndRecoveryLeaseDuration   time.Duration
 }
 
 // Service owns voice-session use cases without depending on HTTP or
@@ -64,6 +68,21 @@ func NewService(deps Dependencies) (*Service, error) {
 	}
 	if deps.StartReconciliationTimeout <= 0 {
 		deps.StartReconciliationTimeout = defaultStartReconciliationTimeout
+	}
+	if deps.EndAttemptTimeout <= 0 {
+		deps.EndAttemptTimeout = defaultEndAttemptTimeout
+	}
+	if deps.EndRecoveryLeaseDuration <= 0 {
+		deps.EndRecoveryLeaseDuration = max(
+			defaultEndRecoveryLeaseDuration,
+			2*deps.EndAttemptTimeout,
+		)
+	}
+	if deps.EndAttemptTimeout >= deps.EndRecoveryLeaseDuration {
+		return nil, fmt.Errorf(
+			"%w: end attempt timeout must be shorter than recovery lease",
+			ErrInvalidDependency,
+		)
 	}
 	return &Service{deps: deps, locks: newKeyedLocker()}, nil
 }
@@ -200,4 +219,17 @@ func (s *Service) startReconciliationContext(
 		context.WithoutCancel(parent),
 		s.deps.StartReconciliationTimeout,
 	)
+}
+
+func (s *Service) endAttemptContext(
+	parent context.Context,
+	leaseRemaining time.Duration,
+) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, min(s.deps.EndAttemptTimeout, leaseRemaining))
+}
+
+func (s *Service) endPersistenceContext(parent context.Context) (context.Context, context.CancelFunc) {
+	// A canceled request must still release its durable lease so recovery can
+	// resume immediately instead of waiting for expiration.
+	return context.WithTimeout(context.WithoutCancel(parent), s.deps.EndAttemptTimeout)
 }

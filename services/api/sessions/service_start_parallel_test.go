@@ -241,6 +241,17 @@ func (r *multiSessionStartRepository) GetOwned(
 	return state.GetOwned(ctx, accountID, sessionID)
 }
 
+func (r *multiSessionStartRepository) GetSession(
+	ctx context.Context,
+	sessionID string,
+) (SessionSnapshot, error) {
+	state, err := r.state(sessionID)
+	if err != nil {
+		return SessionSnapshot{}, err
+	}
+	return state.GetSession(ctx, sessionID)
+}
+
 func (*multiSessionStartRepository) List(context.Context, ListFilter) (ListPage, error) {
 	return ListPage{}, ErrNotImplemented
 }
@@ -315,6 +326,27 @@ func (*multiSessionStartRepository) GetEndIntent(
 	string,
 ) (EndIntent, error) {
 	return EndIntent{}, ErrNotImplemented
+}
+
+func (*multiSessionStartRepository) ClaimPendingEndIntent(
+	context.Context,
+	ClaimEndIntentParams,
+) (EndIntent, bool, error) {
+	return EndIntent{}, false, ErrNotImplemented
+}
+
+func (*multiSessionStartRepository) RetryClaimedEndIntent(
+	context.Context,
+	RetryEndIntentParams,
+) error {
+	return ErrNotImplemented
+}
+
+func (*multiSessionStartRepository) CompleteClaimedEndIntent(
+	context.Context,
+	CompleteClaimedEndIntentParams,
+) error {
+	return ErrNotImplemented
 }
 
 func (*multiSessionStartRepository) CompleteEndIntent(

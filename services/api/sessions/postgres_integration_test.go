@@ -433,7 +433,8 @@ func TestPostgresRepositoryStartCompensationAndTransitions(t *testing.T) {
 		SessionID: "vs_start", AccountID: "acct_start", Expected: sessions.StatusActive,
 		FailedAt: startedAt.Add(time.Second), ErrorCode: "runtime_failed",
 	})
-	if err != nil || failed.Status != sessions.StatusFailed || failed.EndedAt != nil {
+	if err != nil || failed.Status != sessions.StatusFailed ||
+		failed.EndedAt == nil || !failed.EndedAt.Equal(startedAt.Add(time.Second)) {
 		t.Fatalf("TransitionToFailed() = %#v, %v", failed, err)
 	}
 }
@@ -471,9 +472,8 @@ func TestPostgresRepositoryEndIntentAndInterlocks(t *testing.T) {
 	if err != nil || replayed || saved.Completed() {
 		t.Fatalf("SaveEndIntent() = %#v, %t, %v", saved, replayed, err)
 	}
-	replayedIntent, replayed, err := repository.SaveEndIntent(t.Context(), intent)
-	if err != nil || !replayed || replayedIntent.IdempotencyKey != intent.IdempotencyKey {
-		t.Fatalf("replayed SaveEndIntent() = %#v, %t, %v", replayedIntent, replayed, err)
+	if _, _, err := repository.SaveEndIntent(t.Context(), intent); !errors.Is(err, sessions.ErrConcurrentTransition) {
+		t.Fatalf("leased replay SaveEndIntent() error = %v", err)
 	}
 	conflict := intent
 	conflict.RequestHash = "other"
@@ -505,6 +505,214 @@ func TestPostgresRepositoryEndIntentAndInterlocks(t *testing.T) {
 	}
 	if _, err := repository.GetEndIntent(t.Context(), "other", "vs_end"); !errors.Is(err, sessions.ErrEndIntentNotFound) {
 		t.Fatalf("cross-account GetEndIntent() error = %v", err)
+	}
+}
+
+func TestPostgresRepositoryEndRecoveryClaimLeaseAndRetry(t *testing.T) {
+	pool := sessionTestDatabase(t)
+	repository := sessions.NewPostgresRepository(pool)
+	if err := repository.RetryClaimedEndIntent(
+		t.Context(),
+		sessions.RetryEndIntentParams{
+			SessionID: "vs_invalid", AccountID: "acct_invalid",
+			WorkerID: "worker_invalid", LastError: "invalid retry delay",
+			RetryAfter: -time.Second,
+		},
+	); !errors.Is(err, sessions.ErrInvalidRequest) {
+		t.Fatalf("negative RetryAfter error = %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	requestedAt := now.Add(time.Hour)
+	insertAccount(t, pool, "acct_end_recovery", now.Add(-time.Hour))
+	createSession(t, repository, "vs_end_recovery", "acct_end_recovery", now)
+	if _, _, err := repository.SaveEndIntent(t.Context(), endIntent(
+		"vs_end_recovery", "acct_end_recovery", "end_recovery",
+		"hash_end_recovery", requestedAt,
+	)); err != nil {
+		t.Fatalf("SaveEndIntent() error = %v", err)
+	}
+
+	if _, ok, err := repository.ClaimPendingEndIntent(
+		t.Context(),
+		sessions.ClaimEndIntentParams{
+			WorkerID:       "worker_1",
+			ClaimedAt:      now.Add(2 * time.Second),
+			LeaseExpiresAt: now.Add(2 * time.Minute),
+		},
+	); err != nil || ok {
+		t.Fatalf("request-leased ClaimPendingEndIntent() = %t, %v, want false, nil", ok, err)
+	}
+	makeEndIntentClaimable(t, pool, "vs_end_recovery")
+
+	claimedAt := time.Now().UTC()
+	claimed, ok, err := repository.ClaimPendingEndIntent(
+		t.Context(),
+		sessions.ClaimEndIntentParams{
+			WorkerID:       "worker_1",
+			ClaimedAt:      claimedAt,
+			LeaseExpiresAt: claimedAt.Add(time.Minute),
+		},
+	)
+	if err != nil || !ok || claimed.RecoveryOwner == nil ||
+		*claimed.RecoveryOwner != "worker_1" {
+		t.Fatalf("ClaimPendingEndIntent() = %#v, %t, %v", claimed, ok, err)
+	}
+	if _, ok, err := repository.ClaimPendingEndIntent(
+		t.Context(),
+		sessions.ClaimEndIntentParams{
+			WorkerID:       "worker_2",
+			ClaimedAt:      claimedAt.Add(time.Second),
+			LeaseExpiresAt: claimedAt.Add(2 * time.Minute),
+		},
+	); err != nil || ok {
+		t.Fatalf("second ClaimPendingEndIntent() = %t, %v, want false, nil", ok, err)
+	}
+
+	retryAfter := 2 * time.Minute
+	if err := repository.RetryClaimedEndIntent(
+		t.Context(),
+		sessions.RetryEndIntentParams{
+			SessionID:  claimed.SessionID,
+			AccountID:  claimed.AccountID,
+			WorkerID:   "worker_1",
+			LastError:  "stop unavailable",
+			RetryAfter: retryAfter,
+		},
+	); err != nil {
+		t.Fatalf("RetryClaimedEndIntent() error = %v", err)
+	}
+	if _, ok, err := repository.ClaimPendingEndIntent(
+		t.Context(),
+		sessions.ClaimEndIntentParams{
+			WorkerID:       "worker_2",
+			ClaimedAt:      claimedAt,
+			LeaseExpiresAt: claimedAt.Add(time.Minute),
+		},
+	); err != nil || ok {
+		t.Fatalf("early ClaimPendingEndIntent() = %t, %v, want false, nil", ok, err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE voice_session_end_intents
+		SET next_attempt_at = clock_timestamp() - interval '1 second'
+		WHERE session_id = $1`, "vs_end_recovery"); err != nil {
+		t.Fatalf("make EndIntent due: %v", err)
+	}
+	reclaimedAt := time.Now().UTC()
+	reclaimed, ok, err := repository.ClaimPendingEndIntent(
+		t.Context(),
+		sessions.ClaimEndIntentParams{
+			WorkerID:       "worker_2",
+			ClaimedAt:      reclaimedAt,
+			LeaseExpiresAt: reclaimedAt.Add(time.Minute),
+		},
+	)
+	if err != nil || !ok || reclaimed.RetryCount != 1 ||
+		reclaimed.LastError == nil || *reclaimed.LastError != "stop unavailable" {
+		t.Fatalf("reclaimed intent = %#v, %t, %v", reclaimed, ok, err)
+	}
+	completedAt := requestedAt.Add(time.Second)
+	if _, err := repository.TransitionToEnded(
+		t.Context(),
+		sessions.EndTransitionParams{
+			SessionID: "vs_end_recovery", AccountID: "acct_end_recovery",
+			Expected: sessions.StatusCreated, EndedAt: completedAt,
+			EndReason: sessions.EndReasonUserRequested,
+		},
+	); err != nil {
+		t.Fatalf("TransitionToEnded() error = %v", err)
+	}
+	if err := repository.CompleteClaimedEndIntent(
+		t.Context(),
+		sessions.CompleteClaimedEndIntentParams{
+			SessionID: reclaimed.SessionID, AccountID: reclaimed.AccountID,
+			WorkerID: "worker_1", CompletedAt: completedAt,
+		},
+	); !errors.Is(err, sessions.ErrConcurrentTransition) {
+		t.Fatalf("stale CompleteClaimedEndIntent() error = %v", err)
+	}
+	if err := repository.CompleteClaimedEndIntent(
+		t.Context(),
+		sessions.CompleteClaimedEndIntentParams{
+			SessionID: reclaimed.SessionID, AccountID: reclaimed.AccountID,
+			WorkerID: "worker_2", CompletedAt: completedAt,
+		},
+	); err != nil {
+		t.Fatalf("CompleteClaimedEndIntent() error = %v", err)
+	}
+	stored, err := repository.GetEndIntent(
+		t.Context(), "acct_end_recovery", "vs_end_recovery",
+	)
+	if err != nil || stored.CompletedAt == nil || stored.RecoveryOwner != nil ||
+		stored.LeaseExpiresAt != nil {
+		t.Fatalf("GetEndIntent() = %#v, %v", stored, err)
+	}
+}
+
+func TestPostgresRepositoryRejectsExpiredEndRecoveryOwner(t *testing.T) {
+	pool := sessionTestDatabase(t)
+	repository := sessions.NewPostgresRepository(pool)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	insertAccount(t, pool, "acct_expired_recovery", now.Add(-time.Hour))
+	createSession(t, repository, "vs_expired_recovery", "acct_expired_recovery", now.Add(-20*time.Minute))
+	if _, _, err := repository.SaveEndIntent(t.Context(), endIntent(
+		"vs_expired_recovery", "acct_expired_recovery", "end_expired_recovery",
+		"hash_expired_recovery", now.Add(-10*time.Minute),
+	)); err != nil {
+		t.Fatalf("SaveEndIntent() error = %v", err)
+	}
+	expireEndIntentLease(t, pool, "vs_expired_recovery")
+
+	claimedAt := time.Now().UTC()
+	claimed, ok, err := repository.ClaimPendingEndIntent(
+		t.Context(),
+		sessions.ClaimEndIntentParams{
+			WorkerID:       "expired_worker",
+			ClaimedAt:      claimedAt,
+			LeaseExpiresAt: claimedAt.Add(time.Minute),
+		},
+	)
+	if err != nil || !ok {
+		t.Fatalf("ClaimPendingEndIntent() = %#v, %t, %v", claimed, ok, err)
+	}
+	expireEndIntentLease(t, pool, "vs_expired_recovery")
+	if err := repository.RetryClaimedEndIntent(
+		t.Context(),
+		sessions.RetryEndIntentParams{
+			SessionID: claimed.SessionID, AccountID: claimed.AccountID,
+			WorkerID: "expired_worker", LastError: "late stop failure",
+			RetryAfter: time.Minute,
+		},
+	); !errors.Is(err, sessions.ErrConcurrentTransition) {
+		t.Fatalf("expired RetryClaimedEndIntent() error = %v", err)
+	}
+
+	endedAt := now
+	if _, err := repository.TransitionToEnded(
+		t.Context(),
+		sessions.EndTransitionParams{
+			SessionID: claimed.SessionID, AccountID: claimed.AccountID,
+			Expected: sessions.StatusCreated, EndedAt: endedAt,
+			EndReason: sessions.EndReasonUserRequested,
+		},
+	); err != nil {
+		t.Fatalf("TransitionToEnded() error = %v", err)
+	}
+	if err := repository.CompleteClaimedEndIntent(
+		t.Context(),
+		sessions.CompleteClaimedEndIntentParams{
+			SessionID: claimed.SessionID, AccountID: claimed.AccountID,
+			WorkerID: "expired_worker", CompletedAt: endedAt,
+		},
+	); !errors.Is(err, sessions.ErrConcurrentTransition) {
+		t.Fatalf("expired CompleteClaimedEndIntent() error = %v", err)
+	}
+
+	stored, err := repository.GetEndIntent(
+		t.Context(), claimed.AccountID, claimed.SessionID,
+	)
+	if err != nil || stored.Completed() || stored.RetryCount != 0 ||
+		stored.RecoveryOwner == nil || *stored.RecoveryOwner != "expired_worker" {
+		t.Fatalf("expired intent = %#v, %v", stored, err)
 	}
 }
 
@@ -789,10 +997,35 @@ func beginParams(id, sessionID, accountID, key, hash string, at time.Time) sessi
 }
 
 func endIntent(sessionID, accountID, key, hash string, at time.Time) sessions.EndIntent {
+	owner := "request:trace_" + key
+	leaseExpiresAt := at.Add(time.Minute)
 	return sessions.EndIntent{
 		SessionID: sessionID, AccountID: accountID,
 		Reason:         sessions.EndReasonUserRequested,
-		IdempotencyKey: key, RequestHash: hash, RequestedAt: at,
+		IdempotencyKey: key, RequestHash: hash,
+		TraceID: "trace_" + key, RequestedAt: at,
+		RecoveryOwner: &owner, LeaseExpiresAt: &leaseExpiresAt,
+	}
+}
+
+func expireEndIntentLease(t *testing.T, pool *pgxpool.Pool, sessionID string) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE voice_session_end_intents
+		SET recovery_lease_expires_at = clock_timestamp() - interval '1 second'
+		WHERE session_id = $1`, sessionID); err != nil {
+		t.Fatalf("expire EndIntent lease: %v", err)
+	}
+}
+
+func makeEndIntentClaimable(t *testing.T, pool *pgxpool.Pool, sessionID string) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+		UPDATE voice_session_end_intents
+		SET recovery_lease_expires_at = clock_timestamp() - interval '1 second',
+			next_attempt_at = clock_timestamp() - interval '1 second'
+		WHERE session_id = $1`, sessionID); err != nil {
+		t.Fatalf("make EndIntent claimable: %v", err)
 	}
 }
 

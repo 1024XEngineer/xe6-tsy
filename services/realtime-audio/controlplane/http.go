@@ -204,10 +204,14 @@ func (h *Handler) start(writer http.ResponseWriter, request *http.Request) {
 		h.writeError(writer, request, session.ErrStartOperationIDRequired)
 		return
 	}
+	traceID := strings.TrimSpace(body.TraceID)
+	if traceID == "" {
+		traceID = body.OperationID
+	}
 	h.handleReplay(writer, request.Context(), sessionID, "start\x00"+sessionID+"\x00"+idempotencyKey, body, func() (any, error) {
 		return h.lifecycle.Start(request.Context(), session.StartRealtimeCommand{
 			SessionID: sessionID, OperationID: body.OperationID,
-			TraceID: body.TraceID, StartedBy: body.StartedBy,
+			TraceID: traceID, StartedBy: body.StartedBy,
 		})
 	})
 }
@@ -232,6 +236,9 @@ func (h *Handler) stop(writer http.ResponseWriter, request *http.Request) {
 		h.writeError(writer, request, ErrInvalidRequest)
 		return
 	}
+	// Replay identity matches controlplane.Client.Stop: key is stop:<reason>, and the
+	// hashed body deliberately excludes TraceID/EndedAt so End retries may refresh
+	// audit metadata without hitting an idempotency payload conflict.
 	replayBody := struct {
 		Reason string `json:"reason"`
 	}{Reason: body.Reason}
@@ -528,6 +535,8 @@ func mapError(err error) (int, string) {
 		errors.Is(err, webrtc.ErrConnectionIDRequired), errors.Is(err, webrtc.ErrCandidateIDRequired),
 		errors.Is(err, webrtc.ErrCandidateRequired):
 		return http.StatusBadRequest, "invalid_request"
+	case errors.Is(err, webrtc.ErrTTSCodecUnsupported):
+		return http.StatusBadRequest, "tts_codec_unsupported"
 	case errors.Is(err, ErrTicketRequired), errors.Is(err, webrtc.ErrRealtimeTokenRequired),
 		errors.Is(err, webrtc.ErrTicketExpired), errors.Is(err, webrtc.ErrTicketSessionMismatch),
 		errors.Is(err, webrtc.ErrTicketAccountRequired):

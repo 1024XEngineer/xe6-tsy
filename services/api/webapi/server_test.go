@@ -77,6 +77,23 @@ func TestUpdateParticipantRequiresSystemAndKeepsExplicitNull(t *testing.T) {
 	assertError(t, serve(handler, unknownField), http.StatusBadRequest, recordsv1.ErrorInvalidRequest)
 }
 
+func TestUpdateParticipantMapsConflictTo409(t *testing.T) {
+	participantRepository := &participantRepository{updateErr: participants.ErrConflict}
+	handler := newHandler(t, participantRepository, &turnRepository{}, "acct_01")
+	path := "/api/v1/voice-sessions/vs_01/participants/p_01"
+
+	request := accountRequest(http.MethodPatch, path, strings.NewReader(`{"provider_speaker_id":"diar_01"}`), "acct_01", true)
+	response := serve(handler, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("conflict status = %d, want %d; body = %s", response.Code, http.StatusConflict, response.Body.String())
+	}
+	var body recordsv1.ErrorResponse
+	decodeBody(t, response, &body)
+	if body.Error.Code != recordsv1.ErrorConflict {
+		t.Fatalf("conflict error code = %q, want %q", body.Error.Code, recordsv1.ErrorConflict)
+	}
+}
+
 func TestTurnReadRoutesUseContractShapesAndFilters(t *testing.T) {
 	nextCursor := "turn_cursor_02"
 	turn := recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01", SourceText: "source", TranslatedText: "translation"}
@@ -146,6 +163,9 @@ func TestCorrectAttributionRequiresSystemAndValidTarget(t *testing.T) {
 	if turnRepository.attributionUpdate.CorrectedBy != recordsv1.CorrectedBySystem || turnRepository.attributionUpdate.CorrectedAt.IsZero() {
 		t.Fatalf("attribution update = %#v", turnRepository.attributionUpdate)
 	}
+	if !turnRepository.attributionUpdate.SpeakerConfidenceSet || turnRepository.attributionUpdate.SpeakerConfidence == nil || *turnRepository.attributionUpdate.SpeakerConfidence != 0.8 {
+		t.Fatalf("attribution confidence = %#v", turnRepository.attributionUpdate)
+	}
 	var corrected recordsv1.VoiceTurn
 	decodeBody(t, response, &corrected)
 	if corrected.CorrectedBy == nil || *corrected.CorrectedBy != recordsv1.CorrectedBySystem || corrected.SourceText != "source" || corrected.TranslatedText != "translation" {
@@ -158,6 +178,69 @@ func TestCorrectAttributionRequiresSystemAndValidTarget(t *testing.T) {
 	turnRepository.participantInSession = false
 	mismatchedParticipant := accountRequest(http.MethodPatch, path, strings.NewReader(`{"participant_id":"p_02","attribution_status":"confirmed"}`), "acct_01", true)
 	assertError(t, serve(handler, mismatchedParticipant), http.StatusBadRequest, recordsv1.ErrorInvalidAttribution)
+}
+
+func TestCorrectAttributionConfidencePresenceSemantics(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantSet bool
+		want    *float64
+	}{
+		{name: "absent", body: `{"participant_id":"p_01","attribution_status":"confirmed"}`, wantSet: false},
+		{name: "explicit null", body: `{"participant_id":"p_01","attribution_status":"confirmed","speaker_confidence":null}`, wantSet: true},
+		{name: "number", body: `{"participant_id":"p_01","attribution_status":"confirmed","speaker_confidence":0.7}`, wantSet: true, want: ptr64(0.7)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
+			handler := newHandler(t, &participantRepository{}, turnRepository, "acct_01")
+			path := "/api/v1/voice-turns/vt_01/attribution"
+			request := accountRequest(http.MethodPatch, path, strings.NewReader(test.body), "acct_01", true)
+			response := serve(handler, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if turnRepository.attributionUpdate.SpeakerConfidenceSet != test.wantSet {
+				t.Fatalf("SpeakerConfidenceSet = %v, want %v", turnRepository.attributionUpdate.SpeakerConfidenceSet, test.wantSet)
+			}
+			if !equalConfidence(turnRepository.attributionUpdate.SpeakerConfidence, test.want) {
+				t.Fatalf("SpeakerConfidence = %v, want %v", turnRepository.attributionUpdate.SpeakerConfidence, test.want)
+			}
+		})
+	}
+}
+
+func TestCorrectAttributionRejectsOutOfRangeConfidence(t *testing.T) {
+	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
+	handler := newHandler(t, &participantRepository{}, turnRepository, "acct_01")
+	path := "/api/v1/voice-turns/vt_01/attribution"
+	body := `{"participant_id":"p_01","attribution_status":"confirmed","speaker_confidence":1.5}`
+	request := accountRequest(http.MethodPatch, path, strings.NewReader(body), "acct_01", true)
+	response := serve(handler, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("out-of-range confidence status = %d, want 400; body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestPATCHRejectsOversizedBody(t *testing.T) {
+	validBody := `{"participant_id":"p_01","attribution_status":"confirmed"}`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "truncated JSON value", body: `{"participant_id":"` + strings.Repeat("p", maxRequestBodyBytes) + `","attribution_status":"confirmed"}`},
+		{name: "complete JSON followed by overflow", body: validBody + strings.Repeat(" ", maxRequestBodyBytes-len(validBody)+1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
+			handler := newHandler(t, &participantRepository{}, turnRepository, "acct_01")
+			request := accountRequest(http.MethodPatch, "/api/v1/voice-turns/vt_01/attribution", strings.NewReader(test.body), "acct_01", true)
+			response := serve(handler, request)
+			assertError(t, response, http.StatusBadRequest, recordsv1.ErrorInvalidRequest)
+		})
+	}
 }
 
 func TestErrorMappingReturnsNotFoundAndInternalError(t *testing.T) {
@@ -199,7 +282,7 @@ func TestInternalErrorLogsCauseWithoutExposingIt(t *testing.T) {
 
 func TestRegisterAppliesAuthenticationToEveryRoute(t *testing.T) {
 	participantRepository := &participantRepository{}
-	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01"}}
+	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
 	owners := sessionOwners{ownerID: "acct_01"}
 	server := NewHandler(Dependencies{
 		Participants: participants.NewService(participantRepository, owners, nil),
@@ -209,10 +292,10 @@ func TestRegisterAppliesAuthenticationToEveryRoute(t *testing.T) {
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 
-	authenticatedCalls := 0
-	authenticate := func(next http.Handler) http.Handler {
+	accountCalls := 0
+	accountAuthenticate := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			authenticatedCalls++
+			accountCalls++
 			if request.Header.Get("Authorization") != "Bearer access-token" {
 				writer.WriteHeader(http.StatusUnauthorized)
 				return
@@ -221,36 +304,160 @@ func TestRegisterAppliesAuthenticationToEveryRoute(t *testing.T) {
 			next.ServeHTTP(writer, request.WithContext(ctx))
 		})
 	}
+	systemCalls := 0
+	systemAuthenticate := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			systemCalls++
+			if request.Header.Get(systemTokenHeader) != "system-token" {
+				writer.WriteHeader(http.StatusForbidden)
+				return
+			}
+			ctx := WithSystemActor(request.Context())
+			next.ServeHTTP(writer, request.WithContext(ctx))
+		})
+	}
 	mux := http.NewServeMux()
-	server.Register(mux, authenticate)
+	server.Register(mux, RouteMiddleware{
+		Account: accountAuthenticate,
+		System:  systemAuthenticate,
+	})
 
-	unauthenticated := httptest.NewRequest(http.MethodGet, "/api/v1/translation-history", nil)
-	if response := serve(mux, unauthenticated); response.Code != http.StatusUnauthorized {
+	noAuthorization := httptest.NewRequest(http.MethodGet, "/api/v1/translation-history", nil)
+	if response := serve(mux, noAuthorization); response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
 
-	tests := []struct {
+	accountOnly := []struct {
 		method     string
 		path       string
 		wantStatus int
 	}{
 		{method: http.MethodGet, path: "/api/v1/voice-sessions/vs_01/participants", wantStatus: http.StatusOK},
-		{method: http.MethodPatch, path: "/api/v1/voice-sessions/vs_01/participants/p_01", wantStatus: http.StatusForbidden},
 		{method: http.MethodGet, path: "/api/v1/voice-sessions/vs_01/turns", wantStatus: http.StatusOK},
 		{method: http.MethodGet, path: "/api/v1/voice-turns/vt_01", wantStatus: http.StatusOK},
-		{method: http.MethodPatch, path: "/api/v1/voice-turns/vt_01/attribution", wantStatus: http.StatusForbidden},
 		{method: http.MethodGet, path: "/api/v1/translation-history", wantStatus: http.StatusOK},
 	}
-	for _, test := range tests {
+	for _, test := range accountOnly {
 		request := httptest.NewRequest(test.method, test.path, nil)
 		request.Header.Set("Authorization", "Bearer access-token")
 		response := serve(mux, request)
 		if response.Code != test.wantStatus {
-			t.Fatalf("%s %s status = %d, want %d; body = %s", test.method, test.path, response.Code, test.wantStatus, response.Body.String())
+			t.Fatalf("account-only %s %s status = %d, want %d; body = %s", test.method, test.path, response.Code, test.wantStatus, response.Body.String())
 		}
 	}
-	if authenticatedCalls != len(tests)+1 {
-		t.Fatalf("authentication calls = %d, want %d", authenticatedCalls, len(tests)+1)
+
+	missingSystem := []struct {
+		method     string
+		path       string
+		wantStatus int
+	}{
+		{method: http.MethodPatch, path: "/api/v1/voice-sessions/vs_01/participants/p_01", wantStatus: http.StatusForbidden},
+		{method: http.MethodPatch, path: "/api/v1/voice-turns/vt_01/attribution", wantStatus: http.StatusForbidden},
+	}
+	for _, test := range missingSystem {
+		request := httptest.NewRequest(test.method, test.path, strings.NewReader(`{"participant_id":"p_01","attribution_status":"confirmed"}`))
+		request.Header.Set("Authorization", "Bearer access-token")
+		response := serve(mux, request)
+		if response.Code != test.wantStatus {
+			t.Fatalf("missing system %s %s status = %d, want %d; body = %s", test.method, test.path, response.Code, test.wantStatus, response.Body.String())
+		}
+	}
+
+	withSystem := []struct {
+		method     string
+		path       string
+		body       string
+		wantStatus int
+	}{
+		{method: http.MethodPatch, path: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"display_name":"A"}`, wantStatus: http.StatusOK},
+		{method: http.MethodPatch, path: "/api/v1/voice-turns/vt_01/attribution", body: `{"participant_id":"p_01","attribution_status":"confirmed"}`, wantStatus: http.StatusOK},
+	}
+	for _, test := range withSystem {
+		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+		request.Header.Set("Authorization", "Bearer access-token")
+		request.Header.Set(systemTokenHeader, "system-token")
+		response := serve(mux, request)
+		if response.Code != test.wantStatus {
+			t.Fatalf("with system %s %s status = %d, want %d; body = %s", test.method, test.path, response.Code, test.wantStatus, response.Body.String())
+		}
+	}
+}
+
+func TestSystemAuthenticateRejectsWithoutConfiguredToken(t *testing.T) {
+	participantRepository := &participantRepository{}
+	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
+	owners := sessionOwners{ownerID: "acct_01"}
+	server := NewHandler(Dependencies{
+		Participants: participants.NewService(participantRepository, owners, nil),
+		Turns:        turns.NewService(turnRepository, owners, nil),
+		Accounts:     ContextAccountProvider{},
+		System:       ContextSystemAuthorizer{},
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	mux := http.NewServeMux()
+	server.Register(mux, RouteMiddleware{
+		Account: func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				next.ServeHTTP(writer, request.WithContext(WithAccountID(request.Context(), "acct_01")))
+			})
+		},
+		System: server.SystemAuthenticate,
+	})
+
+	path := "/api/v1/voice-sessions/vs_01/participants/p_01"
+	request := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(`{"display_name":"A"}`))
+	request.Header.Set(systemTokenHeader, "any-token")
+	response := serve(mux, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("system authenticate status = %d, want %d; body = %s", response.Code, http.StatusForbidden, response.Body.String())
+	}
+}
+
+func TestSystemAuthenticateAcceptsConfiguredToken(t *testing.T) {
+	participantRepository := &participantRepository{updated: recordsv1.Participant{ID: "p_01", SessionID: "vs_01"}}
+	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
+	owners := sessionOwners{ownerID: "acct_01"}
+	server := NewHandler(Dependencies{
+		Participants: participants.NewService(participantRepository, owners, nil),
+		Turns:        turns.NewService(turnRepository, owners, nil),
+		Accounts:     ContextAccountProvider{},
+		System:       ContextSystemAuthorizer{},
+		SystemToken:  "records-system-token-secret-123456",
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	mux := http.NewServeMux()
+	server.Register(mux, RouteMiddleware{
+		Account: func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				next.ServeHTTP(writer, request.WithContext(WithAccountID(request.Context(), "acct_01")))
+			})
+		},
+		System: server.SystemAuthenticate,
+	})
+
+	tests := []struct {
+		name  string
+		token string
+		path  string
+		body  string
+		want  int
+	}{
+		{name: "matching token", token: "records-system-token-secret-123456", path: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"display_name":"A"}`, want: http.StatusOK},
+		{name: "wrong token", token: "wrong-token", path: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"display_name":"A"}`, want: http.StatusForbidden},
+		{name: "missing header", path: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"display_name":"A"}`, want: http.StatusForbidden},
+		{name: "attribution matching token", token: "records-system-token-secret-123456", path: "/api/v1/voice-turns/vt_01/attribution", body: `{"participant_id":"p_01","attribution_status":"confirmed"}`, want: http.StatusOK},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPatch, test.path, strings.NewReader(test.body))
+			if test.token != "" {
+				request.Header.Set(systemTokenHeader, test.token)
+			}
+			response := serve(mux, request)
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d; body = %s", response.Code, test.want, response.Body.String())
+			}
+		})
 	}
 }
 
@@ -276,7 +483,10 @@ func newHandlerWithLogger(t *testing.T, participantRepository *participantReposi
 		Logger:       logger,
 	})
 	mux := http.NewServeMux()
-	handler.Register(mux, func(next http.Handler) http.Handler { return next })
+	handler.Register(mux, RouteMiddleware{
+		Account: func(next http.Handler) http.Handler { return next },
+		System:  func(next http.Handler) http.Handler { return next },
+	})
 	return mux
 }
 
@@ -317,11 +527,23 @@ func decodeBody(t *testing.T, response *httptest.ResponseRecorder, target any) {
 	}
 }
 
+func ptr64(value float64) *float64 {
+	return &value
+}
+
+func equalConfidence(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
 type participantRepository struct {
 	listResponse recordsv1.ParticipantListResponse
 	listQuery    recordsv1.ListParticipantsQuery
 	updated      recordsv1.Participant
 	update       participants.Update
+	updateErr    error
 }
 
 func (r *participantRepository) List(_ context.Context, _, _ string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
@@ -331,6 +553,9 @@ func (r *participantRepository) List(_ context.Context, _, _ string, query recor
 
 func (r *participantRepository) Update(_ context.Context, _ string, _ string, update participants.Update) (recordsv1.Participant, error) {
 	r.update = update
+	if r.updateErr != nil {
+		return recordsv1.Participant{}, r.updateErr
+	}
 	return r.updated, nil
 }
 
@@ -380,7 +605,9 @@ func (r *turnRepository) CorrectAttribution(_ context.Context, update turns.Attr
 	updated := r.turn
 	updated.ParticipantID = &update.ParticipantID
 	updated.AttributionStatus = update.AttributionStatus
-	updated.SpeakerConfidence = update.SpeakerConfidence
+	if update.SpeakerConfidenceSet {
+		updated.SpeakerConfidence = update.SpeakerConfidence
+	}
 	updated.CorrectedBy = &update.CorrectedBy
 	updated.CorrectedAt = &update.CorrectedAt
 	return updated, nil

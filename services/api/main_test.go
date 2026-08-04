@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
@@ -18,6 +19,7 @@ import (
 	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
+	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
@@ -46,6 +48,7 @@ func TestBuildMuxActivatesAuthenticatedVoiceRecordRoutes(t *testing.T) {
 
 	handler := buildMux(
 		languages.NewHandler(nil, nil),
+		nil,
 		newRecordsTestHandler(),
 		accounts.NewUseCases(),
 		mainTokenVerifier{},
@@ -81,6 +84,7 @@ func TestBuildMuxAuthenticatesLanguageRoutes(t *testing.T) {
 		languages.NewHandler(nil, func(r *http.Request) (string, bool) {
 			return internalwebapi.AccountIDFromContext(r.Context())
 		}),
+		nil,
 		newRecordsTestHandler(),
 		accounts.NewUseCases(),
 		mainTokenVerifier{},
@@ -112,6 +116,101 @@ func TestBuildMuxAuthenticatesLanguageRoutes(t *testing.T) {
 	}
 }
 
+func TestBuildMuxMountsVoiceSessionRoutes(t *testing.T) {
+	sessionHandler := sessions.NewHandler(
+		mainSessionUseCases{now: time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)},
+		func(r *http.Request) (string, bool) {
+			return internalwebapi.AccountIDFromContext(r.Context())
+		},
+	)
+	handler := buildMuxWithServices(
+		languages.NewHandler(nil, nil),
+		sessionHandler,
+		accounts.NewUseCases(),
+		usage.NewUseCases(),
+		delivery.NewUseCases(),
+		mainTokenVerifier{},
+		newRecordsTestHandler(),
+	)
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		key    string
+	}{
+		{
+			name:   "create",
+			method: http.MethodPost,
+			path:   "/api/v1/voice-sessions",
+			body:   `{"capabilities":{"webrtc":true,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
+			key:    "create-key",
+		},
+		{name: "start", method: http.MethodPost, path: "/api/v1/voice-sessions/vs_1/start", key: "start-key"},
+		{name: "end", method: http.MethodPost, path: "/api/v1/voice-sessions/vs_1/end", key: "end-key"},
+		{name: "detail", method: http.MethodGet, path: "/api/v1/voice-sessions/vs_1"},
+		{name: "state", method: http.MethodGet, path: "/api/v1/voice-sessions/vs_1/state"},
+		{name: "list", method: http.MethodGet, path: "/api/v1/voice-sessions"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer account-token")
+			if test.key != "" {
+				request.Header.Set("Idempotency-Key", test.key)
+			}
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code == http.StatusNotFound {
+				t.Fatalf("%s %s returned 404; route is not mounted", test.method, test.path)
+			}
+			if response.Code >= http.StatusInternalServerError {
+				t.Fatalf("status = %d, want mounted non-5xx route; body = %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestBuildMuxSessionRoutesFailClosedWhenRuntimeDisabled(t *testing.T) {
+	handler := buildMux(
+		languages.NewHandler(nil, nil),
+		newSessionHandler(nil),
+		newRecordsTestHandler(),
+		accounts.NewUseCases(),
+		mainTokenVerifier{},
+	)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions", strings.NewReader(
+		`{"capabilities":{"webrtc":true,"data_channel":true,"microphone":true,"speaker":true,"speaker_diarization":true}}`,
+	))
+	request.Header.Set("Authorization", "Bearer account-token")
+	request.Header.Set("Idempotency-Key", "create-disabled")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusNotImplemented, response.Body.String())
+	}
+}
+
+func TestAPIServerTimeoutBudgetConstants(t *testing.T) {
+	if apiReadHeaderTimeout != 5*time.Second ||
+		apiReadTimeout != 15*time.Second ||
+		apiWriteTimeout != 45*time.Second ||
+		apiIdleTimeout != 60*time.Second {
+		t.Fatalf("API timeout budget = (%v, %v, %v, %v), want (5s, 15s, 45s, 60s)",
+			apiReadHeaderTimeout,
+			apiReadTimeout,
+			apiWriteTimeout,
+			apiIdleTimeout,
+		)
+	}
+}
+
 func TestNewRecordsHTTPDependenciesFromPoolRequiresPool(t *testing.T) {
 	_, err := newRecordsHTTPDependenciesFromPool(
 		context.Background(),
@@ -119,6 +218,7 @@ func TestNewRecordsHTTPDependenciesFromPoolRequiresPool(t *testing.T) {
 		strings.Repeat("s", 32),
 		"lingow-api",
 		"lingow-client",
+		"",
 	)
 	if err == nil {
 		t.Fatal("newRecordsHTTPDependenciesFromPool() succeeded with nil pool")
@@ -149,12 +249,32 @@ func TestNewRecordsHTTPDependenciesRequiresConfiguration(t *testing.T) {
 	}
 }
 
+func TestRecordsHTTPConfigurationFromEnvIncludesSystemToken(t *testing.T) {
+	databaseURL := "postgres://unused"
+	jwtSecret := strings.Repeat("s", 32)
+	systemToken := strings.Repeat("t", 32)
+
+	t.Setenv("DATABASE_URL", databaseURL)
+	t.Setenv("JWT_SECRET", jwtSecret)
+	t.Setenv("LINGOW_RECORDS_SYSTEM_TOKEN", systemToken)
+
+	gotDatabaseURL, gotJWTSecret, gotSystemToken, err := recordsHTTPConfigurationFromEnv()
+	if err != nil {
+		t.Fatalf("recordsHTTPConfigurationFromEnv() error = %v", err)
+	}
+	if gotDatabaseURL != databaseURL || gotJWTSecret != jwtSecret || gotSystemToken != systemToken {
+		t.Fatalf("records configuration = (%q, %q, %q)", gotDatabaseURL, gotJWTSecret, gotSystemToken)
+	}
+}
+
 func TestRunValidatesRecordsConfigurationBeforeDatabaseSetup(t *testing.T) {
 	t.Setenv("DATABASE_URL", "://invalid")
 	t.Setenv("JWT_SECRET", strings.Repeat("s", 31))
+	t.Setenv("REALTIME_BASE_URL", "http://127.0.0.1:8090")
+	t.Setenv("REALTIME_TICKET_SECRET", strings.Repeat("r", 32))
 
 	err := run()
-	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET must be at least 32 bytes") {
+	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET must contain at least 32 bytes") {
 		t.Fatalf("run() error = %v, want JWT_SECRET length error", err)
 	}
 }
@@ -171,6 +291,7 @@ func TestRunRejectsInvalidDeliveryRuntimeMode(t *testing.T) {
 func TestBuildMuxWithServicesUsesNotImplementedRecordsWhenNil(t *testing.T) {
 	handler := buildMuxWithServices(
 		languages.NewHandler(nil, nil),
+		nil,
 		accounts.NewUseCases(),
 		usage.NewUseCases(),
 		delivery.NewUseCases(),
@@ -255,4 +376,66 @@ func (mainTurnRepository) ListHistory(context.Context, string, recordsv1.ListTur
 
 func (mainTurnRepository) CorrectAttribution(context.Context, turns.AttributionUpdate) (recordsv1.VoiceTurn, error) {
 	return recordsv1.VoiceTurn{}, nil
+}
+
+type mainSessionUseCases struct {
+	now time.Time
+}
+
+func (u mainSessionUseCases) Create(_ context.Context, input sessions.CreateInput) (sessions.VoiceSession, error) {
+	return sessions.VoiceSession{
+		ID:        "vs_created",
+		AccountID: input.AccountID,
+		Status:    sessions.StatusCreated,
+		CreatedAt: u.now,
+	}, nil
+}
+
+func (u mainSessionUseCases) Start(_ context.Context, input sessions.StartInput) (sessions.VoiceSession, error) {
+	return sessions.VoiceSession{
+		ID:        input.SessionID,
+		AccountID: input.AccountID,
+		Status:    sessions.StatusActive,
+		CreatedAt: u.now,
+	}, nil
+}
+
+func (u mainSessionUseCases) End(_ context.Context, input sessions.EndInput) (sessions.VoiceSession, error) {
+	return sessions.VoiceSession{
+		ID:        input.SessionID,
+		AccountID: input.AccountID,
+		Status:    sessions.StatusEnded,
+		CreatedAt: u.now,
+	}, nil
+}
+
+func (u mainSessionUseCases) GetDetail(_ context.Context, input sessions.DetailInput) (sessions.VoiceSessionDetail, error) {
+	return sessions.VoiceSessionDetail{
+		VoiceSession: sessions.VoiceSession{
+			ID:        input.SessionID,
+			AccountID: input.AccountID,
+			Status:    sessions.StatusActive,
+			CreatedAt: u.now,
+		},
+		RuntimeState:     sessions.RuntimeListening,
+		RuntimeUpdatedAt: u.now,
+	}, nil
+}
+
+func (u mainSessionUseCases) GetState(_ context.Context, input sessions.DetailInput) (sessions.StateSnapshot, error) {
+	return sessions.StateSnapshot{
+		SessionID:        input.SessionID,
+		Status:           sessions.StatusActive,
+		RuntimeState:     sessions.RuntimeListening,
+		RuntimeUpdatedAt: u.now,
+	}, nil
+}
+
+func (u mainSessionUseCases) List(_ context.Context, input sessions.ListInput) (sessions.ListPage, error) {
+	return sessions.ListPage{Sessions: []sessions.VoiceSessionListItem{{
+		ID:        "vs_1",
+		AccountID: input.AccountID,
+		Status:    sessions.StatusActive,
+		CreatedAt: u.now,
+	}}}, nil
 }

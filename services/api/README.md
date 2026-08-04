@@ -46,10 +46,33 @@ services/api/
 └── webapi/
 ```
 
-语言配置能力与本地接线说明见 [`languages/README.md`](./languages/README.md)。
+语言配置能力与本地接线说明见 [`languages/README.md`](./languages/README.md)。Session HTTP
+生产装配会在同一 PostgreSQL pool 上复用真实 `languages.Service`，并通过 Session owner
+校验语言配置归属；不得使用 `LANGUAGE_SESSION_OWNER=trust-auth` 作为生产替代。
+
+会话生命周期 HTTP 在有 `DATABASE_URL` 时与语言配置共用同一 PostgreSQL pool：
+`sessions` 通过 `realtimeaccess.NewLanguageConfigReader` 读取真实 `languages.Service`，
+用于 Start 前双语配置校验。未设置 `REALTIME_BASE_URL` 时，Create/List/Get 可用；
+Start 返回 `501 not_implemented`。End 对仍为 `created` 的会话可直接成功（无需
+Realtime.Stop）；对 `active` 会话因清理依赖 Stop 仍返回 `501`，直到 realtime
+control-plane 客户端接入。
 
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
+
+`services/realtime-audio` 提供本地可运行的 `/realtime/v1` HTTP 入口（`go run .`，默认
+`:8090`）；当前使用 Pion + `localruntime` 适配器，真实 ASR/TTS pipeline 仍为后续工作。
+`LINGOW_SESSION_RUNTIME` 默认 `disabled`；disabled 时 Session 路由明确返回 501，
+不会构造 Realtime client、adapter 或 EndRecoveryWorker。联调完整 Start 可用仓库根目录
+`start-local.bat`（同时拉起 API 与 realtime-audio），并将 API 侧设为 `enabled`。
+
+启用 Session runtime 时需要 `DATABASE_URL`、至少 32 字节的 `JWT_SECRET`、
+`REALTIME_BASE_URL` 和至少 32 字节的 `REALTIME_TICKET_SECRET`。`REALTIME_BASE_URL`
+是 API 访问 `services/realtime-audio` control-plane 的 HTTP/HTTPS URL，例如
+`http://127.0.0.1:8090`；可带路径以兼容 API Gateway，但不得包含用户信息、query 或
+fragment。`REALTIME_HTTP_TIMEOUT` 可选，默认 `5s`，最大 `5s`。API 会使用短期 HMAC
+realtime ticket 调用 WebRTC connection、Start、Stop 和 runtime state 接口，ticket secret
+必须与 realtime-audio 验证端一致，不能与 JWT secret 混用或写入日志。
 
 结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
 本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。
@@ -76,13 +99,21 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 
 ## 语音记录 HTTP 装配
 
-API 启动语音记录路由需要 `DATABASE_URL` 和至少 32 字节的 `JWT_SECRET`。缺少配置或数据库
+API 启动语音记录和 Session 路由需要 `DATABASE_URL` 和至少 32 字节的 `JWT_SECRET`。缺少配置或数据库
 不可用时启动直接失败，不回退到 501 handler。启动时会应用 recordstore migration，并组装真实
 PostgreSQL participant/turn repositories 与账户 session scope。
 
 六条 records 路由统一经过 Bearer token 验证。GET 只读取当前账户拥有会话中的 final records；
-客户端账户字段和 `X-Account-ID` 不参与授权。当前仓库尚无可信 system actor 凭据契约，因此两个
-AI-only PATCH 路由在生产装配中保持 fail-closed，普通 Access Token 返回 `403 forbidden`。
+客户端账户字段和 `X-Account-ID` 不参与授权。两个 AI-only PATCH 路由要求账户 Bearer token 和
+`X-Lingow-System-Token` 双重认证；`LINGOW_RECORDS_SYSTEM_TOKEN` 未配置时 PATCH 保持
+fail-closed（`403 forbidden`），配置后由 `SystemAuthenticate` 做常量时间比对并在成功后标记为
+system actor。
+
+pending/provisional FinalTurn 在落库同一事务内入队一个 durable attribution task。API 启动时运行
+attribution worker：worker 领取任务，按持久化的 `provider_speaker_id` 通过账户范围的 participant
+service 建立稳定映射，再通过 turns service 确认或修正归属。没有 provider speaker key 的任务被永久
+标记失败（`no_provider_speaker_id`）而不是伪装成功；重试采用指数退避并在达到上限后停止。两个
+API runtime（普通与 `LINGOW_DELIVERY_RUNTIME=enabled`）都会启动该 worker。
 
 API 同时运行 PostgreSQL `final_turn_outbox` consumer。事件使用 `event_id` 和完整 payload hash
 保证发布重放一致，worker 通过 receipt lease 领取消息：成功写入后 Ack，临时存储错误 Nack 并延迟

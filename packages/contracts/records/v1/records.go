@@ -47,6 +47,7 @@ const (
 	ErrorParticipantAbsent  ErrorCode = "participant_not_found"
 	ErrorVoiceTurnAbsent    ErrorCode = "voice_turn_not_found"
 	ErrorInvalidAttribution ErrorCode = "invalid_attribution"
+	ErrorConflict           ErrorCode = "conflict"
 	ErrorNotImplemented     ErrorCode = "not_implemented"
 	ErrorInternal           ErrorCode = "internal_error"
 )
@@ -151,27 +152,34 @@ type ListTurnsQuery struct {
 // all three values and its payload unchanged; an existing key with a different payload is a
 // conflict rather than an overwrite.
 type FinalTurnEvent struct {
-	EventVersion          int               `json:"event_version"`
-	EventID               string            `json:"event_id"`
-	TraceID               string            `json:"trace_id"`
-	TurnID                string            `json:"turn_id"`
-	SessionID             string            `json:"session_id"`
-	ParticipantID         *string           `json:"participant_id"`
-	SequenceNo            int64             `json:"sequence_no"`
-	SourceLanguage        string            `json:"source_language"`
-	TargetLanguage        string            `json:"target_language"`
-	LanguageConfigVersion int64             `json:"language_config_version"`
-	SourceText            string            `json:"source_text"`
-	TranslatedText        string            `json:"translated_text"`
-	TTSEnabled            bool              `json:"tts_enabled"`
-	DeliveryEnabled       bool              `json:"delivery_enabled"`
-	SpeakerCode           string            `json:"speaker_code"`
-	SpeakerLabelSnapshot  *string           `json:"speaker_label_snapshot"`
-	SpeakerConfidence     *float64          `json:"speaker_confidence"`
-	AttributionStatus     AttributionStatus `json:"attribution_status"`
-	StartedAt             time.Time         `json:"started_at"`
-	EndedAt               time.Time         `json:"ended_at"`
-	OccurredAt            time.Time         `json:"occurred_at"`
+	EventVersion          int     `json:"event_version"`
+	EventID               string  `json:"event_id"`
+	TraceID               string  `json:"trace_id"`
+	TurnID                string  `json:"turn_id"`
+	SessionID             string  `json:"session_id"`
+	ParticipantID         *string `json:"participant_id"`
+	SequenceNo            int64   `json:"sequence_no"`
+	SourceLanguage        string  `json:"source_language"`
+	TargetLanguage        string  `json:"target_language"`
+	LanguageConfigVersion int64   `json:"language_config_version"`
+	SourceText            string  `json:"source_text"`
+	TranslatedText        string  `json:"translated_text"`
+	// omitempty keeps zero-value route flags out of legacy payload hashes while enabled
+	// routes remain explicit in the immutable event payload.
+	TTSEnabled           bool    `json:"tts_enabled,omitempty"`
+	DeliveryEnabled      bool    `json:"delivery_enabled,omitempty"`
+	SpeakerCode          string  `json:"speaker_code"`
+	SpeakerLabelSnapshot *string `json:"speaker_label_snapshot"`
+	// ProviderSpeakerID is the stable provider or diarization cluster key for this session, not a
+	// global identity. It is optional: when absent the async resolver must not guess attribution.
+	// omitempty keeps the nil-field JSON identical to pre-provider payloads so replay hashes remain
+	// compatible across rolling deploys.
+	ProviderSpeakerID *string           `json:"provider_speaker_id,omitempty"`
+	SpeakerConfidence *float64          `json:"speaker_confidence"`
+	AttributionStatus AttributionStatus `json:"attribution_status"`
+	StartedAt         time.Time         `json:"started_at"`
+	EndedAt           time.Time         `json:"ended_at"`
+	OccurredAt        time.Time         `json:"occurred_at"`
 }
 
 // Validate enforces the required v1 fields before a FinalTurn enters durable delivery.

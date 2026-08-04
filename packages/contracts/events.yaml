@@ -126,6 +126,9 @@ components:
           description: A temporary speaker code. When attribution_status is pending and no speaker is available, this is speaker_pending.
         speaker_label_snapshot:
           type: [string, 'null']
+        provider_speaker_id:
+          type: [string, 'null']
+          description: Stable provider or diarization cluster key scoped to this session. Optional; when absent the async resolver must not guess attribution.
         speaker_confidence:
           type: [number, 'null']
         attribution_status:

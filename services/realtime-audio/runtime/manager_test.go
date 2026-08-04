@@ -681,6 +681,29 @@ func TestManagerStopCancelsBlockedFailureReport(t *testing.T) {
 	}
 }
 
+func TestManagerStartAllowsEmptySourceLanguageForAutoDetect(t *testing.T) {
+	deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.FrameSources = FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
+		return AudioInput{Source: &fakeFrameSource{}, SourceLanguage: ""}, nil
+	})
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "x", SourceLanguage: "en-US", Provider: "asr", Model: "v1"}}),
+		Translation: &translate.FakeProvider{Result: translate.Result{Text: "y", Provider: "llm", Model: "qwen3.6-flash"}},
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "tts", Model: "v1"}}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background(), session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1",
+	}); err != nil {
+		t.Fatalf("Start() error = %v, empty SourceLanguage must be allowed for ASR auto-detect", err)
+	}
+	if err := manager.Stop(context.Background(), "session-1"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
 func TestManagerDoesNotBlockOtherSessionsWhileOpeningInput(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})

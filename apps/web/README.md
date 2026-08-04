@@ -1,38 +1,59 @@
 # apps/web
 
-Lingow Web 对话入口。
+Lingow Web 对话入口（联调/验收前端）。
 
-## 职责
-
-- 搭建响应式页面基础结构，兼容桌面端和手机浏览器
-- 首页支持主按钮和语音唤醒，用于进入对话模式
-- 语音唤醒仅在页面已打开且麦克风授权后生效
-- 提供开始传译和语言选择页面/区域
-- 进入后显示“Lingow 已进入对话模式”
-- 动态展示自动语言识别结果，例如“已识别中文/英语”，后续可按配置展示“已识别法语/西班牙语”
-- 首页仅显示最新一条字幕预览，点击进入后展示完整识别内容
-- 展示语音识别、双向翻译和 TTS 播放组件的运行状态
-- 预留后续面对面沟通、跨设备会话和多人会议入口
-- 作为实时音频服务和设备 SDK 的产品验收入口
-
-## 首期页面与状态
-
-- `/` Lingow 首页
-- `/interpret/start` 开始传译
-- `/interpret/languages` 语言选择
-- `idle`：展示等待按钮或语音唤醒
-- `language_selected`：展示当前会话语言对
-- `conversation_ready`：展示“Lingow 已进入对话模式”
-- `language_detected`：展示已识别语言
-- `subtitle_preview`：展示最新一条字幕预览
-- `subtitle_detail`：展示完整识别内容
-- `speaking_translation`：展示正在语音合成播放
+当前实现来自 realtime mock 联调页：匿名鉴权、voice-sessions、语言配置、API 签发 realtime ticket、WebRTC、字幕与 TTS 播放。
 
 ## 技术栈
 
 - TypeScript
-- Vue 3
-- Vite
-- Tailwind CSS
+- Next.js 16（App Router）
+- React 19
+- Vitest / Playwright
 
-首期不做首页完整字幕列表展示。Web 首页只显示最新一条字幕预览，点击后进入详情查看完整识别内容。Web 可以接入实时音频事件展示状态，但实时音频编排仍由 `services/realtime-audio` 负责。
+> 仓库早期文档曾规划 Vue 3 + Vite；本目录以现网可跑的 Next.js 联调前端为准。
+
+## 本地启动
+
+先在仓库根目录启动 API（`:8080`）与 realtime-audio（`:8090`），例如：
+
+```powershell
+.\start-local.ps1
+```
+
+再启动本前端：
+
+```bash
+cd apps/web
+cp .env.example .env.local
+npm install
+npm run dev
+```
+
+打开 [http://localhost:3000](http://localhost:3000)。Windows 也可：`.\start-windows.ps1`。
+
+## 环境变量
+
+见 [CONFIG.md](./CONFIG.md)。Next 会把浏览器请求代理到后端：
+
+- `/api/v1/*` → `LINGOW_API_BASE_URL`（默认 `http://127.0.0.1:8080`）
+- `/realtime/v1/*` → `LINGOW_REALTIME_BASE_URL`（默认 `http://127.0.0.1:8090`）
+
+正式联调走 `POST /api/v1/voice-sessions/{id}/realtime-ticket`。本地 `/api/dev/realtime-ticket` 旁路默认关闭（需 `ENABLE_DEV_REALTIME_TICKET=true` + `next dev`）。
+
+## 脚本
+
+| 命令 | 说明 |
+| --- | --- |
+| `npm run dev` | 开发服务器 |
+| `npm run test` | Vitest |
+| `npm run typecheck` | TypeScript |
+| `npm run test:e2e` | Playwright |
+| `npm run lint` | ESLint |
+
+## 职责边界
+
+- 负责：产品交互、会话 API 调用、WebRTC 接入、字幕/TTS 展示
+- 不负责：实时音频编排、ASR/翻译/TTS 供应商、硬件采集
+
+实时音频编排仍由 `services/realtime-audio` 负责。

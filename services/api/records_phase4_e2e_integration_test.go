@@ -132,7 +132,7 @@ func TestRecordsPhase4HTTPAndSnapshotConsistency(t *testing.T) {
 		ParticipantID:     correctedParticipant.ID,
 		AttributionStatus: recordsv1.AttributionCorrected,
 		SpeakerConfidence: &confidence,
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("CorrectAttribution() error = %v", err)
 	}
@@ -146,8 +146,8 @@ func TestRecordsPhase4HTTPAndSnapshotConsistency(t *testing.T) {
 	if len(correctedSnapshots) != 1 || correctedSnapshots[0].ParticipantID == nil || *correctedSnapshots[0].ParticipantID != correctedParticipant.ID {
 		t.Fatalf("corrected delivery snapshot = %#v", correctedSnapshots)
 	}
-	if correctedSnapshots[0].SpeakerLabelSnapshot != nil {
-		t.Fatalf("corrected delivery speaker label = %q, want original nil snapshot", *correctedSnapshots[0].SpeakerLabelSnapshot)
+	if correctedSnapshots[0].SpeakerLabelSnapshot == nil || *correctedSnapshots[0].SpeakerLabelSnapshot != correctedName {
+		t.Fatalf("corrected delivery speaker label = %#v, want %q", correctedSnapshots[0].SpeakerLabelSnapshot, correctedName)
 	}
 	if initialSnapshots[0].ParticipantID != nil || initialSnapshots[0].SpeakerLabelSnapshot != nil {
 		t.Fatalf("initial delivery snapshot changed after correction = %#v", initialSnapshots[0])
@@ -164,6 +164,7 @@ func TestRecordsPhase4HTTPAndSnapshotConsistency(t *testing.T) {
 
 	handler := buildMux(
 		languages.NewHandler(nil, nil),
+		nil,
 		fixture.dependencies.handler,
 		fixture.dependencies.accounts,
 		fixture.dependencies.tokens,
@@ -247,6 +248,20 @@ type recordsPhase4Turns struct {
 	pending    pipeline.TurnContext
 	attributed pipeline.TurnContext
 	foreign    pipeline.TurnContext
+}
+
+type phase4SpeakerReader struct {
+	delegate recordsv1.SpeakerAttributionReader
+}
+
+func (r phase4SpeakerReader) GetProvisionalAttribution(ctx context.Context, observation recordsv1.SpeakerObservation) (recordsv1.SpeakerAttribution, error) {
+	if observation.ProviderSpeakerID == "local-mic" {
+		return recordsv1.SpeakerAttribution{
+			SpeakerCode:       recordsv1.PendingSpeakerCode,
+			AttributionStatus: recordsv1.AttributionPending,
+		}, nil
+	}
+	return r.delegate.GetProvisionalAttribution(ctx, observation)
 }
 
 func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
@@ -347,7 +362,7 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 			Provider: "integration-tts",
 			Model:    "integration-tts-model",
 		}}),
-		Speakers:       recordsServices.Participants,
+		Speakers:       phase4SpeakerReader{delegate: recordsServices.Participants},
 		FinalTurns:     pipeline.NewPostgresFinalTurnSink(pool),
 		Usage:          phase4UsageSink{},
 		Audio:          phase4AudioSink{},
@@ -467,10 +482,9 @@ func assertPhase4CorrectedTurn(t *testing.T, turn recordsv1.VoiceTurn, participa
 
 func assertPhase4ImmutableTurn(t *testing.T, before, after recordsv1.VoiceTurn) {
 	t.Helper()
-	if before.ID != after.ID || before.SessionID != after.SessionID || before.SpeakerCode != after.SpeakerCode || before.SequenceNo != after.SequenceNo ||
+	if before.ID != after.ID || before.SessionID != after.SessionID || before.SequenceNo != after.SequenceNo ||
 		before.SourceLanguage != after.SourceLanguage || before.TargetLanguage != after.TargetLanguage || before.LanguageConfigVersion != after.LanguageConfigVersion ||
-		before.SourceText != after.SourceText || before.TranslatedText != after.TranslatedText || !equalPhase4StringPointers(before.DisplayName, after.DisplayName) ||
-		!equalPhase4StringPointers(before.ProviderSpeakerID, after.ProviderSpeakerID) || !equalPhase4StringPointers(before.VoiceProfileID, after.VoiceProfileID) ||
+		before.SourceText != after.SourceText || before.TranslatedText != after.TranslatedText ||
 		!before.StartedAt.Equal(after.StartedAt) || !before.EndedAt.Equal(after.EndedAt) || !before.CreatedAt.Equal(after.CreatedAt) {
 		t.Fatalf("immutable turn fields changed: before=%#v after=%#v", before, after)
 	}
@@ -488,9 +502,6 @@ func assertPhase4ImmutableDeliverySnapshot(t *testing.T, before, after delivery.
 	if before.TurnID != after.TurnID || before.SessionID != after.SessionID || before.SourceLanguage != after.SourceLanguage || before.TargetLanguage != after.TargetLanguage ||
 		before.LanguageConfigVersion != after.LanguageConfigVersion || before.SourceText != after.SourceText || before.TranslatedText != after.TranslatedText || !before.CreatedAt.Equal(after.CreatedAt) {
 		t.Fatalf("immutable delivery snapshot fields changed: before=%#v after=%#v", before, after)
-	}
-	if after.SpeakerLabelSnapshot != nil {
-		t.Fatalf("immutable delivery speaker label = %#v, want nil", after.SpeakerLabelSnapshot)
 	}
 }
 

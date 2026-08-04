@@ -2,6 +2,7 @@ package recordsv1
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -72,6 +73,38 @@ func TestFinalTurnEventJSONPreservesNullableAttribution(t *testing.T) {
 	}
 }
 
+func TestFinalTurnEventCarriesProviderSpeakerID(t *testing.T) {
+	event := validFinalTurnEvent()
+	providerID := "diar_01"
+	event.ProviderSpeakerID = &providerID
+
+	body, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal final turn event: %v", err)
+	}
+
+	var actual map[string]any
+	if err := json.Unmarshal(body, &actual); err != nil {
+		t.Fatalf("unmarshal final turn event: %v", err)
+	}
+	if got, want := actual["provider_speaker_id"], providerID; got != want {
+		t.Fatalf("provider_speaker_id = %v, want %q", got, want)
+	}
+
+	event.ProviderSpeakerID = nil
+	body, err = json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal final turn event without provider id: %v", err)
+	}
+	var withoutProvider map[string]any
+	if err := json.Unmarshal(body, &withoutProvider); err != nil {
+		t.Fatalf("unmarshal final turn event without provider id: %v", err)
+	}
+	if _, present := withoutProvider["provider_speaker_id"]; present {
+		t.Fatalf("provider_speaker_id should be omitted when nil")
+	}
+}
+
 func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 	valid := validFinalTurnEvent()
 	if err := valid.Validate(); err != nil {
@@ -138,6 +171,34 @@ func TestFinalTurnEventPayloadHashCoversCompleteEvent(t *testing.T) {
 		if changedHash == hash {
 			t.Fatalf("changed event hash = %x, want a different hash", changedHash)
 		}
+	}
+}
+
+func TestFinalTurnPayloadHashMatchesLegacyPayloadWithoutProviderSpeakerID(t *testing.T) {
+	legacyJSON := `{"event_version":1,"event_id":"evt_01","trace_id":"trace_01","turn_id":"vt_01","session_id":"vs_01","participant_id":null,"sequence_no":1,"source_language":"zh-CN","target_language":"en-US","language_config_version":3,"source_text":"hello","translated_text":"hello","speaker_code":"speaker_01","speaker_label_snapshot":null,"speaker_confidence":null,"attribution_status":"pending","started_at":"2026-07-24T08:00:00Z","ended_at":"2026-07-24T08:00:01Z","occurred_at":"2026-07-24T08:00:02Z"}`
+
+	legacyHash := sha256.Sum256([]byte(legacyJSON))
+
+	current := validFinalTurnEvent()
+	current.ProviderSpeakerID = nil
+	currentHash, err := FinalTurnEventPayloadHash(current)
+	if err != nil {
+		t.Fatalf("FinalTurnEventPayloadHash() error = %v", err)
+	}
+	if currentHash != legacyHash {
+		t.Fatalf("current hash = %x, want legacy %x", currentHash, legacyHash)
+	}
+
+	var decoded FinalTurnEvent
+	if err := json.Unmarshal([]byte(legacyJSON), &decoded); err != nil {
+		t.Fatalf("unmarshal legacy payload: %v", err)
+	}
+	decodedHash, err := FinalTurnEventPayloadHash(decoded)
+	if err != nil {
+		t.Fatalf("FinalTurnEventPayloadHash() legacy decode error = %v", err)
+	}
+	if decodedHash != legacyHash {
+		t.Fatalf("decoded legacy hash = %x, want %x", decodedHash, legacyHash)
 	}
 }
 

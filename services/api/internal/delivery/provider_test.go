@@ -107,6 +107,17 @@ func TestFakeEmailProviderRejectsIdempotencyKeyReuse(t *testing.T) {
 	}
 }
 
+func TestFakeEmailProviderInitializesZeroValueState(t *testing.T) {
+	var provider FakeEmailProvider
+	request := validFakeRequest()
+	if err := provider.Send(context.Background(), request); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if got := len(provider.Requests()); got != 1 {
+		t.Fatalf("Requests() length = %d, want 1", got)
+	}
+}
+
 func TestFakeEmailProviderConcurrentDuplicateInvokesOnce(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -137,6 +148,35 @@ func TestFakeEmailProviderConcurrentDuplicateInvokesOnce(t *testing.T) {
 	}
 }
 
+func TestFakeEmailProviderRejectsMismatchedInFlightRequestIdentity(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	provider := NewFakeEmailProvider(FakeEmailProviderConfig{
+		SendFunc: func(context.Context, SendRequest) error {
+			close(started)
+			<-release
+			return nil
+		},
+	})
+	request := validFakeRequest()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- provider.Send(context.Background(), request) }()
+	<-started
+	second := validFakeRequest()
+	second.Message.ID = "message-2"
+	second.Attempt.MessageID = "message-2"
+	second.ProviderIdempotencyKey = request.ProviderIdempotencyKey
+	second.Attempt.ID = request.Attempt.ID
+	err := provider.Send(context.Background(), second)
+	close(release)
+	if !errors.Is(err, ErrProviderRejected) || !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("Send() error = %v, want provider rejection and conflict", err)
+	}
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Send() error = %v", err)
+	}
+}
+
 func TestFakeEmailProviderRejectsInvalidRequest(t *testing.T) {
 	provider := NewFakeEmailProvider(FakeEmailProviderConfig{})
 	request := validFakeRequest()
@@ -150,6 +190,32 @@ func TestFakeEmailProviderRejectsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestFakeEmailProviderReturnsConfiguredFailureWithoutAccepting(t *testing.T) {
+	expected := errors.New("provider unavailable")
+	provider := NewFakeEmailProvider(FakeEmailProviderConfig{SendErr: expected})
+	request := validFakeRequest()
+
+	if err := provider.Send(context.Background(), request); !errors.Is(err, expected) {
+		t.Fatalf("Send() error = %v, want configured failure", err)
+	}
+	if err := provider.Send(context.Background(), request); !errors.Is(err, expected) {
+		t.Fatalf("retry Send() error = %v, want configured failure", err)
+	}
+	if got := len(provider.Requests()); got != 2 {
+		t.Fatalf("Requests() length = %d, want 2 failed attempts", got)
+	}
+}
+
+func TestNilFakeEmailProviderFailsClosed(t *testing.T) {
+	var provider *FakeEmailProvider
+	if err := provider.Send(context.Background(), validFakeRequest()); !errors.Is(err, ErrProviderNotConfigured) {
+		t.Fatalf("Send() error = %v, want ErrProviderNotConfigured", err)
+	}
+	if requests := provider.Requests(); requests != nil {
+		t.Fatalf("Requests() = %#v, want nil", requests)
+	}
+}
+
 func TestFakeEmailProviderRejectsMismatchedRequestIdentity(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -160,6 +226,15 @@ func TestFakeEmailProviderRejectsMismatchedRequestIdentity(t *testing.T) {
 		}},
 		{name: "attempt message", mutate: func(request *SendRequest) {
 			request.Attempt.MessageID = "message-2"
+		}},
+		{name: "missing account", mutate: func(request *SendRequest) {
+			request.Message.AccountID = ""
+		}},
+		{name: "wrong channel", mutate: func(request *SendRequest) {
+			request.Message.Channel = ChannelWeChat
+		}},
+		{name: "destination ref", mutate: func(request *SendRequest) {
+			request.Destination.DestinationRef = "destination-2"
 		}},
 	}
 	for _, test := range tests {
@@ -199,6 +274,24 @@ func TestFakeEmailProviderWaiterHonorsCancellation(t *testing.T) {
 	close(release)
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first Send() error = %v", err)
+	}
+}
+
+func TestWaitForFakeProviderCallReturnsSettledError(t *testing.T) {
+	expected := errors.New("provider failed")
+	call := &fakeProviderCall{done: make(chan struct{}), err: expected}
+	close(call.done)
+	if err := waitForFakeProviderCall(context.Background(), call); !errors.Is(err, expected) {
+		t.Fatalf("waitForFakeProviderCall() error = %v, want settled error", err)
+	}
+}
+
+func TestWaitForFakeProviderCallHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	call := &fakeProviderCall{done: make(chan struct{})}
+	if err := waitForFakeProviderCall(ctx, call); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForFakeProviderCall() error = %v, want context.Canceled", err)
 	}
 }
 

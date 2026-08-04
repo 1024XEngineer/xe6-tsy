@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -21,18 +22,33 @@ import (
 	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
+	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
+const (
+	apiReadHeaderTimeout = 5 * time.Second
+	apiReadTimeout       = 15 * time.Second
+	apiWriteTimeout      = 45 * time.Second
+	apiIdleTimeout       = 60 * time.Second
+)
+
 type recordsHTTPDependencies struct {
-	handler    *recordswebapi.Server
-	accounts   accounts.Service
-	tokens     accounts.AccessTokenVerifier
-	worker     finalTurnWorker
-	turns      *turns.Service
-	maintainer backgroundWorker
-	cleanup    func()
+	handler           *recordswebapi.Server
+	accounts          accounts.Service
+	tokens            accounts.AccessTokenVerifier
+	worker            finalTurnWorker
+	turns             *turns.Service
+	attributionWorker backgroundWorker
+	maintainer        backgroundWorker
+	pool              *pgxpool.Pool
+	cleanup           func()
+}
+
+type languageHTTPDependencies struct {
+	service *languages.Service
+	handler *languages.Handler
 }
 
 type finalTurnWorker interface {
@@ -41,6 +57,11 @@ type finalTurnWorker interface {
 
 type backgroundWorker interface {
 	Run(context.Context) error
+}
+
+type namedBackgroundWorker struct {
+	name string
+	run  func(context.Context) error
 }
 
 // main wires foundation use cases into the HTTP server and owns graceful shutdown.
@@ -60,38 +81,78 @@ func run() error {
 		return runConfigured(processConfig)
 	}
 
-	if _, _, err := recordsHTTPConfigurationFromEnv(); err != nil {
-		return err
-	}
-
-	address := os.Getenv("API_ADDR")
-	if address == "" {
-		address = ":8080"
-	}
-
-	langHandler, cleanup, err := newLanguageHandler(context.Background())
+	pool, err := recordstore.Open(context.Background(), processConfig.DatabaseURL)
 	if err != nil {
 		return err
 	}
-	if cleanup != nil {
-		defer cleanup()
+	defer pool.Close()
+	if err := recordstore.Migrate(context.Background(), pool); err != nil {
+		return err
 	}
 
-	records, err := newRecordsHTTPDependencies(context.Background())
+	sessionRepository := sessions.NewPostgresRepository(pool)
+	langDependencies, err := newLanguageDependenciesWithPool(
+		context.Background(),
+		pool,
+		sessionOwnerReader{reader: sessionRepository},
+	)
 	if err != nil {
 		return err
 	}
-	defer records.cleanup()
+	records, err := newRecordsHTTPDependenciesFromPool(
+		context.Background(),
+		pool,
+		processConfig.JWTSecret,
+		processConfig.JWTIssuer,
+		processConfig.JWTAudience,
+		processConfig.RecordsSystemToken,
+	)
+	if err != nil {
+		return err
+	}
 
-	mux := buildMux(langHandler, records.handler, records.accounts, records.tokens)
+	sessionHandler := newSessionHandler(nil)
+	var sessionRecovery backgroundWorker
+	if processConfig.SessionRuntimeEnabled {
+		sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
+			Repository:     sessionRepository,
+			SessionReader:  sessionRepository,
+			LanguageReader: langDependencies.service,
+			HTTPClient: &http.Client{
+				Timeout: realtimeHTTPTimeout(processConfig),
+			},
+			IDs:    newSessionIDGenerator(),
+			Clock:  utcClock{},
+			Config: processConfig,
+			Logger: slog.Default(),
+		})
+		if err != nil {
+			return err
+		}
+		sessionHandler = sessionDependencies.handler
+		sessionRecovery = sessionDependencies.endRecovery
+	} else {
+		slog.Warn(
+			"voice session runtime disabled",
+			"configuration", "LINGOW_SESSION_RUNTIME",
+		)
+	}
+
+	mux := buildMux(
+		langDependencies.handler,
+		sessionHandler,
+		records.handler,
+		records.accounts,
+		records.tokens,
+	)
 
 	server := &http.Server{
-		Addr:              address,
+		Addr:              processConfig.APIAddr,
 		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: apiReadHeaderTimeout,
+		ReadTimeout:       apiReadTimeout,
+		WriteTimeout:      apiWriteTimeout,
+		IdleTimeout:       apiIdleTimeout,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -107,110 +168,99 @@ func run() error {
 		}()
 	}
 
-	return runHTTPAndFinalTurnWorker(ctx, server, records.worker)
+	workers := []namedBackgroundWorker{
+		{name: "final turn worker", run: records.worker.Run},
+	}
+	if records.attributionWorker != nil {
+		workers = append(workers, namedBackgroundWorker{
+			name: "attribution worker",
+			run:  records.attributionWorker.Run,
+		})
+	}
+	if sessionRecovery != nil {
+		workers = append(workers, namedBackgroundWorker{
+			name: "session end recovery worker",
+			run:  sessionRecovery.Run,
+		})
+	}
+	return runHTTPAndBackgroundWorkers(ctx, server, workers...)
 }
 
-func runHTTPAndFinalTurnWorker(ctx context.Context, server *http.Server, worker finalTurnWorker) error {
-	workerCtx, cancelWorker := context.WithCancel(ctx)
-	defer cancelWorker()
+func runHTTPAndBackgroundWorkers(
+	ctx context.Context,
+	server *http.Server,
+	workers ...namedBackgroundWorker,
+) error {
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
 
 	serverErrors := make(chan error, 1)
 	go func() {
 		slog.Info("Lingow API listening", "address", server.Addr)
 		serverErrors <- server.ListenAndServe()
 	}()
-	workerErrors := make(chan error, 1)
-	go func() { workerErrors <- worker.Run(workerCtx) }()
 
-	var (
-		runErr     error
-		workerDone bool
-	)
+	workerErrors := make(chan error, max(1, len(workers)))
+	var workerGroup sync.WaitGroup
+	for _, worker := range workers {
+		worker := worker
+		workerGroup.Add(1)
+		go runFailFastBackgroundWorker(workerCtx, worker.name, worker.run, workerErrors, &workerGroup)
+	}
+
+	var runErr error
 	select {
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
 			runErr = fmt.Errorf("run API HTTP server: %w", err)
 		}
 	case err := <-workerErrors:
-		workerDone = true
-		if err != nil {
-			runErr = fmt.Errorf("run final turn worker: %w", err)
-		} else if ctx.Err() == nil {
-			runErr = errors.New("final turn worker stopped unexpectedly")
-		}
+		runErr = err
 	case <-ctx.Done():
 	}
-	cancelWorker()
+	cancelWorkers()
 
 	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShutdown()
 	shutdownErrors := make(chan error, 1)
 	go func() { shutdownErrors <- server.Shutdown(shutdownCtx) }()
-	if !workerDone {
-		select {
-		case err := <-workerErrors:
-			if err != nil {
-				runErr = errors.Join(runErr, fmt.Errorf("stop final turn worker: %w", err))
-			}
-		default:
-			select {
-			case err := <-workerErrors:
-				if err != nil {
-					runErr = errors.Join(runErr, fmt.Errorf("stop final turn worker: %w", err))
-				}
-			case <-shutdownCtx.Done():
-				runErr = errors.Join(runErr, fmt.Errorf("stop final turn worker: %w", shutdownCtx.Err()))
-			}
-		}
+	workerDone := make(chan struct{})
+	go func() {
+		workerGroup.Wait()
+		close(workerDone)
+	}()
+	select {
+	case <-workerDone:
+	case <-shutdownCtx.Done():
+		runErr = errors.Join(runErr, fmt.Errorf("stop background workers: %w", shutdownCtx.Err()))
 	}
 	shutdownErr := <-shutdownErrors
 	return errors.Join(runErr, shutdownErr)
 }
 
-func newLanguageHandler(ctx context.Context) (*languages.Handler, func(), error) {
-	accountID := func(r *http.Request) (string, bool) {
-		return internalwebapi.AccountIDFromContext(r.Context())
-	}
-
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		slog.Warn("DATABASE_URL unset; language HTTP routes return not_implemented until wired")
-		return languages.NewHandler(nil, accountID), nil, nil
-	}
-
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, nil, err
-	}
-	handler, err := newLanguageHandlerWithPool(ctx, pool)
-	if err != nil {
-		pool.Close()
-		return nil, nil, err
-	}
-	return handler, pool.Close, nil
-}
-
-func newLanguageHandlerWithPool(ctx context.Context, pool *pgxpool.Pool) (*languages.Handler, error) {
+func newLanguageDependenciesWithPool(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	sessions languages.SessionOwnerReader,
+) (*languageHTTPDependencies, error) {
 	if pool == nil {
 		return nil, errors.New("language handler requires PostgreSQL pool")
 	}
 	if err := languages.ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
-	sessions := sessionOwnerFromEnv()
 	svc := languages.NewService(languages.NewPostgresStore(pool, nil), sessions)
 	slog.Info("language configuration service enabled")
 	accountID := func(r *http.Request) (string, bool) {
 		return internalwebapi.AccountIDFromContext(r.Context())
 	}
-	return languages.NewHandler(svc, accountID), nil
+	return &languageHTTPDependencies{
+		service: svc,
+		handler: languages.NewHandler(svc, accountID),
+	}, nil
 }
 
-func sessionOwnerFromEnv() languages.SessionOwnerReader {
+func languageSessionOwner(pool *pgxpool.Pool) languages.SessionOwnerReader {
 	switch os.Getenv("LANGUAGE_SESSION_OWNER") {
 	case "trust-auth":
 		slog.Warn("LANGUAGE_SESSION_OWNER=trust-auth enabled; sessions are not ownership-checked")
@@ -218,7 +268,9 @@ func sessionOwnerFromEnv() languages.SessionOwnerReader {
 			AccountIDFromCtx: internalwebapi.AccountIDFromContext,
 		}
 	default:
-		return languages.NotImplementedSessionOwner{}
+		return languages.NewRecordsSessionOwner(
+			recordstore.NewCanonicalSessionOwner(accounts.NewPostgresRepository(pool)),
+		)
 	}
 }
 
@@ -228,7 +280,7 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		accessTokenAudience = "lingow-client"
 	)
 
-	databaseURL, tokenSecret, err := recordsHTTPConfigurationFromEnv()
+	databaseURL, tokenSecret, systemToken, err := recordsHTTPConfigurationFromEnv()
 	if err != nil {
 		return nil, err
 	}
@@ -242,11 +294,12 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
 	}
 
-	dependencies, err := newRecordsHTTPDependenciesFromPool(ctx, pool, tokenSecret, accessTokenIssuer, accessTokenAudience)
+	dependencies, err := newRecordsHTTPDependenciesFromPool(ctx, pool, tokenSecret, accessTokenIssuer, accessTokenAudience, systemToken)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("initialize records HTTP: %w", err)
 	}
+	dependencies.pool = pool
 	dependencies.cleanup = pool.Close
 	return dependencies, nil
 }
@@ -256,7 +309,7 @@ func newRecordsHTTPDependencies(ctx context.Context) (*recordsHTTPDependencies, 
 func newRecordsHTTPDependenciesFromPool(
 	ctx context.Context,
 	pool *pgxpool.Pool,
-	tokenSecret, issuer, audience string,
+	tokenSecret, issuer, audience, systemToken string,
 ) (*recordsHTTPDependencies, error) {
 	if pool == nil {
 		return nil, errors.New("records HTTP requires PostgreSQL pool")
@@ -309,16 +362,17 @@ func newRecordsHTTPDependenciesFromPool(
 			Participants: services.Participants,
 			Turns:        services.Turns,
 			Accounts:     recordswebapi.ContextAccountProvider{},
-			// No production system credential exists yet; PATCH routes stay fail-closed.
-			System: recordswebapi.ContextSystemAuthorizer{},
-			Logger: slog.Default(),
+			System:       recordswebapi.ContextSystemAuthorizer{},
+			SystemToken:  systemToken,
+			Logger:       slog.Default(),
 		}),
-		accounts:   accountUseCases,
-		tokens:     tokens,
-		worker:     services.FinalTurnWorker,
-		turns:      services.Turns,
-		maintainer: accounts.NewAuthMaintainer(accountRepository, 0, 0),
-		cleanup:    func() {},
+		accounts:          accountUseCases,
+		tokens:            tokens,
+		worker:            services.FinalTurnWorker,
+		turns:             services.Turns,
+		attributionWorker: services.AttributionWorker,
+		maintainer:        accounts.NewAuthMaintainer(accountRepository, 0, 0),
+		cleanup:           func() {},
 	}, nil
 }
 
@@ -330,32 +384,42 @@ func credentialDigesterFromEnv() (*accounts.CredentialDigester, error) {
 	return accounts.NewCredentialDigester(pepper)
 }
 
-func recordsHTTPConfigurationFromEnv() (string, string, error) {
+func recordsHTTPConfigurationFromEnv() (string, string, string, error) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
-		return "", "", fmt.Errorf("initialize records HTTP: DATABASE_URL is required")
+		return "", "", "", fmt.Errorf("initialize records HTTP: DATABASE_URL is required")
 	}
 	tokenSecret := os.Getenv("JWT_SECRET")
 	if tokenSecret == "" {
-		return "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET is required")
+		return "", "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET is required")
 	}
 	if len([]byte(tokenSecret)) < 32 {
-		return "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET must be at least 32 bytes")
+		return "", "", "", fmt.Errorf("initialize records HTTP: JWT_SECRET must be at least 32 bytes")
 	}
-	return databaseURL, tokenSecret, nil
+	return databaseURL, tokenSecret, os.Getenv("LINGOW_RECORDS_SYSTEM_TOKEN"), nil
 }
 
 func buildMux(
 	lang *languages.Handler,
+	sessionHandler *sessions.Handler,
 	records *recordswebapi.Server,
 	accountUseCases accounts.Service,
 	tokens accounts.AccessTokenVerifier,
 ) *http.ServeMux {
-	return buildMuxWithServices(lang, accountUseCases, usage.NewUseCases(), delivery.NewUseCases(), tokens, records)
+	return buildMuxWithServices(
+		lang,
+		sessionHandler,
+		accountUseCases,
+		usage.NewUseCases(),
+		delivery.NewUseCases(),
+		tokens,
+		records,
+	)
 }
 
 func buildMuxWithServices(
 	lang *languages.Handler,
+	sessionHandler *sessions.Handler,
 	accountService accounts.Service,
 	usageService usage.Service,
 	deliveryService delivery.Service,
@@ -366,14 +430,33 @@ func buildMuxWithServices(
 	lang.Register(mux, func(next http.Handler) http.Handler {
 		return internalwebapi.Authenticate(tokens, next)
 	})
+	if sessionHandler != nil {
+		sessionHandler.Register(mux, func(next http.Handler) http.Handler {
+			return internalwebapi.Authenticate(tokens, next)
+		})
+	}
 	if records != nil {
-		records.Register(mux, func(next http.Handler) http.Handler {
-			return records.Authenticate(tokens, next)
+		records.Register(mux, recordswebapi.RouteMiddleware{
+			Account: func(next http.Handler) http.Handler {
+				return records.Authenticate(tokens, next)
+			},
+			System: records.SystemAuthenticate,
 		})
 		return mux
 	}
-	recordswebapi.NewNotImplementedHandler(slog.Default()).Register(mux, func(next http.Handler) http.Handler {
-		return internalwebapi.Authenticate(tokens, next)
+	notImplemented := recordswebapi.NewNotImplementedHandler(slog.Default())
+	notImplemented.Register(mux, recordswebapi.RouteMiddleware{
+		Account: func(next http.Handler) http.Handler {
+			return internalwebapi.Authenticate(tokens, next)
+		},
+		System: notImplemented.SystemAuthenticate,
 	})
 	return mux
+}
+
+func newSessionHandler(service sessions.UseCases) *sessions.Handler {
+	accountID := func(r *http.Request) (string, bool) {
+		return internalwebapi.AccountIDFromContext(r.Context())
+	}
+	return sessions.NewHandler(service, accountID)
 }

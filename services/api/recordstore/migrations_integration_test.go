@@ -22,7 +22,7 @@ func TestMigrateRecordsSchema(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("second Migrate() error = %v", err)
 	}
-	assertSessionStartCompatibilitySchema(t, pool)
+	assertEndIntentRecoverySchema(t, pool)
 
 	statuses, err := AppliedMigrations(t.Context(), pool)
 	if err != nil {
@@ -42,6 +42,13 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{8, "delivery_retry_idempotency"},
 		{9, "final_turn_outbox"},
 		{10, "session_start_operation_compatibility"},
+		{11, "email_bind_challenges"},
+		{12, "enable_wechat_channel"},
+		{13, "session_failed_terminal_timestamp"},
+		{14, "end_intent_recovery"},
+		{15, "attribution_snapshot_updates"},
+		{16, "attribution_tasks"},
+		{17, "backfill_attribution_tasks"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))
@@ -51,6 +58,48 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		if status.Version != expected.version || status.Name != expected.name || status.AppliedAt.IsZero() {
 			t.Fatalf("AppliedMigrations()[%d] = %#v, want applied %s version %d", index, status, expected.name, expected.version)
 		}
+	}
+}
+
+func assertConstraintViolation(t *testing.T, err error, constraint string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("PostgreSQL error = nil, want constraint %s", constraint)
+	}
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) {
+		t.Fatalf("error = %v, want PostgreSQL constraint %s", err, constraint)
+	}
+	if postgresError.ConstraintName != constraint {
+		t.Fatalf("PostgreSQL constraint = %q, want %q", postgresError.ConstraintName, constraint)
+	}
+}
+
+func assertEndIntentRecoverySchema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var columns int
+	if err := pool.QueryRow(t.Context(), `
+		SELECT COUNT(*)
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+		  AND table_name = 'voice_session_end_intents'
+		  AND column_name IN (
+			  'trace_id', 'retry_count', 'last_error', 'next_attempt_at',
+			  'recovery_owner', 'recovery_lease_expires_at'
+		  )`).Scan(&columns); err != nil {
+		t.Fatalf("count EndIntent recovery columns: %v", err)
+	}
+	if columns != 6 {
+		t.Fatalf("EndIntent recovery columns = %d, want 6", columns)
+	}
+	var indexExists bool
+	if err := pool.QueryRow(t.Context(), `
+		SELECT to_regclass('voice_session_end_intents_recovery_due_idx') IS NOT NULL
+	`).Scan(&indexExists); err != nil {
+		t.Fatalf("inspect EndIntent recovery index: %v", err)
+	}
+	if !indexExists {
+		t.Fatal("voice_session_end_intents_recovery_due_idx does not exist")
 	}
 }
 
@@ -93,7 +142,7 @@ func testSessionLifecycleConstraints(t *testing.T, pool *pgxpool.Pool) {
 		{name: "active", status: "active", startedAt: &startedAt},
 		{name: "created_to_ended", status: "ended", endedAt: &endedAt},
 		{name: "active_to_ended", status: "ended", startedAt: &startedAt, endedAt: &activeEndedAt},
-		{name: "active_to_failed", status: "failed", startedAt: &startedAt, failure: &failureCode},
+		{name: "active_to_failed", status: "failed", startedAt: &startedAt, endedAt: &activeEndedAt, failure: &failureCode},
 	}
 	for _, test := range valid {
 		t.Run("valid_"+test.name, func(t *testing.T) {
@@ -120,6 +169,8 @@ func testSessionLifecycleConstraints(t *testing.T, pool *pgxpool.Pool) {
 		{name: "ended_before_created", status: "ended", endedAt: &beforeCreated},
 		{name: "ended_before_started", status: "ended", startedAt: &startedAt, endedAt: &beforeStarted},
 		{name: "failed_without_error", status: "failed", startedAt: &startedAt},
+		{name: "failed_without_end", status: "failed", startedAt: &startedAt, failure: &failureCode},
+		{name: "failed_before_started", status: "failed", startedAt: &startedAt, endedAt: &beforeStarted, failure: &failureCode},
 	}
 	for _, test := range invalid {
 		t.Run("invalid_"+test.name, func(t *testing.T) {
@@ -344,6 +395,12 @@ func testTurnConstraints(t *testing.T, pool *pgxpool.Pool) {
 	}
 	if _, err := pool.Exec(t.Context(), "UPDATE voice_turns SET attribution_status = 'confirmed', speaker_confidence = 0.9 WHERE id = 'turn_01'"); err != nil {
 		t.Fatalf("updating attribution fields: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), "UPDATE voice_turns SET speaker_code = 'speaker_02' WHERE id = 'turn_01'"); err != nil {
+		t.Fatalf("updating speaker snapshot field: %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), "UPDATE voice_turns SET source_text = 'edited' WHERE id = 'turn_01'"); err == nil {
+		t.Fatal("updating source_text after snapshot update succeeded, want an error")
 	}
 }
 

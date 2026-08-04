@@ -129,8 +129,45 @@ type EndIntent struct {
 	Reason         EndReason
 	IdempotencyKey string
 	RequestHash    string
+	TraceID        string
 	RequestedAt    time.Time
 	CompletedAt    *time.Time
+	RetryCount     int
+	LastError      *string
+	NextAttemptAt  time.Time
+	RecoveryOwner  *string
+	// LeaseExpiresAt is a storage-clock deadline used for repository fencing.
+	// Callers must budget attempts from local elapsed time, not this timestamp.
+	LeaseExpiresAt *time.Time
+}
+
+// ClaimEndIntentParams grants one worker a bounded lease on the next due
+// unfinished intent. WorkerID must be unique for one running API instance.
+// The timestamps define the requested duration; persistent repositories anchor
+// the actual lease to their own clock and return that expiration in EndIntent.
+type ClaimEndIntentParams struct {
+	WorkerID       string
+	ClaimedAt      time.Time
+	LeaseExpiresAt time.Time
+}
+
+// RetryEndIntentParams releases a claimed intent after a failed recovery step
+// and persists the bounded-backoff schedule.
+type RetryEndIntentParams struct {
+	SessionID  string
+	AccountID  string
+	WorkerID   string
+	LastError  string
+	RetryAfter time.Duration
+}
+
+// CompleteClaimedEndIntentParams completes an intent only for its current
+// recovery owner. Completion is idempotent if another request already won.
+type CompleteClaimedEndIntentParams struct {
+	SessionID   string
+	AccountID   string
+	WorkerID    string
+	CompletedAt time.Time
 }
 
 // MatchesRequest reports whether a repeated end request is an idempotent replay.
@@ -153,6 +190,9 @@ func (i EndIntent) Completed() bool {
 type Repository interface {
 	Create(ctx context.Context, params CreateParams) (session VoiceSession, replayed bool, err error)
 	GetOwned(ctx context.Context, accountID string, sessionID string) (VoiceSession, error)
+	// GetSession is a trusted internal read used when no user actor exists,
+	// such as a realtime failure notification. It returns the immutable owner.
+	GetSession(ctx context.Context, sessionID string) (SessionSnapshot, error)
 	List(ctx context.Context, filter ListFilter) (ListPage, error)
 	// GetStartOperation returns the matching request when present. If another
 	// key owns a pending, compensating, or compensation_failed operation for the
@@ -174,10 +214,14 @@ type Repository interface {
 	CompleteStartCompensation(ctx context.Context, params CompleteStartCompensationParams) error
 	FailStartCompensation(ctx context.Context, params FailStartCompensationParams) error
 	// SaveEndIntent atomically creates or replays the session's EndIntent. A
-	// different request identity conflicts. An unfinished StartOperation returns
-	// ErrSessionStartInProgress so created -> ended cannot orphan a runtime.
+	// different request identity or an unexpired execution lease conflicts. An
+	// unfinished StartOperation returns ErrSessionStartInProgress so
+	// created -> ended cannot orphan a runtime.
 	SaveEndIntent(ctx context.Context, intent EndIntent) (saved EndIntent, replayed bool, err error)
 	GetEndIntent(ctx context.Context, accountID string, sessionID string) (EndIntent, error)
+	ClaimPendingEndIntent(ctx context.Context, params ClaimEndIntentParams) (intent EndIntent, claimed bool, err error)
+	RetryClaimedEndIntent(ctx context.Context, params RetryEndIntentParams) error
+	CompleteClaimedEndIntent(ctx context.Context, params CompleteClaimedEndIntentParams) error
 	// CompleteEndIntent is idempotent after the business transition commits.
 	CompleteEndIntent(ctx context.Context, accountID string, sessionID string, completedAt time.Time) error
 	TransitionToActive(ctx context.Context, params StartTransitionParams) (session VoiceSession, replayed bool, err error)

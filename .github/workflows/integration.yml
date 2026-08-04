@@ -1,0 +1,64 @@
+name: Integration
+
+on:
+  push:
+    branches:
+      - "**"
+      - "!xgopilot/**"
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  api-postgres:
+    name: API PostgreSQL Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lingow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d lingow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: services/api
+
+    env:
+      RECORDSTORE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/lingow_test?sslmode=disable
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/lingow_test?sslmode=disable
+      JWT_SECRET: ci-integration-secret-1234567890123456
+      REALTIME_TICKET_SECRET: ci-realtime-ticket-secret-1234567890
+      LINGOW_SESSION_RUNTIME: disabled
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Run API integration tests
+        run: go test -count=1 -tags=integration ./...

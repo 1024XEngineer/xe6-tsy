@@ -6,8 +6,10 @@ require github.com/1024XEngineer/xe6-tsy/packages/contracts v0.0.0
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/opd-ai/magnum v0.0.0-20260620040707-10aa22af5212
 	github.com/pion/opus v0.1.0
 	github.com/pion/rtp v1.10.5
 	github.com/pion/sdp/v3 v3.0.19
@@ -17,7 +19,6 @@ require (
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect

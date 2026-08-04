@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -131,6 +132,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	}
 	// Turn owns the versioned language snapshot captured at start. Do not reread
 	// the current session config or a mid-turn change would alter this direction.
+	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
 	target, route, ok := targetRoute(turn.LanguageConfig, result.SourceLanguage)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
@@ -161,6 +163,10 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	// later without rewriting the body.
 	startedAt, endedAt := turnBounds(turn, result, s.now())
 	attribution := s.resolveSpeaker(ctx, turn, result, startedAt, endedAt)
+	var providerSpeakerID *string
+	if id := strings.TrimSpace(result.ProviderSpeakerID); id != "" {
+		providerSpeakerID = &id
+	}
 	finalEvent := FinalTurnEvent{
 		EventVersion: recordsv1.FinalTurnEventVersion,
 		EventID:      "final_" + turn.ID, TraceID: turn.TraceID, SessionID: turn.SessionID, TurnID: turn.ID,
@@ -170,6 +176,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		SpeakerLabelSnapshot: attribution.DisplayName, SpeakerConfidence: attribution.Confidence,
 		AttributionStatus: attribution.AttributionStatus, LanguageConfigVersion: turn.LanguageConfig.Version,
 		StartedAt: startedAt, EndedAt: endedAt, OccurredAt: s.now(),
+		ProviderSpeakerID: providerSpeakerID,
 	}
 	finalEvent.ParticipantID = attribution.ParticipantID
 	if err := finalEvent.Validate(); err != nil {
@@ -300,13 +307,19 @@ func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider
 }
 
 func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, result asr.FinalResult, startedAt, endedAt time.Time) recordsv1.SpeakerAttribution {
-	if s.speakers == nil || result.ProviderSpeakerID == "" {
+	if s.speakers == nil {
+		return pendingSpeakerAttribution()
+	}
+	providerSpeakerID := strings.TrimSpace(result.ProviderSpeakerID)
+	if providerSpeakerID == "" {
+		// Without a stable provider or diarization key there is no evidence to map a speaker;
+		// keep the turn pending instead of fabricating a single-speaker identity.
 		return pendingSpeakerAttribution()
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, s.speakerTimeout)
 	defer cancel()
 	attribution, err := s.speakers.GetProvisionalAttribution(lookupCtx, recordsv1.SpeakerObservation{
-		SessionID: turn.SessionID, TurnID: turn.ID, ProviderSpeakerID: result.ProviderSpeakerID,
+		SessionID: turn.SessionID, TurnID: turn.ID, ProviderSpeakerID: providerSpeakerID,
 		StartedAt: startedAt, EndedAt: endedAt,
 		AudioStartMS: result.AudioStart.Milliseconds(), AudioEndMS: result.AudioEnd.Milliseconds(),
 	})
@@ -345,8 +358,9 @@ func turnBounds(turn TurnContext, result asr.FinalResult, fallback time.Time) (t
 }
 
 func targetRoute(config session.LanguageConfigSnapshot, source string) (string, session.OutputRoute, bool) {
+	source = asr.NormalizeLanguage(source)
 	for _, pair := range config.LanguagePairs {
-		if pair.Source == source {
+		if asr.NormalizeLanguage(pair.Source) == source {
 			route := session.OutputRoute{TargetLanguage: pair.Target, TTSEnabled: true, DeliveryEnabled: false}
 			for _, configured := range config.OutputRoutes {
 				if configured.TargetLanguage == pair.Target {

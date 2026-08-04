@@ -230,6 +230,26 @@ func (r *startRepository) GetOwned(
 	return session, nil
 }
 
+func (r *startRepository) GetSession(
+	ctx context.Context,
+	sessionID string,
+) (SessionSnapshot, error) {
+	r.mu.Lock()
+	accountID := r.session.AccountID
+	r.mu.Unlock()
+	session, err := r.GetOwned(ctx, accountID, sessionID)
+	if err != nil {
+		return SessionSnapshot{}, err
+	}
+	return SessionSnapshot{
+		SessionID: session.ID,
+		AccountID: session.AccountID,
+		Status:    session.Status,
+		StartedAt: session.StartedAt,
+		EndedAt:   session.EndedAt,
+	}, nil
+}
+
 func (r *startRepository) BeginStartOperation(
 	_ context.Context,
 	params BeginStartOperationParams,
@@ -483,6 +503,24 @@ func (*startRepository) SaveEndIntent(context.Context, EndIntent) (EndIntent, bo
 
 func (*startRepository) GetEndIntent(context.Context, string, string) (EndIntent, error) {
 	return EndIntent{}, ErrNotImplemented
+}
+
+func (*startRepository) ClaimPendingEndIntent(
+	context.Context,
+	ClaimEndIntentParams,
+) (EndIntent, bool, error) {
+	return EndIntent{}, false, ErrNotImplemented
+}
+
+func (*startRepository) RetryClaimedEndIntent(context.Context, RetryEndIntentParams) error {
+	return ErrNotImplemented
+}
+
+func (*startRepository) CompleteClaimedEndIntent(
+	context.Context,
+	CompleteClaimedEndIntentParams,
+) error {
+	return ErrNotImplemented
 }
 
 func (*startRepository) CompleteEndIntent(context.Context, string, string, time.Time) error {

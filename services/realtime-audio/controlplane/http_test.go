@@ -42,6 +42,8 @@ func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
 	if firstStop.Code != http.StatusOK {
 		t.Fatalf("first stop status = %d, body=%s", firstStop.Code, firstStop.Body.String())
 	}
+	// End retries may refresh TraceID/EndedAt while reusing stop:<reason>; server
+	// hashes reason only so those retries replay instead of conflicting.
 	secondStopBody := `{"trace_id":"trace-stop-replay","reason":"user_requested","ended_at":"2023-11-14T22:15:20Z"}`
 	secondStop := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/stop", secondStopBody, "stop-key")
 	if secondStop.Code != http.StatusOK {
@@ -125,6 +127,13 @@ func TestHandlerReturnsAllConnectionStates(t *testing.T) {
 				t.Fatalf("snapshot = %#v", snapshot)
 			}
 		})
+	}
+}
+
+func TestMapErrorTTSCodecUnsupported(t *testing.T) {
+	status, code := mapError(webrtc.ErrTTSCodecUnsupported)
+	if status != http.StatusBadRequest || code != "tts_codec_unsupported" {
+		t.Fatalf("mapError(ErrTTSCodecUnsupported) = %d %q", status, code)
 	}
 }
 

@@ -383,6 +383,8 @@ Turn 侧的 `speaker_code`、`display_name`、`provider_speaker_id`、`voice_pro
 
 `voice_turns.provider_speaker_id` 在初始 FinalTurn 落库时由实时链路写入：`FinalTurnEvent.provider_speaker_id` 只有在 ASR/diarization 提供会话内稳定的 cluster key 时才填充，缺失时保持 `NULL`。异步归属 worker 依据该字段建立 participant 稳定映射；没有该字段的 turn 无法确定性归属，其任务被永久标记失败（`no_provider_speaker_id`）而不是伪造成功。当前仓库的 Qwen ASR adapter 不产生 speaker key，因此默认只保留 pending。
 
+`language_config_version` 是每个新 FinalTurn 的必填正整数。Realtime 在 Turn 开始时读取并固定语言配置快照版本，随后将该版本同时写入 FinalTurn event 和 `voice_turns`；API consumer 不推断、不补默认值。归属修正只更新 attribution 字段，不会修改语言配置版本，因此历史记录可以准确追溯当轮使用的双语配置。
+
 ### 4.12 `attribution_tasks`
 
 异步说话人归属的持久化工作队列。当 FinalTurn 以 `pending` 或 `provisional` 状态落库时，在同一事务内为每个 turn 创建一条任务（`turn_id` 唯一）。API 的 attribution worker 领取任务、解析归属并结算。

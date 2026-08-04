@@ -115,6 +115,10 @@ service 建立稳定映射，再通过 turns service 确认或修正归属。没
 标记失败（`no_provider_speaker_id`）而不是伪装成功；重试采用指数退避并在达到上限后停止。两个
 API runtime（普通与 `LINGOW_DELIVERY_RUNTIME=enabled`）都会启动该 worker。
 
+FinalTurn 的 `language_config_version` 是新事件的必填字段，且必须大于 0。Realtime 在每个 Turn
+开始时固定语言配置版本并写入事件；API 不为缺失、零值或负值补默认版本，而是将事件拒绝为非法请求。
+该字段同时用于 `voice_turns` 审计和重放一致性，归属修正不会修改它。
+
 API 同时运行 PostgreSQL `final_turn_outbox` consumer。事件使用 `event_id` 和完整 payload hash
 保证发布重放一致，worker 通过 receipt lease 领取消息：成功写入后 Ack，临时存储错误 Nack 并延迟
 重试，非法事件或幂等冲突 Reject。服务关闭时停止领取新事件，并在数据库 pool 关闭前等待当前结算；

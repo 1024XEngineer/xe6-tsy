@@ -4,12 +4,14 @@ package recordstore
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -144,6 +146,55 @@ func TestAttributionTaskFailsWithoutProviderEvidence(t *testing.T) {
 	}
 	if lastError == "" {
 		t.Fatal("failed task must record an error")
+	}
+}
+
+func TestAttributionTaskEnqueueRequiresResolvableSessionOwner(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(t.Context())
+
+	err = NewAttributionTaskStore(pool).Enqueue(t.Context(), tx, "turn_missing", "session_missing")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Enqueue() error = %v, want not found", err)
+	}
+}
+
+func TestAttributionTaskEnqueueIsIdempotentForExistingTurnTask(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	insertOwnedSession(t, pool, "session_01", "acct_01")
+	tx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback(t.Context())
+	store := NewAttributionTaskStore(pool)
+
+	if err := store.Enqueue(t.Context(), tx, "turn_01", "session_01"); err != nil {
+		t.Fatalf("first Enqueue() error = %v", err)
+	}
+	if err := store.Enqueue(t.Context(), tx, "turn_01", "session_01"); err != nil {
+		t.Fatalf("second Enqueue() error = %v", err)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatalf("commit tx: %v", err)
+	}
+
+	var count int
+	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM attribution_tasks WHERE turn_id = 'turn_01'`).Scan(&count); err != nil {
+		t.Fatalf("count attribution tasks: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("task count = %d, want 1", count)
 	}
 }
 

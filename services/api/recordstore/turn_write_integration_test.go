@@ -203,6 +203,28 @@ func TestTurnWriterRejectsParticipantFromAnotherSession(t *testing.T) {
 	}
 }
 
+func TestTurnWriterRollsBackPendingTurnWhenAttributionTaskCannotEnqueue(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	event := finalTurnEvent("event_missing_session", "turn_missing_session", "session_missing", 1)
+	event.ParticipantID = nil
+	event.AttributionStatus = recordsv1.AttributionPending
+
+	if err := NewTurnWriter(pool).StoreFinalTurn(t.Context(), event); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("StoreFinalTurn() error = %v, want not found", err)
+	}
+
+	var turnCount int
+	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM voice_turns WHERE id = $1`, event.TurnID).Scan(&turnCount); err != nil {
+		t.Fatalf("count rolled back turn: %v", err)
+	}
+	if turnCount != 0 {
+		t.Fatalf("rolled back turn count = %d, want 0", turnCount)
+	}
+}
+
 func finalTurnEvent(eventID, turnID, sessionID string, sequenceNo int64) recordsv1.FinalTurnEvent {
 	startedAt := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
 	participantID := "participant_01"

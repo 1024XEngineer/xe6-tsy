@@ -122,6 +122,25 @@ func TestAttributionWorkerRetriesApplyError(t *testing.T) {
 	}
 }
 
+func TestAttributionWorkerAcksStaleDecision(t *testing.T) {
+	delivery := &attributionDeliveryStub{task: taskFixture()}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{decision: &AttributionDecision{ParticipantID: "p_02", AttributionStatus: recordsv1.AttributionConfirmed}},
+		&attributionApplierStub{err: ErrStaleAttribution},
+	)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !delivery.acked {
+		t.Fatal("stale attribution task was not acked")
+	}
+	if delivery.retried || delivery.failed {
+		t.Fatal("stale attribution task must not retry or fail")
+	}
+}
+
 func TestAttributionWorkerStopsOnSettlementFailure(t *testing.T) {
 	worker, ctx := newAttributionWorkerStub(t,
 		&attributionSourceStub{deliveries: []AttributionTaskDelivery{&attributionDeliveryStub{
@@ -232,7 +251,7 @@ type attributionApplierStub struct {
 	calls   []recordsv1.UpdateAttributionRequest
 }
 
-func (a *attributionApplierStub) CorrectAttribution(_ context.Context, _, _ string, request recordsv1.UpdateAttributionRequest, _ bool) (recordsv1.VoiceTurn, error) {
+func (a *attributionApplierStub) CorrectAttributionIfUnresolved(_ context.Context, _, _ string, request recordsv1.UpdateAttributionRequest, _ bool) (recordsv1.VoiceTurn, error) {
 	a.calls = append(a.calls, request)
 	if a.err != nil {
 		return recordsv1.VoiceTurn{}, a.err

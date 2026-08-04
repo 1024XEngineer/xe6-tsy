@@ -223,6 +223,25 @@ func TestCorrectAttributionConfidenceThreeState(t *testing.T) {
 	}
 }
 
+func TestCorrectAttributionIfUnresolvedSetsConditionalUpdate(t *testing.T) {
+	repository := &fakeRepository{
+		turn:                 recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
+		participantInSession: true,
+	}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+
+	_, err := service.CorrectAttributionIfUnresolved(t.Context(), "acct_01", "vt_01", recordsv1.UpdateAttributionRequest{
+		ParticipantID:     "p_01",
+		AttributionStatus: recordsv1.AttributionConfirmed,
+	}, false)
+	if err != nil {
+		t.Fatalf("CorrectAttributionIfUnresolved() error = %v", err)
+	}
+	if !repository.lastUpdate.OnlyIfUnresolved {
+		t.Fatal("OnlyIfUnresolved = false, want true")
+	}
+}
+
 func TestCorrectAttributionRejectsOutOfRangeConfidence(t *testing.T) {
 	outOfRange := 1.5
 	repository := &fakeRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}

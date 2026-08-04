@@ -257,6 +257,53 @@ func TestTurnWriterCorrectAttributionRejectsForeignAccount(t *testing.T) {
 	}
 }
 
+func TestTurnWriterCorrectAttributionOnlyIfUnresolvedRejectsStaleDecision(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	insertOwnedSession(t, pool, "session_01", "acct_01")
+	participant, err := NewParticipantWriter(pool).FindOrCreate(t.Context(), recordsv1.SpeakerObservation{
+		SessionID:         "session_01",
+		TurnID:            "turn_01",
+		ProviderSpeakerID: "cluster_01",
+	})
+	if err != nil {
+		t.Fatalf("FindOrCreate() error = %v", err)
+	}
+	writer := NewTurnWriter(pool)
+	event := finalTurnEvent("event_01", "turn_01", "session_01", 1)
+	event.ParticipantID = &participant.ID
+	event.AttributionStatus = recordsv1.AttributionConfirmed
+	if err := writer.StoreFinalTurn(t.Context(), event); err != nil {
+		t.Fatalf("StoreFinalTurn() error = %v", err)
+	}
+
+	_, err = writer.CorrectAttribution(t.Context(), turns.AttributionUpdate{
+		AccountID:         "acct_01",
+		TurnID:            event.TurnID,
+		ParticipantID:     participant.ID,
+		AttributionStatus: recordsv1.AttributionCorrected,
+		OnlyIfUnresolved:  true,
+		CorrectedBy:       recordsv1.CorrectedBySystem,
+		CorrectedAt:       event.OccurredAt.Add(time.Minute),
+	})
+	if !errors.Is(err, turns.ErrStaleAttribution) {
+		t.Fatalf("CorrectAttribution() error = %v, want stale attribution", err)
+	}
+
+	var attributionStatus recordsv1.AttributionStatus
+	if err := pool.QueryRow(t.Context(), `
+SELECT attribution_status
+FROM voice_turns
+WHERE id = $1`, event.TurnID).Scan(&attributionStatus); err != nil {
+		t.Fatalf("read unchanged attribution: %v", err)
+	}
+	if attributionStatus != recordsv1.AttributionConfirmed {
+		t.Fatalf("attribution_status = %q, want confirmed", attributionStatus)
+	}
+}
+
 func insertOwnedSession(t *testing.T, pool *pgxpool.Pool, sessionID, accountID string) {
 	t.Helper()
 	if _, err := pool.Exec(t.Context(), `

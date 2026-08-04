@@ -55,8 +55,12 @@ func (w *TurnWriter) CorrectAttribution(
 		update.SpeakerConfidence,
 		update.CorrectedBy,
 		update.CorrectedAt.UTC(),
+		update.OnlyIfUnresolved,
 	))
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) && update.OnlyIfUnresolved {
+			return recordsv1.VoiceTurn{}, turns.ErrStaleAttribution
+		}
 		return recordsv1.VoiceTurn{}, fmt.Errorf("update turn attribution: %w", MapError(err))
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -102,6 +106,7 @@ FROM voice_session_participants AS target
 WHERE turn.id = $1
   AND target.id = $2
   AND target.session_id = turn.session_id
+  AND (NOT $8 OR turn.attribution_status IN ('pending', 'provisional'))
 RETURNING turn.id, turn.session_id, turn.participant_id, turn.speaker_code, turn.display_name,
           turn.provider_speaker_id, turn.voice_profile_id, turn.sequence_no, turn.source_language,
           turn.target_language, turn.language_config_version, turn.source_text, turn.translated_text,

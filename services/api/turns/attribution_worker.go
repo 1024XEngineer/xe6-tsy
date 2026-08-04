@@ -74,7 +74,7 @@ type AttributionReader interface {
 
 // AttributionApplier persists a resolver decision through the records services.
 type AttributionApplier interface {
-	CorrectAttribution(ctx context.Context, accountID, turnID string, request recordsv1.UpdateAttributionRequest, speakerConfidenceSet bool) (recordsv1.VoiceTurn, error)
+	CorrectAttributionIfUnresolved(ctx context.Context, accountID, turnID string, request recordsv1.UpdateAttributionRequest, speakerConfidenceSet bool) (recordsv1.VoiceTurn, error)
 }
 
 // AttributionWorker drains durable attribution tasks, resolving each with the resolver and
@@ -142,11 +142,17 @@ func (w *AttributionWorker) handle(ctx context.Context, delivery AttributionTask
 		}
 		return nil
 	}
-	if _, err := w.applier.CorrectAttribution(ctx, task.AccountID, task.TurnID, recordsv1.UpdateAttributionRequest{
+	if _, err := w.applier.CorrectAttributionIfUnresolved(ctx, task.AccountID, task.TurnID, recordsv1.UpdateAttributionRequest{
 		ParticipantID:     decision.ParticipantID,
 		AttributionStatus: decision.AttributionStatus,
 		SpeakerConfidence: decision.SpeakerConfidence,
 	}, decision.SpeakerConfidenceSet); err != nil {
+		if errors.Is(err, ErrStaleAttribution) {
+			if ackErr := delivery.Ack(); ackErr != nil {
+				return fmt.Errorf("%w: ack stale attribution task: %w", ErrAttributionSettlement, errors.Join(err, ackErr))
+			}
+			return nil
+		}
 		return w.settleFailure(delivery, task, fmt.Errorf("apply attribution decision: %w", err))
 	}
 	if err := delivery.Ack(); err != nil {

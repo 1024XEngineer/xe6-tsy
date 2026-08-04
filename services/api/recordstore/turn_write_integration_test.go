@@ -51,6 +51,7 @@ func TestTurnWriterReplaysLegacyHashWithRouteFields(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	insertOwnedSession(t, pool, "session_legacy", "acct_legacy")
 	writer := NewTurnWriter(pool)
 	legacyEvent := finalTurnEvent("event_legacy", "turn_legacy", "session_legacy", 1)
 	legacyEvent.ParticipantID = nil

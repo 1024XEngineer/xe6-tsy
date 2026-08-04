@@ -426,7 +426,14 @@ Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓
 | `receipt` | `TEXT` | 是 |  | 当前处理收据 |
 | `locked_until` | `TIMESTAMPTZ` | 是 |  | 锁过期时间 |
 | `attempts` | `INTEGER` | 否 | `0` | 尝试次数 |
+| `last_error` | `TEXT` | 是 |  | 最近一次 Nack 或 Reject 的错误信息；用于重试诊断和毒消息审计 |
+| `rejected_at` | `TIMESTAMPTZ` | 是 |  | 消息进入 `rejected` 状态的时间；仅永久拒绝或达到最大尝试次数时设置 |
 | `created_at` | `TIMESTAMPTZ` | 否 | `CURRENT_TIMESTAMP` | 创建时间 |
+
+处理语义：
+
+- worker 领取事件后，成功持久化则 Ack；临时错误 Nack 并记录 `last_error`，事件按延迟重新进入 `pending`。
+- 非法事件、幂等冲突、引用对象不存在等永久错误直接 Reject；临时错误达到 8 次尝试后也 Reject，并记录 `last_error` 和 `rejected_at`。
 
 索引与约束：
 

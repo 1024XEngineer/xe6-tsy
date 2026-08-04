@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -507,3 +508,236 @@ func TestManualModeFinishSendsCommitBeforeSessionFinish(t *testing.T) {
 		t.Fatalf("write order = %v", seen)
 	}
 }
+
+func TestNewProviderValidatesConfiguration(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  Config
+		wantErr error
+	}{
+		{name: "missing api key", config: Config{WebSocketURL: "wss://example.com"}, wantErr: ErrAPIKeyRequired},
+		{name: "missing endpoint", config: Config{APIKey: "test-key"}, wantErr: ErrEndpointRequired},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := NewProvider(test.config); !errors.Is(err, test.wantErr) {
+				t.Fatalf("NewProvider() error = %v, want %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestNewProviderAppliesDefaultsAndDerivesEndpoint(t *testing.T) {
+	provider, err := NewProvider(Config{APIKey: "test-key", BaseURL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	if provider.config.WebSocketURL != "wss://example.com/api-ws/v1/realtime" {
+		t.Fatalf("WebSocketURL = %q, want derived realtime endpoint", provider.config.WebSocketURL)
+	}
+	if provider.config.Model != defaultModel {
+		t.Fatalf("Model = %q, want %q", provider.config.Model, defaultModel)
+	}
+	if provider.config.SampleRate != 16000 {
+		t.Fatalf("SampleRate = %d, want 16000", provider.config.SampleRate)
+	}
+	if provider.config.SilenceDuration != 500*time.Millisecond {
+		t.Fatalf("SilenceDuration = %v, want 500ms", provider.config.SilenceDuration)
+	}
+	if provider.config.Provider != "aliyun" {
+		t.Fatalf("Provider = %q, want aliyun", provider.config.Provider)
+	}
+	if provider.config.Dialer == nil {
+		t.Fatal("Dialer = nil, want default dialer")
+	}
+}
+
+func TestDeriveWebSocketURLVariants(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+		want string
+	}{
+		{name: "empty", base: "", want: ""},
+		{name: "invalid host", base: "not a url", want: ""},
+		{name: "compatible mode", base: "https://example.com/compatible-mode/v1", want: "wss://example.com/api-ws/v1/realtime"},
+		{name: "api v1", base: "https://example.com/api/v1", want: "wss://example.com/api-ws/v1/realtime"},
+		{name: "custom path", base: "https://example.com/custom", want: "wss://example.com/custom/api-ws/v1/realtime"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := deriveWebSocketURL(test.base); got != test.want {
+				t.Fatalf("deriveWebSocketURL(%q) = %q, want %q", test.base, got, test.want)
+			}
+		})
+	}
+}
+
+func TestRealtimeEndpoint(t *testing.T) {
+	if _, err := realtimeEndpoint("not a url", "model_01"); !errors.Is(err, ErrEndpointRequired) {
+		t.Fatalf("realtimeEndpoint() error = %v, want endpoint required", err)
+	}
+	endpoint, err := realtimeEndpoint("wss://example.com/api-ws/v1/realtime?key=1", "model_01")
+	if err != nil {
+		t.Fatalf("realtimeEndpoint() error = %v", err)
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		t.Fatalf("parse endpoint: %v", err)
+	}
+	if parsed.Query().Get("model") != "model_01" || parsed.Query().Get("key") != "1" {
+		t.Fatalf("endpoint query = %v, want model and key preserved", parsed.Query())
+	}
+}
+
+func TestLanguageCodeNormalization(t *testing.T) {
+	tests := []struct {
+		language string
+		want     string
+	}{
+		{language: "zh-CN", want: "zh"},
+		{language: "zh_CN", want: "zh"},
+		{language: "en-US", want: "en"},
+		{language: "ja", want: "ja"},
+	}
+	for _, test := range tests {
+		if got := languageCode(test.language); got != test.want {
+			t.Fatalf("languageCode(%q) = %q, want %q", test.language, got, test.want)
+		}
+	}
+}
+
+func TestHandleEventRejectsInvalidJSON(t *testing.T) {
+	stream := &stream{}
+	if err := stream.handleEvent([]byte("{invalid")); err == nil {
+		t.Fatal("handleEvent() invalid JSON succeeded")
+	}
+}
+
+func TestHandleEventReturnsProviderFailure(t *testing.T) {
+	stream := &stream{}
+	data := mustJSON(t, map[string]any{
+		"type":  "conversation.item.input_audio_transcription.failed",
+		"error": map[string]any{"message": "provider boom"},
+	})
+	if err := stream.handleEvent(data); err == nil {
+		t.Fatal("handleEvent() failed event succeeded")
+	}
+}
+
+func TestHandleEventSetsFinalResult(t *testing.T) {
+	stream := &stream{
+		sourceLanguage: "zh-CN", provider: "aliyun", model: "model_01",
+		events: make(chan asr.Event, 1),
+	}
+	data := mustJSON(t, map[string]any{
+		"type": "conversation.item.input_audio_transcription.completed", "transcript": "你好",
+	})
+	if err := stream.handleEvent(data); err != nil {
+		t.Fatalf("handleEvent() error = %v", err)
+	}
+	result, err := stream.finalResult()
+	if err != nil {
+		t.Fatalf("finalResult() error = %v", err)
+	}
+	if result.Text != "你好" || result.SourceLanguage != "zh-CN" || result.AudioDuration != 0 {
+		t.Fatalf("final result = %#v", result)
+	}
+	select {
+	case event := <-stream.events:
+		if event.Type != asr.EventFinal {
+			t.Fatalf("emitted event = %#v, want final", event)
+		}
+	default:
+		t.Fatal("no final event emitted")
+	}
+}
+
+func TestHandleEventFallsBackToEventLanguage(t *testing.T) {
+	stream := &stream{
+		provider: "aliyun", model: "model_01",
+		events: make(chan asr.Event, 1),
+	}
+	data := mustJSON(t, map[string]any{
+		"type": "conversation.item.input_audio_transcription.completed", "language": "zh", "transcript": "你好",
+	})
+	if err := stream.handleEvent(data); err != nil {
+		t.Fatalf("handleEvent() error = %v", err)
+	}
+	result, err := stream.finalResult()
+	if err != nil {
+		t.Fatalf("finalResult() error = %v", err)
+	}
+	if result.SourceLanguage != "zh-CN" {
+		t.Fatalf("SourceLanguage = %q, want zh-CN from event", result.SourceLanguage)
+	}
+}
+
+func TestHandleEventPartialUsesStashFallback(t *testing.T) {
+	stream := &stream{events: make(chan asr.Event, 2)}
+	data := mustJSON(t, map[string]any{
+		"type": "conversation.item.input_audio_transcription.text", "stash": "你",
+	})
+	if err := stream.handleEvent(data); err != nil {
+		t.Fatalf("handleEvent() error = %v", err)
+	}
+	select {
+	case event := <-stream.events:
+		if event.Type != asr.EventPartial || event.Text != "你" {
+			t.Fatalf("emitted partial = %#v", event)
+		}
+	default:
+		t.Fatal("no partial event emitted")
+	}
+}
+
+func TestEmitEventBackpressure(t *testing.T) {
+	stream := &stream{events: make(chan asr.Event, 1)}
+	stream.events <- asr.Event{Type: asr.EventPartial, Text: "fill"}
+	if err := stream.emitEvent(asr.Event{Type: asr.EventPartial, Text: "drop"}); err != nil {
+		t.Fatalf("emitEvent() partial on full buffer error = %v, want nil drop", err)
+	}
+	final := asr.Event{Type: asr.EventFinal, Final: &asr.FinalResult{}}
+	if err := stream.emitEvent(final); err == nil {
+		t.Fatal("emitEvent() final on full buffer succeeded")
+	}
+}
+
+func TestPushAudioIgnoresEmptyChunk(t *testing.T) {
+	stream := &stream{}
+	if err := stream.PushAudio(context.Background(), nil); err != nil {
+		t.Fatalf("PushAudio() error = %v", err)
+	}
+}
+
+func TestWriteReturnsConnectionError(t *testing.T) {
+	stream := &stream{conn: &failWriteConn{}}
+	err := stream.write(context.Background(), map[string]any{"type": "session.finish"})
+	if err == nil || errors.Is(err, context.Canceled) {
+		t.Fatalf("write() error = %v, want connection error", err)
+	}
+}
+
+func TestFinishReturnsErrorWhenSessionFinishWriteFails(t *testing.T) {
+	readDone := make(chan struct{})
+	close(readDone)
+	stream := &stream{
+		conn:     &failWriteConn{},
+		cancel:   func() {},
+		events:   make(chan asr.Event, eventBufferSize+1),
+		done:     make(chan struct{}),
+		readDone: readDone,
+	}
+	if _, err := stream.Finish(context.Background()); err == nil {
+		t.Fatal("Finish() error = nil, want write error")
+	}
+}
+
+type failWriteConn struct{}
+
+func (*failWriteConn) WriteMessage(int, []byte) error { return errors.New("write failed") }
+func (*failWriteConn) ReadMessage() (int, []byte, error) {
+	return 0, nil, errors.New("read failed")
+}
+func (*failWriteConn) Close() error                     { return nil }
+func (*failWriteConn) SetWriteDeadline(time.Time) error { return nil }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -44,7 +45,11 @@ func (s *AttributionTaskStore) Enqueue(ctx context.Context, tx pgx.Tx, turnID, s
 	if s == nil || s.pool == nil {
 		return ErrAttributionTaskRequired
 	}
-	_, err := tx.Exec(ctx, insertAttributionTaskQuery, attributionTaskID(turnID), turnID, sessionID)
+	var taskID string
+	err := tx.QueryRow(ctx, insertAttributionTaskQuery, attributionTaskID(turnID), turnID, sessionID).Scan(&taskID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("enqueue attribution task: %w", domain.ErrNotFound)
+	}
 	if err != nil {
 		return fmt.Errorf("enqueue attribution task: %w", MapError(err))
 	}
@@ -158,12 +163,38 @@ func (s *AttributionTaskStore) settle(taskID, receipt, status string, lastError 
 var _ turns.AttributionTaskSource = (*AttributionTaskStore)(nil)
 
 const insertAttributionTaskQuery = `
-INSERT INTO attribution_tasks (task_id, turn_id, session_id, account_id, task_type)
-SELECT $1, $2, $3, COALESCE(owner.merged_into, owner.id), 'turn_attribution'
-FROM voice_sessions AS sessions
-JOIN lingow_accounts AS owner ON owner.id = sessions.account_id
-WHERE sessions.id = $3
-ON CONFLICT (turn_id) DO NOTHING`
+WITH RECURSIVE target_session AS (
+    SELECT sessions.id, sessions.account_id
+    FROM voice_sessions AS sessions
+    WHERE sessions.id = $3
+), canonical_owner AS (
+    SELECT account.id, account.merged_into, ARRAY[account.id] AS visited
+    FROM lingow_accounts AS account
+    JOIN target_session AS session ON session.account_id = account.id
+
+    UNION ALL
+
+    SELECT parent.id, parent.merged_into, current.visited || parent.id
+    FROM lingow_accounts AS parent
+    JOIN canonical_owner AS current ON parent.id = current.merged_into
+    WHERE NOT parent.id = ANY(current.visited)
+), inserted AS (
+    INSERT INTO attribution_tasks (task_id, turn_id, session_id, account_id, task_type)
+    SELECT $1, $2, session.id, owner.id, 'turn_attribution'
+    FROM target_session AS session
+    JOIN canonical_owner AS owner ON owner.merged_into IS NULL
+    ON CONFLICT (turn_id) DO NOTHING
+    RETURNING task_id
+), existing AS (
+    SELECT task.task_id
+    FROM attribution_tasks AS task
+    JOIN target_session AS session ON session.id = task.session_id
+    WHERE task.turn_id = $2
+)
+SELECT task_id FROM inserted
+UNION ALL
+SELECT task_id FROM existing
+LIMIT 1`
 
 const claimAttributionTaskQuery = `
 WITH candidate AS (

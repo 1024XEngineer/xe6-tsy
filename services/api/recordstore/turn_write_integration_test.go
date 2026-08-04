@@ -17,6 +17,7 @@ func TestTurnWriterStoresAndReplaysFinalTurn(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	insertOwnedSession(t, pool, "session_01", "acct_01")
 	writer := NewTurnWriter(pool)
 	event := finalTurnEvent("event_01", "turn_01", "session_01", 1)
 	event.ParticipantID = nil
@@ -79,6 +80,7 @@ func TestTurnWriterRejectsConflictingReplayKeys(t *testing.T) {
 			if err := Migrate(t.Context(), pool); err != nil {
 				t.Fatalf("Migrate() error = %v", err)
 			}
+			insertOwnedSession(t, pool, "session_01", "acct_01")
 			writer := NewTurnWriter(pool)
 			event := finalTurnEvent("event_01", "turn_01", "session_01", 1)
 			event.ParticipantID = nil
@@ -100,6 +102,7 @@ func TestTurnWriterConcurrentReplayCreatesOneTurn(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	insertOwnedSession(t, pool, "session_01", "acct_01")
 	writer := NewTurnWriter(pool)
 	event := finalTurnEvent("event_01", "turn_01", "session_01", 1)
 	event.ParticipantID = nil
@@ -138,6 +141,7 @@ func TestTurnWriterConcurrentConflictingReplayKeepsOnePayload(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	insertOwnedSession(t, pool, "session_01", "acct_01")
 	writer := NewTurnWriter(pool)
 	first := finalTurnEvent("event_01", "turn_01", "session_01", 1)
 	first.ParticipantID = nil
@@ -200,6 +204,28 @@ func TestTurnWriterRejectsParticipantFromAnotherSession(t *testing.T) {
 
 	if err := NewTurnWriter(pool).StoreFinalTurn(t.Context(), event); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("StoreFinalTurn() error = %v, want not found", err)
+	}
+}
+
+func TestTurnWriterRollsBackPendingTurnWhenAttributionTaskCannotEnqueue(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	event := finalTurnEvent("event_missing_session", "turn_missing_session", "session_missing", 1)
+	event.ParticipantID = nil
+	event.AttributionStatus = recordsv1.AttributionPending
+
+	if err := NewTurnWriter(pool).StoreFinalTurn(t.Context(), event); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("StoreFinalTurn() error = %v, want not found", err)
+	}
+
+	var turnCount int
+	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM voice_turns WHERE id = $1`, event.TurnID).Scan(&turnCount); err != nil {
+		t.Fatalf("count rolled back turn: %v", err)
+	}
+	if turnCount != 0 {
+		t.Fatalf("rolled back turn count = %d, want 0", turnCount)
 	}
 }
 

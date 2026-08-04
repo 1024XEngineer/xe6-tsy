@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 17 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 17", len(migrations))
+	if len(migrations) != 18 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 18", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -224,6 +224,19 @@ func TestEmbeddedMigrations(t *testing.T) {
 	} {
 		if !strings.Contains(backfill.SQL, expected) {
 			t.Fatalf("backfill migration does not contain %q", expected)
+		}
+	}
+
+	deadLetter := migrations[17]
+	if deadLetter.Version != 18 || deadLetter.Name != "final_turn_outbox_dead_letter" {
+		t.Fatalf("migration = %#v, want version 18 named final_turn_outbox_dead_letter", deadLetter)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN last_error TEXT",
+		"ADD COLUMN rejected_at TIMESTAMPTZ",
+	} {
+		if !strings.Contains(deadLetter.SQL, expected) {
+			t.Fatalf("dead-letter migration does not contain %q", expected)
 		}
 	}
 }

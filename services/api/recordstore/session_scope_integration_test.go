@@ -37,3 +37,32 @@ func TestPostgresSessionScopeReaderFiltersByAccount(t *testing.T) {
 		t.Fatalf("SessionIDsForAccount() = %#v, want %#v", ids, want)
 	}
 }
+
+func TestPostgresSessionScopeReaderIncludesTwoHopMergedAccounts(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	if _, err := pool.Exec(t.Context(), `
+INSERT INTO lingow_accounts (id, kind) VALUES
+    ('account_old', 'anonymous'),
+    ('account_mid', 'anonymous'),
+    ('account_new', 'anonymous');
+UPDATE lingow_accounts SET merged_into = 'account_mid' WHERE id = 'account_old';
+UPDATE lingow_accounts SET merged_into = 'account_new' WHERE id = 'account_mid';
+INSERT INTO voice_sessions (id, account_id, status, audio_config, capabilities) VALUES
+    ('session_two_hop', 'account_old', 'created', '{}'::jsonb, '{}'::jsonb)`); err != nil {
+		t.Fatalf("insert two-hop account merge fixture: %v", err)
+	}
+	reader, err := NewPostgresSessionScopeReader(pool)
+	if err != nil {
+		t.Fatalf("NewPostgresSessionScopeReader() error = %v", err)
+	}
+	ids, err := reader.SessionIDsForAccount(t.Context(), "account_new")
+	if err != nil {
+		t.Fatalf("SessionIDsForAccount() error = %v", err)
+	}
+	if !slices.Equal(ids, []string{"session_two_hop"}) {
+		t.Fatalf("SessionIDsForAccount() = %#v, want session_two_hop", ids)
+	}
+}

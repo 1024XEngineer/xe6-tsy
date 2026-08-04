@@ -154,16 +154,22 @@ func (s *stream) run() {
 		close(s.chunks)
 		close(s.done)
 	}()
-	requestBody := generationRequest{
-		Model: s.config.Model,
-		Input: generationInput{Text: s.request.Text, Voice: firstNonEmpty(s.request.VoiceID, s.config.Voice), LanguageType: languageType(s.request.TargetLanguage)},
+	input := generationInput{
+		Text:  s.request.Text,
+		Voice: firstNonEmpty(s.request.VoiceID, s.config.Voice),
 	}
+	if isCosyVoiceModel(s.config.Model) {
+		input.Instruction = languageInstruction(s.request.TargetLanguage)
+	} else {
+		input.LanguageType = languageType(s.request.TargetLanguage)
+	}
+	requestBody := generationRequest{Model: s.config.Model, Input: input}
 	encoded, err := json.Marshal(requestBody)
 	if err != nil {
-		s.setError(fmt.Errorf("encode Qwen TTS request: %w", err))
+		s.setError(fmt.Errorf("encode TTS request: %w", err))
 		return
 	}
-	endpoint := ttsEndpoint(s.config.BaseURL)
+	endpoint := ttsEndpoint(s.config.BaseURL, s.config.Model)
 	req, err := http.NewRequestWithContext(s.ctx, http.MethodPost, endpoint, strings.NewReader(string(encoded)))
 	if err != nil {
 		s.setError(fmt.Errorf("create Qwen TTS request: %w", err))
@@ -304,12 +310,38 @@ func (s *stream) setError(err error) {
 	s.stateMu.Unlock()
 }
 
-func ttsEndpoint(base string) string {
+func ttsEndpoint(base, model string) string {
 	base = strings.TrimRight(base, "/")
+	if isCosyVoiceModel(model) {
+		if strings.HasSuffix(base, "/services/audio/tts/SpeechSynthesizer") {
+			return base
+		}
+		return base + "/services/audio/tts/SpeechSynthesizer"
+	}
 	if strings.HasSuffix(base, "/services/aigc/multimodal-generation/generation") {
 		return base
 	}
 	return base + "/services/aigc/multimodal-generation/generation"
+}
+
+func isCosyVoiceModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "cosyvoice-")
+}
+
+func languageInstruction(language string) string {
+	labels := map[string]string{
+		"zh": "中文", "en": "英语", "ja": "日语", "ko": "韩语",
+		"fr": "法语", "de": "德语", "ru": "俄语", "pt": "葡萄牙语",
+		"th": "泰语", "id": "印尼语", "vi": "越南语",
+	}
+	primary := strings.ToLower(language)
+	if index := strings.IndexAny(primary, "-_"); index > 0 {
+		primary = primary[:index]
+	}
+	if label := labels[primary]; label != "" {
+		return "请用" + label + "自然地朗读。"
+	}
+	return "请自然地朗读。"
 }
 
 func languageType(language string) string {
@@ -347,6 +379,7 @@ type generationInput struct {
 	Text         string `json:"text"`
 	Voice        string `json:"voice"`
 	LanguageType string `json:"language_type,omitempty"`
+	Instruction  string `json:"instruction,omitempty"`
 }
 
 type generationResponse struct {

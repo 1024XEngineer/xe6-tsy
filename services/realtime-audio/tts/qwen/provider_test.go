@@ -69,6 +69,47 @@ func TestProviderStreamsQwenTTSAudio(t *testing.T) {
 	}
 }
 
+func TestCosyVoiceRequestUsesMultilingualInstruction(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/services/audio/tts/SpeechSynthesizer" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		var request struct {
+			Model string `json:"model"`
+			Input struct {
+				Voice       string `json:"voice"`
+				Instruction string `json:"instruction"`
+			} `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if request.Model != "cosyvoice-v3.5-flash" || request.Input.Voice != "longanhuan_v3" || request.Input.Instruction != "请用日语自然地朗读。" {
+			t.Errorf("request = %#v", request)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: " + ttsEvent([]byte{1, 2}) + "\n\n"))
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(Config{
+		APIKey: "test-key", BaseURL: server.URL + "/api/v1",
+		Model: "cosyvoice-v3.5-flash", Voice: "longanhuan_v3",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	stream, err := provider.StartStream(context.Background(), tts.Request{Text: "hello", TargetLanguage: "ja-JP"})
+	if err != nil {
+		t.Fatalf("StartStream() error = %v", err)
+	}
+	for range stream.Chunks() {
+	}
+	if _, err := stream.Finish(context.Background()); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+}
+
 func TestFinishPrefersCompletedResultOverCanceledContext(t *testing.T) {
 	done := make(chan struct{})
 	close(done)

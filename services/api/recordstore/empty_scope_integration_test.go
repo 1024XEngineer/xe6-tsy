@@ -19,12 +19,11 @@ func TestRecordReadersReturnNoRowsForEmptyAccountScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCursorCodec() error = %v", err)
 	}
-	scopes := staticAccountSessionScopes{}
-	participants, err := NewParticipantReadRepository(pool, codec, scopes)
+	participants, err := NewParticipantReadRepository(pool, codec)
 	if err != nil {
 		t.Fatalf("NewParticipantReadRepository() error = %v", err)
 	}
-	turnsRepository, err := NewTurnReadRepository(pool, codec, scopes)
+	turnsRepository, err := NewTurnReadRepository(pool, codec, staticAccountSessionScopes{})
 	if err != nil {
 		t.Fatalf("NewTurnReadRepository() error = %v", err)
 	}

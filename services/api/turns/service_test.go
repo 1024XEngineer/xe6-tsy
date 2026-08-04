@@ -300,8 +300,14 @@ func TestGetAndListOperationsEnforceOwnership(t *testing.T) {
 	if _, err := service.ListSession(context.Background(), "acct_02", "vs_01", recordsv1.ListTurnsQuery{}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ListSession() error = %v, want forbidden", err)
 	}
+	if repository.listSessionCalls != 0 {
+		t.Fatalf("ListSession() repository calls = %d, want 0", repository.listSessionCalls)
+	}
 	if _, err := service.ListHistory(context.Background(), "acct_02", recordsv1.ListTurnsQuery{SessionID: "vs_01"}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("ListHistory() error = %v, want forbidden", err)
+	}
+	if repository.listHistoryCalls != 0 {
+		t.Fatalf("ListHistory() repository calls = %d, want 0", repository.listHistoryCalls)
 	}
 
 	if _, err := service.Get(context.Background(), "acct_01", "vt_01"); err != nil {
@@ -378,6 +384,8 @@ type fakeRepository struct {
 	readTurnIDs          []string
 	findAccountID        string
 	listAccountID        string
+	listSessionCalls     int
+	listHistoryCalls     int
 	ownedAccountID       string
 	readErr              error
 	readCalls            int
@@ -411,6 +419,7 @@ func (r *fakeRepository) StoreFinalTurn(_ context.Context, event recordsv1.Final
 }
 
 func (r *fakeRepository) ListSession(_ context.Context, accountID, _ string, _ recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+	r.listSessionCalls++
 	r.listAccountID = accountID
 	return r.listResponse, nil
 }
@@ -424,6 +433,7 @@ func (r *fakeRepository) Find(_ context.Context, accountID, _ string) (recordsv1
 }
 
 func (r *fakeRepository) ListHistory(context.Context, string, recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+	r.listHistoryCalls++
 	return r.historyResponse, nil
 }
 

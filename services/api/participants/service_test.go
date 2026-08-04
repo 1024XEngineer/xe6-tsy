@@ -34,6 +34,9 @@ func TestListChecksSessionOwnership(t *testing.T) {
 				if !errors.Is(err, test.wantErr) {
 					t.Fatalf("List() error = %v, want %v", err, test.wantErr)
 				}
+				if repository.listCalls != 0 {
+					t.Fatalf("List() repository calls = %d, want 0", repository.listCalls)
+				}
 				return
 			}
 			if err != nil {
@@ -138,9 +141,11 @@ type fakeRepository struct {
 	turnMutations int
 	participants  map[string]recordsv1.Participant
 	listAccountID string
+	listCalls     int
 }
 
 func (r *fakeRepository) List(_ context.Context, accountID, _ string, _ recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+	r.listCalls++
 	r.listAccountID = accountID
 	return r.listResponse, nil
 }

@@ -317,7 +317,7 @@ func (a *API) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input delivery.CreateInput
-	if decodeJSON(r, &input) != nil || input.Channel != delivery.ChannelEmail || input.DestinationRef == "" || len(input.TurnIDs) == 0 || len(input.TurnIDs) > recordsv1.MaxFinalTurnBatchSize || r.Header.Get("Idempotency-Key") == "" || hasDuplicates(input.TurnIDs) {
+	if decodeJSON(r, &input) != nil || !delivery.IsSupportedChannel(input.Channel) || input.DestinationRef == "" || len(input.TurnIDs) == 0 || len(input.TurnIDs) > recordsv1.MaxFinalTurnBatchSize || r.Header.Get("Idempotency-Key") == "" || hasDuplicates(input.TurnIDs) {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}
@@ -384,18 +384,28 @@ func (a *API) putPreference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	channel := delivery.Channel(r.PathValue("channel"))
-	if channel != delivery.ChannelEmail {
+	if !delivery.IsSupportedChannel(channel) {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}
 	var request struct {
-		Enabled *bool `json:"enabled"`
+		Enabled        *bool  `json:"enabled"`
+		DestinationRef string `json:"destination_ref,omitempty"`
 	}
 	if decodeJSON(r, &request) != nil || request.Enabled == nil {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}
-	result, err := a.delivery.PutPreference(r.Context(), id, channel, *request.Enabled)
+	var result delivery.Preference
+	if request.DestinationRef != "" {
+		if service, ok := a.delivery.(delivery.AutomaticPreferenceService); ok {
+			result, err = service.PutPreferenceForDestination(r.Context(), id, channel, *request.Enabled, request.DestinationRef)
+		} else {
+			err = domain.ErrInvalidArgument
+		}
+	} else {
+		result, err = a.delivery.PutPreference(r.Context(), id, channel, *request.Enabled)
+	}
 	if err != nil {
 		writeError(w, r, err)
 		return

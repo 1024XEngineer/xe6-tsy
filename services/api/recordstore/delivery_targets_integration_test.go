@@ -95,3 +95,53 @@ func TestMessageTargetRepositoryRevokeMissingTargetReturnsNotFound(t *testing.T)
 		t.Fatalf("RevokeMessageTarget() error = %v, want not found", err)
 	}
 }
+
+func TestMessagePreferencePersistsSelectedDestinationAndEnabled(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+
+	key := make([]byte, 32)
+	for index := range key {
+		key[index] = byte(index + 20)
+	}
+	accountID := "preference_destination_account"
+	insertDeliveryAccount(t, pool, accountID, "anonymous", nil)
+	repository := delivery.NewPostgresRepository(pool)
+	reader, err := delivery.NewPostgresDestinationReader(pool, key)
+	if err != nil {
+		t.Fatalf("NewPostgresDestinationReader() error = %v", err)
+	}
+	service := delivery.NewPersistentUseCases(repository, nil, reader, nil)
+	service.ConfigureTargetBinding(key, "local")
+	if _, err := service.BindEmailTarget(t.Context(), accountID, "dev:primary-email:preference@example.test"); err != nil {
+		t.Fatalf("BindEmailTarget() error = %v", err)
+	}
+
+	preference, err := service.PutPreference(t.Context(), accountID, delivery.ChannelEmail, true)
+	if err != nil {
+		t.Fatalf("PutPreference() error = %v", err)
+	}
+	if preference.DestinationRef != "primary-email" || !preference.Enabled || !preference.Verified {
+		t.Fatalf("stored preference = %#v, want selected verified destination and enabled", preference)
+	}
+
+	preferences, err := service.Preferences(t.Context(), accountID)
+	if err != nil {
+		t.Fatalf("Preferences() error = %v", err)
+	}
+	if len(preferences) != 1 || preferences[0].DestinationRef != "primary-email" || !preferences[0].Enabled || !preferences[0].Verified {
+		t.Fatalf("listed preferences = %#v, want selected verified destination and enabled", preferences)
+	}
+
+	preference, err = service.PutPreferenceForDestination(
+		t.Context(), accountID, delivery.ChannelEmail, false, "primary-email",
+	)
+	if err != nil {
+		t.Fatalf("PutPreferenceForDestination(disable) error = %v", err)
+	}
+	if preference.DestinationRef != "primary-email" || preference.Enabled || !preference.Verified {
+		t.Fatalf("disabled preference = %#v, want selected verified destination and disabled", preference)
+	}
+}

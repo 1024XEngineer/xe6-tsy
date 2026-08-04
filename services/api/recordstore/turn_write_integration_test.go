@@ -46,6 +46,28 @@ WHERE id = $1`, event.TurnID).Scan(&count, &languageConfigVersion, &createdAt); 
 	}
 }
 
+func TestTurnWriterReplaysLegacyHashWithRouteFields(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	insertOwnedSession(t, pool, "session_legacy", "acct_legacy")
+	writer := NewTurnWriter(pool)
+	legacyEvent := finalTurnEvent("event_legacy", "turn_legacy", "session_legacy", 1)
+	legacyEvent.ParticipantID = nil
+	legacyEvent.AttributionStatus = recordsv1.AttributionPending
+	if err := writer.StoreFinalTurn(t.Context(), legacyEvent); err != nil {
+		t.Fatalf("store legacy FinalTurn() error = %v", err)
+	}
+
+	currentEvent := legacyEvent
+	currentEvent.TTSEnabled = true
+	currentEvent.DeliveryEnabled = true
+	if err := writer.StoreFinalTurn(t.Context(), currentEvent); err != nil {
+		t.Fatalf("replay current FinalTurn() error = %v", err)
+	}
+}
+
 func TestTurnWriterRejectsConflictingReplayKeys(t *testing.T) {
 	tests := []struct {
 		name   string

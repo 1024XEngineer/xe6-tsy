@@ -1,7 +1,6 @@
 package recordstore
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -87,7 +86,11 @@ func (o *FinalTurnOutbox) Append(ctx context.Context, topic, idempotencyKey stri
 	if err := o.pool.QueryRow(ctx, finalTurnOutboxHashQuery, event.EventID).Scan(&storedHash); err != nil {
 		return fmt.Errorf("read final turn outbox replay: %w", MapError(err))
 	}
-	if !bytes.Equal(storedHash, payloadHash[:]) {
+	matches, err := recordsv1.FinalTurnEventPayloadHashMatches(event, storedHash)
+	if err != nil {
+		return fmt.Errorf("hash final turn outbox replay: %w", err)
+	}
+	if !matches {
 		return fmt.Errorf("%w: %w", ErrFinalTurnOutboxConflict, domain.ErrConflict)
 	}
 	return nil

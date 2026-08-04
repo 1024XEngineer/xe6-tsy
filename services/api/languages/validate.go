@@ -71,9 +71,11 @@ func validateP0LanguagePairs(pairs []LanguagePair, catalog map[string]SupportedL
 func requestFingerprint(req CreateLanguageConfigRequest) string {
 	payload := struct {
 		Languages       []LanguagePair `json:"languages"`
+		OutputRoutes    []OutputRoute  `json:"output_routes,omitempty"`
 		ExpectedVersion *int           `json:"expected_version"`
 	}{
 		Languages:       req.Languages,
+		OutputRoutes:    req.OutputRoutes,
 		ExpectedVersion: req.ExpectedVersion,
 	}
 	raw, err := json.Marshal(payload)
@@ -82,6 +84,45 @@ func requestFingerprint(req CreateLanguageConfigRequest) string {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
+}
+
+func normalizeOutputRoutes(pairs []LanguagePair, routes []OutputRoute) ([]OutputRoute, error) {
+	targets := make(map[string]struct{}, len(pairs))
+	for _, pair := range pairs {
+		targets[pair.Target] = struct{}{}
+	}
+	if len(routes) == 0 {
+		defaults := make([]OutputRoute, 0, len(targets))
+		for _, pair := range pairs {
+			if _, exists := targets[pair.Target]; !exists {
+				continue
+			}
+			targets[pair.Target] = struct{}{}
+			defaults = append(defaults, OutputRoute{TargetLanguage: pair.Target, TTSEnabled: true, DeliveryEnabled: false})
+			delete(targets, pair.Target)
+		}
+		return defaults, nil
+	}
+
+	seen := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		if route.TargetLanguage == "" {
+			return nil, fmt.Errorf("%w: output route target_language is required", ErrInvalidRequest)
+		}
+		if _, exists := targets[route.TargetLanguage]; !exists {
+			return nil, fmt.Errorf("%w: output route target_language %s is not configured", ErrInvalidLanguagePair, route.TargetLanguage)
+		}
+		if _, exists := seen[route.TargetLanguage]; exists {
+			return nil, fmt.Errorf("%w: duplicate output route %s", ErrInvalidLanguagePair, route.TargetLanguage)
+		}
+		seen[route.TargetLanguage] = struct{}{}
+	}
+	for target := range targets {
+		if _, exists := seen[target]; !exists {
+			return nil, fmt.Errorf("%w: missing output route %s", ErrInvalidLanguagePair, target)
+		}
+	}
+	return append([]OutputRoute(nil), routes...), nil
 }
 
 func sameIdempotentRequest(existing LanguageConfig, sessionID, fingerprint string) bool {
@@ -95,6 +136,7 @@ func toSnapshot(cfg LanguageConfig) LanguageConfigSnapshot {
 		SessionID:     cfg.SessionID,
 		Version:       cfg.Version,
 		LanguagePairs: append([]LanguagePair(nil), cfg.LanguagePairs...),
+		OutputRoutes:  append([]OutputRoute(nil), cfg.OutputRoutes...),
 		Status:        cfg.Status,
 		EffectiveFrom: cfg.EffectiveFrom,
 		UpdatedAt:     cfg.CreatedAt,

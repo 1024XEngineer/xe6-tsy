@@ -9,6 +9,7 @@ import (
 type CreateConfigInput struct {
 	SessionID          string
 	LanguagePairs      []LanguagePair
+	OutputRoutes       []OutputRoute
 	CreatedBy          string
 	IdempotencyKey     string // empty means no idempotency key
 	ExpectedVersion    *int   // optional optimistic lock against current active version

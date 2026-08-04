@@ -114,6 +114,12 @@ components:
         translated_text:
           type: string
           minLength: 1
+        tts_enabled:
+          type: boolean
+          description: Whether this target-language route may synthesize and play TTS.
+        delivery_enabled:
+          type: boolean
+          description: Whether this final turn may create automatic outbound messages.
         speaker_code:
           type: string
           minLength: 1

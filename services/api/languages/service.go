@@ -79,6 +79,10 @@ func (s *Service) CreateConfig(
 	if err := validateP0LanguagePairs(req.Languages, catalog); err != nil {
 		return LanguageConfig{}, err
 	}
+	routes, err := normalizeOutputRoutes(req.Languages, req.OutputRoutes)
+	if err != nil {
+		return LanguageConfig{}, err
+	}
 
 	fingerprint := requestFingerprint(req)
 	if idempotencyKey != "" {
@@ -99,6 +103,7 @@ func (s *Service) CreateConfig(
 	created, err := s.store.CreateActiveConfig(ctx, CreateConfigInput{
 		SessionID:          sessionID,
 		LanguagePairs:      req.Languages,
+		OutputRoutes:       routes,
 		CreatedBy:          accountID,
 		IdempotencyKey:     idempotencyKey,
 		ExpectedVersion:    req.ExpectedVersion,

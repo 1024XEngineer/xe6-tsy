@@ -321,7 +321,9 @@ export function useVoiceSession() {
           onDataMessage: (payload) => {
             const audio = parseTTSAudioEvent(payload);
             if (audio) {
-              enqueueTTSAudio(audio, setMicrophoneInputEnabled);
+              enqueueTTSAudio(audio, (playing) => {
+                setMicrophoneInputEnabled(!playing);
+              });
               return;
             }
             const event = parseTranslationFinal(payload);

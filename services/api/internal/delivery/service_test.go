@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
@@ -21,10 +22,14 @@ type retryRepositoryStub struct {
 	createErr     error
 	createCalls   int
 	preference    Preference
+	createdRecord []CreateMessageRecord
 }
 
-func (r *retryRepositoryStub) CreateMessage(context.Context, CreateMessageRecord) error {
+func (r *retryRepositoryStub) CreateMessage(_ context.Context, record CreateMessageRecord) error {
 	r.createCalls++
+	r.createdRecord = append(r.createdRecord, record)
+	r.createLookup = record.Message
+	r.createErr = nil
 	return nil
 }
 
@@ -72,7 +77,10 @@ func (r *retryRepositoryStub) SetAttemptStatus(context.Context, string, Delivery
 }
 
 func (r *retryRepositoryStub) ListPreferences(context.Context, string) ([]Preference, error) {
-	return nil, nil
+	if r.preference.AccountID == "" {
+		return nil, nil
+	}
+	return []Preference{r.preference}, nil
 }
 
 func (r *retryRepositoryStub) PutPreference(_ context.Context, preference Preference) (Preference, error) {
@@ -91,6 +99,41 @@ func TestPutPreferenceDoesNotClaimVerification(t *testing.T) {
 	if preference.Verified || repository.preference.Verified {
 		t.Fatal("PutPreference() must leave destination verification to the repository")
 	}
+}
+
+func TestScheduleFinalTurnCreatesOneIdempotentMessagePerPreference(t *testing.T) {
+	repository := &retryRepositoryStub{preference: Preference{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Enabled: true, Verified: true}}
+	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
+	event := recordsv1.FinalTurnEvent{TurnID: "turn-1", DeliveryEnabled: true}
+	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
+		t.Fatalf("first ScheduleFinalTurn() error = %v", err)
+	}
+	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
+		t.Fatalf("replayed ScheduleFinalTurn() error = %v", err)
+	}
+	if len(repository.createdRecord) != 1 {
+		t.Fatalf("created messages = %d, want 1", len(repository.createdRecord))
+	}
+	wantKey := "auto:final_turn:turn-1:wechat:primary-wechat"
+	if len(repository.createdRecord[0].Message.Turns) != 1 {
+		t.Fatalf("created record = %#v", repository.createdRecord[0])
+	}
+	turn := repository.createdRecord[0].Message.Turns[0]
+	if repository.createdRecord[0].IdempotencyKey != wantKey || turn.SourceText != "原文" || turn.TranslatedText != "translation" {
+		t.Fatalf("created record = %#v", repository.createdRecord[0])
+	}
+}
+
+type automaticTurnReaderStub struct{}
+
+func (automaticTurnReaderStub) ReadFinalTurns(context.Context, string, []string) ([]FinalTurnSnapshot, error) {
+	return []FinalTurnSnapshot{{TurnID: "turn-1", SourceText: "原文", TranslatedText: "translation"}}, nil
+}
+
+type automaticDestinationReaderStub struct{}
+
+func (automaticDestinationReaderStub) ResolveVerifiedDestination(context.Context, string, Channel, string) (VerifiedDestination, error) {
+	return VerifiedDestination{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", ProviderTarget: "opaque"}, nil
 }
 
 func (r *retryRepositoryStub) GetMessageByIdempotency(context.Context, string, string) (Message, error) {

@@ -174,6 +174,9 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		destinationReader,
 		queue,
 	)
+	if records.turns != nil {
+		records.turns.SetFinalTurnScheduler(deliveryService)
+	}
 	deliveryService.ConfigureTargetBinding(destinationKey, processConfig.AppEnv)
 	smtpMailer, err := newConfiguredSMTPMailer(processConfig)
 	if err != nil {

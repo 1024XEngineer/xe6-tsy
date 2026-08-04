@@ -260,8 +260,7 @@ func (r *PostgresRepository) PutPreference(ctx context.Context, preference Prefe
 		VALUES (
 			$1,
 			$2,
-			$3,
-			COALESCE(NULLIF($4, ''), (
+			COALESCE(NULLIF($3, ''), (
 				SELECT d.destination_ref
 				FROM account_destinations d
 				WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1))
@@ -271,12 +270,13 @@ func (r *PostgresRepository) PutPreference(ctx context.Context, preference Prefe
 				ORDER BY d.verified_at DESC, d.destination_ref ASC
 				LIMIT 1
 			)),
+			$4,
 			EXISTS (
 				SELECT 1
 				FROM account_destinations d
 				WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1))
 				  AND d.channel=$2
-				  AND (NULLIF($4, '') IS NULL OR d.destination_ref=$4)
+				  AND (NULLIF($3, '') IS NULL OR d.destination_ref=$3)
 				  AND d.verified_at IS NOT NULL
 				  AND d.revoked_at IS NULL
 			),
@@ -285,7 +285,7 @@ func (r *PostgresRepository) PutPreference(ctx context.Context, preference Prefe
 		ON CONFLICT (account_id,channel) DO UPDATE
 		SET destination_ref=EXCLUDED.destination_ref,enabled=EXCLUDED.enabled,verified=EXCLUDED.verified,updated_at=EXCLUDED.updated_at
 		RETURNING account_id,channel,COALESCE(destination_ref,''),enabled,verified,updated_at`,
-		preference.AccountID, preference.Channel, preference.Enabled, preference.DestinationRef, preference.UpdatedAt,
+		preference.AccountID, preference.Channel, preference.DestinationRef, preference.Enabled, preference.UpdatedAt,
 	).Scan(&stored.AccountID, &stored.Channel, &stored.DestinationRef, &stored.Enabled, &stored.Verified, &stored.UpdatedAt)
 	if err != nil {
 		return Preference{}, mapDeliveryError(err)

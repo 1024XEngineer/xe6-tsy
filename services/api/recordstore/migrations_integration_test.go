@@ -49,6 +49,7 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{15, "attribution_snapshot_updates"},
 		{16, "attribution_tasks"},
 		{17, "backfill_attribution_tasks"},
+		{18, "auto_delivery_destination"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))

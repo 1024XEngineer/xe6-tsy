@@ -44,7 +44,7 @@ func NewServices(
 	if err != nil {
 		return nil, fmt.Errorf("create records services: %w", err)
 	}
-	participantReader, err := NewParticipantReadRepository(pool, cursors, sessionScope)
+	participantReader, err := NewParticipantReadRepository(pool, cursors)
 	if err != nil {
 		return nil, fmt.Errorf("create records services: %w", err)
 	}
@@ -70,7 +70,7 @@ func NewServices(
 		NewAttributionTaskStore(pool),
 		attributionResolver,
 		sessionOwner,
-		turns.NewServiceAttributionReader(turnService, participantService),
+		turns.NewServiceAttributionReader(turnService),
 		turnService,
 		slog.Default(),
 	)

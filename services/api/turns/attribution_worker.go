@@ -53,14 +53,13 @@ type AttributionOwnerReader interface {
 	AccountIDForSession(ctx context.Context, sessionID string) (string, error)
 }
 
-// AttributionResolutionInput carries the persisted turn and its session participants so a
-// resolver can use surrounding context without reading storage directly.
+// AttributionResolutionInput carries the persisted turn and authorization context. Provider-key
+// resolvers resolve participants through their mapping service instead of receiving a truncated list.
 type AttributionResolutionInput struct {
-	AccountID    string
-	SessionID    string
-	TurnID       string
-	Turn         recordsv1.VoiceTurn
-	Participants []recordsv1.Participant
+	AccountID string
+	SessionID string
+	TurnID    string
+	Turn      recordsv1.VoiceTurn
 }
 
 // AttributionDecision is the resolver output applied through the records services. ParticipantID
@@ -75,7 +74,6 @@ type AttributionDecision struct {
 // AttributionReader reads the inputs a resolver needs, enforcing account ownership.
 type AttributionReader interface {
 	GetTurn(ctx context.Context, accountID, turnID string) (recordsv1.VoiceTurn, error)
-	ListParticipants(ctx context.Context, accountID, sessionID string) ([]recordsv1.Participant, error)
 }
 
 // AttributionApplier persists a resolver decision through the records services.
@@ -192,16 +190,11 @@ func (w *AttributionWorker) resolve(ctx context.Context, task AttributionTask, a
 	if err != nil {
 		return nil, fmt.Errorf("read turn %s: %w", task.TurnID, err)
 	}
-	participants, err := w.reader.ListParticipants(ctx, accountID, task.SessionID)
-	if err != nil {
-		return nil, fmt.Errorf("list participants for turn %s: %w", task.TurnID, err)
-	}
 	decision, err := w.resolver.Resolve(ctx, AttributionResolutionInput{
-		AccountID:    accountID,
-		SessionID:    task.SessionID,
-		TurnID:       task.TurnID,
-		Turn:         turn,
-		Participants: participants,
+		AccountID: accountID,
+		SessionID: task.SessionID,
+		TurnID:    task.TurnID,
+		Turn:      turn,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("resolve attribution for turn %s: %w", task.TurnID, err)

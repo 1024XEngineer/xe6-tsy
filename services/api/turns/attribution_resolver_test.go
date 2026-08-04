@@ -97,7 +97,7 @@ func TestProviderAttributionResolverPropagatesMappingError(t *testing.T) {
 func TestServiceAttributionReaderGetTurn(t *testing.T) {
 	repository := &fakeRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}}
 	service := NewService(repository, fakeSessionOwners{}, nil)
-	reader := NewServiceAttributionReader(service, participantListerStub{})
+	reader := NewServiceAttributionReader(service)
 
 	turn, err := reader.GetTurn(context.Background(), "acct_01", "vt_01")
 	if err != nil {
@@ -114,46 +114,11 @@ func TestServiceAttributionReaderGetTurn(t *testing.T) {
 func TestServiceAttributionReaderGetTurnPropagatesError(t *testing.T) {
 	repository := &fakeRepository{ownedAccountID: "acct_01"}
 	service := NewService(repository, fakeSessionOwners{}, nil)
-	reader := NewServiceAttributionReader(service, participantListerStub{})
+	reader := NewServiceAttributionReader(service)
 
 	if _, err := reader.GetTurn(context.Background(), "acct_02", "vt_01"); !errors.Is(err, ErrTurnNotFound) {
 		t.Fatalf("GetTurn() error = %v, want ErrTurnNotFound", err)
 	}
-}
-
-func TestServiceAttributionReaderListParticipants(t *testing.T) {
-	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
-	reader := NewServiceAttributionReader(service, participantListerStub{
-		response: recordsv1.ParticipantListResponse{
-			Items: []recordsv1.Participant{{ID: "p_01", SpeakerCode: "speaker_01"}},
-		},
-	})
-
-	participants, err := reader.ListParticipants(context.Background(), "acct_01", "vs_01")
-	if err != nil {
-		t.Fatalf("ListParticipants() error = %v", err)
-	}
-	if len(participants) != 1 || participants[0].ID != "p_01" {
-		t.Fatalf("ListParticipants() = %#v", participants)
-	}
-}
-
-func TestServiceAttributionReaderListParticipantsPropagatesError(t *testing.T) {
-	service := NewService(&fakeRepository{}, fakeSessionOwners{}, nil)
-	reader := NewServiceAttributionReader(service, participantListerStub{err: errors.New("list failed")})
-
-	if _, err := reader.ListParticipants(context.Background(), "acct_01", "vs_01"); err == nil {
-		t.Fatal("ListParticipants() error = nil, want list error")
-	}
-}
-
-type participantListerStub struct {
-	response recordsv1.ParticipantListResponse
-	err      error
-}
-
-func (s participantListerStub) List(context.Context, string, string, recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
-	return s.response, s.err
 }
 
 type participantMapperStub struct {

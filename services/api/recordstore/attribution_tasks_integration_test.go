@@ -53,7 +53,7 @@ func TestAttributionTaskFlow(t *testing.T) {
 		store,
 		services.AttributionResolver,
 		sessionOwnerStub{accountID: "acct_01"},
-		turns.NewServiceAttributionReader(services.Turns, services.Participants),
+		turns.NewServiceAttributionReader(services.Turns),
 		services.Turns,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
@@ -123,7 +123,7 @@ func TestAttributionTaskFailsWithoutProviderEvidence(t *testing.T) {
 		store,
 		services.AttributionResolver,
 		sessionOwnerStub{accountID: "acct_01"},
-		turns.NewServiceAttributionReader(services.Turns, services.Participants),
+		turns.NewServiceAttributionReader(services.Turns),
 		services.Turns,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
@@ -184,7 +184,7 @@ UPDATE lingow_accounts SET merged_into = 'acct_new' WHERE id = 'acct_mid'`); err
 		store,
 		services.AttributionResolver,
 		owner,
-		turns.NewServiceAttributionReader(services.Turns, services.Participants),
+		turns.NewServiceAttributionReader(services.Turns),
 		services.Turns,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)

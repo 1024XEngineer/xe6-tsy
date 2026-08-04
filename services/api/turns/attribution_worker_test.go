@@ -128,8 +128,7 @@ func TestAttributionWorkerUsesCurrentSessionOwner(t *testing.T) {
 		TaskType: "turn_attribution", Attempts: 1,
 	}}
 	reader := &attributionReaderStub{
-		turn:  recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
-		parts: []recordsv1.Participant{{ID: "p_01"}},
+		turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
 	}
 	applier := &attributionApplierStub{updated: recordsv1.VoiceTurn{ID: "vt_01"}}
 	worker, err := NewAttributionWorker(
@@ -149,8 +148,8 @@ func TestAttributionWorkerUsesCurrentSessionOwner(t *testing.T) {
 	if err := worker.Process(ctx, delivery); err != nil {
 		t.Fatalf("Process() error = %v", err)
 	}
-	if reader.getAccountID != "acct_new" || reader.listAccountID != "acct_new" {
-		t.Fatalf("reader account IDs get=%q list=%q, want acct_new", reader.getAccountID, reader.listAccountID)
+	if reader.getAccountID != "acct_new" {
+		t.Fatalf("reader account ID = %q, want acct_new", reader.getAccountID)
 	}
 	if applier.accountID != "acct_new" {
 		t.Fatalf("applier account ID = %q, want acct_new", applier.accountID)
@@ -195,8 +194,7 @@ func TestAttributionWorkerStopsOnSettlementFailure(t *testing.T) {
 func newAttributionWorkerStub(t *testing.T, source AttributionTaskSource, resolver AttributionResolver, applier AttributionApplier) (*AttributionWorker, context.Context) {
 	t.Helper()
 	reader := &attributionReaderStub{
-		turn:  recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
-		parts: []recordsv1.Participant{{ID: "p_01"}},
+		turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
 	}
 	worker, err := NewAttributionWorker(source, resolver, attributionOwnerStub{accountID: "acct_01"}, reader, applier, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
@@ -267,21 +265,14 @@ func (r *fixedDecisionResolver) Resolve(context.Context, AttributionResolutionIn
 }
 
 type attributionReaderStub struct {
-	turn          recordsv1.VoiceTurn
-	parts         []recordsv1.Participant
-	err           error
-	getAccountID  string
-	listAccountID string
+	turn         recordsv1.VoiceTurn
+	err          error
+	getAccountID string
 }
 
 func (r *attributionReaderStub) GetTurn(_ context.Context, accountID string, _ string) (recordsv1.VoiceTurn, error) {
 	r.getAccountID = accountID
 	return r.turn, r.err
-}
-
-func (r *attributionReaderStub) ListParticipants(_ context.Context, accountID string, _ string) ([]recordsv1.Participant, error) {
-	r.listAccountID = accountID
-	return r.parts, r.err
 }
 
 type attributionOwnerStub struct {

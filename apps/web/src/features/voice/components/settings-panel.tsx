@@ -14,7 +14,7 @@ import {
 } from "../lib/languages";
 import { listSupportedLanguages } from "../lib/lingow-api";
 import styles from "../voice.module.css";
-import { HistorySettings } from "./history-settings";
+import { HistoryPreview, HistorySettings } from "./history-settings";
 import { OptionWheel } from "./option-wheel";
 import { UsageSettings } from "./usage-settings";
 
@@ -52,6 +52,7 @@ const SETTINGS_ITEMS = [
 ] as const;
 
 type SettingId = (typeof SETTINGS_ITEMS)[number]["id"];
+const HISTORY_INDEX = SETTINGS_ITEMS.findIndex((item) => item.id === "history");
 
 function SelectRow({
   label,
@@ -91,7 +92,7 @@ function SettingsDetail({
   languageOptions,
   languageLoading,
   languageLabels,
-  onExitHistory,
+  onOpenHistory,
 }: {
   selectedId: SettingId;
   voiceConfig: VoiceSessionConfig;
@@ -100,7 +101,7 @@ function SettingsDetail({
   languageOptions: readonly LanguageCode[];
   languageLoading: boolean;
   languageLabels: Readonly<Record<string, string>>;
-  onExitHistory: () => void;
+  onOpenHistory: (session: import("../lib/lingow-api").VoiceSession) => void;
 }) {
   switch (selectedId) {
     case "language":
@@ -153,7 +154,7 @@ function SettingsDetail({
         </div>
       );
     case "history":
-      return <HistorySettings onExit={onExitHistory} />;
+      return <HistoryPreview onOpen={onOpenHistory} />;
     case "usage":
       return <UsageSettings />;
     case "about":
@@ -185,12 +186,14 @@ export function SettingsPanel({
   debug: SessionDebugInfo;
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [historySessionId, setHistorySessionId] = useState<string | null>(null);
   const [languageOptions, setLanguageOptions] = useState<LanguageCode[]>(SUPPORTED_LANGUAGES);
   const [languageLoading, setLanguageLoading] = useState(true);
   const [languageLabels, setLanguageLabels] = useState<Record<string, string>>({});
   const panelRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const selected = SETTINGS_ITEMS[selectedIndex];
+  const historyWorkspaceOpen = selected.id === "history" && historySessionId !== null;
 
   useEffect(() => {
     let cancelled = false;
@@ -303,8 +306,8 @@ export function SettingsPanel({
           </button>
         </header>
 
-        <div className={selected.id === "history" ? styles.settingsContentHistory : styles.settingsContent}>
-          {selected.id !== "history" ? <section aria-label="设置导航" className={styles.settingsNavigation}>
+        <div className={historyWorkspaceOpen ? styles.settingsContentHistory : styles.settingsContent}>
+          {!historyWorkspaceOpen ? <section aria-label="设置导航" className={styles.settingsNavigation}>
             <div className={styles.settingsCount}>
               <span>{String(selectedIndex + 1).padStart(2, "0")}</span>
               <i />
@@ -319,24 +322,21 @@ export function SettingsPanel({
                 fontSize={2.42}
                 inset={96}
                 items={SETTINGS_ITEMS.map((item) => item.label)}
-                onChange={(index) => setSelectedIndex(index)}
+                onChange={(index) => {
+                  setSelectedIndex(index);
+                  if (index !== HISTORY_INDEX) setHistorySessionId(null);
+                }}
                 spacing={1.5}
                 tilt={7.2}
               />
             </div>
           </section> : null}
 
-          <section aria-live="polite" className={selected.id === "history" ? styles.settingsDetailHistory : styles.settingsDetail}>
-            {selected.id === "history" ? (
-              <SettingsDetail
-                debug={debug}
-                languageLoading={languageLoading}
-                languageOptions={languageOptions}
-                languageLabels={languageLabels}
-                onConfigChange={onConfigChange}
-                onExitHistory={() => setSelectedIndex(0)}
-                selectedId={selected.id}
-                voiceConfig={voiceConfig}
+          <section aria-live="polite" className={historyWorkspaceOpen ? styles.settingsDetailHistory : styles.settingsDetail}>
+            {historyWorkspaceOpen ? (
+              <HistorySettings
+                initialSessionId={historySessionId}
+                onExit={() => setHistorySessionId(null)}
               />
             ) : <AnimatePresence mode="wait">
               <motion.div
@@ -358,8 +358,8 @@ export function SettingsPanel({
                     languageLoading={languageLoading}
                     languageOptions={languageOptions}
                     languageLabels={languageLabels}
-                    onExitHistory={() => setSelectedIndex(0)}
                     onConfigChange={onConfigChange}
+                    onOpenHistory={(session) => setHistorySessionId(session.id)}
                     selectedId={selected.id}
                     voiceConfig={voiceConfig}
                   />

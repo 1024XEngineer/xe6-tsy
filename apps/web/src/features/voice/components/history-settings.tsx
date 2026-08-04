@@ -49,7 +49,71 @@ function statusLabel(status: VoiceSession["status"]): string {
   }
 }
 
-export function HistorySettings({ onExit = () => undefined }: { onExit?: () => void }) {
+export function HistoryPreview({
+  onOpen,
+}: {
+  onOpen: (session: VoiceSession) => void;
+}) {
+  const [sessions, setSessions] = useState<VoiceSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const auth = await getOrCreateAuthSession();
+        const page = await listVoiceSessions(auth.tokens.access_token, { limit: 5 });
+        if (!cancelled) setSessions(page.sessions);
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : "无法加载最近会话");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <div className={styles.historySessionsView}>
+      <p className={styles.settingsState}>最近 5 次会话</p>
+      {loading ? <p className={styles.settingsState}>正在读取会话...</p> : null}
+      {error ? <p className={styles.settingsState}>{error}</p> : null}
+      {!loading && !error && sessions.length === 0 ? (
+        <p className={styles.settingsState}>还没有历史会话</p>
+      ) : null}
+      <div className={styles.historySessionList}>
+        {sessions.map((session) => (
+          <button
+            className={styles.historySessionRow}
+            key={session.id}
+            onClick={() => onOpen(session)}
+            type="button"
+          >
+            <ClockCounterClockwise aria-hidden="true" size={18} />
+            <span>
+              <strong>{sessionDate(session)}</strong>
+              <small>{sessionDuration(session)} · {statusLabel(session.status)}</small>
+            </span>
+            <CaretRight aria-hidden="true" size={16} />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function HistorySettings({
+  onExit = () => undefined,
+  initialSessionId,
+}: {
+  onExit?: () => void;
+  initialSessionId?: string | null;
+}) {
   const [sessions, setSessions] = useState<VoiceSession[]>([]);
   const [selected, setSelected] = useState<VoiceSession | null>(null);
   const [turns, setTurns] = useState<VoiceTurn[]>([]);
@@ -111,6 +175,12 @@ export function HistorySettings({ onExit = () => undefined }: { onExit?: () => v
       setDetailLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!initialSessionId || selected || loading) return;
+    const session = sessions.find((item) => item.id === initialSessionId);
+    if (session) void openSession(session);
+  }, [initialSessionId, loading, selected, sessions]);
 
   return (
     <div className={styles.historyWorkspace}>

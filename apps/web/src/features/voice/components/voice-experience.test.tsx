@@ -118,6 +118,10 @@ describe("VoiceExperience", () => {
           });
         }
 
+        if (url.includes("/api/v1/voice-sessions?") && method === "GET") {
+          return jsonResponse({ sessions: [], next_cursor: null });
+        }
+
         if (url.includes("/state")) {
           return jsonResponse({
             session_id: "vs-1",
@@ -207,6 +211,18 @@ describe("VoiceExperience", () => {
     expect(screen.getByRole("option", { name: "关于" })).toBeInTheDocument();
     expect(screen.getByText("01")).toBeInTheDocument();
     expect(screen.getByText("05")).toBeInTheDocument();
+  });
+
+  it("keeps the settings wheel open while showing the history preview", async () => {
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const wheel = screen.getByRole("listbox", { name: "设置选项" });
+    fireEvent.keyDown(wheel, { key: "ArrowDown" });
+
+    expect(wheel).toBeInTheDocument();
+    expect(await screen.findByText("最近 5 次会话")).toBeInTheDocument();
+    expect(screen.queryByText("选择一次会话，查看完整双语记录。")).toBeNull();
   });
 
   it("connects through xe6-tsy APIs and shows the newest bilingual turn", async () => {

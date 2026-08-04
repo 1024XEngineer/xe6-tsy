@@ -14,20 +14,21 @@
 lingow_accounts
     ├── lingow_auth_sessions
     ├── email_bind_challenges
-├── account_destinations
-├── message_preferences
-├── outbound_messages
-│   └── delivery_attempts
-│       └── delivery_outbox
-├── delivery_retry_requests
-└── voice_sessions
-    ├── voice_session_create_requests
-    ├── voice_session_start_operations
-    ├── voice_session_end_intents
-    ├── voice_session_language_configs
-    ├── voice_session_participants
-    │   └── voice_turns
-    └── lingow_usage_records
+    ├── account_destinations
+    ├── message_preferences
+    ├── outbound_messages
+    │   └── delivery_attempts
+    │       └── delivery_outbox
+    ├── delivery_retry_requests
+    └── voice_sessions
+        ├── voice_session_create_requests
+        ├── voice_session_start_operations
+        ├── voice_session_end_intents
+        ├── voice_session_language_configs
+        ├── voice_session_participants
+        │   └── voice_turns
+        │       └── attribution_tasks
+        └── lingow_usage_records
 
 final_turn_outbox 独立承载 Final Turn 入站事件收据状态。
 lingow_phone_challenges 独立承载注册前手机号 OTP 挑战，不通过 `account_id` 关联账户。
@@ -377,6 +378,7 @@ Final Turn 持久化表，保存每轮原文、译文、语言方向和说话人
 | `voice_turns_session_participant_foreign_key` | FK | `(session_id, participant_id) REFERENCES voice_session_participants(session_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT` |
 | `voice_turns_session_sequence_order_idx` | Index | `(session_id, sequence_no ASC, id ASC)` |
 | `voice_turns_history_created_order_idx` | Index | `(created_at DESC, id DESC)` |
+| `voice_turns_session_history_order_idx` | Index | `(session_id, created_at DESC, id DESC)` |
 | `voice_turns_reject_immutable_updates` | Trigger | 禁止更新文本、语言方向、时间、序号和身份键等不可变字段；说话人快照字段允许随归属修正更新 |
 
 Turn 侧的 `speaker_code`、`display_name`、`provider_speaker_id`、`voice_profile_id` 是归属快照：初始 FinalTurn 落库时与实时阶段识别结果一致，归属修正（`PATCH /api/v1/voice-turns/{id}/attribution`）时在同一 UPDATE 中跟随目标 participant 刷新，保证返回给调用方和渲染端的 `participant_id` 与说话人标签始终自洽。真正不可变的是转译快照（`source_text`、`translated_text`、语言方向、配置版本、时间、序号和身份键）。当前表只保存最终修正状态，不保存每一次修正历史。
@@ -387,7 +389,7 @@ Turn 侧的 `speaker_code`、`display_name`、`provider_speaker_id`、`voice_pro
 
 ### 4.12 `attribution_tasks`
 
-异步说话人归属的持久化工作队列。当 FinalTurn 以 `pending` 或 `provisional` 状态落库时，在同一事务内为每个 turn 创建一条任务（`turn_id` 唯一）。API 的 attribution worker 领取任务、解析归属并结算。
+异步说话人归属的持久化工作队列。当 FinalTurn 以 `pending` 或历史兼容的 `provisional` 状态落库时，在同一事务内为每个 turn 创建一条任务（`turn_id` 唯一）。当前 realtime 生产链路只产生 pending；provisional 仅用于历史数据和兼容 contract。API 的 attribution worker 领取任务、解析归属并结算。
 
 | 字段 | 类型 | 空 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -407,7 +409,7 @@ Turn 侧的 `speaker_code`、`display_name`、`provider_speaker_id`、`voice_pro
 
 处理语义：
 
-- worker 按 `FOR UPDATE SKIP LOCKED` 领取到期任务，成功写入后 Ack，临时错误按指数退避 Retry，缺少 provider speaker key 或超过尝试上限时 Fail。
+- worker 按 `FOR UPDATE SKIP LOCKED` 领取到期任务，成功写入后 Ack，临时错误按指数退避 Retry，缺少 provider speaker key 或超过尝试上限时 Fail；没有 evidence 不会创建 participant。
 - 任务只在实时 FinalTurn 写入时入队；上线前的历史 unresolved turn 由 migration `000017` 幂等回填，并把旧的 `completed` 但 turn 仍 unresolved 的任务修复为 `pending`。
 - 没有 `provider_speaker_id` 的 turn 无法确定性归属，任务以 `no_provider_speaker_id` 永久失败，保证 unresolved 数据可审计。
 
@@ -1020,6 +1022,44 @@ CREATE INDEX voice_turns_session_sequence_order_idx
     ON voice_turns (session_id, sequence_no ASC, id ASC);
 CREATE INDEX voice_turns_history_created_order_idx
     ON voice_turns (created_at DESC, id DESC);
+CREATE INDEX voice_turns_session_history_order_idx
+    ON voice_turns (session_id, created_at DESC, id DESC);
+
+CREATE TABLE attribution_tasks (
+    task_id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    task_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    available_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    receipt TEXT,
+    locked_until TIMESTAMPTZ,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT attribution_tasks_task_id_not_empty CHECK (task_id <> ''),
+    CONSTRAINT attribution_tasks_turn_id_not_empty CHECK (turn_id <> ''),
+    CONSTRAINT attribution_tasks_session_id_not_empty CHECK (session_id <> ''),
+    CONSTRAINT attribution_tasks_account_id_not_empty CHECK (account_id <> ''),
+    CONSTRAINT attribution_tasks_task_type_valid CHECK (task_type IN ('participant_mapping', 'turn_attribution')),
+    CONSTRAINT attribution_tasks_status_valid CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    CONSTRAINT attribution_tasks_attempts_nonnegative CHECK (attempts >= 0),
+    CONSTRAINT attribution_tasks_available_at_valid CHECK (available_at >= created_at),
+    CONSTRAINT attribution_tasks_receipt_state_valid CHECK (
+        (status = 'processing' AND receipt IS NOT NULL AND receipt <> '' AND locked_until IS NOT NULL)
+        OR (status IN ('pending', 'completed', 'failed') AND receipt IS NULL AND locked_until IS NULL)
+    ),
+    CONSTRAINT attribution_tasks_turn_id_key UNIQUE (turn_id)
+);
+
+CREATE INDEX attribution_tasks_available_idx
+    ON attribution_tasks (available_at ASC, created_at ASC, task_id ASC)
+    WHERE status = 'pending';
+CREATE INDEX attribution_tasks_lease_idx
+    ON attribution_tasks (locked_until ASC, created_at ASC, task_id ASC)
+    WHERE status = 'processing';
 
 CREATE TABLE final_turn_outbox (
     event_id TEXT PRIMARY KEY,
@@ -1033,6 +1073,8 @@ CREATE TABLE final_turn_outbox (
     receipt TEXT,
     locked_until TIMESTAMPTZ,
     attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    rejected_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT final_turn_outbox_event_id_not_empty CHECK (event_id <> ''),
     CONSTRAINT final_turn_outbox_turn_id_not_empty CHECK (turn_id <> ''),

@@ -175,7 +175,7 @@ export function SettingsPanel({
 
   const selectedValue =
     selected.id === "language"
-      ? `${voiceConfig.sourceLanguage} / ${voiceConfig.targetLanguage}`
+      ? `${languageLabel(voiceConfig.sourceLanguage)} / ${languageLabel(voiceConfig.targetLanguage)}`
       : selected.id === "session"
         ? debug.sessionId
           ? debug.sessionId.slice(0, 18)

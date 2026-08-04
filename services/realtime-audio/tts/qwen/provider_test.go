@@ -105,11 +105,11 @@ func TestProviderRealtimeDialUsesProviderTimeout(t *testing.T) {
 	defer server.Close()
 
 	provider, err := NewProvider(Config{
-		APIKey:     "test-key",
-		BaseURL:    "ws" + strings.TrimPrefix(server.URL, "http"),
-		Model:      realtimeModel,
-		Timeout:    50 * time.Millisecond,
-		Dialer:     &websocket.Dialer{},
+		APIKey:  "test-key",
+		BaseURL: "ws" + strings.TrimPrefix(server.URL, "http"),
+		Model:   realtimeModel,
+		Timeout: 50 * time.Millisecond,
+		Dialer:  &websocket.Dialer{},
 	})
 	if err != nil {
 		t.Fatalf("NewProvider() error = %v", err)

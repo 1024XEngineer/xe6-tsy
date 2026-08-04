@@ -54,7 +54,7 @@ export function languageTranslation(code: string): string {
 }
 
 export function isLanguageCode(value: string): value is LanguageCode {
-  return /^[a-z]{2,3}(?:-[A-Z][a-z]{3})?-[A-Z]{2}$/.test(value);
+  return SUPPORTED_LANGUAGES.includes(value);
 }
 
 export type VoiceSessionConfig = {

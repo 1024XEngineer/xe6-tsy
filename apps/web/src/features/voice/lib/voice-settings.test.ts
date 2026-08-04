@@ -49,4 +49,13 @@ describe("voice-settings", () => {
       targetLanguage: "zh-CN",
     });
   });
+
+  it("falls back when a saved language is no longer supported", () => {
+    expect(
+      normalizeVoiceConfig({
+        sourceLanguage: "vi-VN",
+        targetLanguage: "en-US",
+      }),
+    ).toEqual(DEFAULT_VOICE_CONFIG);
+  });
 });

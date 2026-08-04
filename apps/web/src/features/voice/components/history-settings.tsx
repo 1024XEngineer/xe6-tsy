@@ -62,8 +62,17 @@ export function HistorySettings({ onExit = () => undefined }: { onExit?: () => v
     setError(null);
     try {
       const auth = await getOrCreateAuthSession();
-      const page = await listVoiceSessions(auth.tokens.access_token, { limit: 20 });
-      setSessions(page.sessions);
+      const loaded: VoiceSession[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await listVoiceSessions(auth.tokens.access_token, {
+          limit: 20,
+          cursor,
+        });
+        loaded.push(...page.sessions);
+        cursor = page.next_cursor ?? undefined;
+      } while (cursor);
+      setSessions(loaded);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "无法加载历史会话");
     } finally {
@@ -83,8 +92,19 @@ export function HistorySettings({ onExit = () => undefined }: { onExit?: () => v
     setError(null);
     try {
       const auth = await getOrCreateAuthSession();
-      const page = await listSessionTurns(auth.tokens.access_token, session.id, 100);
-      setTurns(page.items);
+      const loaded: VoiceTurn[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await listSessionTurns(
+          auth.tokens.access_token,
+          session.id,
+          100,
+          cursor,
+        );
+        loaded.push(...page.items);
+        cursor = page.next_cursor ?? undefined;
+      } while (cursor);
+      setTurns(loaded);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "无法加载会话记录");
     } finally {

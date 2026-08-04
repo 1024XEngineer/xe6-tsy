@@ -236,8 +236,11 @@ export async function listVoiceSessions(
   return parseJson<VoiceSessionListResponse>(response);
 }
 
-export async function listSupportedLanguages(): Promise<SupportedLanguageListResponse> {
+export async function listSupportedLanguages(
+  accessToken: string,
+): Promise<SupportedLanguageListResponse> {
   const response = await fetch("/api/v1/languages?active=true", {
+    headers: authHeaders(accessToken),
     cache: "no-store",
   });
   return parseJson<SupportedLanguageListResponse>(response);
@@ -338,8 +341,10 @@ export async function listSessionTurns(
   accessToken: string,
   sessionId: string,
   limit = 50,
+  cursor?: string,
 ): Promise<VoiceTurnListResponse> {
   const params = new URLSearchParams({ limit: String(limit) });
+  if (cursor) params.set("cursor", cursor);
   const response = await fetch(
     `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/turns?${params}`,
     {

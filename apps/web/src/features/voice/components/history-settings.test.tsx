@@ -86,4 +86,58 @@ describe("HistorySettings", () => {
       ).toBeVisible(),
     );
   });
+
+  it("loads every page of sessions and turns", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/voice-sessions?") && !url.includes("/turns")) {
+          const cursor = new URL(url, "http://localhost").searchParams.get("cursor");
+          return jsonResponse({
+            sessions: [
+              {
+                id: cursor ? "vs-history-2" : "vs-history-1",
+                account_id: "acc-history",
+                status: "ended",
+                created_at: "2026-08-04T08:00:00Z",
+                started_at: "2026-08-04T08:00:00Z",
+                ended_at: "2026-08-04T08:12:00Z",
+              },
+            ],
+            next_cursor: cursor ? null : "sessions-2",
+          });
+        }
+        if (url.includes("/turns")) {
+          const cursor = new URL(url, "http://localhost").searchParams.get("cursor");
+          return jsonResponse({
+            items: [
+              {
+                id: cursor ? "turn-history-2" : "turn-history-1",
+                session_id: "vs-history-1",
+                source_language: "zh-CN",
+                target_language: "en-US",
+                source_text: cursor ? "Older page" : "First page",
+                translated_text: cursor ? "Older translation" : "First translation",
+                sequence_no: cursor ? 2 : 1,
+                created_at: "2026-08-04T08:01:00Z",
+              },
+            ],
+            next_cursor: cursor ? null : "turns-2",
+          });
+        }
+        return new Response("not found", { status: 404 });
+      }),
+    );
+
+    render(<HistorySettings />);
+
+    expect(await screen.findByText("vs-history-2")).toBeInTheDocument();
+    const sessionButton = screen
+      .getAllByRole("button")
+      .find((button) => button.getAttribute("aria-label")?.includes("历史记录"));
+    if (!sessionButton) throw new Error("history session button not found");
+    fireEvent.click(sessionButton);
+    expect(await screen.findByText("Older page")).toBeInTheDocument();
+  });
 });

@@ -196,8 +196,8 @@ export function SettingsPanel({
     let cancelled = false;
     void (async () => {
       try {
-        await getOrCreateAuthSession();
-        const result = await listSupportedLanguages();
+        const auth = await getOrCreateAuthSession();
+        const result = await listSupportedLanguages(auth.tokens.access_token);
         const options = result.languages
           .filter((language) => language.supports_as_source && language.supports_as_target)
           .map((language) => language.language_code)

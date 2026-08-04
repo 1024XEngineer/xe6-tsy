@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   getAccountUsageSummary,
+  listSessionTurns,
+  listSupportedLanguages,
   listVoiceSessions,
   startVoiceSession,
 } from "./lingow-api";
@@ -149,6 +151,43 @@ describe("getAccountUsageSummary", () => {
     ]>;
     expect(new Headers(calls[0]?.[1].headers).get("Authorization")).toBe(
       "Bearer access-1",
+    );
+  });
+});
+
+describe("authenticated catalog and turn pagination", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends the access token when loading supported languages", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ languages: [] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listSupportedLanguages("access-1");
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      RequestInfo,
+      RequestInit,
+    ];
+    expect(new Headers(init.headers).get("Authorization")).toBe(
+      "Bearer access-1",
+    );
+  });
+
+  it("passes the cursor when loading the next turn page", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ items: [], next_cursor: null }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listSessionTurns("access-1", "session-1", 100, "cursor-2");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/voice-sessions/session-1/turns?limit=100&cursor=cursor-2",
+      expect.objectContaining({ cache: "no-store" }),
     );
   });
 });

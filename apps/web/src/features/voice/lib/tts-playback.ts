@@ -110,22 +110,52 @@ async function playAssembled(event: {
   pcm: ArrayBuffer;
 }, listener?: TTSAudioPlaybackListener): Promise<void> {
   listener?.(true);
-  const ctx = getAudioContext(event.sampleRateHz);
   try {
+    const ctx = getAudioContext(event.sampleRateHz);
     if (ctx.state === "suspended") {
-      await ctx.resume().catch(() => undefined);
+      try {
+        await ctx.resume();
+      } catch {
+        return;
+      }
+      if (ctx.state === "suspended") {
+        return;
+      }
     }
     const audioBuffer = await toAudioBuffer(ctx, event);
     await new Promise<void>((resolve, reject) => {
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
-      source.onended = () => resolve();
+      let settled = false;
+      let fallbackTimer: number | null = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (fallbackTimer !== null) {
+          window.clearTimeout(fallbackTimer);
+        }
+        resolve();
+      };
+      source.onended = finish;
       try {
         source.start();
       } catch (error) {
         reject(error);
+        return;
       }
+      const durationMs =
+        Number.isFinite(audioBuffer.duration) && audioBuffer.duration > 0
+          ? Math.ceil(audioBuffer.duration * 1000) + 250
+          : 1000;
+      fallbackTimer = window.setTimeout(() => {
+        try {
+          source.stop();
+        } catch {
+          // The source may already be stopped by the browser.
+        }
+        finish();
+      }, durationMs);
     });
   } finally {
     listener?.(false);

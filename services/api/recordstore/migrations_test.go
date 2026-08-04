@@ -244,8 +244,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if autoDelivery.Version != 19 || autoDelivery.Name != "auto_delivery_destination" || !strings.Contains(autoDelivery.SQL, "destination_ref") {
 		t.Fatalf("migration = %#v, want version 19 automatic destination column", autoDelivery)
 	}
-  
-  historyIndexes := migrations[19]
+
+	historyIndexes := migrations[19]
 	if historyIndexes.Version != 20 || historyIndexes.Name != "record_history_indexes" {
 		t.Fatalf("migration = %#v, want version 20 named record_history_indexes", historyIndexes)
 	}

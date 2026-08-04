@@ -5,6 +5,7 @@ package recordstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -93,6 +94,61 @@ func TestAttributionTaskFlow(t *testing.T) {
 	}
 	if status != "completed" {
 		t.Fatalf("task status = %q, want completed", status)
+	}
+}
+
+func TestAttributionTaskFlowMapsProviderKeyAfterParticipantPageLimit(t *testing.T) {
+	pool := testDatabase(t)
+	if err := Migrate(t.Context(), pool); err != nil {
+		t.Fatalf("Migrate() error = %v", err)
+	}
+	insertOwnedSession(t, pool, "session_many_participants", "acct_many_participants")
+	for index := 1; index <= 101; index++ {
+		providerID := fmt.Sprintf("cluster_%03d", index)
+		if err := insertParticipant(t.Context(), pool, fmt.Sprintf("participant_%03d", index), "session_many_participants", fmt.Sprintf("speaker_%02d", index), &providerID); err != nil {
+			t.Fatalf("insert participant %d: %v", index, err)
+		}
+	}
+
+	providerID := "cluster_101"
+	event := finalTurnEvent("event_many_participants", "turn_many_participants", "session_many_participants", 1)
+	event.ParticipantID = nil
+	event.ProviderSpeakerID = &providerID
+	event.AttributionStatus = recordsv1.AttributionPending
+	if err := NewTurnWriter(pool).StoreFinalTurn(t.Context(), event); err != nil {
+		t.Fatalf("StoreFinalTurn() error = %v", err)
+	}
+
+	services, err := NewServices(pool, make([]byte, 32), sessionOwnerStub{accountID: "acct_many_participants"}, &postgresSessionScopeStub{pool: pool})
+	if err != nil {
+		t.Fatalf("NewServices() error = %v", err)
+	}
+	store := NewAttributionTaskStore(pool)
+	worker, err := turns.NewAttributionWorker(
+		store,
+		services.AttributionResolver,
+		sessionOwnerStub{accountID: "acct_many_participants"},
+		turns.NewServiceAttributionReader(services.Turns),
+		services.Turns,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatalf("NewAttributionWorker() error = %v", err)
+	}
+	delivery, err := store.Receive(t.Context())
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	if err := worker.Process(t.Context(), delivery); err != nil {
+		t.Fatalf("worker Process() error = %v", err)
+	}
+
+	var participantID string
+	if err := pool.QueryRow(t.Context(), `SELECT participant_id FROM voice_turns WHERE id = $1`, event.TurnID).Scan(&participantID); err != nil {
+		t.Fatalf("read mapped participant: %v", err)
+	}
+	if participantID != "participant_101" {
+		t.Fatalf("participant_id = %q, want participant_101", participantID)
 	}
 }
 

@@ -1,6 +1,8 @@
-# Voice session foundation
+# Voice session lifecycle
 
-This package owns the business lifecycle for Issue #86 voice sessions.
+This package owns the authenticated voice-session business lifecycle for Issue
+#86, including persistence, lifecycle orchestration, HTTP delivery, realtime
+integration, and End recovery.
 
 ## State ownership
 
@@ -39,10 +41,11 @@ account into a registered account therefore grants the registered actor access
 without rewriting historical ownership.
 
 `RealtimeLifecycle` and `LanguageConfigReader` are consumer-owned ports. Their
-providers do not directly implement these interfaces: follow-up adapters map
-provider commands and snapshots explicitly. Adapters must exhaustively map
-`RuntimeState`, `ConnectionState`, `EndReason`, language-config status, and time
-fields; unchecked string conversion is not an integration contract.
+providers do not directly implement these interfaces. Production adapters map
+provider commands, errors, and snapshots into the consumer-owned session ports.
+Adapters must exhaustively map `RuntimeState`, `ConnectionState`, `EndReason`,
+language-config status, and time fields; unchecked string conversion is not an
+integration contract.
 
 Realtime runtime ownership is frozen at this boundary:
 
@@ -55,9 +58,28 @@ Realtime runtime ownership is frozen at this boundary:
 - `RuntimeSnapshot.StartOperationID` identifies the durable Start operation
   that owns the runtime instance.
 
-The shared realtime contract does not yet expose this ownership field. A
-follow-up production adapter must map it explicitly when the provider contract
-is extended; this slice changes only the sessions consumer-owned port.
+The shared realtime contract carries the durable Start operation identity as
+`start_operation_id`. The production realtime adapter maps that identity into
+`RuntimeSnapshot.StartOperationID`. Session activation and compensation must
+only use runtime snapshots owned by the matching durable Start operation.
+
+## Public HTTP API
+
+```text
+POST /api/v1/voice-sessions
+POST /api/v1/voice-sessions/{id}/start
+POST /api/v1/voice-sessions/{id}/end
+GET  /api/v1/voice-sessions/{id}
+GET  /api/v1/voice-sessions
+GET  /api/v1/voice-sessions/{id}/state
+POST /api/v1/voice-sessions/{id}/realtime-ticket
+```
+
+All routes are registered behind the authentication middleware. The Account ID
+comes only from middleware-injected identity, while Create, Start, and End use
+`Idempotency-Key` as their request identity boundary. The realtime-ticket route
+mints a short-lived WebRTC/Realtime ticket for the Session owner. Request and
+response schemas stay owned by `packages/contracts/openapi.yaml`.
 
 ## Create flow
 
@@ -262,12 +284,16 @@ exponential backoff. A stale worker cannot retry or complete an intent after a
 different worker has acquired its lease.
 
 The package exposes the worker lifecycle and deterministic one-step processing
-entrypoint. The API process wires `sessions.NewService` with
-`realtimeaccess.NewLanguageConfigReader(languages.Service)` for start readiness.
-Realtime WebRTC/lifecycle adapters are enabled when `REALTIME_BASE_URL` is set;
-otherwise Start remains `not_implemented`. End of a `created` session does not
-call realtime and still succeeds; End of an `active` session remains
-`not_implemented` until Stop is wired. Create/List/Get stay available.
+entrypoint.
+
+The API production composition wires the PostgreSQL repository, language-config
+adapter, WebRTC connection reader, realtime lifecycle adapter, authenticated
+realtime ticket source, HTTP handler, and `EndRecoveryWorker`.
+
+Start uses the language, WebRTC, and realtime lifecycle adapters for readiness
+and runtime activation. End uses the realtime lifecycle adapter for active
+session cleanup, while an End of a `created` session transitions directly
+without calling realtime.
 
 ## Query flows
 
@@ -301,25 +327,25 @@ clients.
 | Start | `Repository.BeginStartOperation` and `TransitionToActive` | durable request identity + atomic `created -> active` and `completed` |
 | End | `Repository.SaveEndIntent` | end request identity and completion marker |
 
-## Current slice
+## Current implementation
 
-The service currently implements Create, account-scoped Detail, State, and
-List queries, durable idempotent Start orchestration with repository-owned
-bounded compensation and interrupted-owner recovery, and idempotent End with
-cleanup-confirmed terminal commits and durable background recovery.
-`PostgresRepository`
-implements the persistent Session, StartOperation, compensation, EndIntent,
-and lifecycle-transition contracts against the final control-plane tables.
-Detail and State combine an owned persistent session with one validated runtime
-snapshot; List remains persistent-only.
+The current implementation provides authenticated Create, Start, End, Detail,
+State, List, and realtime-ticket HTTP flows. PostgreSQL owns persistent session
+state, lifecycle transitions, Create/Start/End request idempotency, durable
+Start operations, compensation state, and End intents.
 
-Runtime-failure handling consumes a trusted cleanup-confirmed notification,
-serializes it with Start and End, and conditionally records `active -> failed`
-with `ended_at` and the stable failure code. The cross-service transport that
-delivers this notification belongs to production adapter wiring.
+Production composition wires the session service to language configuration,
+WebRTC connection state, the realtime control plane, HMAC realtime tickets, the
+HTTP handler, and the End recovery worker. Repository authorization preserves
+the immutable session owner while allowing access through account lineage after
+anonymous account merge. Detail and State combine owned persistent session data
+with one validated runtime snapshot, while List remains persistent-only. The
+OpenAPI contract in `packages/contracts/openapi.yaml` is the source of truth
+for public request and response shapes.
 
-HTTP handlers, route registration, OpenAPI, production wiring, and
-realtime/language/WebRTC adapters belong to follow-up reviewable slices.
-No stub in this package returns fabricated success data. It does not change
-`main.go`, `go.work`, shared authentication, shared error responses, or
-request-ID middleware.
+The session service also exposes `ConsumeRuntimeFailure` as the consumer
+boundary for a trusted, cleanup-confirmed unrecoverable runtime failure. Session
+side consumption serializes the failure with Start and End and can record
+`active -> failed` after cleanup is confirmed. The production transport that
+delivers that notification from Realtime to API is not wired in the current
+composition.

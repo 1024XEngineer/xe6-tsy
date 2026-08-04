@@ -31,6 +31,9 @@ WHERE event_id = $1`, event.EventID); err == nil {
 	if err != nil {
 		t.Fatalf("Receive() error = %v", err)
 	}
+	if delivery.Attempts() != 1 {
+		t.Fatalf("Attempts() = %d, want 1", delivery.Attempts())
+	}
 	if got := delivery.Event(); !reflect.DeepEqual(got, event) {
 		t.Fatalf("Receive() event = %#v, want %#v", got, event)
 	}
@@ -82,8 +85,22 @@ VALUES ('event_invalid', 'turn_invalid', 'session_invalid', 1, decode(repeat('00
 	if delivery.Event().EventVersion != 2 {
 		t.Fatalf("invalid payload event version = %d, want 2", delivery.Event().EventVersion)
 	}
-	if err := delivery.Reject(); err != nil {
+	if err := delivery.Reject("invalid payload"); err != nil {
 		t.Fatalf("Reject() invalid payload error = %v", err)
+	}
+	var (
+		status     string
+		lastError  *string
+		rejectedAt *string
+	)
+	if err := pool.QueryRow(t.Context(), `
+SELECT status, last_error, rejected_at::TEXT
+FROM final_turn_outbox
+WHERE event_id = 'event_invalid'`).Scan(&status, &lastError, &rejectedAt); err != nil {
+		t.Fatalf("read rejected invalid payload: %v", err)
+	}
+	if status != "rejected" || lastError == nil || *lastError != "invalid payload" || rejectedAt == nil {
+		t.Fatalf("rejected row status=%q last_error=%v rejected_at=%v", status, lastError, rejectedAt)
 	}
 }
 
@@ -101,8 +118,15 @@ func TestFinalTurnOutboxNackReleasesDeliveryForRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Receive() error = %v", err)
 	}
-	if err := delivery.Nack(); err != nil {
+	if err := delivery.Nack("temporary store error"); err != nil {
 		t.Fatalf("Nack() error = %v", err)
+	}
+	var lastError string
+	if err := pool.QueryRow(t.Context(), `SELECT last_error FROM final_turn_outbox WHERE event_id = $1`, event.EventID).Scan(&lastError); err != nil {
+		t.Fatalf("read nack last_error: %v", err)
+	}
+	if lastError != "temporary store error" {
+		t.Fatalf("last_error = %q, want temporary store error", lastError)
 	}
 
 	if _, found, err := outbox.receiveOnce(t.Context()); err != nil {
@@ -123,7 +147,10 @@ func TestFinalTurnOutboxNackReleasesDeliveryForRetry(t *testing.T) {
 	if retry.Event().EventID != event.EventID {
 		t.Fatalf("retry event ID = %q, want %q", retry.Event().EventID, event.EventID)
 	}
-	if err := retry.Reject(); err != nil {
+	if retry.Attempts() != 2 {
+		t.Fatalf("retry Attempts() = %d, want 2", retry.Attempts())
+	}
+	if err := retry.Reject("exhausted"); err != nil {
 		t.Fatalf("Reject() error = %v", err)
 	}
 }

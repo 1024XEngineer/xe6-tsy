@@ -127,10 +127,11 @@ func (o *FinalTurnOutbox) receiveOnce(ctx context.Context) (turns.FinalTurnDeliv
 
 	receipt := ulid.Make().String()
 	var (
-		eventID string
-		payload []byte
+		eventID  string
+		payload  []byte
+		attempts int
 	)
-	err = tx.QueryRow(ctx, claimFinalTurnOutboxQuery, receipt).Scan(&eventID, &payload)
+	err = tx.QueryRow(ctx, claimFinalTurnOutboxQuery, receipt).Scan(&eventID, &payload, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -147,49 +148,53 @@ func (o *FinalTurnOutbox) receiveOnce(ctx context.Context) (turns.FinalTurnDeliv
 		return nil, false, fmt.Errorf("commit final turn outbox claim: %w", err)
 	}
 	return &finalTurnDelivery{
-		outbox:  o,
-		ctx:     context.WithoutCancel(ctx),
-		event:   event,
-		eventID: eventID,
-		receipt: receipt,
+		outbox:   o,
+		ctx:      context.WithoutCancel(ctx),
+		event:    event,
+		eventID:  eventID,
+		attempts: attempts,
+		receipt:  receipt,
 	}, true, nil
 }
 
 type finalTurnDelivery struct {
-	outbox  *FinalTurnOutbox
-	ctx     context.Context
-	event   recordsv1.FinalTurnEvent
-	eventID string
-	receipt string
+	outbox   *FinalTurnOutbox
+	ctx      context.Context
+	event    recordsv1.FinalTurnEvent
+	eventID  string
+	attempts int
+	receipt  string
 }
 
 func (d *finalTurnDelivery) Event() recordsv1.FinalTurnEvent { return d.event }
 
+func (d *finalTurnDelivery) Attempts() int { return d.attempts }
+
 func (d *finalTurnDelivery) Ack() error {
-	return d.outbox.settle(d.ctx, d.eventID, d.receipt, "acked")
+	return d.outbox.settle(d.ctx, d.eventID, d.receipt, "acked", "")
 }
 
-func (d *finalTurnDelivery) Nack() error {
-	return d.outbox.settle(d.ctx, d.eventID, d.receipt, "pending")
+func (d *finalTurnDelivery) Nack(lastError string) error {
+	return d.outbox.settle(d.ctx, d.eventID, d.receipt, "pending", lastError)
 }
 
-func (d *finalTurnDelivery) Reject() error {
-	return d.outbox.settle(d.ctx, d.eventID, d.receipt, "rejected")
+func (d *finalTurnDelivery) Reject(lastError string) error {
+	return d.outbox.settle(d.ctx, d.eventID, d.receipt, "rejected", lastError)
 }
 
-func (o *FinalTurnOutbox) settle(parent context.Context, eventID, receipt, status string) error {
+func (o *FinalTurnOutbox) settle(parent context.Context, eventID, receipt, status, lastError string) error {
 	ctx, cancel := context.WithTimeout(parent, finalTurnOutboxSettleTimeout)
 	defer cancel()
 
 	var rowsAffected int64
 	if status == "pending" {
-		result, err := o.pool.Exec(ctx, nackFinalTurnOutboxQuery, eventID, receipt)
+		result, err := o.pool.Exec(ctx, nackFinalTurnOutboxQuery, eventID, receipt, lastError)
 		if err != nil {
 			return fmt.Errorf("settle final turn outbox event: %w", err)
 		}
 		rowsAffected = result.RowsAffected()
 	} else {
-		result, err := o.pool.Exec(ctx, settleFinalTurnOutboxQuery, status, eventID, receipt)
+		result, err := o.pool.Exec(ctx, settleFinalTurnOutboxQuery, status, eventID, receipt, lastError)
 		if err != nil {
 			return fmt.Errorf("settle final turn outbox event: %w", err)
 		}
@@ -236,13 +241,15 @@ SET status = 'processing',
     attempts = outbox.attempts + 1
 FROM candidate
 WHERE outbox.event_id = candidate.event_id
-RETURNING outbox.event_id, outbox.payload`
+RETURNING outbox.event_id, outbox.payload, outbox.attempts`
 
 const settleFinalTurnOutboxQuery = `
 UPDATE final_turn_outbox
 SET status = $1,
     receipt = NULL,
-    locked_until = NULL
+    locked_until = NULL,
+    last_error = CASE WHEN $1 = 'rejected' THEN $4 ELSE last_error END,
+    rejected_at = CASE WHEN $1 = 'rejected' THEN CURRENT_TIMESTAMP ELSE rejected_at END
 WHERE event_id = $2 AND receipt = $3 AND status = 'processing'`
 
 const nackFinalTurnOutboxQuery = `
@@ -250,7 +257,8 @@ UPDATE final_turn_outbox
 SET status = 'pending',
     available_at = CURRENT_TIMESTAMP + INTERVAL '1 second',
     receipt = NULL,
-    locked_until = NULL
+    locked_until = NULL,
+    last_error = $3
 WHERE event_id = $1 AND receipt = $2 AND status = 'processing'`
 
 var _ turns.FinalTurnDeliverySource = (*FinalTurnOutbox)(nil)

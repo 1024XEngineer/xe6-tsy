@@ -98,6 +98,38 @@ func TestProviderStreamsQwenRealtimeAudio(t *testing.T) {
 	}
 }
 
+func TestProviderRealtimeDialUsesProviderTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(Config{
+		APIKey:     "test-key",
+		BaseURL:    "ws" + strings.TrimPrefix(server.URL, "http"),
+		Model:      realtimeModel,
+		Timeout:    50 * time.Millisecond,
+		Dialer:     &websocket.Dialer{},
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, startErr := provider.StartStream(context.Background(), tts.Request{Text: "hello"})
+		result <- startErr
+	}()
+	select {
+	case err = <-result:
+		if err == nil {
+			t.Fatal("StartStream() unexpectedly connected")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("StartStream() exceeded the test deadline")
+	}
+}
+
 func TestProviderStreamsQwenTTSAudio(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/services/aigc/multimodal-generation/generation" {

@@ -110,7 +110,9 @@ func (p *Provider) startRealtimeStream(ctx context.Context, request tts.Request)
 	if err != nil {
 		return nil, err
 	}
-	conn, _, err := p.config.Dialer.DialContext(ctx, endpoint, http.Header{"Authorization": []string{"Bearer " + p.config.APIKey}})
+	dialCtx, cancelDial := context.WithTimeout(ctx, p.config.Timeout)
+	conn, _, err := p.config.Dialer.DialContext(dialCtx, endpoint, http.Header{"Authorization": []string{"Bearer " + p.config.APIKey}})
+	cancelDial()
 	if err != nil {
 		return nil, fmt.Errorf("connect Qwen TTS realtime: %w", err)
 	}

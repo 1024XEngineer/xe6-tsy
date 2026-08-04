@@ -4,6 +4,11 @@ UPDATE supported_languages
 SET is_active = FALSE
 WHERE language_code IN ('th-TH', 'id-ID', 'vi-VN');
 
+-- Keep the existing multilingual rows explicitly active for this provider intersection.
+UPDATE supported_languages
+SET is_active = TRUE
+WHERE language_code IN ('ja-JP', 'ko-KR', 'fr-FR', 'de-DE', 'ru-RU', 'pt-BR');
+
 INSERT INTO supported_languages (
     language_code, display_name, display_name_en,
     supports_as_source, supports_as_target, sort_order, is_active

@@ -667,6 +667,14 @@
   border-bottom: 1px solid rgb(255 255 255 / 11%);
 }
 
+.languageSelectField {
+  border-bottom: 1px solid rgb(255 255 255 / 11%);
+}
+
+.languageSelectField .settingSelectRow {
+  border-bottom: 0;
+}
+
 .settingRow > div {
   display: grid;
   gap: 0.32rem;
@@ -719,21 +727,118 @@
   background: #080808;
 }
 
-.settingSelectRow select {
-  max-width: 58%;
+.languageSelectTrigger {
+  display: grid;
+  max-width: 68%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto 1rem;
+  gap: 0.45rem;
+  align-items: center;
+  padding: 0.45rem 0;
   border: 0;
-  outline: 0;
   background: transparent;
   color: #f4f4f1;
   font: inherit;
-  font-size: 0.76rem;
+  font-size: 0.78rem;
   text-align: right;
   cursor: pointer;
 }
 
-.settingSelectRow option {
-  background: #101010;
-  color: #f4f4f1;
+.languageSelectTrigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.languageSelectTrigger code,
+.languageSelectOption code {
+  color: rgb(255 255 255 / 42%);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.58rem;
+}
+
+.languageSelectTrigger svg {
+  color: rgb(255 255 255 / 52%);
+  transition: transform 180ms ease, color 180ms ease;
+}
+
+.languageSelectTrigger[aria-expanded="true"] svg {
+  color: #fff;
+  transform: rotate(180deg);
+}
+
+.languageSelectTrigger:focus-visible,
+.languageSelectOption:focus-visible {
+  outline: 1px solid rgb(255 255 255 / 72%);
+  outline-offset: -1px;
+}
+
+.languageSelectMenu {
+  display: grid;
+  max-height: min(14rem, 30dvh);
+  margin: 0.15rem 0 0;
+  padding: 0.3rem 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-top: 1px solid rgb(255 255 255 / 9%);
+  background: rgb(255 255 255 / 4%);
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.languageSelectMenu::-webkit-scrollbar {
+  display: none;
+}
+
+.languageSelectOption {
+  display: grid;
+  min-height: 3.05rem;
+  grid-template-columns: minmax(0, 1fr) auto 1rem;
+  gap: 0.7rem;
+  align-items: center;
+  padding: 0.45rem 0.65rem;
+  border: 0;
+  background: transparent;
+  color: rgb(255 255 255 / 68%);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.languageSelectOption > span {
+  display: grid;
+  min-width: 0;
+  gap: 0.16rem;
+}
+
+.languageSelectOption strong {
+  overflow: hidden;
+  font-size: 0.72rem;
+  font-weight: 520;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.languageSelectOption small {
+  color: rgb(255 255 255 / 38%);
+  font-size: 0.58rem;
+}
+
+.languageSelectOption i {
+  width: 15px;
+  height: 15px;
+}
+
+.languageSelectOption:hover,
+.languageSelectOptionSelected {
+  background: rgb(255 255 255 / 10%);
+  color: #fff;
+}
+
+.languageSelectOptionSelected code,
+.languageSelectOptionSelected small {
+  color: rgb(255 255 255 / 64%);
 }
 
 .rangeControl > div {
@@ -1355,8 +1460,32 @@
   }
 
   .settingRow strong,
-  .settingSelectRow select {
+  .languageSelectTrigger {
     font-size: 0.66rem;
+  }
+
+  .languageSelectTrigger {
+    max-width: 72%;
+  }
+
+  .languageSelectMenu {
+    max-height: min(12rem, 32dvh);
+  }
+
+  .languageSelectOption {
+    min-height: 2.8rem;
+    gap: 0.45rem;
+    padding-inline: 0.45rem;
+  }
+
+  .languageSelectOption strong {
+    font-size: 0.64rem;
+  }
+
+  .languageSelectOption small,
+  .languageSelectTrigger code,
+  .languageSelectOption code {
+    font-size: 0.5rem;
   }
 
   .settingRow > div span,

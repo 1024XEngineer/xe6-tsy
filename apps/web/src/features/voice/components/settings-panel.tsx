@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, X } from "@phosphor-icons/react";
+import { CaretDown, Check, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 
@@ -54,33 +54,113 @@ const SETTINGS_ITEMS = [
 type SettingId = (typeof SETTINGS_ITEMS)[number]["id"];
 const HISTORY_INDEX = SETTINGS_ITEMS.findIndex((item) => item.id === "history");
 
+const LANGUAGE_TRANSLATIONS: Record<string, string> = {
+  "zh-CN": "中文（简体）",
+  "en-US": "英语（美国）",
+  "ja-JP": "日语",
+  "ko-KR": "韩语",
+  "fr-FR": "法语",
+  "de-DE": "德语",
+  "ru-RU": "俄语",
+  "pt-BR": "葡萄牙语（巴西）",
+  "it-IT": "意大利语",
+  "es-ES": "西班牙语",
+  "th-TH": "泰语",
+  "id-ID": "印度尼西亚语",
+  "vi-VN": "越南语",
+};
+
+function languageTranslation(code: string): string {
+  return LANGUAGE_TRANSLATIONS[code] ?? code;
+}
+
 function SelectRow({
   label,
   options,
   labels,
   value,
   onChange,
+  open,
+  onOpenChange,
 }: {
   label: string;
   options: readonly LanguageCode[];
   labels: Readonly<Record<string, string>>;
   value: LanguageCode;
   onChange: (value: LanguageCode) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
+  const fieldRef = useRef<HTMLDivElement>(null);
+  const selectedLabel = labels[value] ?? languageLabel(value);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (event.target instanceof Node && !fieldRef.current?.contains(event.target)) {
+        onOpenChange(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePress);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePress);
+  }, [onOpenChange, open]);
+
   return (
-    <label className={styles.settingSelectRow}>
-      <span>{label}</span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value as LanguageCode)}
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {labels[option] ?? languageLabel(option)} ({option})
-          </option>
-        ))}
-      </select>
-    </label>
+    <div
+      className={styles.languageSelectField}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          onOpenChange(false);
+        }
+      }}
+      ref={fieldRef}
+    >
+      <div className={styles.settingSelectRow}>
+        <span>{label}</span>
+        <button
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          aria-label={`${label}，当前${selectedLabel}`}
+          className={styles.languageSelectTrigger}
+          onClick={() => onOpenChange(!open)}
+          type="button"
+        >
+          <span>{selectedLabel}</span>
+          <code>{value}</code>
+          <CaretDown aria-hidden="true" size={15} weight="bold" />
+        </button>
+      </div>
+      {open ? (
+        <div aria-label={`${label}选项`} className={styles.languageSelectMenu} role="listbox">
+          {options.map((option) => {
+            const isSelected = option === value;
+            return (
+              <button
+                aria-selected={isSelected}
+                className={`${styles.languageSelectOption} ${isSelected ? styles.languageSelectOptionSelected : ""}`}
+                key={option}
+                onClick={() => {
+                  onChange(option);
+                  onOpenChange(false);
+                }}
+                role="option"
+                type="button"
+              >
+                <span>
+                  <strong>{labels[option] ?? languageLabel(option)}</strong>
+                  <small>{languageTranslation(option)}</small>
+                </span>
+                <code>{option}</code>
+                {isSelected ? <Check aria-hidden="true" size={15} weight="bold" /> : <i aria-hidden="true" />}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -103,6 +183,8 @@ function SettingsDetail({
   languageLabels: Readonly<Record<string, string>>;
   onOpenHistory: (session: import("../lib/lingow-api").VoiceSession) => void;
 }) {
+  const [openLanguage, setOpenLanguage] = useState<"source" | "target" | null>(null);
+
   switch (selectedId) {
     case "language":
       return (
@@ -114,6 +196,8 @@ function SettingsDetail({
             }
             options={languageOptions}
             labels={languageLabels}
+            onOpenChange={(open) => setOpenLanguage(open ? "source" : null)}
+            open={openLanguage === "source"}
             value={voiceConfig.sourceLanguage}
           />
           <SelectRow
@@ -123,6 +207,8 @@ function SettingsDetail({
             }
             options={languageOptions}
             labels={languageLabels}
+            onOpenChange={(open) => setOpenLanguage(open ? "target" : null)}
+            open={openLanguage === "target"}
             value={voiceConfig.targetLanguage}
           />
           <p>

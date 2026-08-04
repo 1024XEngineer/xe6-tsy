@@ -17,6 +17,7 @@ func TestTurnWriterStoresAndReplaysFinalTurn(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	insertOwnedSession(t, pool, "session_01", "acct_01")
 	writer := NewTurnWriter(pool)
 	event := finalTurnEvent("event_01", "turn_01", "session_01", 1)
 	event.ParticipantID = nil
@@ -79,6 +80,7 @@ func TestTurnWriterRejectsConflictingReplayKeys(t *testing.T) {
 			if err := Migrate(t.Context(), pool); err != nil {
 				t.Fatalf("Migrate() error = %v", err)
 			}
+			insertOwnedSession(t, pool, "session_01", "acct_01")
 			writer := NewTurnWriter(pool)
 			event := finalTurnEvent("event_01", "turn_01", "session_01", 1)
 			event.ParticipantID = nil
@@ -100,6 +102,7 @@ func TestTurnWriterConcurrentReplayCreatesOneTurn(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	insertOwnedSession(t, pool, "session_01", "acct_01")
 	writer := NewTurnWriter(pool)
 	event := finalTurnEvent("event_01", "turn_01", "session_01", 1)
 	event.ParticipantID = nil
@@ -138,6 +141,7 @@ func TestTurnWriterConcurrentConflictingReplayKeepsOnePayload(t *testing.T) {
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
 	}
+	insertOwnedSession(t, pool, "session_01", "acct_01")
 	writer := NewTurnWriter(pool)
 	first := finalTurnEvent("event_01", "turn_01", "session_01", 1)
 	first.ParticipantID = nil

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_VOICE_CONFIG } from "./languages";
-import { normalizeVoiceConfig } from "./voice-settings";
+import {
+  loadVoiceConfig,
+  normalizeVoiceConfig,
+  saveVoiceConfig,
+} from "./voice-settings";
 
 describe("voice-settings", () => {
   it("keeps a valid zh-CN/en-US pair", () => {
@@ -35,5 +39,14 @@ describe("voice-settings", () => {
         targetLanguage: "english" as never,
       }),
     ).toEqual(DEFAULT_VOICE_CONFIG);
+  });
+
+  it("persists the selected default pair for the next session", () => {
+    saveVoiceConfig({ sourceLanguage: "en-US", targetLanguage: "zh-CN" });
+
+    expect(loadVoiceConfig(DEFAULT_VOICE_CONFIG)).toEqual({
+      sourceLanguage: "en-US",
+      targetLanguage: "zh-CN",
+    });
   });
 });

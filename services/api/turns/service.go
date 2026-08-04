@@ -154,10 +154,13 @@ func (s *Service) CorrectAttributionIfUnresolved(ctx context.Context, accountID,
 
 func (s *Service) correctAttribution(ctx context.Context, accountID, turnID string, request recordsv1.UpdateAttributionRequest, speakerConfidenceSet bool, onlyIfUnresolved bool) (recordsv1.VoiceTurn, error) {
 	if !validAttributionRequest(turnID, request) {
-		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
+		if turnID == "" || request.ParticipantID == "" {
+			return recordsv1.VoiceTurn{}, domain.NewFieldError("participant_id", ErrInvalidAttribution)
+		}
+		return recordsv1.VoiceTurn{}, domain.NewFieldError("attribution_status", ErrInvalidAttribution)
 	}
 	if request.SpeakerConfidence != nil && (*request.SpeakerConfidence < 0 || *request.SpeakerConfidence > 1) {
-		return recordsv1.VoiceTurn{}, ErrInvalidAttribution
+		return recordsv1.VoiceTurn{}, domain.NewFieldError("speaker_confidence", ErrInvalidAttribution)
 	}
 	// Account ownership is enforced inside the repository write transaction so the
 	// authorization check and the attribution update share one atomic boundary.

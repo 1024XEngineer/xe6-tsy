@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -51,7 +52,7 @@ func (r *TurnReadRepository) ListSession(
 	if query.Cursor != "" {
 		decoded, err := r.cursors.Decode(query.Cursor, CursorSessionTurns, scope)
 		if err != nil {
-			return recordsv1.VoiceTurnListResponse{}, fmt.Errorf("decode session turns cursor: %w: %w", turns.ErrInvalidRequest, err)
+			return recordsv1.VoiceTurnListResponse{}, domain.NewFieldError("cursor", fmt.Errorf("decode session turns cursor: %w: %w", turns.ErrInvalidRequest, err))
 		}
 		after = decoded
 	}

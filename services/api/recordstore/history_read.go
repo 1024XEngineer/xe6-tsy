@@ -8,6 +8,7 @@ import (
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 )
 
@@ -30,7 +31,7 @@ func (r *TurnReadRepository) ListHistory(
 	if query.Cursor != "" {
 		decoded, err := r.cursors.Decode(query.Cursor, CursorHistory, scope)
 		if err != nil {
-			return recordsv1.VoiceTurnListResponse{}, fmt.Errorf("decode history cursor: %w: %w", turns.ErrInvalidRequest, err)
+			return recordsv1.VoiceTurnListResponse{}, domain.NewFieldError("cursor", fmt.Errorf("decode history cursor: %w: %w", turns.ErrInvalidRequest, err))
 		}
 		after = decoded
 		afterCreatedAt = &after.CreatedAt

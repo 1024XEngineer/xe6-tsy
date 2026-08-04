@@ -9,6 +9,7 @@ import (
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
 const (
@@ -70,7 +71,7 @@ func parseHistoryQuery(request *http.Request) (recordsv1.ListTurnsQuery, error) 
 		return recordsv1.ListTurnsQuery{}, err
 	}
 	if createdFrom != nil && createdTo != nil && createdFrom.After(*createdTo) {
-		return recordsv1.ListTurnsQuery{}, errors.New("created_from must not be after created_to")
+		return recordsv1.ListTurnsQuery{}, domain.NewFieldError("created_from", errors.New("created_from must not be after created_to"))
 	}
 	return recordsv1.ListTurnsQuery{
 		Cursor:         page.cursor,
@@ -94,7 +95,7 @@ func parsePage(values url.Values) (page, error) {
 	if values.Has("limit") {
 		parsed, err := strconv.Atoi(values.Get("limit"))
 		if err != nil || parsed < 1 || parsed > maximumLimit {
-			return page{}, fmt.Errorf("limit must be between 1 and %d", maximumLimit)
+			return page{}, domain.NewFieldError("limit", fmt.Errorf("limit must be between 1 and %d", maximumLimit))
 		}
 		limit = parsed
 	}
@@ -110,7 +111,7 @@ func parseAttributionStatus(values url.Values) (recordsv1.AttributionStatus, err
 	case recordsv1.AttributionPending, recordsv1.AttributionProvisional, recordsv1.AttributionConfirmed, recordsv1.AttributionCorrected:
 		return status, nil
 	default:
-		return "", errors.New("invalid attribution_status")
+		return "", domain.NewFieldError("attribution_status", errors.New("invalid attribution_status"))
 	}
 }
 
@@ -120,7 +121,7 @@ func parseTime(values url.Values, key string) (*time.Time, error) {
 	}
 	parsed, err := time.Parse(time.RFC3339, values.Get(key))
 	if err != nil {
-		return nil, fmt.Errorf("%s must use RFC3339", key)
+		return nil, domain.NewFieldError(key, fmt.Errorf("%s must use RFC3339", key))
 	}
 	return &parsed, nil
 }
@@ -132,10 +133,10 @@ func allowOnly(values url.Values, allowed ...string) error {
 	}
 	for key, entries := range values {
 		if _, ok := allowedSet[key]; !ok {
-			return fmt.Errorf("query parameter %q is not allowed", key)
+			return domain.NewFieldError(key, fmt.Errorf("query parameter %q is not allowed", key))
 		}
 		if len(entries) != 1 {
-			return fmt.Errorf("query parameter %q must occur once", key)
+			return domain.NewFieldError(key, fmt.Errorf("query parameter %q must occur once", key))
 		}
 	}
 	return nil

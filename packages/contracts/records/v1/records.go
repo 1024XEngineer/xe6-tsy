@@ -55,9 +55,14 @@ const (
 
 // APIError is the shared error body returned by public HTTP endpoints.
 type APIError struct {
-	Code      ErrorCode `json:"code"`
-	Message   string    `json:"message"`
-	RequestID string    `json:"request_id"`
+	Code      ErrorCode        `json:"code"`
+	Message   string           `json:"message"`
+	Details   *APIErrorDetails `json:"details,omitempty"`
+	RequestID string           `json:"request_id"`
+}
+
+type APIErrorDetails struct {
+	Field string `json:"field"`
 }
 
 type ErrorResponse struct {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestOpenAPIDefinesRecordModuleContract(t *testing.T) {
@@ -142,5 +144,31 @@ func TestOpenAPICorrectedByAllowsJSONNull(t *testing.T) {
 	}
 	if strings.Contains(correctedBySchema, "enum: [system, 'null']") {
 		t.Fatal("corrected_by enum must not use the string literal 'null'")
+	}
+}
+
+func TestOpenAPIErrorDetailsUseTypedFieldSchema(t *testing.T) {
+	specPath := filepath.Join("..", "..", "openapi", "voice-records.v1.yaml")
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatalf("read OpenAPI spec: %v", err)
+	}
+	var spec map[string]any
+	if err := yaml.Unmarshal(data, &spec); err != nil {
+		t.Fatalf("parse OpenAPI spec: %v", err)
+	}
+
+	schemas := mapValue(t, mapValue(t, spec, "components"), "schemas")
+	apiError := mapValue(t, schemas, "APIError")
+	if _, required := stringSet(t, apiError["required"])["details"]; required {
+		t.Fatal("APIError details must remain optional")
+	}
+	detailsRef, ok := mapValue(t, apiError, "properties")["details"].(map[string]any)
+	if !ok || detailsRef["$ref"] != "#/components/schemas/APIErrorDetails" {
+		t.Fatalf("APIError details = %#v, want APIErrorDetails reference", detailsRef)
+	}
+	details := mapValue(t, schemas, "APIErrorDetails")
+	if !stringSet(t, details["required"])["field"] || mapValue(t, details, "properties")["field"].(map[string]any)["type"] != "string" {
+		t.Fatalf("APIErrorDetails = %#v, want required string field", details)
 	}
 }

@@ -457,6 +457,14 @@ components:
           type: string
         request_id:
           type: string
+        details:
+          $ref: '#/components/schemas/APIErrorDetails'
+    APIErrorDetails:
+      type: object
+      required: [field]
+      properties:
+        field:
+          type: string
     ErrorResponse:
       type: object
       required: [error]

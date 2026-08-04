@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { listVoiceSessions, startVoiceSession } from "./lingow-api";
+import {
+  getAccountUsageSummary,
+  listVoiceSessions,
+  startVoiceSession,
+} from "./lingow-api";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -98,6 +102,52 @@ describe("listVoiceSessions", () => {
     ]>;
     const init = calls[0]?.[1];
     expect(new Headers(init.headers).get("Authorization")).toBe(
+      "Bearer access-1",
+    );
+  });
+});
+
+describe("getAccountUsageSummary", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("loads usage totals for a requested period", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        account_id: "acc-1",
+        period_start: "2026-08-01T00:00:00Z",
+        period_end: "2026-09-01T00:00:00Z",
+        totals: [
+          {
+            service_type: "asr",
+            input_tokens: 0,
+            output_tokens: 0,
+            audio_duration_ms: 90_000,
+            cost_amount: "",
+            currency: "",
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await getAccountUsageSummary(
+      "access-1",
+      "2026-08-01T00:00:00Z",
+      "2026-09-01T00:00:00Z",
+    );
+
+    expect(result.totals[0]?.audio_duration_ms).toBe(90_000);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/usage/summary?period_start=2026-08-01T00%3A00%3A00Z&period_end=2026-09-01T00%3A00%3A00Z",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+    const calls = fetchMock.mock.calls as unknown as Array<[
+      RequestInfo | URL,
+      RequestInit,
+    ]>;
+    expect(new Headers(calls[0]?.[1].headers).get("Authorization")).toBe(
       "Bearer access-1",
     );
   });

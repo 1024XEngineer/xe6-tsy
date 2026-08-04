@@ -73,6 +73,22 @@ export type VoiceTurnListResponse = {
   next_cursor: string | null;
 };
 
+export type UsageStageTotal = {
+  service_type: "asr" | "translation" | "tts" | "diarization" | string;
+  input_tokens: number;
+  output_tokens: number;
+  audio_duration_ms: number;
+  cost_amount: string;
+  currency: string;
+};
+
+export type UsageSummary = {
+  account_id: string;
+  period_start: string;
+  period_end: string;
+  totals: UsageStageTotal[];
+};
+
 function authHeaders(accessToken: string, idempotencyKey?: string): HeadersInit {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
@@ -206,6 +222,22 @@ export async function listVoiceSessions(
     cache: "no-store",
   });
   return parseJson<VoiceSessionListResponse>(response);
+}
+
+export async function getAccountUsageSummary(
+  accessToken: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<UsageSummary> {
+  const params = new URLSearchParams({
+    period_start: periodStart,
+    period_end: periodEnd,
+  });
+  const response = await fetch(`/api/v1/usage/summary?${params}`, {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<UsageSummary>(response);
 }
 
 export async function refreshAccountTokens(

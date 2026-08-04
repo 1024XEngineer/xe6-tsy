@@ -54,6 +54,12 @@ func TestProviderStreamsQwenRealtimeAudio(t *testing.T) {
 		}
 		done, _ := json.Marshal(map[string]any{"type": "response.done"})
 		_ = conn.WriteMessage(websocket.TextMessage, done)
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read session finish: %v", err)
+			return
+		}
+		finished, _ := json.Marshal(map[string]any{"type": "session.finished"})
+		_ = conn.WriteMessage(websocket.TextMessage, finished)
 	}))
 	defer server.Close()
 

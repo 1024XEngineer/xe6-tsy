@@ -218,7 +218,12 @@ func (s *realtimeStream) run() {
 		case "error":
 			s.setError(fmt.Errorf("Qwen TTS realtime failed: %s", firstNonEmpty(event.Error.Message, event.Message, event.Error.Code)))
 			return
-		case "response.done", "session.finished":
+		case "response.done":
+			if err := s.write(map[string]any{"type": "session.finish"}); err != nil {
+				s.setError(fmt.Errorf("finish Qwen TTS realtime session: %w", err))
+				return
+			}
+		case "session.finished":
 			return
 		}
 	}

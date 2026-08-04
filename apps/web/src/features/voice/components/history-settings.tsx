@@ -1,6 +1,11 @@
 "use client";
 
-import { ArrowLeft, CaretRight, ClockCounterClockwise } from "@phosphor-icons/react";
+import {
+  ArrowLeft,
+  CaretRight,
+  ClockCounterClockwise,
+  X,
+} from "@phosphor-icons/react";
 import { useCallback, useEffect, useState } from "react";
 
 import { getOrCreateAuthSession } from "../lib/auth-session";
@@ -44,11 +49,12 @@ function statusLabel(status: VoiceSession["status"]): string {
   }
 }
 
-export function HistorySettings() {
+export function HistorySettings({ onExit = () => undefined }: { onExit?: () => void }) {
   const [sessions, setSessions] = useState<VoiceSession[]>([]);
   const [selected, setSelected] = useState<VoiceSession | null>(null);
   const [turns, setTurns] = useState<VoiceTurn[]>([]);
   const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadSessions = useCallback(async () => {
@@ -66,16 +72,14 @@ export function HistorySettings() {
   }, []);
 
   useEffect(() => {
-    const requestId = window.setTimeout(() => {
-      void loadSessions();
-    }, 0);
+    const requestId = window.setTimeout(() => void loadSessions(), 0);
     return () => window.clearTimeout(requestId);
   }, [loadSessions]);
 
   const openSession = async (session: VoiceSession) => {
     setSelected(session);
     setTurns([]);
-    setLoading(true);
+    setDetailLoading(true);
     setError(null);
     try {
       const auth = await getOrCreateAuthSession();
@@ -84,76 +88,92 @@ export function HistorySettings() {
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "无法加载会话记录");
     } finally {
-      setLoading(false);
+      setDetailLoading(false);
     }
   };
 
-  if (selected) {
-    return (
-      <div className={styles.historyDetailView}>
-        <button
-          aria-label="返回历史会话"
-          className={styles.historyBack}
-          onClick={() => setSelected(null)}
-          type="button"
-        >
-          <ArrowLeft aria-hidden="true" size={17} />
-          历史会话
-        </button>
-        <div className={styles.historyIdentity}>
-          <strong>{sessionDate(selected)}的记录</strong>
-          <span>会话 {selected.id.slice(0, 8)} · {sessionDuration(selected)}</span>
+  return (
+    <div className={styles.historyWorkspace}>
+      <aside className={styles.historyWorkspaceNav}>
+        <div className={styles.historyWorkspaceNavHeader}>
+          <div>
+            <span className={styles.historyWorkspaceKicker}>ARCHIVE</span>
+            <h3>历史会话</h3>
+          </div>
+          <button aria-label="返回设置" className={styles.iconButton} onClick={onExit} type="button">
+            <X aria-hidden="true" size={18} />
+          </button>
         </div>
-        {loading ? <p className={styles.settingsState}>正在读取记录...</p> : null}
-        {error ? <p className={styles.settingsState}>{error}</p> : null}
-        {!loading && !error && turns.length === 0 ? (
-          <p className={styles.settingsState}>这次会话没有翻译记录</p>
+        <p className={styles.historyWorkspaceHint}>选择一次会话，查看完整双语记录。</p>
+        {loading ? <p className={styles.settingsState}>正在读取会话...</p> : null}
+        {error && !selected ? (
+          <div className={styles.settingsState}>
+            <p>{error}</p>
+            <button onClick={() => void loadSessions()} type="button">重新加载</button>
+          </div>
         ) : null}
-        <div className={styles.historyTranscript}>
-          {turns.map((turn) => (
-            <article className={styles.historyTranscriptTurn} key={turn.id}>
-              <span>{languageLabel(turn.source_language)}</span>
-              <div>
-                <p>{turn.source_text}</p>
-                <p>{turn.translated_text}</p>
-              </div>
-            </article>
+        {!loading && !error && sessions.length === 0 ? (
+          <p className={styles.settingsState}>还没有历史会话</p>
+        ) : null}
+        <div className={styles.historyWorkspaceSessionList}>
+          {sessions.map((session) => (
+            <button
+              aria-label={`查看${sessionDate(session)}的历史记录`}
+              className={`${styles.historyWorkspaceSession} ${selected?.id === session.id ? styles.historyWorkspaceSessionActive : ""}`}
+              key={session.id}
+              onClick={() => void openSession(session)}
+              type="button"
+            >
+              <ClockCounterClockwise aria-hidden="true" size={17} />
+              <span>
+                <strong>{sessionDate(session)}</strong>
+                <small>{sessionDuration(session)} · {statusLabel(session.status)}</small>
+                <small className={styles.historyWorkspaceSessionId}>{session.id.slice(0, 12)}</small>
+              </span>
+              <CaretRight aria-hidden="true" size={15} />
+            </button>
           ))}
         </div>
-      </div>
-    );
-  }
+      </aside>
 
-  return (
-    <div className={styles.historySessionsView}>
-      {loading ? <p className={styles.settingsState}>正在读取历史会话...</p> : null}
-      {error ? (
-        <div className={styles.settingsState}>
-          <p>{error}</p>
-          <button onClick={() => void loadSessions()} type="button">重新加载</button>
-        </div>
-      ) : null}
-      {!loading && !error && sessions.length === 0 ? (
-        <p className={styles.settingsState}>还没有历史会话</p>
-      ) : null}
-      <div className={styles.historySessionList}>
-        {sessions.map((session) => (
-          <button
-            aria-label={`查看${sessionDate(session)}的历史记录`}
-            className={styles.historySessionRow}
-            key={session.id}
-            onClick={() => void openSession(session)}
-            type="button"
-          >
-            <ClockCounterClockwise aria-hidden="true" size={18} />
-            <span>
-              <strong>{sessionDate(session)}</strong>
-              <small>{sessionDuration(session)} · {statusLabel(session.status)}</small>
-            </span>
-            <CaretRight aria-hidden="true" size={16} />
-          </button>
-        ))}
-      </div>
+      <section aria-live="polite" className={styles.historyWorkspaceDetail}>
+        {selected ? (
+          <>
+            <header className={styles.historyWorkspaceDetailHeader}>
+              <div>
+                <span className={styles.historyWorkspaceKicker}>会话 {selected.id.slice(0, 12)}</span>
+                <h3>{sessionDate(selected)} 的记录</h3>
+                <p>{sessionDuration(selected)} · {statusLabel(selected.status)}</p>
+              </div>
+              <button aria-label="返回历史会话" className={styles.historyWorkspaceBack} onClick={() => setSelected(null)} type="button">
+                <ArrowLeft aria-hidden="true" size={17} />
+                会话列表
+              </button>
+            </header>
+            {detailLoading ? <p className={styles.settingsState}>正在读取双语记录...</p> : null}
+            {error ? <p className={styles.settingsState}>{error}</p> : null}
+            {!detailLoading && !error && turns.length === 0 ? (
+              <p className={styles.settingsState}>这次会话没有翻译记录</p>
+            ) : null}
+            <div className={styles.historyWorkspaceTranscript}>
+              {turns.map((turn) => (
+                <article className={styles.historyTranscriptTurn} key={turn.id}>
+                  <span>{languageLabel(turn.source_language)}</span>
+                  <div>
+                    <p>{turn.source_text}</p>
+                    <p>{turn.translated_text}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className={styles.historyWorkspaceEmpty}>
+            <ClockCounterClockwise aria-hidden="true" size={30} />
+            <p>选择左侧会话开始查看</p>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

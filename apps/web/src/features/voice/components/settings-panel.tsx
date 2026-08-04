@@ -88,6 +88,7 @@ function SettingsDetail({
   debug,
   languageOptions,
   languageLoading,
+  onExitHistory,
 }: {
   selectedId: SettingId;
   voiceConfig: VoiceSessionConfig;
@@ -95,6 +96,7 @@ function SettingsDetail({
   debug: SessionDebugInfo;
   languageOptions: readonly LanguageCode[];
   languageLoading: boolean;
+  onExitHistory: () => void;
 }) {
   switch (selectedId) {
     case "language":
@@ -145,7 +147,7 @@ function SettingsDetail({
         </div>
       );
     case "history":
-      return <HistorySettings />;
+      return <HistorySettings onExit={onExitHistory} />;
     case "usage":
       return <UsageSettings />;
     case "about":
@@ -284,8 +286,8 @@ export function SettingsPanel({
           </button>
         </header>
 
-        <div className={styles.settingsContent}>
-          <section aria-label="设置导航" className={styles.settingsNavigation}>
+        <div className={selected.id === "history" ? styles.settingsContentHistory : styles.settingsContent}>
+          {selected.id !== "history" ? <section aria-label="设置导航" className={styles.settingsNavigation}>
             <div className={styles.settingsCount}>
               <span>{String(selectedIndex + 1).padStart(2, "0")}</span>
               <i />
@@ -305,10 +307,20 @@ export function SettingsPanel({
                 tilt={7.2}
               />
             </div>
-          </section>
+          </section> : null}
 
-          <section aria-live="polite" className={styles.settingsDetail}>
-            <AnimatePresence mode="wait">
+          <section aria-live="polite" className={selected.id === "history" ? styles.settingsDetailHistory : styles.settingsDetail}>
+            {selected.id === "history" ? (
+              <SettingsDetail
+                debug={debug}
+                languageLoading={languageLoading}
+                languageOptions={languageOptions}
+                onConfigChange={onConfigChange}
+                onExitHistory={() => setSelectedIndex(0)}
+                selectedId={selected.id}
+                voiceConfig={voiceConfig}
+              />
+            ) : <AnimatePresence mode="wait">
               <motion.div
                 animate={{ opacity: 1, y: 0 }}
                 className={styles.settingsDetailInner}
@@ -327,13 +339,14 @@ export function SettingsPanel({
                     debug={debug}
                     languageLoading={languageLoading}
                     languageOptions={languageOptions}
+                    onExitHistory={() => setSelectedIndex(0)}
                     onConfigChange={onConfigChange}
                     selectedId={selected.id}
                     voiceConfig={voiceConfig}
                   />
                 </div>
               </motion.div>
-            </AnimatePresence>
+            </AnimatePresence>}
           </section>
         </div>
 

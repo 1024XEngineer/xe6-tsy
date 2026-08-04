@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -46,7 +47,7 @@ func (r *ParticipantReadRepository) List(
 	if query.Cursor != "" {
 		decoded, err := r.cursors.Decode(query.Cursor, CursorParticipants, scope)
 		if err != nil {
-			return recordsv1.ParticipantListResponse{}, fmt.Errorf("decode participant cursor: %w: %w", participants.ErrInvalidRequest, err)
+			return recordsv1.ParticipantListResponse{}, domain.NewFieldError("cursor", fmt.Errorf("decode participant cursor: %w: %w", participants.ErrInvalidRequest, err))
 		}
 		after = decoded
 	}

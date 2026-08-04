@@ -55,9 +55,14 @@ const (
 
 // APIError is the shared error body returned by public HTTP endpoints.
 type APIError struct {
-	Code      ErrorCode `json:"code"`
-	Message   string    `json:"message"`
-	RequestID string    `json:"request_id"`
+	Code      ErrorCode        `json:"code"`
+	Message   string           `json:"message"`
+	Details   *APIErrorDetails `json:"details,omitempty"`
+	RequestID string           `json:"request_id"`
+}
+
+type APIErrorDetails struct {
+	Field string `json:"field"`
 }
 
 type ErrorResponse struct {
@@ -280,14 +285,6 @@ type SpeakerObservation struct {
 	AudioEndMS        int64     `json:"audio_end_ms"`
 }
 
-type SpeakerAttribution struct {
-	ParticipantID     *string           `json:"participant_id"`
-	SpeakerCode       string            `json:"speaker_code"`
-	DisplayName       *string           `json:"display_name"`
-	Confidence        *float64          `json:"confidence"`
-	AttributionStatus AttributionStatus `json:"attribution_status"`
-}
-
 // FinalTurnSnapshot is the immutable data needed to create an outbound message snapshot. New
 // records always retain the language configuration version that realtime fixed for the turn.
 type FinalTurnSnapshot struct {
@@ -312,11 +309,6 @@ type FinalTurnSink interface {
 // FinalTurnConsumer is the record module's idempotent final-event consumption port.
 type FinalTurnConsumer interface {
 	ConsumeFinalTurn(ctx context.Context, event FinalTurnEvent) error
-}
-
-// SpeakerAttributionReader resolves the best available temporary speaker attribution without blocking realtime work.
-type SpeakerAttributionReader interface {
-	GetProvisionalAttribution(ctx context.Context, observation SpeakerObservation) (SpeakerAttribution, error)
 }
 
 // TurnReader returns final turns only after enforcing account ownership.

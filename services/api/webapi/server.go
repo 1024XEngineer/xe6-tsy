@@ -16,6 +16,7 @@ import (
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/authcontext"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	internalwebapi "github.com/1024XEngineer/xe6-tsy/services/api/internal/webapi"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
@@ -203,7 +204,7 @@ func (s *Server) updateParticipant(writer http.ResponseWriter, request *http.Req
 	}
 	body, err := decodeParticipantUpdate(request.Body)
 	if err != nil {
-		s.writeError(writer, recordsv1.ErrorInvalidRequest, err)
+		s.writeError(writer, recordsv1.ErrorInvalidRequest, err, "body")
 		return
 	}
 	participant, err := s.participants.Update(request.Context(), accountID, request.PathValue("id"), request.PathValue("participant_id"), body)
@@ -256,7 +257,7 @@ func (s *Server) correctAttribution(writer http.ResponseWriter, request *http.Re
 	}
 	var body attributionUpdateBody
 	if err := decodeJSON(request.Body, &body); err != nil {
-		s.writeError(writer, recordsv1.ErrorInvalidRequest, err)
+		s.writeError(writer, recordsv1.ErrorInvalidRequest, err, "body")
 		return
 	}
 	turn, err := s.turns.CorrectAttribution(request.Context(), accountID, request.PathValue("id"), recordsv1.UpdateAttributionRequest{
@@ -322,7 +323,7 @@ func (s *Server) writeDomainError(writer http.ResponseWriter, request *http.Requ
 	}
 }
 
-func (s *Server) writeError(writer http.ResponseWriter, code recordsv1.ErrorCode, cause error) {
+func (s *Server) writeError(writer http.ResponseWriter, code recordsv1.ErrorCode, cause error, fallbackField ...string) {
 	status := http.StatusInternalServerError
 	switch code {
 	case recordsv1.ErrorInvalidRequest, recordsv1.ErrorInvalidAttribution:
@@ -338,9 +339,18 @@ func (s *Server) writeError(writer http.ResponseWriter, code recordsv1.ErrorCode
 	case recordsv1.ErrorNotImplemented:
 		status = http.StatusNotImplemented
 	}
+	field := domain.FieldName(cause)
+	if field == "" && len(fallbackField) > 0 {
+		field = fallbackField[0]
+	}
+	var details *recordsv1.APIErrorDetails
+	if field != "" {
+		details = &recordsv1.APIErrorDetails{Field: field}
+	}
 	s.writeJSON(writer, status, recordsv1.ErrorResponse{Error: recordsv1.APIError{
 		Code:      code,
 		Message:   cause.Error(),
+		Details:   details,
 		RequestID: fmt.Sprintf("req_%d", s.requestSeq.Add(1)),
 	}})
 }

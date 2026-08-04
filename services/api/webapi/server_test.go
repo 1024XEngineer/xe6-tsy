@@ -243,6 +243,43 @@ func TestPATCHRejectsOversizedBody(t *testing.T) {
 	}
 }
 
+func TestInvalidRequestsReturnFieldDetails(t *testing.T) {
+	handler := newHandler(t, &participantRepository{}, &turnRepository{
+		turn:                 recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
+		participantInSession: true,
+	}, "acct_01")
+
+	tests := []struct {
+		name   string
+		method string
+		target string
+		body   string
+		system bool
+		code   recordsv1.ErrorCode
+		field  string
+	}{
+		{name: "invalid limit", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/participants?limit=101", code: recordsv1.ErrorInvalidRequest, field: "limit"},
+		{name: "invalid attribution status", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/turns?attribution_status=invalid", code: recordsv1.ErrorInvalidRequest, field: "attribution_status"},
+		{name: "invalid history time", method: http.MethodGet, target: "/api/v1/translation-history?created_from=not-a-time", code: recordsv1.ErrorInvalidRequest, field: "created_from"},
+		{name: "reversed history range", method: http.MethodGet, target: "/api/v1/translation-history?created_from=2026-07-24T09:00:00Z&created_to=2026-07-24T08:00:00Z", code: recordsv1.ErrorInvalidRequest, field: "created_from"},
+		{name: "empty participant update", method: http.MethodPatch, target: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{}`, system: true, code: recordsv1.ErrorInvalidRequest, field: "body"},
+		{name: "unknown participant update field", method: http.MethodPatch, target: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"unknown":true}`, system: true, code: recordsv1.ErrorInvalidRequest, field: "body"},
+		{name: "missing attribution participant", method: http.MethodPatch, target: "/api/v1/voice-turns/vt_01/attribution", body: `{"attribution_status":"confirmed"}`, system: true, code: recordsv1.ErrorInvalidAttribution, field: "participant_id"},
+		{name: "invalid attribution status body", method: http.MethodPatch, target: "/api/v1/voice-turns/vt_01/attribution", body: `{"participant_id":"p_01","attribution_status":"pending"}`, system: true, code: recordsv1.ErrorInvalidAttribution, field: "attribution_status"},
+		{name: "out of range confidence", method: http.MethodPatch, target: "/api/v1/voice-turns/vt_01/attribution", body: `{"participant_id":"p_01","attribution_status":"confirmed","speaker_confidence":1.5}`, system: true, code: recordsv1.ErrorInvalidAttribution, field: "speaker_confidence"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var body *strings.Reader
+			if test.body != "" {
+				body = strings.NewReader(test.body)
+			}
+			response := serve(handler, accountRequest(test.method, test.target, body, "acct_01", test.system))
+			assertErrorField(t, response, test.code, test.field)
+		})
+	}
+}
+
 func TestErrorMappingReturnsNotFoundAndInternalError(t *testing.T) {
 	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, findErr: turns.ErrTurnNotFound}
 	handler := newHandler(t, &participantRepository{}, turnRepository, "acct_01")
@@ -517,6 +554,18 @@ func assertError(t *testing.T, response *httptest.ResponseRecorder, wantStatus i
 	decodeBody(t, response, &body)
 	if body.Error.Code != wantCode || body.Error.RequestID == "" {
 		t.Fatalf("error body = %#v, want code %q and request ID", body, wantCode)
+	}
+}
+
+func assertErrorField(t *testing.T, response *httptest.ResponseRecorder, wantCode recordsv1.ErrorCode, wantField string) {
+	t.Helper()
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	var body recordsv1.ErrorResponse
+	decodeBody(t, response, &body)
+	if body.Error.Code != wantCode || body.Error.Details == nil || body.Error.Details.Field != wantField {
+		t.Fatalf("error body = %#v, want code %q and field %q", body, wantCode, wantField)
 	}
 }
 

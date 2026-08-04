@@ -47,48 +47,40 @@ type AudioPlaybackLifecycle interface {
 
 // PipelineDependencies wires provider and event boundaries for one service.
 type PipelineDependencies struct {
-	Translator     translate.Provider
-	TTS            tts.Provider
-	Speakers       recordsv1.SpeakerAttributionReader
-	FinalTurns     recordsv1.FinalTurnSink
-	Usage          UsageFactSink
-	Audio          AudioChunkSink
-	Runtime        session.RuntimeStateReporter
-	SpeakerTimeout time.Duration
-	VoiceID        string
-	Now            func() time.Time
+	Translator translate.Provider
+	TTS        tts.Provider
+	FinalTurns recordsv1.FinalTurnSink
+	Usage      UsageFactSink
+	Audio      AudioChunkSink
+	Runtime    session.RuntimeStateReporter
+	VoiceID    string
+	Now        func() time.Time
 }
 
 // PipelineService orchestrates one final ASR result through translation and TTS.
 type PipelineService struct {
-	translator     translate.Provider
-	tts            tts.Provider
-	speakers       recordsv1.SpeakerAttributionReader
-	finalTurns     recordsv1.FinalTurnSink
-	usage          UsageFactSink
-	audio          AudioChunkSink
-	runtime        session.RuntimeStateReporter
-	speakerTimeout time.Duration
-	voiceID        string
-	now            func() time.Time
+	translator translate.Provider
+	tts        tts.Provider
+	finalTurns recordsv1.FinalTurnSink
+	usage      UsageFactSink
+	audio      AudioChunkSink
+	runtime    session.RuntimeStateReporter
+	voiceID    string
+	now        func() time.Time
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
 // persistence, playback, and runtime reporting are injected dependencies, so
 // this package does not depend on a vendor protocol or transport.
 func NewPipelineService(deps PipelineDependencies) *PipelineService {
-	timeout := deps.SpeakerTimeout
-	if timeout <= 0 {
-		timeout = 50 * time.Millisecond
-	}
 	now := deps.Now
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &PipelineService{
-		translator: deps.Translator, tts: deps.TTS, speakers: deps.Speakers,
+		translator: deps.Translator, tts: deps.TTS,
 		finalTurns: deps.FinalTurns, usage: deps.Usage, audio: deps.Audio, runtime: deps.Runtime,
-		speakerTimeout: timeout, voiceID: deps.VoiceID, now: now,
+		voiceID: deps.VoiceID, now: now,
 	}
 }
 
@@ -158,11 +150,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err != nil {
 		return fmt.Errorf("prepare translation usage: %w", err)
 	}
-	// Speaker attribution is best effort. On lookup timeout, retain pending
-	// attribution instead of dropping valid text; records can correct ownership
-	// later without rewriting the body.
 	startedAt, endedAt := turnBounds(turn, result, s.now())
-	attribution := s.resolveSpeaker(ctx, turn, result, startedAt, endedAt)
 	var providerSpeakerID *string
 	if id := strings.TrimSpace(result.ProviderSpeakerID); id != "" {
 		providerSpeakerID = &id
@@ -172,13 +160,11 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		EventID:      "final_" + turn.ID, TraceID: turn.TraceID, SessionID: turn.SessionID, TurnID: turn.ID,
 		SequenceNo: turn.SequenceNo, SourceLanguage: result.SourceLanguage, TargetLanguage: target,
 		SourceText: result.Text, TranslatedText: translationResult.Text, TTSEnabled: route.TTSEnabled,
-		DeliveryEnabled: route.DeliveryEnabled, SpeakerCode: attribution.SpeakerCode,
-		SpeakerLabelSnapshot: attribution.DisplayName, SpeakerConfidence: attribution.Confidence,
-		AttributionStatus: attribution.AttributionStatus, LanguageConfigVersion: turn.LanguageConfig.Version,
+		DeliveryEnabled: route.DeliveryEnabled, SpeakerCode: recordsv1.PendingSpeakerCode,
+		AttributionStatus: recordsv1.AttributionPending, LanguageConfigVersion: turn.LanguageConfig.Version,
 		StartedAt: startedAt, EndedAt: endedAt, OccurredAt: s.now(),
 		ProviderSpeakerID: providerSpeakerID,
 	}
-	finalEvent.ParticipantID = attribution.ParticipantID
 	if err := finalEvent.Validate(); err != nil {
 		return fmt.Errorf("validate FinalTurn: %w", err)
 	}
@@ -304,45 +290,6 @@ func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider
 		return UsageFact{}, fmt.Errorf("validate UsageFact: %w", err)
 	}
 	return fact, nil
-}
-
-func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, result asr.FinalResult, startedAt, endedAt time.Time) recordsv1.SpeakerAttribution {
-	if s.speakers == nil {
-		return pendingSpeakerAttribution()
-	}
-	providerSpeakerID := strings.TrimSpace(result.ProviderSpeakerID)
-	if providerSpeakerID == "" {
-		// Without a stable provider or diarization key there is no evidence to map a speaker;
-		// keep the turn pending instead of fabricating a single-speaker identity.
-		return pendingSpeakerAttribution()
-	}
-	lookupCtx, cancel := context.WithTimeout(ctx, s.speakerTimeout)
-	defer cancel()
-	attribution, err := s.speakers.GetProvisionalAttribution(lookupCtx, recordsv1.SpeakerObservation{
-		SessionID: turn.SessionID, TurnID: turn.ID, ProviderSpeakerID: providerSpeakerID,
-		StartedAt: startedAt, EndedAt: endedAt,
-		AudioStartMS: result.AudioStart.Milliseconds(), AudioEndMS: result.AudioEnd.Milliseconds(),
-	})
-	if err != nil {
-		return pendingSpeakerAttribution()
-	}
-	if attribution.ParticipantID == nil {
-		attribution.AttributionStatus = recordsv1.AttributionPending
-		if attribution.SpeakerCode == "" {
-			attribution.SpeakerCode = recordsv1.PendingSpeakerCode
-		}
-	}
-	if attribution.AttributionStatus == "" {
-		attribution.AttributionStatus = recordsv1.AttributionPending
-	}
-	return attribution
-}
-
-func pendingSpeakerAttribution() recordsv1.SpeakerAttribution {
-	return recordsv1.SpeakerAttribution{
-		SpeakerCode:       recordsv1.PendingSpeakerCode,
-		AttributionStatus: recordsv1.AttributionPending,
-	}
 }
 
 func turnBounds(turn TurnContext, result asr.FinalResult, fallback time.Time) (time.Time, time.Time) {

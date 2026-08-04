@@ -1,6 +1,42 @@
 package domain
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
+
+// FieldError preserves the input field responsible for a typed validation failure while keeping
+// the underlying domain error available to errors.Is callers.
+type FieldError struct {
+	Field string
+	Err   error
+}
+
+func (e *FieldError) Error() string {
+	if e == nil || e.Err == nil {
+		return "invalid field"
+	}
+	return fmt.Sprintf("%s: %v", e.Field, e.Err)
+}
+
+func (e *FieldError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func NewFieldError(field string, err error) error {
+	return &FieldError{Field: field, Err: err}
+}
+
+func FieldName(err error) string {
+	var fieldErr *FieldError
+	if errors.As(err, &fieldErr) {
+		return fieldErr.Field
+	}
+	return ""
+}
 
 var (
 	// ErrNotImplemented marks a declared boundary whose production dependencies are not wired yet.

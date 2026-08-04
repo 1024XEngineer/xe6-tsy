@@ -73,8 +73,11 @@ func (s *Service) List(ctx context.Context, accountID, sessionID string, query r
 }
 
 func (s *Service) Update(ctx context.Context, accountID, sessionID, participantID string, update Update) (recordsv1.Participant, error) {
-	if update.Empty() || participantID == "" {
-		return recordsv1.Participant{}, ErrInvalidRequest
+	if participantID == "" {
+		return recordsv1.Participant{}, domain.NewFieldError("participant_id", ErrInvalidRequest)
+	}
+	if update.Empty() {
+		return recordsv1.Participant{}, domain.NewFieldError("body", ErrInvalidRequest)
 	}
 	if err := s.requireOwner(ctx, accountID, sessionID); err != nil {
 		return recordsv1.Participant{}, err

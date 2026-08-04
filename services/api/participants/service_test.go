@@ -74,6 +74,17 @@ func TestUpdatePassesExplicitClearWithoutTouchingTurns(t *testing.T) {
 	}
 }
 
+func TestUpdateReportsTheMissingParticipantField(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeSessionOwners{ownerID: "acct_01"}, nil)
+	_, err := service.Update(context.Background(), "acct_01", "vs_01", "", Update{DisplayNameSet: true})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Update() error = %v, want ErrInvalidRequest", err)
+	}
+	if got := domain.FieldName(err); got != "participant_id" {
+		t.Fatalf("FieldName() = %q, want participant_id", got)
+	}
+}
+
 func TestResolveProviderMappingRequiresOwnerAndEvidence(t *testing.T) {
 	tests := []struct {
 		name        string

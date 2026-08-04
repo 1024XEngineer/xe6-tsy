@@ -43,6 +43,9 @@ func TestAsyncAPIFinalTurnContract(t *testing.T) {
 	if got, want := mapValue(t, properties, "speaker_code")["minLength"], 1; got != want {
 		t.Fatalf("speaker_code minLength = %v, want %d", got, want)
 	}
+	if description := mapValue(t, properties, "speaker_code")["description"].(string); !strings.Contains(description, "speaker_pending") {
+		t.Fatalf("speaker_code description = %q, want pending code semantics", description)
+	}
 	if !allowsNull(t, mapValue(t, properties, "participant_id")) {
 		t.Fatal("participant_id must allow null")
 	}

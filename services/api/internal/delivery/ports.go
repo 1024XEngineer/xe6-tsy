@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 )
 
 // ErrProviderRejected marks a provider response that definitively rejects a
@@ -143,4 +145,17 @@ type Service interface {
 	BindWeChatTarget(context.Context, string, string) (MessageTarget, error)
 	// RevokeMessageTarget marks one verified destination as revoked.
 	RevokeMessageTarget(context.Context, string, Channel, string) error
+}
+
+// AutomaticPreferenceService is an optional extension used by the HTTP
+// adapter to select the single automatic destination for a channel without
+// breaking older lightweight Service fakes.
+type AutomaticPreferenceService interface {
+	PutPreferenceForDestination(context.Context, string, Channel, bool, string) (Preference, error)
+}
+
+// FinalTurnScheduler creates one immutable asynchronous message for an
+// eligible Final Turn after it has been durably stored.
+type FinalTurnScheduler interface {
+	ScheduleFinalTurn(context.Context, string, recordsv1.FinalTurnEvent) error
 }

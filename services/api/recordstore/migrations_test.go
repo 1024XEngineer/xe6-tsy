@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 18 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 18", len(migrations))
+	if len(migrations) != 19 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 19", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -238,5 +238,10 @@ func TestEmbeddedMigrations(t *testing.T) {
 		if !strings.Contains(deadLetter.SQL, expected) {
 			t.Fatalf("dead-letter migration does not contain %q", expected)
 		}
+	}
+
+	autoDelivery := migrations[18]
+	if autoDelivery.Version != 19 || autoDelivery.Name != "auto_delivery_destination" || !strings.Contains(autoDelivery.SQL, "destination_ref") {
+		t.Fatalf("migration = %#v, want version 19 automatic destination column", autoDelivery)
 	}
 }

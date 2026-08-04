@@ -45,11 +45,20 @@ type LanguagePair struct {
 	Target string
 }
 
+// OutputRoute controls independent TTS and delivery behavior for one target
+// language captured at Turn start.
+type OutputRoute struct {
+	TargetLanguage  string
+	TTSEnabled      bool
+	DeliveryEnabled bool
+}
+
 // LanguageConfigSnapshot is captured once by member 3 when a Turn begins.
 type LanguageConfigSnapshot struct {
 	SessionID     string
 	Version       int64
 	LanguagePairs []LanguagePair
+	OutputRoutes  []OutputRoute
 	Status        string
 	UpdatedAt     time.Time
 }

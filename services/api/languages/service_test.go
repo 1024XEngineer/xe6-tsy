@@ -33,8 +33,13 @@ func TestServiceCreateAndReadLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCurrentConfig: %v", err)
 	}
-	if snap.Version != 1 || len(snap.LanguagePairs) != 2 {
+	if snap.Version != 1 || len(snap.LanguagePairs) != 2 || len(snap.OutputRoutes) != 2 {
 		t.Fatalf("unexpected snapshot: %#v", snap)
+	}
+	for _, route := range snap.OutputRoutes {
+		if !route.TTSEnabled || route.DeliveryEnabled {
+			t.Fatalf("legacy-compatible output route = %#v", route)
+		}
 	}
 
 	target, version, err := svc.ResolveTarget(ctx, "vs_1", "zh-CN")
@@ -52,6 +57,31 @@ func TestServiceCreateAndReadLifecycle(t *testing.T) {
 	}
 	if second.Version != 2 {
 		t.Fatalf("want version 2, got %d", second.Version)
+	}
+}
+
+func TestServicePersistsPerTargetOutputRoutes(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})
+	created, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "routes-1", CreateLanguageConfigRequest{
+		Languages: bilingualPairs(),
+		OutputRoutes: []OutputRoute{
+			{TargetLanguage: "en-US", TTSEnabled: true, DeliveryEnabled: false},
+			{TargetLanguage: "zh-CN", TTSEnabled: false, DeliveryEnabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig() error = %v", err)
+	}
+	if len(created.OutputRoutes) != 2 || created.OutputRoutes[0].DeliveryEnabled || !created.OutputRoutes[1].DeliveryEnabled {
+		t.Fatalf("created output routes = %#v", created.OutputRoutes)
+	}
+	snapshot, err := svc.GetCurrentConfig(t.Context(), "vs_1")
+	if err != nil {
+		t.Fatalf("GetCurrentConfig() error = %v", err)
+	}
+	if len(snapshot.OutputRoutes) != 2 || snapshot.OutputRoutes[1].TTSEnabled {
+		t.Fatalf("snapshot output routes = %#v", snapshot.OutputRoutes)
 	}
 }
 

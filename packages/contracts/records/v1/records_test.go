@@ -202,6 +202,37 @@ func TestFinalTurnPayloadHashMatchesLegacyPayloadWithoutProviderSpeakerID(t *tes
 	}
 }
 
+func TestFinalTurnEventPayloadHashMatchesLegacyRoutePayload(t *testing.T) {
+	event := validFinalTurnEvent()
+	event.TTSEnabled = true
+	event.DeliveryEnabled = true
+	legacyEvent := event
+	legacyEvent.TTSEnabled = false
+	legacyEvent.DeliveryEnabled = false
+	legacyHash, err := FinalTurnEventPayloadHash(legacyEvent)
+	if err != nil {
+		t.Fatalf("legacy hash error = %v", err)
+	}
+
+	matched, err := FinalTurnEventPayloadHashMatches(event, legacyHash[:])
+	if err != nil {
+		t.Fatalf("hash compatibility check error = %v", err)
+	}
+	if !matched {
+		t.Fatal("legacy route payload hash was not accepted")
+	}
+
+	changed := event
+	changed.TranslatedText = "different translation"
+	matched, err = FinalTurnEventPayloadHashMatches(changed, legacyHash[:])
+	if err != nil {
+		t.Fatalf("changed hash compatibility check error = %v", err)
+	}
+	if matched {
+		t.Fatal("changed payload unexpectedly matched legacy hash")
+	}
+}
+
 func validFinalTurnEvent() FinalTurnEvent {
 	return FinalTurnEvent{
 		EventVersion:          FinalTurnEventVersion,

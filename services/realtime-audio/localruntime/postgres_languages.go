@@ -1,6 +1,7 @@
 package localruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,17 @@ type PostgresLanguageConfigReader struct {
 type languagePairJSON struct {
 	Source string `json:"source"`
 	Target string `json:"target"`
+}
+
+type outputRouteJSON struct {
+	TargetLanguage  string `json:"target_language"`
+	TTSEnabled      bool   `json:"tts_enabled"`
+	DeliveryEnabled bool   `json:"delivery_enabled"`
+}
+
+type languageConfigPayload struct {
+	LanguagePairs []languagePairJSON `json:"language_pairs"`
+	OutputRoutes  []outputRouteJSON  `json:"output_routes"`
 }
 
 func (r PostgresLanguageConfigReader) GetCurrentConfig(
@@ -51,9 +63,9 @@ func (r PostgresLanguageConfigReader) GetCurrentConfig(
 		}
 		return session.LanguageConfigSnapshot{}, fmt.Errorf("read language config: %w", err)
 	}
-	var pairs []languagePairJSON
-	if err := json.Unmarshal(raw, &pairs); err != nil {
-		return session.LanguageConfigSnapshot{}, fmt.Errorf("decode language_pairs: %w", err)
+	pairs, routes, err := decodeLanguageConfig(raw)
+	if err != nil {
+		return session.LanguageConfigSnapshot{}, err
 	}
 	out := make([]session.LanguagePair, 0, len(pairs))
 	for _, pair := range pairs {
@@ -71,13 +83,43 @@ func (r PostgresLanguageConfigReader) GetCurrentConfig(
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	outputRoutes := make([]session.OutputRoute, 0, len(routes))
+	for _, route := range routes {
+		target := strings.TrimSpace(route.TargetLanguage)
+		if target == "" {
+			continue
+		}
+		outputRoutes = append(outputRoutes, session.OutputRoute{
+			TargetLanguage: target, TTSEnabled: route.TTSEnabled, DeliveryEnabled: route.DeliveryEnabled,
+		})
+	}
 	return session.LanguageConfigSnapshot{
 		SessionID:     sessionID,
 		Version:       version,
 		Status:        status,
 		LanguagePairs: out,
+		OutputRoutes:  outputRoutes,
 		UpdatedAt:     now(),
 	}, nil
+}
+
+func decodeLanguageConfig(raw []byte) ([]languagePairJSON, []outputRouteJSON, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, nil, fmt.Errorf("decode language_pairs: empty payload")
+	}
+	if raw[0] == '[' {
+		var pairs []languagePairJSON
+		if err := json.Unmarshal(raw, &pairs); err != nil {
+			return nil, nil, fmt.Errorf("decode language_pairs: %w", err)
+		}
+		return pairs, nil, nil
+	}
+	var payload languageConfigPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, nil, fmt.Errorf("decode language config payload: %w", err)
+	}
+	return payload.LanguagePairs, payload.OutputRoutes, nil
 }
 
 // FallbackLanguageConfigReader tries Primary, then Fallback (env static pair).

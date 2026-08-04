@@ -22,6 +22,7 @@ Go 实时音频服务。
 - 只支持两方面对面
 - partial 结果只用于后台纠偏
 - 句末 final 译文才进入 TTS
+- TTS / 渠道输出可按 target_language 单独关闭
 - TTS 播放中检测到对方发言时，发送 `playback.stop`
 
 ## 建议包结构

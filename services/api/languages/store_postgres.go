@@ -19,6 +19,11 @@ type PostgresStore struct {
 	clock Clock
 }
 
+type languageConfigPayload struct {
+	LanguagePairs []LanguagePair `json:"language_pairs"`
+	OutputRoutes  []OutputRoute  `json:"output_routes,omitempty"`
+}
+
 // NewPostgresStore constructs a store. clock may be nil (uses UTC wall clock).
 func NewPostgresStore(pool *pgxpool.Pool, clock Clock) *PostgresStore {
 	if clock == nil {
@@ -103,7 +108,15 @@ func (s *PostgresStore) CreateActiveConfig(ctx context.Context, input CreateConf
 		return LanguageConfig{}, fmt.Errorf("%w: language_pairs is required", ErrInvalidRequest)
 	}
 
-	pairsJSON, err := json.Marshal(input.LanguagePairs)
+	routes := append([]OutputRoute(nil), input.OutputRoutes...)
+	if len(routes) == 0 {
+		var err error
+		routes, err = normalizeOutputRoutes(input.LanguagePairs, nil)
+		if err != nil {
+			return LanguageConfig{}, err
+		}
+	}
+	pairsJSON, err := json.Marshal(languageConfigPayload{LanguagePairs: input.LanguagePairs, OutputRoutes: routes})
 	if err != nil {
 		return LanguageConfig{}, fmt.Errorf("marshal language_pairs: %w", err)
 	}
@@ -185,6 +198,7 @@ INSERT INTO voice_session_language_configs (
 		SessionID:          input.SessionID,
 		Version:            nextVersion,
 		LanguagePairs:      append([]LanguagePair(nil), input.LanguagePairs...),
+		OutputRoutes:       append([]OutputRoute(nil), routes...),
 		Status:             StatusActive,
 		EffectiveFrom:      now,
 		EffectiveUntil:     nil,
@@ -281,9 +295,23 @@ func scanConfigRow(row rowScanner) (LanguageConfig, error) {
 	); err != nil {
 		return LanguageConfig{}, err
 	}
-	if err := json.Unmarshal(pairsRaw, &cfg.LanguagePairs); err != nil {
-		return LanguageConfig{}, fmt.Errorf("unmarshal language_pairs: %w", err)
+	if len(pairsRaw) > 0 && pairsRaw[0] == '[' {
+		if err := json.Unmarshal(pairsRaw, &cfg.LanguagePairs); err != nil {
+			return LanguageConfig{}, fmt.Errorf("unmarshal language_pairs: %w", err)
+		}
+	} else {
+		var payload languageConfigPayload
+		if err := json.Unmarshal(pairsRaw, &payload); err != nil {
+			return LanguageConfig{}, fmt.Errorf("unmarshal language config payload: %w", err)
+		}
+		cfg.LanguagePairs = payload.LanguagePairs
+		cfg.OutputRoutes = payload.OutputRoutes
 	}
+	routes, err := normalizeOutputRoutes(cfg.LanguagePairs, cfg.OutputRoutes)
+	if err != nil {
+		return LanguageConfig{}, fmt.Errorf("normalize output routes: %w", err)
+	}
+	cfg.OutputRoutes = routes
 	cfg.EffectiveFrom = cfg.EffectiveFrom.UTC()
 	cfg.CreatedAt = cfg.CreatedAt.UTC()
 	if cfg.EffectiveUntil != nil {

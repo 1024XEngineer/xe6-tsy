@@ -23,6 +23,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
 	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
+	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 	recordswebapi "github.com/1024XEngineer/xe6-tsy/services/api/webapi"
 )
 
@@ -38,6 +39,7 @@ type recordsHTTPDependencies struct {
 	accounts          accounts.Service
 	tokens            accounts.AccessTokenVerifier
 	worker            finalTurnWorker
+	turns             *turns.Service
 	attributionWorker backgroundWorker
 	maintainer        backgroundWorker
 	pool              *pgxpool.Pool
@@ -367,6 +369,7 @@ func newRecordsHTTPDependenciesFromPool(
 		accounts:          accountUseCases,
 		tokens:            tokens,
 		worker:            services.FinalTurnWorker,
+		turns:             services.Turns,
 		attributionWorker: services.AttributionWorker,
 		maintainer:        accounts.NewAuthMaintainer(accountRepository, 0, 0),
 		cleanup:           func() {},

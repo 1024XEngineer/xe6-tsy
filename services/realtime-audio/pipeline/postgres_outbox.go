@@ -1,7 +1,6 @@
 package pipeline
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -75,7 +74,11 @@ func (o *PostgresFinalTurnOutbox) Append(ctx context.Context, topic, idempotency
 	if err := o.pool.QueryRow(ctx, postgresFinalTurnOutboxHashQuery, event.EventID).Scan(&storedHash); err != nil {
 		return fmt.Errorf("read final turn outbox replay: %w", err)
 	}
-	if !bytes.Equal(storedHash, payloadHash[:]) {
+	matches, err := recordsv1.FinalTurnEventPayloadHashMatches(event, storedHash)
+	if err != nil {
+		return fmt.Errorf("hash final turn outbox replay: %w", err)
+	}
+	if !matches {
 		return fmt.Errorf("%w: event ID %q", ErrPostgresFinalTurnOutboxConflict, event.EventID)
 	}
 	return nil

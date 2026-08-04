@@ -106,6 +106,7 @@ func (o *TurnOpener) OpenTurn(ctx context.Context, request TurnOpenRequest) (Tur
 		return TurnContext{}, ErrLanguageConfigUnavailable
 	}
 	config.LanguagePairs = append([]session.LanguagePair(nil), config.LanguagePairs...)
+	config.OutputRoutes = append([]session.OutputRoute(nil), config.OutputRoutes...)
 	startedAt := request.StartedAt
 	if startedAt.IsZero() {
 		startedAt = time.Now().UTC()

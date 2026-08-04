@@ -16,12 +16,21 @@ type LanguagePair struct {
 	Target string `json:"target"`
 }
 
+// OutputRoute controls independent media and delivery behavior for one
+// translated target language.
+type OutputRoute struct {
+	TargetLanguage  string `json:"target_language"`
+	TTSEnabled      bool   `json:"tts_enabled"`
+	DeliveryEnabled bool   `json:"delivery_enabled"`
+}
+
 // LanguageConfig is the HTTP/API representation of a versioned session config.
 type LanguageConfig struct {
 	ID                 string         `json:"id"`
 	SessionID          string         `json:"session_id"`
 	Version            int            `json:"version"`
 	LanguagePairs      []LanguagePair `json:"language_pairs"`
+	OutputRoutes       []OutputRoute  `json:"output_routes"`
 	Status             string         `json:"status"` // active | superseded | expired
 	EffectiveFrom      time.Time      `json:"effective_from"`
 	EffectiveUntil     *time.Time     `json:"effective_until"`
@@ -37,6 +46,7 @@ type LanguageConfigSnapshot struct {
 	SessionID     string
 	Version       int
 	LanguagePairs []LanguagePair
+	OutputRoutes  []OutputRoute
 	Status        string
 	EffectiveFrom time.Time
 	UpdatedAt     time.Time
@@ -59,6 +69,7 @@ type ListLanguagesResponse struct {
 // CreateLanguageConfigRequest is the body for POST .../language-configs.
 type CreateLanguageConfigRequest struct {
 	Languages       []LanguagePair `json:"languages"`
+	OutputRoutes    []OutputRoute  `json:"output_routes,omitempty"`
 	ExpectedVersion *int           `json:"expected_version,omitempty"`
 }
 

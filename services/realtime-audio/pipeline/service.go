@@ -73,7 +73,9 @@ type PipelineService struct {
 	now            func() time.Time
 }
 
-// NewPipelineService creates a mock-backed translation pipeline.
+// NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
+// persistence, playback, and runtime reporting are injected dependencies, so
+// this package does not depend on a vendor protocol or transport.
 func NewPipelineService(deps PipelineDependencies) *PipelineService {
 	timeout := deps.SpeakerTimeout
 	if timeout <= 0 {
@@ -90,7 +92,9 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 	}
 }
 
-// HandleASREvent ignores partial updates and handles only a final recognition result.
+// HandleASREvent intentionally ignores partial recognition updates. Partials
+// may drive UI or ASR correction, but are unstable and must not trigger
+// translation, billing, TTS, or FinalTurn persistence.
 func (s *PipelineService) HandleASREvent(ctx context.Context, turn TurnContext, event asr.Event) error {
 	if event.Type != asr.EventFinal || event.Final == nil {
 		return nil
@@ -98,13 +102,16 @@ func (s *PipelineService) HandleASREvent(ctx context.Context, turn TurnContext, 
 	return s.HandleASRFinal(ctx, turn, *event.Final)
 }
 
-// HandleASRFinal carries one allocated Turn through all final-result stages. An error matching
-// ErrFinalTurnAccepted reports a downstream failure after durable publication and is not a signal
-// to rerun this method; Usage and TTS recovery belong to their respective processing boundaries.
+// HandleASRFinal carries an allocated Turn through final-result stages. An
+// ErrFinalTurnAccepted error means FinalTurn was durably accepted but a later
+// stage failed; callers must not rerun this method, while Usage and TTS recover
+// at their own processing boundaries.
 func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) (returnErr error) {
 	if err := s.validate(); err != nil {
 		return err
 	}
+	// Runtime state is a media-plane observable fact. Report each long-running
+	// stage and restore listening on every exit unless the report itself fails.
 	if err := s.reportRuntime(ctx, turn, session.RuntimeTranslating, ""); err != nil {
 		return fmt.Errorf("report translating runtime: %w", err)
 	}
@@ -118,11 +125,15 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 			returnErr = errors.Join(returnErr, restoreErr)
 		}
 	}()
+	// ASR usage describes a completed recognition operation. Record it before
+	// calling the next provider so a usage failure cannot hide an untracked call.
 	if err := s.publishUsage(ctx, turn, "asr", result.Provider, result.Model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
 		return fmt.Errorf("publish ASR usage: %w", err)
 	}
+	// Turn owns the versioned language snapshot captured at start. Do not reread
+	// the current session config or a mid-turn change would alter this direction.
 	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
-	target, ok := targetLanguage(turn.LanguageConfig, result.SourceLanguage)
+	target, route, ok := targetRoute(turn.LanguageConfig, result.SourceLanguage)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
 	}
@@ -147,6 +158,9 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err != nil {
 		return fmt.Errorf("prepare translation usage: %w", err)
 	}
+	// Speaker attribution is best effort. On lookup timeout, retain pending
+	// attribution instead of dropping valid text; records can correct ownership
+	// later without rewriting the body.
 	startedAt, endedAt := turnBounds(turn, result, s.now())
 	attribution := s.resolveSpeaker(ctx, turn, result, startedAt, endedAt)
 	var providerSpeakerID *string
@@ -157,16 +171,20 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		EventVersion: recordsv1.FinalTurnEventVersion,
 		EventID:      "final_" + turn.ID, TraceID: turn.TraceID, SessionID: turn.SessionID, TurnID: turn.ID,
 		SequenceNo: turn.SequenceNo, SourceLanguage: result.SourceLanguage, TargetLanguage: target,
-		SourceText: result.Text, TranslatedText: translationResult.Text, SpeakerCode: attribution.SpeakerCode,
-		SpeakerLabelSnapshot: attribution.DisplayName, ProviderSpeakerID: providerSpeakerID,
-		SpeakerConfidence: attribution.Confidence, AttributionStatus: attribution.AttributionStatus,
-		LanguageConfigVersion: turn.LanguageConfig.Version,
-		StartedAt:             startedAt, EndedAt: endedAt, OccurredAt: s.now(),
+		SourceText: result.Text, TranslatedText: translationResult.Text, TTSEnabled: route.TTSEnabled,
+		DeliveryEnabled: route.DeliveryEnabled, SpeakerCode: attribution.SpeakerCode,
+		SpeakerLabelSnapshot: attribution.DisplayName, SpeakerConfidence: attribution.Confidence,
+		AttributionStatus: attribution.AttributionStatus, LanguageConfigVersion: turn.LanguageConfig.Version,
+		StartedAt: startedAt, EndedAt: endedAt, OccurredAt: s.now(),
+		ProviderSpeakerID: providerSpeakerID,
 	}
 	finalEvent.ParticipantID = attribution.ParticipantID
 	if err := finalEvent.Validate(); err != nil {
 		return fmt.Errorf("validate FinalTurn: %w", err)
 	}
+	// Reliable FinalTurn publication is the turn commit point. A failure here may
+	// retry the whole turn; after success the immutable body is accepted and later
+	// failures must not retranslate or publish a second logical turn.
 	if err := s.finalTurns.Publish(ctx, finalEvent); err != nil {
 		return fmt.Errorf("publish FinalTurn: %w", err)
 	}
@@ -174,6 +192,15 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err := s.usage.Publish(ctx, translationUsage); err != nil {
 		return finalTurnAcceptedError("publish translation usage", err)
 	}
+	if !route.TTSEnabled {
+		return nil
+	}
+	if s.tts == nil {
+		return finalTurnAcceptedError("start TTS", ErrPipelineDependencyRequired)
+	}
+	// TTS runs after durable text publication. TTS or playback failures therefore
+	// return ErrFinalTurnAccepted; callers may show degraded playback but must
+	// not create another FinalTurn.
 	playbackID := "playback_" + turn.ID
 	if err := s.reportRuntime(ctx, turn, session.RuntimeTTSProcessing, playbackID); err != nil {
 		return finalTurnAcceptedError("report TTS runtime", err)
@@ -215,6 +242,8 @@ func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext
 				return playing, nil
 			}
 			if !playing {
+				// A created TTS stream is not playing until its first real audio chunk;
+				// that chunk is the externally observable playback start.
 				if err := s.reportRuntime(ctx, turn, session.RuntimePlaying, playbackID); err != nil {
 					return false, fmt.Errorf("report playing runtime: %w", err)
 				}
@@ -240,13 +269,16 @@ func (s *PipelineService) cancelPlayback(ctx context.Context, sessionID, playbac
 	if !played || !ok {
 		return nil
 	}
+	// Playback cleanup must continue even when the request or provider context is
+	// cancelled, otherwise a failed TTS stream may keep playing. Use an
+	// independent timeout to bound cleanup.
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 	defer cancel()
 	return lifecycle.Cancel(cleanupCtx, sessionID, playbackID, reason)
 }
 
 func (s *PipelineService) validate() error {
-	if s == nil || s.translator == nil || s.tts == nil || s.finalTurns == nil || s.usage == nil || s.audio == nil || s.runtime == nil {
+	if s == nil || s.translator == nil || s.finalTurns == nil || s.usage == nil || s.audio == nil || s.runtime == nil {
 		return ErrPipelineDependencyRequired
 	}
 	return nil
@@ -325,12 +357,19 @@ func turnBounds(turn TurnContext, result asr.FinalResult, fallback time.Time) (t
 	return startedAt, startedAt.Add(duration)
 }
 
-func targetLanguage(config session.LanguageConfigSnapshot, source string) (string, bool) {
+func targetRoute(config session.LanguageConfigSnapshot, source string) (string, session.OutputRoute, bool) {
 	source = asr.NormalizeLanguage(source)
 	for _, pair := range config.LanguagePairs {
 		if asr.NormalizeLanguage(pair.Source) == source {
-			return pair.Target, true
+			route := session.OutputRoute{TargetLanguage: pair.Target, TTSEnabled: true, DeliveryEnabled: false}
+			for _, configured := range config.OutputRoutes {
+				if configured.TargetLanguage == pair.Target {
+					route = configured
+					break
+				}
+			}
+			return pair.Target, route, true
 		}
 	}
-	return "", false
+	return "", session.OutputRoute{}, false
 }

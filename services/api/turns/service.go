@@ -55,7 +55,14 @@ type AttributionUpdate struct {
 type Service struct {
 	repository Repository
 	sessions   recordsv1.SessionOwnerReader
+	scheduler  FinalTurnScheduler
 	now        func() time.Time
+}
+
+// FinalTurnScheduler is invoked only after StoreFinalTurn succeeds. It owns
+// the asynchronous message/outbox side effect and must remain idempotent.
+type FinalTurnScheduler interface {
+	ScheduleFinalTurn(context.Context, string, recordsv1.FinalTurnEvent) error
 }
 
 func NewService(repository Repository, sessions recordsv1.SessionOwnerReader, now func() time.Time) *Service {
@@ -71,19 +78,49 @@ func NewService(repository Repository, sessions recordsv1.SessionOwnerReader, no
 	return &Service{repository: repository, sessions: sessions, now: now}
 }
 
-// ConsumeFinalTurn stores one final realtime event. The repository owns the atomic event/turn
-// deduplication transaction because at-least-once delivery can race across consumer instances.
+// SetFinalTurnScheduler wires the optional post-commit delivery hook. Keeping
+// it optional preserves the records-only runtime used by local tests and
+// deployments where outbound delivery is disabled.
+func (s *Service) SetFinalTurnScheduler(scheduler FinalTurnScheduler) {
+	if s != nil {
+		s.scheduler = scheduler
+	}
+}
+
+// ConsumeFinalTurn stores an immutable translation fact from the media plane.
+// The service validates attribution semantics before storage; the repository
+// owns atomic event/turn deduplication because at-least-once delivery can race
+// across consumers. Identical payload replays are accepted, while later
+// corrections may update attribution only, never the text.
 func (s *Service) ConsumeFinalTurn(ctx context.Context, event recordsv1.FinalTurnEvent) error {
 	if err := event.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	}
+	// nil explicitly means attribution is pending. A non-nil empty string has no
+	// protocol meaning, so reject it instead of silently normalizing it.
 	if event.ParticipantID != nil && *event.ParticipantID == "" {
 		return fmt.Errorf("%w: participant_id cannot be empty", ErrInvalidRequest)
 	}
+	// A resolved attribution without a participant would make later corrections
+	// ambiguous. If realtime cannot identify a speaker within its latency budget,
+	// pending is the only valid state.
 	if event.ParticipantID == nil && event.AttributionStatus != recordsv1.AttributionPending {
 		return fmt.Errorf("%w: participant_id is required for resolved attribution", ErrInvalidRequest)
 	}
-	return s.repository.StoreFinalTurn(ctx, event)
+	if err := s.repository.StoreFinalTurn(ctx, event); err != nil {
+		return err
+	}
+	if s.scheduler == nil {
+		return nil
+	}
+	accountID, err := s.sessions.AccountIDForSession(ctx, event.SessionID)
+	if err != nil {
+		return fmt.Errorf("resolve final turn account: %w", err)
+	}
+	if err := s.scheduler.ScheduleFinalTurn(ctx, accountID, event); err != nil {
+		return fmt.Errorf("schedule final turn delivery: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) ListSession(ctx context.Context, accountID, sessionID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {

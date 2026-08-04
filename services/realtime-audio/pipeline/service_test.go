@@ -76,6 +76,34 @@ func TestPipelineRejectsUnsupportedSourceBeforeTranslation(t *testing.T) {
 	}
 }
 
+func TestPipelineSkipsTTSAcrossDisabledOutputRoute(t *testing.T) {
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
+	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        ttsProvider,
+		FinalTurns: finalSink,
+		Usage:      usageSink,
+		Audio:      &recordingAudioSink{},
+		Runtime:    &recordingRuntimeReporter{},
+	})
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", DeliveryEnabled: true}}
+	if err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	if len(ttsProvider.Requests()) != 0 {
+		t.Fatalf("TTS requests = %#v, want none", ttsProvider.Requests())
+	}
+	if len(finalSink.events) != 1 || finalSink.events[0].TTSEnabled || !finalSink.events[0].DeliveryEnabled {
+		t.Fatalf("FinalTurn output route = %#v", finalSink.events[0])
+	}
+	if len(usageSink.facts) != 2 {
+		t.Fatalf("usage facts = %#v, want ASR and translation only", usageSink.facts)
+	}
+}
+
 func TestPipelineSpeakerTimeoutProducesPendingAttribution(t *testing.T) {
 	service := NewPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},

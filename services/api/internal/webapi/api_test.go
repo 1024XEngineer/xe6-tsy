@@ -160,6 +160,23 @@ func TestCreateMessagePassesAuthenticatedAccount(t *testing.T) {
 	}
 }
 
+func TestCreateMessageAcceptsWeChatChannel(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(
+		`{"channel":"wechat","destination_ref":"primary-wechat","turn_ids":["turn-1"]}`,
+	))
+	request = authenticate(request)
+	request.Header.Set("Idempotency-Key", "wechat-message-1")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted || fake.created.Channel != delivery.ChannelWeChat {
+		t.Fatalf("status = %d, created = %#v; want accepted wechat", response.Code, fake.created)
+	}
+}
+
 func TestInvalidMessageDoesNotReachService(t *testing.T) {
 	fake := &deliveryFake{}
 	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})

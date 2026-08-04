@@ -66,6 +66,34 @@ describe("auth-session", () => {
     expect(loadAuthSession()).toEqual(result);
   });
 
+  it("shares one in-flight refresh across concurrent callers", async () => {
+    const expired = {
+      ...storedAuth,
+      tokens: { ...storedAuth.tokens, expires_at: "2020-01-01T00:00:00Z" },
+    };
+    saveAuthSession(expired);
+    let resolveRefresh: ((value: typeof storedAuth.tokens) => void) | undefined;
+    const refresh = vi.fn(
+      () =>
+        new Promise<typeof storedAuth.tokens>((resolve) => {
+          resolveRefresh = resolve;
+        }),
+    );
+    const create = vi.fn();
+
+    const first = getOrCreateAuthSession({ create, refresh });
+    const second = getOrCreateAuthSession({ create, refresh });
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    resolveRefresh?.({
+      access_token: "access-2",
+      refresh_token: "refresh-2",
+      expires_at: "2099-08-01T02:00:00Z",
+    });
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("creates a replacement account when refresh fails", async () => {
     saveAuthSession({
       ...storedAuth,

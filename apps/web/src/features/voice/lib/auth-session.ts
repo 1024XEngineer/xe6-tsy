@@ -7,6 +7,7 @@ import {
 
 const AUTH_STORAGE_KEY = "lingow-auth-session-v1";
 const EXPIRY_SKEW_MS = 30_000;
+let authSessionRequest: Promise<AuthResult> | null = null;
 
 type AuthDependencies = {
   create?: () => Promise<AuthResult>;
@@ -39,8 +40,26 @@ export function saveAuthSession(auth: AuthResult): void {
   localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth));
 }
 
-export async function getOrCreateAuthSession(
+export function getOrCreateAuthSession(
   dependencies: AuthDependencies = {},
+): Promise<AuthResult> {
+  if (authSessionRequest) return authSessionRequest;
+
+  const request = resolveAuthSession(dependencies);
+  authSessionRequest = request;
+  void request.then(
+    () => {
+      if (authSessionRequest === request) authSessionRequest = null;
+    },
+    () => {
+      if (authSessionRequest === request) authSessionRequest = null;
+    },
+  );
+  return request;
+}
+
+async function resolveAuthSession(
+  dependencies: AuthDependencies,
 ): Promise<AuthResult> {
   const create = dependencies.create ?? createAnonymousAccount;
   const refresh = dependencies.refresh ?? refreshAccountTokens;
@@ -58,7 +77,15 @@ export async function getOrCreateAuthSession(
       saveAuthSession(refreshed);
       return refreshed;
     } catch {
-      // A rejected refresh means this browser needs a new anonymous owner.
+      // Another tab may have rotated the same refresh token successfully.
+      const latest = loadAuthSession();
+      if (
+        latest &&
+        latest.tokens.refresh_token !== stored.tokens.refresh_token &&
+        Date.parse(latest.tokens.expires_at) > Date.now() + EXPIRY_SKEW_MS
+      ) {
+        return latest;
+      }
     }
   }
 

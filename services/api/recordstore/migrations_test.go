@@ -247,7 +247,7 @@ func TestEmbeddedMigrations(t *testing.T) {
   
   historyIndexes := migrations[19]
 	if historyIndexes.Version != 20 || historyIndexes.Name != "record_history_indexes" {
-		t.Fatalf("migration = %#v, want version 19 named record_history_indexes", historyIndexes)
+		t.Fatalf("migration = %#v, want version 20 named record_history_indexes", historyIndexes)
 	}
 	if !strings.Contains(historyIndexes.SQL, "voice_turns_session_history_order_idx") {
 		t.Fatal("history index migration does not create voice_turns_session_history_order_idx")

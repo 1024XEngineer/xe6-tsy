@@ -12,14 +12,21 @@ import {
   type VoiceSessionConfig,
 } from "../lib/languages";
 import styles from "../voice.module.css";
+import { HistorySettings } from "./history-settings";
 import { OptionWheel } from "./option-wheel";
 
 const SETTINGS_ITEMS = [
   {
     id: "language",
-    label: "语言对",
+    label: "默认语言对",
     value: "zh-CN / en-US",
-    description: "会话双语配置",
+    description: "下次会话使用的双向语言",
+  },
+  {
+    id: "history",
+    label: "历史会话",
+    value: "查看记录",
+    description: "按会话查看翻译记录",
   },
   {
     id: "session",
@@ -122,6 +129,8 @@ function SettingsDetail({
           </div>
         </div>
       );
+    case "history":
+      return <HistorySettings />;
     case "about":
       return (
         <div className={styles.aboutView}>

@@ -13,8 +13,10 @@ import (
 
 const maximumRecordPageSize = 100
 
-// ParticipantReadRepository applies stable participant ordering and binds cursors to the
-// authenticated account and session supplied by the service layer.
+// ParticipantReadRepository applies stable participant ordering and binds cursors to the account
+// and session supplied by the service layer. The service must validate session ownership before
+// calling this repository; the repository performs a session-scoped read and does not authorize
+// the account independently.
 type ParticipantReadRepository struct {
 	pool    *pgxpool.Pool
 	cursors *CursorCodec

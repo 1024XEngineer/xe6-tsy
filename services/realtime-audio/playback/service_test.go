@@ -237,6 +237,34 @@ func TestServiceRetriesSettlementWhenTrackStopFails(t *testing.T) {
 	}
 }
 
+func TestServiceFlushesCompletingTrackBeforeFinishedEvent(t *testing.T) {
+	track := &completingTrack{completeFailures: 1}
+	events := &recordingEvents{}
+	service, err := NewService(Dependencies{Track: track, Events: events, Now: fixedClock})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	chunk := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+	if err := service.Publish(context.Background(), chunk); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if err := service.Complete(context.Background(), "session-1", "playback-1"); err == nil {
+		t.Fatal("Complete() unexpectedly succeeded when track completion failed")
+	}
+	if got := events.Types(); !reflect.DeepEqual(got, []EventType{EventStarted}) {
+		t.Fatalf("events after failed track completion = %#v", got)
+	}
+	if err := service.Complete(context.Background(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("Complete(retry) error = %v", err)
+	}
+	if track.CompleteCalls() != 2 {
+		t.Fatalf("track complete calls = %d, want 2", track.CompleteCalls())
+	}
+	if got := events.Types(); !reflect.DeepEqual(got, []EventType{EventStarted, EventFinished}) {
+		t.Fatalf("events after completed track = %#v", got)
+	}
+}
+
 func TestServiceRetriesStartedEventAndAudioAfterInitialEventFailure(t *testing.T) {
 	track := &recordingTrack{}
 	events := &recordingEvents{failures: 1}
@@ -337,6 +365,29 @@ type recordingTrack struct {
 	stops         int
 	stopFailures  int
 	writeFailures map[int64]int
+}
+
+type completingTrack struct {
+	recordingTrack
+	completes        int
+	completeFailures int
+}
+
+func (t *completingTrack) Complete(_ context.Context, _ string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.completes++
+	if t.completeFailures > 0 {
+		t.completeFailures--
+		return errors.New("injected track completion failure")
+	}
+	return nil
+}
+
+func (t *completingTrack) CompleteCalls() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.completes
 }
 
 func (t *recordingTrack) Write(_ context.Context, chunk pipeline.AudioChunk) error {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
@@ -42,6 +43,7 @@ type Dependencies struct {
 	Source    FrameSource
 	Segmenter *vad.Segmenter
 	Processor TurnProcessor
+	Latency   *slog.Logger
 }
 
 // Service reads normalized frames, applies VAD, and sends only finalized utterances downstream.
@@ -49,6 +51,7 @@ type Service struct {
 	source    FrameSource
 	segmenter *vad.Segmenter
 	processor TurnProcessor
+	latency   *slog.Logger
 }
 
 // finalizedEventQueueCapacity bounds audio-turn backlog while provider calls run.
@@ -58,7 +61,7 @@ func NewService(deps Dependencies) (*Service, error) {
 	if deps.Source == nil || deps.Segmenter == nil || deps.Processor == nil {
 		return nil, ErrDependencyRequired
 	}
-	return &Service{source: deps.Source, segmenter: deps.Segmenter, processor: deps.Processor}, nil
+	return &Service{source: deps.Source, segmenter: deps.Segmenter, processor: deps.Processor, latency: deps.Latency}, nil
 }
 
 // Run owns the source until EOF, context cancellation, or a processing error closes the loop.
@@ -119,6 +122,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 					loopErr = flushErr
 				} else {
 					for _, event := range events {
+						s.logVADCheckpoint(request, event)
 						if event.Type == vad.EventFinal {
 							if err := enqueueFinalized(event); err != nil {
 								loopErr = err
@@ -139,6 +143,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 			break
 		}
 		for _, event := range events {
+			s.logVADCheckpoint(request, event)
 			if event.Type != vad.EventFinal {
 				continue
 			}
@@ -196,6 +201,31 @@ func (s *Service) handleEvents(ctx context.Context, request Request, events []va
 		}
 	}
 	return nil
+}
+
+func (s *Service) logVADCheckpoint(request Request, event vad.Event) {
+	if s == nil || s.latency == nil {
+		return
+	}
+	switch event.Type {
+	case vad.EventOpened:
+		s.latency.Info("realtime latency checkpoint",
+			"stage", "vad_open",
+			"session_id", request.SessionID,
+			"trace_id", request.TraceID,
+			"started_at", event.StartedAt,
+		)
+	case vad.EventFinal:
+		s.latency.Info("realtime latency checkpoint",
+			"stage", "vad_final",
+			"session_id", request.SessionID,
+			"trace_id", request.TraceID,
+			"started_at", event.StartedAt,
+			"ended_at", event.EndedAt,
+			"segment_audio_ms", event.EndedAt.Sub(event.StartedAt).Milliseconds(),
+			"frame_count", len(event.Frames),
+		)
+	}
 }
 
 func audioChunks(frames []audio.Frame) [][]byte {

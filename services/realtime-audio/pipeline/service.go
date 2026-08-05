@@ -56,6 +56,7 @@ type PipelineDependencies struct {
 	Runtime    session.RuntimeStateReporter
 	VoiceID    string
 	Now        func() time.Time
+	Latency    LatencyLogger
 }
 
 // PipelineService orchestrates one final ASR result through translation and TTS.
@@ -68,6 +69,7 @@ type PipelineService struct {
 	runtime    session.RuntimeStateReporter
 	voiceID    string
 	now        func() time.Time
+	latency    LatencyLogger
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
@@ -81,7 +83,7 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 	return &PipelineService{
 		translator: deps.Translator, tts: deps.TTS,
 		finalTurns: deps.FinalTurns, usage: deps.Usage, audio: deps.Audio, runtime: deps.Runtime,
-		voiceID: deps.VoiceID, now: now,
+		voiceID: deps.VoiceID, now: now, latency: deps.Latency,
 	}
 }
 
@@ -130,6 +132,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
 	}
+	translateStartedAt := time.Now()
 	translationResult, err := s.translator.Translate(ctx, translate.Request{
 		SessionID: turn.SessionID, TurnID: turn.ID, Text: result.Text,
 		SourceLanguage: result.SourceLanguage, TargetLanguage: target,
@@ -137,6 +140,13 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err != nil {
 		return fmt.Errorf("translate Turn %s: %w", turn.ID, err)
 	}
+	s.logLatencyCheckpoint("translate_done", turn, translateStartedAt,
+		"source_language", result.SourceLanguage,
+		"target_language", target,
+		"provider_latency_ms", translationResult.LatencyMS,
+		"input_tokens", translationResult.InputTokens,
+		"output_tokens", translationResult.OutputTokens,
+	)
 	translationUsage, err := s.buildUsageFact(
 		turn,
 		"translation",
@@ -192,12 +202,17 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err := s.reportRuntime(ctx, turn, session.RuntimeTTSProcessing, playbackID); err != nil {
 		return finalTurnAcceptedError("report TTS runtime", err)
 	}
+	ttsStartedAt := time.Now()
 	stream, err := s.tts.StartStream(ctx, tts.Request{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, Text: translationResult.Text, TargetLanguage: target, VoiceID: s.voiceID})
 	if err != nil {
 		return finalTurnAcceptedError("start TTS", err)
 	}
+	s.logLatencyCheckpoint("tts_stream_started", turn, ttsStartedAt,
+		"playback_id", playbackID,
+		"target_language", target,
+	)
 	defer stream.Close()
-	played, err := s.publishTTSChunks(ctx, turn, playbackID, stream.Chunks())
+	played, err := s.publishTTSChunks(ctx, turn, playbackID, ttsStartedAt, stream.Chunks())
 	if err != nil {
 		return finalTurnAcceptedError("stream TTS audio", errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_stream_failed", played)))
 	}
@@ -218,8 +233,9 @@ func finalTurnAcceptedError(operation string, err error) error {
 	return fmt.Errorf("%w: %s: %w", ErrFinalTurnAccepted, operation, err)
 }
 
-func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, chunks <-chan tts.AudioChunk) (bool, error) {
+func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, ttsStartedAt time.Time, chunks <-chan tts.AudioChunk) (bool, error) {
 	playing := false
+	firstChunkLogged := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -239,8 +255,23 @@ func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext
 			if err := s.audio.Publish(ctx, AudioChunk{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, SequenceNo: chunk.SequenceNo, Encoding: chunk.Encoding, Data: append([]byte(nil), chunk.Data...)}); err != nil {
 				return playing, fmt.Errorf("publish audio chunk: %w", err)
 			}
+			if !firstChunkLogged {
+				firstChunkLogged = true
+				s.logLatencyCheckpoint("tts_first_chunk", turn, ttsStartedAt,
+					"playback_id", playbackID,
+					"encoding", chunk.Encoding,
+					"bytes", len(chunk.Data),
+				)
+			}
 		}
 	}
+}
+
+func (s *PipelineService) logLatencyCheckpoint(stage string, turn TurnContext, since time.Time, attrs ...any) {
+	if s == nil {
+		return
+	}
+	s.latency.Checkpoint(stage, turn, since, attrs...)
 }
 
 func (s *PipelineService) completePlayback(ctx context.Context, sessionID, playbackID string, played bool) error {

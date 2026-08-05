@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "sync-kws-models": "node ./scripts/sync-kws-models.mjs"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",

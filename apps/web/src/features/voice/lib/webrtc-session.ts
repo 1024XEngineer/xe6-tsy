@@ -20,6 +20,13 @@ export type WebRTCSessionOptions = {
   sessionId: string;
   onDataMessage?: (payload: unknown) => void;
   onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+  /**
+   * Optional mic tracks already opened (e.g. wake-word listener clones).
+   * Ownership transfers to this function immediately: close() and failure
+   * cleanup always stop these tracks. Callers must pass clones so the
+   * always-on wake stream stays alive.
+   */
+  audioTracks?: MediaStreamTrack[];
 };
 
 function toIceServers(
@@ -106,28 +113,36 @@ function closePartialSession(parts: {
 export async function openWebRTCSession(
   options: WebRTCSessionOptions,
 ): Promise<WebRTCSessionHandles> {
-  const config = await getWebRTCConfig(options.ticket, options.sessionId);
-
   let peerConnection: RTCPeerConnection | null = null;
   let localStream: MediaStream | null = null;
   let remoteAudio: HTMLAudioElement | null = null;
   let dataChannel: RTCDataChannel | null = null;
 
+  // Claim provided clones before any await so getWebRTCConfig / later failures
+  // still run closePartialSession and stop leaked mic tracks.
+  if (options.audioTracks && options.audioTracks.length > 0) {
+    localStream = new MediaStream(options.audioTracks);
+  }
+
   try {
+    const config = await getWebRTCConfig(options.ticket, options.sessionId);
+
     peerConnection = new RTCPeerConnection({
       iceServers: toIceServers(config.ice_servers),
       iceTransportPolicy:
         config.ice_transport_policy === "relay" ? "relay" : "all",
     });
 
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    });
+    if (!localStream) {
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+    }
 
     for (const track of localStream.getTracks()) {
       peerConnection.addTrack(track, localStream);

@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node ./scripts/sync-kws-models.mjs",
+    "prebuild": "node ./scripts/sync-kws-models.mjs",
+    "postinstall": "node ./scripts/sync-kws-models.mjs --optional",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
@@ -10,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "sync-kws-models": "node ./scripts/sync-kws-models.mjs"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",

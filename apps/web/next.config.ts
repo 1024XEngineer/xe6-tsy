@@ -10,6 +10,21 @@ const realtimeBase =
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  async headers() {
+    return [
+      {
+        // Unversioned filenames under /kws/wasm are overwritten by sync-kws-models;
+        // avoid immutable/year-long cache so JS/WASM pairs stay coherent.
+        source: "/kws/wasm/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=300, must-revalidate",
+          },
+        ],
+      },
+    ];
+  },
   async rewrites() {
     return [
       {

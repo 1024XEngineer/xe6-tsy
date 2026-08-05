@@ -18,7 +18,7 @@ export function VoiceControl({
 
   return (
     <motion.button
-      aria-label={isIdle ? "开始语音会话" : "结束语音会话"}
+      aria-label={isIdle ? "开始翻译" : "停止翻译"}
       className={styles.voiceButton}
       onClick={onActivate}
       type="button"

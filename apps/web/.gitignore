@@ -50,3 +50,7 @@ logs/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# sherpa-onnx KWS model weights / WASM binary (sync via pnpm run sync-kws-models)
+/public/kws/*.onnx
+/public/kws/wasm/*.wasm

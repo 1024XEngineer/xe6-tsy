@@ -32,6 +32,10 @@ import {
   type WebRTCSessionHandles,
 } from "../lib/webrtc-session";
 import {
+  WakeWordListener,
+  type WakeListenerStatus,
+} from "../lib/wake-word/wake-listener";
+import {
   initialSession,
   sessionReducer,
   type TranslationTurn,
@@ -45,6 +49,7 @@ export type SessionDebugInfo = {
   sessionId: string | null;
   runtimeState: RuntimeState | null;
   lastError: string | null;
+  wakeStatus: WakeListenerStatus;
 };
 
 function mapRuntimeToStatus(runtime: RuntimeState | null): string {
@@ -120,18 +125,35 @@ function errorMessage(error: unknown, fallback: string): string {
   return message;
 }
 
+function idleHintForWake(status: WakeListenerStatus): string | null {
+  switch (status) {
+    case "requesting_mic":
+      return "请允许麦克风，以便唤醒词与传译共用同一输入。";
+    case "loading_model":
+      return "正在加载本地唤醒模型（首次约十几 MB）…";
+    case "listening":
+      return "可说「小灵，开始翻译」或轻触开始。";
+    case "error":
+      return "唤醒词不可用，仍可用按钮开始传译。";
+    default:
+      return null;
+  }
+}
+
 export function useVoiceSession() {
   const [state, dispatch] = useReducer(sessionReducer, initialSession);
-  const [statusMessage, setStatusMessage] = useState("轻触开始");
+  const [statusMessage, setStatusMessage] = useState("正在准备麦克风");
   const [hintMessage, setHintMessage] = useState<string | null>(null);
   const [voiceConfig, setVoiceConfig] = useState<VoiceSessionConfig>(() =>
     loadVoiceConfig(DEFAULT_VOICE_CONFIG),
   );
+  const [wakeStatus, setWakeStatus] = useState<WakeListenerStatus>("idle");
   const [debug, setDebug] = useState<SessionDebugInfo>({
     accountId: null,
     sessionId: null,
     runtimeState: null,
     lastError: null,
+    wakeStatus: "idle",
   });
 
   const configRef = useRef<VoiceSessionConfig>(voiceConfig);
@@ -142,6 +164,9 @@ export function useVoiceSession() {
   const webrtcRef = useRef<WebRTCSessionHandles | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
+  const wakeRef = useRef<WakeWordListener | null>(null);
+  const startRef = useRef<() => Promise<void>>(async () => undefined);
+  const endRef = useRef<() => Promise<void>>(async () => undefined);
 
   const updateConfig = useCallback((next: VoiceSessionConfig) => {
     const normalized = normalizeVoiceConfig(next);
@@ -232,14 +257,19 @@ export function useVoiceSession() {
 
     sessionIdRef.current = null;
     dispatch({ type: "END" });
-    setStatusMessage("轻触开始");
-    setHintMessage(null);
-    setDebug({
+    setStatusMessage(
+      wakeRef.current?.getStatus() === "listening"
+        ? "轻触或说「小灵，开始翻译」"
+        : "轻触开始",
+    );
+    setHintMessage(idleHintForWake(wakeRef.current?.getStatus() ?? "idle"));
+    setDebug((prev) => ({
       accountId: accountIdRef.current,
       sessionId: null,
       runtimeState: null,
       lastError: null,
-    });
+      wakeStatus: prev.wakeStatus,
+    }));
   }, [cleanupMedia, stopPolling]);
 
   const start = useCallback(async () => {
@@ -251,12 +281,13 @@ export function useVoiceSession() {
     dispatch({ type: "START" });
     setStatusMessage("正在匿名登录");
     setHintMessage("连接 xe6-tsy API…");
-    setDebug({
+    setDebug((prev) => ({
       accountId: null,
       sessionId: null,
       runtimeState: null,
       lastError: null,
-    });
+      wakeStatus: prev.wakeStatus,
+    }));
 
     try {
       const auth = await getOrCreateAuthSession();
@@ -313,11 +344,13 @@ export function useVoiceSession() {
       };
 
       setStatusMessage("正在建立 WebRTC");
-      setHintMessage("请允许麦克风；随后交换 SDP/ICE。");
+      setHintMessage("复用已授权麦克风，交换 SDP/ICE。");
+      const wakeTracks = wakeRef.current?.cloneAudioTracksForPeer() ?? [];
       try {
         webrtcRef.current = await openWebRTCSession({
           ticket,
           sessionId: session.id,
+          audioTracks: wakeTracks.length > 0 ? wakeTracks : undefined,
           onDataMessage: (payload) => {
             const audio = parseTTSAudioEvent(payload);
             if (audio) {
@@ -373,7 +406,7 @@ export function useVoiceSession() {
       dispatch({ type: "ACTIVATE" });
       setStatusMessage("正在聆听");
       setHintMessage(
-        `已接通实时管道 · ${formatActivePair(configRef.current)} · 说话后显示字幕；若后端开启 TTS 下行则会播放译音`,
+        `传译已开启 · ${formatActivePair(configRef.current)} · 可说「小灵，停止翻译」或轻触结束`,
       );
       startPolling();
     } catch (error) {
@@ -412,6 +445,11 @@ export function useVoiceSession() {
     }
   }, [cleanupMedia, startPolling, stopPolling]);
 
+  useEffect(() => {
+    startRef.current = start;
+    endRef.current = end;
+  }, [start, end]);
+
   const toggle = useCallback(() => {
     if (runningRef.current || sessionIdRef.current) {
       void end();
@@ -419,6 +457,52 @@ export function useVoiceSession() {
     }
     void start();
   }, [end, start]);
+
+  useEffect(() => {
+    const listener = new WakeWordListener({
+      onCommand: (command, keyword) => {
+        if (command === "start") {
+          if (runningRef.current || sessionIdRef.current) return;
+          setHintMessage(`已识别「${keyword}」，正在开启传译…`);
+          void startRef.current();
+          return;
+        }
+        if (!runningRef.current && !sessionIdRef.current) return;
+        setHintMessage(`已识别「${keyword}」，正在停止传译…`);
+        void endRef.current();
+      },
+      onStatus: (status, detail) => {
+        setWakeStatus(status);
+        setDebug((prev) => ({ ...prev, wakeStatus: status }));
+        if (runningRef.current) return;
+        if (status === "listening") {
+          setStatusMessage("轻触或说「小灵，开始翻译」");
+          setHintMessage(idleHintForWake(status));
+          return;
+        }
+        if (status === "error") {
+          setStatusMessage("轻触开始");
+          setHintMessage(detail ?? idleHintForWake(status));
+          return;
+        }
+        if (status === "requesting_mic" || status === "loading_model") {
+          setStatusMessage(
+            status === "requesting_mic" ? "请允许麦克风" : "正在加载唤醒模型",
+          );
+          setHintMessage(detail ?? idleHintForWake(status));
+        }
+      },
+    });
+    wakeRef.current = listener;
+    void listener.start().catch(() => {
+      // Status callback already reports the error; button path remains available.
+    });
+
+    return () => {
+      wakeRef.current = null;
+      listener.stop();
+    };
+  }, []);
 
   useEffect(
     () => () => {
@@ -440,6 +524,7 @@ export function useVoiceSession() {
       voiceConfig,
       updateConfig,
       debug,
+      wakeStatus,
       toggle,
     }),
     [
@@ -450,6 +535,7 @@ export function useVoiceSession() {
       toggle,
       updateConfig,
       voiceConfig,
+      wakeStatus,
     ],
   );
 }

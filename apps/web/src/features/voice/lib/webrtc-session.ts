@@ -20,6 +20,12 @@ export type WebRTCSessionOptions = {
   sessionId: string;
   onDataMessage?: (payload: unknown) => void;
   onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+  /**
+   * Optional mic tracks already opened (e.g. wake-word listener clones).
+   * When provided, getUserMedia is skipped and close() still stops these tracks
+   * (callers should pass clones so the always-on wake stream stays alive).
+   */
+  audioTracks?: MediaStreamTrack[];
 };
 
 function toIceServers(
@@ -120,14 +126,18 @@ export async function openWebRTCSession(
         config.ice_transport_policy === "relay" ? "relay" : "all",
     });
 
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    });
+    if (options.audioTracks && options.audioTracks.length > 0) {
+      localStream = new MediaStream(options.audioTracks);
+    } else {
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+    }
 
     for (const track of localStream.getTracks()) {
       peerConnection.addTrack(track, localStream);

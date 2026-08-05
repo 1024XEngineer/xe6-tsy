@@ -237,6 +237,10 @@ function SettingsDetail({
             <strong>Last error</strong>
             <span>{debug.lastError ?? "—"}</span>
           </div>
+          <div>
+            <strong>Wake</strong>
+            <span>{debug.wakeStatus ?? "—"}</span>
+          </div>
         </div>
       );
     case "history":

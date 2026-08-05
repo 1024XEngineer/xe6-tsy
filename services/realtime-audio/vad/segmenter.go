@@ -20,8 +20,9 @@ type Classifier interface {
 }
 
 type Options struct {
-	SilenceAfter time.Duration
-	MaxDuration  time.Duration
+	SilenceAfter  time.Duration
+	MaxDuration   time.Duration
+	PrefixPadding time.Duration
 }
 
 type EventType string
@@ -41,24 +42,30 @@ type Event struct {
 }
 
 type Segmenter struct {
-	classifier   Classifier
-	silenceAfter time.Duration
-	maxDuration  time.Duration
-	active       bool
-	startedAt    time.Time
-	lastSpeech   time.Time
-	lastSeen     time.Time
-	frames       []audio.Frame
+	classifier    Classifier
+	silenceAfter  time.Duration
+	maxDuration   time.Duration
+	prefixPadding time.Duration
+	active        bool
+	startedAt     time.Time
+	lastSpeech    time.Time
+	lastSeen      time.Time
+	frames        []audio.Frame
+	prefixFrames  []audio.Frame
 }
 
 func NewSegmenter(classifier Classifier, options Options) (*Segmenter, error) {
 	if classifier == nil {
 		return nil, ErrClassifierRequired
 	}
-	if options.SilenceAfter <= 0 || options.MaxDuration <= 0 || options.SilenceAfter >= options.MaxDuration {
+	if options.SilenceAfter <= 0 || options.MaxDuration <= 0 || options.SilenceAfter >= options.MaxDuration ||
+		options.PrefixPadding < 0 || options.PrefixPadding >= options.MaxDuration {
 		return nil, ErrInvalidOptions
 	}
-	return &Segmenter{classifier: classifier, silenceAfter: options.SilenceAfter, maxDuration: options.MaxDuration}, nil
+	return &Segmenter{
+		classifier: classifier, silenceAfter: options.SilenceAfter,
+		maxDuration: options.MaxDuration, prefixPadding: options.PrefixPadding,
+	}, nil
 }
 
 func (s *Segmenter) Push(ctx context.Context, frame audio.Frame) ([]Event, error) {
@@ -79,16 +86,19 @@ func (s *Segmenter) Push(ctx context.Context, frame audio.Frame) ([]Event, error
 	}
 	s.lastSeen = frame.CapturedAt
 
+	isSpeech := s.classifier.Speech(frame)
 	if s.active && frame.CapturedAt.Sub(s.startedAt) >= s.maxDuration {
 		events := s.finalize(s.startedAt.Add(s.maxDuration))
-		if s.classifier.Speech(frame) {
+		if isSpeech {
 			s.start(frame)
 			events = append(events, Event{Type: EventOpened, StartedAt: s.startedAt}, s.audioEvent(frame))
+		} else {
+			s.rememberPrefix(frame)
 		}
 		return events, nil
 	}
 
-	if s.classifier.Speech(frame) {
+	if isSpeech {
 		if !s.active {
 			s.start(frame)
 			return []Event{{Type: EventOpened, StartedAt: s.startedAt}, s.audioEvent(frame)}, nil
@@ -97,9 +107,16 @@ func (s *Segmenter) Push(ctx context.Context, frame audio.Frame) ([]Event, error
 		s.frames = append(s.frames, frame.Clone())
 		return []Event{s.audioEvent(frame)}, nil
 	}
-	if s.active && frame.CapturedAt.Sub(s.lastSpeech) >= s.silenceAfter {
-		return s.finalize(frame.CapturedAt), nil
+	if s.active {
+		// Preserve quiet phonemes and pauses inside an utterance. The classifier
+		// decides boundaries; it must not destructively filter the ASR waveform.
+		s.frames = append(s.frames, frame.Clone())
+		if frame.CapturedAt.Sub(s.lastSpeech) >= s.silenceAfter {
+			return s.finalize(frame.CapturedAt), nil
+		}
+		return []Event{s.audioEvent(frame)}, nil
 	}
+	s.rememberPrefix(frame)
 	return nil, nil
 }
 
@@ -130,7 +147,32 @@ func (s *Segmenter) start(frame audio.Frame) {
 	s.active = true
 	s.startedAt = frame.CapturedAt
 	s.lastSpeech = frame.CapturedAt
-	s.frames = []audio.Frame{frame.Clone()}
+	s.frames = make([]audio.Frame, 0, len(s.prefixFrames)+1)
+	for _, prefix := range s.prefixFrames {
+		s.frames = append(s.frames, prefix.Clone())
+	}
+	if len(s.frames) > 0 {
+		s.startedAt = s.frames[0].CapturedAt
+	}
+	s.frames = append(s.frames, frame.Clone())
+	s.prefixFrames = nil
+}
+
+func (s *Segmenter) rememberPrefix(frame audio.Frame) {
+	if s.prefixPadding <= 0 {
+		return
+	}
+	s.prefixFrames = append(s.prefixFrames, frame.Clone())
+	cutoff := frame.CapturedAt.Add(-s.prefixPadding)
+	first := 0
+	for first < len(s.prefixFrames) && s.prefixFrames[first].CapturedAt.Before(cutoff) {
+		first++
+	}
+	if first > 0 {
+		kept := make([]audio.Frame, len(s.prefixFrames)-first)
+		copy(kept, s.prefixFrames[first:])
+		s.prefixFrames = kept
+	}
 }
 
 func (s *Segmenter) audioEvent(frame audio.Frame) Event {
@@ -145,12 +187,14 @@ func (s *Segmenter) finalize(endedAt time.Time) []Event {
 	}
 	event := Event{Type: EventFinal, Frames: frames, StartedAt: s.startedAt, EndedAt: endedAt}
 	s.resetActive()
+	s.prefixFrames = nil
 	return []Event{event}
 }
 
 func (s *Segmenter) reset() {
 	s.resetActive()
 	s.lastSeen = time.Time{}
+	s.prefixFrames = nil
 }
 
 func (s *Segmenter) resetActive() {

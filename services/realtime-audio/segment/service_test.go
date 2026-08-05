@@ -40,8 +40,8 @@ func TestServiceProcessesOnlyFinalizedUtterances(t *testing.T) {
 	if request.SessionID != "session-1" || request.AccountID != "account-1" || request.TraceID != "trace-1" || request.SourceLanguage != "zh-CN" {
 		t.Fatalf("processor request metadata = %#v", request)
 	}
-	if len(request.AudioChunks) != 2 {
-		t.Fatalf("audio chunks = %d, want 2 speech frames", len(request.AudioChunks))
+	if len(request.AudioChunks) != 3 {
+		t.Fatalf("audio chunks = %d, want speech and trailing quiet frames", len(request.AudioChunks))
 	}
 	if !request.StartedAt.Equal(time.Unix(10, 0)) {
 		t.Fatalf("StartedAt = %s, want first speech timestamp", request.StartedAt)

@@ -119,7 +119,19 @@ describe("VoiceExperience", () => {
         }
 
         if (url.includes("/api/v1/voice-sessions?") && method === "GET") {
-          return jsonResponse({ sessions: [], next_cursor: null });
+          return jsonResponse({
+            sessions: [
+              {
+                id: "vs-history-1",
+                account_id: "acc-1",
+                status: "ended",
+                created_at: "2026-07-30T00:00:00Z",
+                started_at: "2026-07-30T00:00:01Z",
+                ended_at: "2026-07-30T00:02:01Z",
+              },
+            ],
+            next_cursor: null,
+          });
         }
 
         if (url.includes("/state")) {
@@ -204,7 +216,7 @@ describe("VoiceExperience", () => {
     expect(
       screen.getByRole("listbox", { name: "设置选项" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "默认语言对" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "语言配置" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "联调会话" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "历史会话" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "用量管理" })).toBeInTheDocument();
@@ -240,6 +252,21 @@ describe("VoiceExperience", () => {
     expect(wheel).toBeInTheDocument();
     expect(await screen.findByText("最近 5 次会话")).toBeInTheDocument();
     expect(screen.queryByText("选择一次会话，查看完整双语记录。")).toBeNull();
+  });
+
+  it("restores the history wheel item after leaving a history session", async () => {
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    fireEvent.keyDown(screen.getByRole("listbox", { name: "设置选项" }), {
+      key: "ArrowDown",
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /2 分钟.*已结束/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "返回设置" }));
+
+    const historyOption = screen.getByRole("option", { name: "历史会话" });
+    expect(historyOption).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: "历史会话" })).toBeInTheDocument();
   });
 
   it("connects through xe6-tsy APIs and shows the newest bilingual turn", async () => {

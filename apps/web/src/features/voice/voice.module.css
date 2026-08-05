@@ -86,11 +86,12 @@
   content: "";
   filter: blur(22px);
   opacity: 0;
-  transition: opacity 480ms ease;
+  transition: opacity 0ms;
 }
 
 .experience:not([data-phase="idle"]) .voiceStage::before {
   opacity: 1;
+  transition: opacity 480ms ease;
 }
 
 .voiceButton {

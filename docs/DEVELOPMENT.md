@@ -6,7 +6,7 @@
 
 - Node.js 22 LTS
 - pnpm 9+
-- Go 1.25+
+- Go 1.26+
 - Docker Desktop
 - PostgreSQL 16
 - Redis 7

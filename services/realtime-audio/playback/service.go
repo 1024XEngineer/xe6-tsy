@@ -62,6 +62,10 @@ type AudioTrack interface {
 	Stop(ctx context.Context, playbackID string) error
 }
 
+type audioTrackCompleter interface {
+	Complete(ctx context.Context, playbackID string) error
+}
+
 // Dependencies wires the state machine to a media track and an event publisher.
 type Dependencies struct {
 	Track  AudioTrack
@@ -293,6 +297,16 @@ func (s *Service) settle(ctx context.Context, sessionID, playbackID string, stat
 	}
 	pending := current.settlement
 	s.mu.Unlock()
+	if !pending.stop && !pending.trackStopped {
+		if completer, ok := s.track.(audioTrackCompleter); ok {
+			if err := completer.Complete(ctx, playbackID); err != nil {
+				return fmt.Errorf("complete playback track: %w", err)
+			}
+		}
+		s.mu.Lock()
+		pending.trackStopped = true
+		s.mu.Unlock()
+	}
 	if !pending.eventSent {
 		if err := s.events.Publish(ctx, pending.event); err != nil {
 			return fmt.Errorf("publish playback settlement: %w", err)
@@ -310,9 +324,6 @@ func (s *Service) settle(ctx context.Context, sessionID, playbackID string, stat
 		s.mu.Unlock()
 	}
 	s.mu.Lock()
-	if !pending.stop {
-		pending.trackStopped = true
-	}
 	if pending.eventSent && pending.trackStopped {
 		current.snapshot.State = pending.state
 		current.settlement = nil

@@ -260,8 +260,12 @@ jobs:
             const baseline = readCoverageTree(path.join("coverage", "baseline"));
             const currentTotal = percent(current);
             const baselineTotal = percent(baseline);
+            // Compare at the displayed 0.1pp precision so race-coverage
+            // jitter (same toFixed(1), tiny statement delta) does not fail.
+            const currentRounded = Number(currentTotal.toFixed(1));
+            const baselineRounded = Number(baselineTotal.toFixed(1));
 
-            if (currentTotal + 1e-9 < baselineTotal) {
+            if (currentRounded < baselineRounded) {
               core.setFailed(
                 "Total coverage " +
                   currentTotal.toFixed(1) +

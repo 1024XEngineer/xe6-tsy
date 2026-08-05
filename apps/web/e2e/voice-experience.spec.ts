@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const voiceButton = (page: import("@playwright/test").Page) =>
-  page.getByRole("button", { name: /语音会话/ });
+  page.getByRole("button", { name: /翻译/ });
 
 async function mockLingowApis(page: import("@playwright/test").Page) {
   await page.route("**/api/v1/auth/anonymous", async (route) => {
@@ -133,7 +133,7 @@ test("keeps voice states legible with reduced motion", async ({ page }) => {
     "rgba(0, 0, 0, 0)",
   );
   await expect(page.getByTestId("idle-voice-ring")).toBeVisible();
-  await expect(page.getByText("轻触开始")).toBeVisible();
+  await expect(page.getByText(/轻触/)).toBeVisible();
 });
 
 test("renders the idle voice video", async ({ page }) => {

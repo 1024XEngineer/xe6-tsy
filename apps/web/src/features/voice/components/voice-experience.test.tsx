@@ -9,12 +9,34 @@ vi.mock("../lib/webrtc-session", () => ({
   openWebRTCSession: vi.fn(async () => ({
     connectionId: "conn-1",
     peerConnection: {} as RTCPeerConnection,
-    localStream: { getTracks: () => [] } as unknown as MediaStream,
+    localStream: {
+      getTracks: () => [],
+      getAudioTracks: () => [],
+    } as unknown as MediaStream,
     remoteAudio: document.createElement("audio"),
     dataChannel: null,
     close: closeWebRTC,
   })),
 }));
+
+vi.mock("../lib/wake-word/wake-listener", () => {
+  class WakeWordListener {
+    start = vi.fn(async () => {
+      this.handlers.onStatus?.("listening");
+    });
+    stop = vi.fn();
+    getStatus = vi.fn(() => "listening" as const);
+    getMediaStream = vi.fn(() => null);
+    cloneAudioTracksForPeer = vi.fn(() => []);
+    constructor(
+      private readonly handlers: {
+        onCommand: (command: "start" | "stop", keyword: string) => void;
+        onStatus?: (status: string, detail?: string) => void;
+      },
+    ) {}
+  }
+  return { WakeWordListener };
+});
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -189,10 +211,12 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
 
     expect(screen.getByText("lingow")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "开始语音会话" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "开始翻译" })).toBeVisible();
     expect(screen.getByRole("button", { name: "设置" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /语音会话/ })).toHaveLength(1);
-    expect(screen.getByText("轻触开始")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /翻译/ })).toHaveLength(1);
+    expect(
+      screen.getByText("轻触或说「小灵，开始翻译」"),
+    ).toBeInTheDocument();
     const idleVideo = screen.getByTestId("idle-voice-video");
     expect(idleVideo).toHaveAttribute("src", "/media/loop.mp4");
     expect(idleVideo).toHaveAttribute("autoplay");
@@ -272,7 +296,7 @@ describe("VoiceExperience", () => {
   it("connects through xe6-tsy APIs and shows the newest bilingual turn", async () => {
     render(<VoiceExperience />);
 
-    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
 
     await waitFor(() => {
       expect(screen.getByText("正在聆听")).toBeInTheDocument();
@@ -289,7 +313,7 @@ describe("VoiceExperience", () => {
 
   it("opens the complete history from the newest subtitle", async () => {
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
 
     await waitFor(() => {
       expect(
@@ -304,30 +328,32 @@ describe("VoiceExperience", () => {
 
   it("ends the session from the same central control", async () => {
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
 
     await waitFor(() => {
       expect(screen.getByText("正在聆听")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "结束语音会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "停止翻译" }));
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "开始语音会话" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "开始翻译" })).toBeVisible();
     });
-    expect(screen.getByText("轻触开始")).toBeInTheDocument();
+    expect(
+      screen.getByText("轻触或说「小灵，开始翻译」"),
+    ).toBeInTheDocument();
     expect(closeWebRTC).toHaveBeenCalled();
   });
 
   it("reuses the same anonymous account for later sessions", async () => {
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "结束语音会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "停止翻译" }));
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "开始语音会话" })).toBeVisible(),
+      expect(screen.getByRole("button", { name: "开始翻译" })).toBeVisible(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
     await waitFor(() => expect(createdSessions).toBe(2));
 
     expect(anonymousRequests).toBe(1);
@@ -337,12 +363,12 @@ describe("VoiceExperience", () => {
     failFirstStart = true;
 
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "开始语音会话" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "开始翻译" })).toBeVisible();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "开始语音会话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
     expect(createdSessions).toBe(2);
     expect(startRequests).toBe(3);

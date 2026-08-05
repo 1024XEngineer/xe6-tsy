@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -71,6 +72,7 @@ type Dependencies struct {
 	Runtime      RuntimeReporter
 	Allocator    pipeline.TurnAllocator
 	VoiceID      string
+	Latency      *slog.Logger
 	Now          func() time.Time
 }
 
@@ -139,6 +141,7 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		Audio:      deps.Audio,
 		Runtime:    deps.Runtime,
 		VoiceID:    deps.VoiceID,
+		Latency:    pipeline.LatencyLogger{Logger: deps.Latency},
 		Now:        deps.Now,
 	})
 	return &Manager{
@@ -219,7 +222,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		return errors.Join(fmt.Errorf("create VAD segmenter: %w", err), closeErr)
 	}
 	service, err := segment.NewService(segment.Dependencies{
-		Source: owned, Segmenter: segmenter, Processor: m.processor,
+		Source: owned, Segmenter: segmenter, Processor: m.processor, Latency: m.deps.Latency,
 	})
 	if err != nil {
 		closeErr := owned.closeContext(ctx)

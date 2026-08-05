@@ -128,6 +128,44 @@ func TestTurnProcessorPropagatesUsageAcceptanceFailure(t *testing.T) {
 	}
 }
 
+func TestTurnProcessorObservesPartialWithoutTranslatingIt(t *testing.T) {
+	asrProvider := asr.NewFakeProvider(asr.FakeProviderConfig{
+		Partial: asr.Event{Text: "你"},
+		Final: asr.FinalResult{
+			Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+		},
+	})
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}}
+	finalSink := &recordingFinalSink{}
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: asrProvider,
+		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active",
+			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}),
+		Pipeline: NewPipelineService(PipelineDependencies{
+			Translator: translator,
+			TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+			FinalTurns: finalSink,
+			Usage:      &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		}),
+	})
+
+	turn, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{
+		SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", AudioChunks: [][]byte{{1, 2}},
+	})
+	if err != nil {
+		t.Fatalf("ProcessAudio() error = %v", err)
+	}
+	requests := translator.Requests()
+	if len(requests) != 1 || requests[0].TurnID != turn.ID || requests[0].Text != "你好" {
+		t.Fatalf("translation requests = %#v, want one final-text request", requests)
+	}
+	if len(finalSink.events) != 1 || finalSink.events[0].SourceText != "你好" {
+		t.Fatalf("FinalTurn events = %#v, want final text only", finalSink.events)
+	}
+}
+
 func TestTurnProcessorPropagatesPostFinalFailureClassification(t *testing.T) {
 	wantErr := errors.New("translation usage unavailable")
 	finalSink := &recordingFinalSink{}

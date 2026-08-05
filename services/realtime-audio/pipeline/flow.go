@@ -81,12 +81,14 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if stream == nil {
 		return turn, p.pipeline.finishASRWithError(ctx, turn, ErrASRStreamRequired)
 	}
+	asrStartedAt := time.Now()
+	p.pipeline.logLatencyCheckpoint("asr_stream_started", turn, asrStartedAt)
 	defer stream.Close()
 	streamCtx, stopEvents := context.WithCancel(ctx)
 	defer stopEvents()
 	finalEvents := make(chan *asr.FinalResult, 1)
 	eventErrors := make(chan error, 1)
-	go collectFinalASREvent(streamCtx, stream.Events(), finalEvents, eventErrors)
+	go collectFinalASREvent(streamCtx, p.pipeline.latency, turn, asrStartedAt, stream.Events(), finalEvents, eventErrors)
 	for _, chunk := range request.AudioChunks {
 		if err := stream.PushAudio(ctx, append([]byte(nil), chunk...)); err != nil {
 			return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("push audio for Turn %s: %w", turn.ID, err))
@@ -109,6 +111,10 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		result.SourceLanguage = request.SourceLanguage
 	}
 	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
+	p.pipeline.logLatencyCheckpoint("asr_final", turn, asrStartedAt,
+		"source_language", result.SourceLanguage,
+		"text_bytes", len(result.Text),
+	)
 	if strings.TrimSpace(result.Text) == "" || isTrivialASRText(result.Text) {
 		// Energy VAD / Manual commit can produce empty or filler cuts; keep listening.
 		if err := p.pipeline.reportListening(ctx, turn); err != nil {
@@ -145,9 +151,10 @@ func isTrivialASRText(text string) bool {
 	return false
 }
 
-func collectFinalASREvent(ctx context.Context, events <-chan asr.Event, finalEvents chan<- *asr.FinalResult, eventErrors chan<- error) {
+func collectFinalASREvent(ctx context.Context, latency LatencyLogger, turn TurnContext, asrStartedAt time.Time, events <-chan asr.Event, finalEvents chan<- *asr.FinalResult, eventErrors chan<- error) {
 	var final *asr.FinalResult
 	var eventErr error
+	partialObserved := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -162,6 +169,10 @@ func collectFinalASREvent(ctx context.Context, events <-chan asr.Event, finalEve
 				return
 			}
 			if event.Type != asr.EventFinal || event.Final == nil {
+				if event.Type == asr.EventPartial && !partialObserved {
+					partialObserved = true
+					latency.Checkpoint("asr_first_partial", turn, asrStartedAt, "text_bytes", len(event.Text))
+				}
 				continue
 			}
 			if final != nil {

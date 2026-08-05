@@ -38,8 +38,8 @@ func TestSegmenterEmitsOneFinalAfterSilenceTimeout(t *testing.T) {
 	if len(ended) != 1 || ended[0].Type != EventFinal {
 		t.Fatalf("Push(silence) events = %#v, want one final", ended)
 	}
-	if len(ended[0].Frames) != 2 {
-		t.Fatalf("final frames = %d, want 2", len(ended[0].Frames))
+	if len(ended[0].Frames) != 3 {
+		t.Fatalf("final frames = %d, want 3", len(ended[0].Frames))
 	}
 	flushed, err := segmenter.Flush(context.Background(), time.Unix(11, 0))
 	if err != nil {
@@ -47,6 +47,71 @@ func TestSegmenterEmitsOneFinalAfterSilenceTimeout(t *testing.T) {
 	}
 	if len(flushed) != 0 {
 		t.Fatalf("duplicate Flush() events = %#v, want none", flushed)
+	}
+}
+
+func TestSegmenterPreservesQuietFramesInsideUtterance(t *testing.T) {
+	segmenter := newTestSegmenter(t, fakeClassifier{speech: true})
+	startedAt := time.Unix(15, 0)
+	if _, err := segmenter.Push(context.Background(), testFrame(t, 1, startedAt)); err != nil {
+		t.Fatalf("Push(speech) error = %v", err)
+	}
+
+	segmenter.classifier = fakeClassifier{speech: false}
+	quiet := testFrame(t, 2, startedAt.Add(100*time.Millisecond))
+	if _, err := segmenter.Push(context.Background(), quiet); err != nil {
+		t.Fatalf("Push(quiet) error = %v", err)
+	}
+	ended, err := segmenter.Push(context.Background(), testFrame(t, 3, startedAt.Add(600*time.Millisecond)))
+	if err != nil {
+		t.Fatalf("Push(silence timeout) error = %v", err)
+	}
+	if len(ended) != 1 || ended[0].Type != EventFinal {
+		t.Fatalf("Push(silence timeout) events = %#v, want one final", ended)
+	}
+	if len(ended[0].Frames) != 3 || ended[0].Frames[1].PCM[0] != quiet.PCM[0] {
+		t.Fatalf("final frames = %#v, want quiet frame preserved", ended[0].Frames)
+	}
+}
+
+func TestSegmenterPrependsRecentAudioBeforeSpeech(t *testing.T) {
+	segmenter, err := NewSegmenter(fakeClassifier{speech: false}, Options{
+		SilenceAfter:  500 * time.Millisecond,
+		MaxDuration:   2 * time.Second,
+		PrefixPadding: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewSegmenter() error = %v", err)
+	}
+	base := time.Unix(18, 0)
+	for index, offset := range []time.Duration{0, 200 * time.Millisecond, 400 * time.Millisecond} {
+		if _, err := segmenter.Push(context.Background(), testFrame(t, byte(index+1), base.Add(offset))); err != nil {
+			t.Fatalf("Push(prefix %d) error = %v", index, err)
+		}
+	}
+
+	segmenter.classifier = fakeClassifier{speech: true}
+	events, err := segmenter.Push(context.Background(), testFrame(t, 4, base.Add(500*time.Millisecond)))
+	if err != nil {
+		t.Fatalf("Push(speech) error = %v", err)
+	}
+	if len(events) != 2 || events[0].Type != EventOpened {
+		t.Fatalf("Push(speech) events = %#v, want opened and audio", events)
+	}
+
+	segmenter.classifier = fakeClassifier{speech: false}
+	ended, err := segmenter.Push(context.Background(), testFrame(t, 5, base.Add(time.Second)))
+	if err != nil {
+		t.Fatalf("Push(silence timeout) error = %v", err)
+	}
+	if len(ended) != 1 || len(ended[0].Frames) != 4 {
+		t.Fatalf("final events = %#v, want two prefix, speech, and silence frames", ended)
+	}
+	if got := ended[0].Frames[0].PCM[0]; got != 2 {
+		t.Fatalf("first prefix frame value = %d, want 2", got)
+	}
+	if want := base.Add(200 * time.Millisecond); !ended[0].StartedAt.Equal(want) {
+		t.Fatalf("StartedAt = %s, want %s", ended[0].StartedAt, want)
 	}
 }
 

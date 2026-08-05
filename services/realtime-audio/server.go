@@ -240,9 +240,10 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			Languages:      languages,
 		},
 		NewSegmenter: func() (*vad.Segmenter, error) {
-			return vad.NewSegmenter(localruntime.EnergySpeechClassifier{Threshold: 0.035}, vad.Options{
-				SilenceAfter: 800 * time.Millisecond,
-				MaxDuration:  12 * time.Second,
+			return vad.NewSegmenter(localruntime.EnergySpeechClassifier{Threshold: 0.01}, vad.Options{
+				SilenceAfter:  800 * time.Millisecond,
+				MaxDuration:   12 * time.Second,
+				PrefixPadding: 500 * time.Millisecond,
 			})
 		},
 		Languages:  languages,

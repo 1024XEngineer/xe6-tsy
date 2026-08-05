@@ -139,6 +139,8 @@ export async function openWebRTCSession(
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 16_000,
         },
         video: false,
       });

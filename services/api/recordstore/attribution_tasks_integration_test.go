@@ -152,9 +152,9 @@ func TestAttributionTaskFlowMapsProviderKeyAfterParticipantPageLimit(t *testing.
 	}
 }
 
-// TestAttributionTaskFailsWithoutProviderEvidence verifies a pending turn with no provider key is
-// permanently failed instead of being acked as completed by the resolver.
-func TestAttributionTaskFailsWithoutProviderEvidence(t *testing.T) {
+// TestAttributionTaskIsNotEnqueuedWithoutProviderEvidence keeps unresolved turns visible without
+// creating deterministic worker failures that can never produce a participant mapping.
+func TestAttributionTaskIsNotEnqueuedWithoutProviderEvidence(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
@@ -170,40 +170,12 @@ func TestAttributionTaskFailsWithoutProviderEvidence(t *testing.T) {
 		t.Fatalf("StoreFinalTurn() error = %v", err)
 	}
 
-	services, err := NewServices(pool, make([]byte, 32), sessionOwnerStub{accountID: "acct_01"}, &postgresSessionScopeStub{pool: pool})
-	if err != nil {
-		t.Fatalf("NewServices() error = %v", err)
+	var taskCount int
+	if err := pool.QueryRow(t.Context(), `SELECT COUNT(*) FROM attribution_tasks WHERE turn_id = $1`, event.TurnID).Scan(&taskCount); err != nil {
+		t.Fatalf("count attribution tasks: %v", err)
 	}
-	store := NewAttributionTaskStore(pool)
-	worker, err := turns.NewAttributionWorker(
-		store,
-		services.AttributionResolver,
-		sessionOwnerStub{accountID: "acct_01"},
-		turns.NewServiceAttributionReader(services.Turns),
-		services.Turns,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-	)
-	if err != nil {
-		t.Fatalf("NewAttributionWorker() error = %v", err)
-	}
-
-	delivery, err := store.Receive(t.Context())
-	if err != nil {
-		t.Fatalf("Receive() error = %v", err)
-	}
-	if err := worker.Process(t.Context(), delivery); err != nil {
-		t.Fatalf("worker Process() error = %v", err)
-	}
-
-	var status, lastError string
-	if err := pool.QueryRow(t.Context(), `SELECT status, COALESCE(last_error, '') FROM attribution_tasks WHERE turn_id = $1`, event.TurnID).Scan(&status, &lastError); err != nil {
-		t.Fatalf("read task status: %v", err)
-	}
-	if status != "failed" {
-		t.Fatalf("task status = %q, want failed", status)
-	}
-	if lastError == "" {
-		t.Fatal("failed task must record an error")
+	if taskCount != 0 {
+		t.Fatalf("attribution tasks = %d, want 0 without provider evidence", taskCount)
 	}
 }
 

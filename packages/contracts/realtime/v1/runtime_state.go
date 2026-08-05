@@ -45,6 +45,7 @@ type RuntimeSnapshot struct {
 type RuntimeErrorCode string
 
 const (
-	RuntimeErrorStartFailed RuntimeErrorCode = "realtime_start_failed"
-	RuntimeErrorStopFailed  RuntimeErrorCode = "realtime_stop_failed"
+	RuntimeErrorStartFailed    RuntimeErrorCode = "realtime_start_failed"
+	RuntimeErrorStopFailed     RuntimeErrorCode = "realtime_stop_failed"
+	RuntimeErrorPipelineFailed RuntimeErrorCode = "realtime_pipeline_failed"
 )

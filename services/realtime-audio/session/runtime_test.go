@@ -90,7 +90,7 @@ func TestLifecycleSetRuntimeFailedPersistsTerminalState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRuntimeState() error = %v", err)
 	}
-	if got.StartOperationID != "operation-1" || got.RuntimeState != RuntimeFailed || got.CurrentTurnID != nil || got.CurrentPlaybackID != nil || got.LastErrorCode != nil {
+	if got.StartOperationID != "operation-1" || got.RuntimeState != RuntimeFailed || got.CurrentTurnID != nil || got.CurrentPlaybackID != nil || got.LastErrorCode == nil || *got.LastErrorCode != ErrorCodePipelineFailed {
 		t.Fatalf("failed runtime = %#v", got)
 	}
 	if err := service.SetRuntimeFailed(context.Background(), "session-1"); err != nil {

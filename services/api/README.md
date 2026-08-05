@@ -109,11 +109,12 @@ PostgreSQL participant/turn repositories 与账户 session scope。
 fail-closed（`403 forbidden`），配置后由 `SystemAuthenticate` 做常量时间比对并在成功后标记为
 system actor。
 
-pending/provisional FinalTurn 在落库同一事务内入队一个 durable attribution task。API 启动时运行
-attribution worker：worker 领取任务，按持久化的 `provider_speaker_id` 通过账户范围的 participant
-service 建立稳定映射，再通过 turns service 确认或修正归属。没有 provider speaker key 的任务被永久
-标记失败（`no_provider_speaker_id`）而不是伪装成功；重试采用指数退避并在达到上限后停止。两个
-API runtime（普通与 `LINGOW_DELIVERY_RUNTIME=enabled`）都会启动该 worker。
+带有 `provider_speaker_id` 的 pending/provisional FinalTurn 在落库同一事务内入队一个 durable
+attribution task。API 启动时运行 attribution worker：worker 领取任务，按持久化的 provider key
+通过账户范围的 participant service 建立稳定映射，再通过 turns service 确认或修正归属。没有
+provider speaker key 的 turn 保持 pending，但不创建永远无法解析的任务，也不会伪造本地说话人；
+可重试失败采用指数退避并在达到上限后停止。两个 API runtime（普通与
+`LINGOW_DELIVERY_RUNTIME=enabled`）都会启动该 worker。
 
 FinalTurn 的 `language_config_version` 是新事件的必填字段，且必须大于 0。Realtime 在每个 Turn
 开始时固定语言配置版本并写入事件；API 不为缺失、零值或负值补默认版本，而是将事件拒绝为非法请求。

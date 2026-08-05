@@ -72,7 +72,8 @@ func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID strin
 	current.RuntimeState = RuntimeFailed
 	current.CurrentTurnID = nil
 	current.CurrentPlaybackID = nil
-	current.LastErrorCode = nil
+	errorCode := ErrorCodePipelineFailed
+	current.LastErrorCode = &errorCode
 	current.UpdatedAt = s.deps.Now()
 	if err := s.deps.Runtimes.Save(ctx, current); err != nil {
 		return fmt.Errorf("save runtime failure: %w", err)

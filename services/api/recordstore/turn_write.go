@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
@@ -61,9 +62,9 @@ func (w *TurnWriter) StoreFinalTurn(ctx context.Context, event recordsv1.FinalTu
 		if err := verifyFinalTurnReplay(ctx, tx, event); err != nil {
 			return err
 		}
-	} else if needsAsyncAttribution(event.AttributionStatus) {
+	} else if shouldEnqueueAttribution(event) {
 		// Enqueue one durable attribution task in the same transaction so a pending or
-		// provisional turn is guaranteed to be considered by the async resolver.
+		// provisional turn with provider evidence is considered by the async resolver.
 		if err := w.enqueueAttribution(ctx, tx, event.TurnID, event.SessionID); err != nil {
 			return err
 		}
@@ -86,6 +87,11 @@ func (w *TurnWriter) enqueueAttribution(ctx context.Context, tx pgx.Tx, turnID, 
 
 func needsAsyncAttribution(status recordsv1.AttributionStatus) bool {
 	return status == recordsv1.AttributionPending || status == recordsv1.AttributionProvisional
+}
+
+func shouldEnqueueAttribution(event recordsv1.FinalTurnEvent) bool {
+	return needsAsyncAttribution(event.AttributionStatus) &&
+		event.ProviderSpeakerID != nil && strings.TrimSpace(*event.ProviderSpeakerID) != ""
 }
 
 func verifyFinalTurnReplay(

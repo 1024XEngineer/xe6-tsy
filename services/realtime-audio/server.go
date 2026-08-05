@@ -252,6 +252,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		Audio:      audioSink,
 		Runtime:    runtimeBridge,
 		VoiceID:    voiceID,
+		Logger:     slog.Default(),
 		Latency:    slog.Default(),
 		Now:        now,
 	})

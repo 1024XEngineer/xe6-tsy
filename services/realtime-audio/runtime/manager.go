@@ -72,6 +72,7 @@ type Dependencies struct {
 	Runtime      RuntimeReporter
 	Allocator    pipeline.TurnAllocator
 	VoiceID      string
+	Logger       *slog.Logger
 	Latency      *slog.Logger
 	Now          func() time.Time
 }
@@ -84,6 +85,7 @@ type Manager struct {
 	locks     keyedLocker
 	processor *pipeline.TurnProcessor
 	failure   session.RuntimeFailureReporter
+	logger    *slog.Logger
 	deps      Dependencies
 	entries   map[string]*entry
 }
@@ -132,6 +134,9 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 	if deps.Allocator == nil {
 		deps.Allocator = pipeline.NewMemoryTurnAllocator()
 	}
+	if deps.Logger == nil {
+		deps.Logger = slog.Default()
+	}
 	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages)
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
 		Translator: providers.Translation,
@@ -148,8 +153,8 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		processor: pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
 			ASR: providers.ASR, Opener: opener, Pipeline: service,
 		}),
-		failure: deps.Runtime,
-		deps:    deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
+		failure: deps.Runtime, logger: deps.Logger,
+		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
 	}, nil
 }
 
@@ -301,12 +306,24 @@ func (m *Manager) run(item *entry, ctx context.Context) {
 		reportFailure = true
 	}
 	if reportFailure {
+		m.logger.Error("realtime pipeline worker failed",
+			"session_id", item.request.SessionID,
+			"operation_id", item.operationID,
+			"trace_id", item.request.TraceID,
+			"error", err,
+		)
 		m.mu.Lock()
 		item.terminal = true
 		item.err = err
 		m.mu.Unlock()
 		reportErr = m.reportFailure(ctx, item.request.SessionID)
 		if reportErr != nil && !errors.Is(reportErr, context.Canceled) {
+			m.logger.Error("realtime pipeline failure state report failed",
+				"session_id", item.request.SessionID,
+				"operation_id", item.operationID,
+				"trace_id", item.request.TraceID,
+				"error", reportErr,
+			)
 			err = errors.Join(err, fmt.Errorf("report runtime failure: %w", reportErr))
 		}
 	}

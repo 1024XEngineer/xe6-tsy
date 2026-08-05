@@ -21,7 +21,7 @@ import { UsageSettings } from "./usage-settings";
 const SETTINGS_ITEMS = [
   {
     id: "language",
-    label: "默认语言对",
+    label: "语言配置",
     value: "zh-CN / en-US",
     description: "下次会话使用的双向语言",
   },
@@ -404,6 +404,7 @@ export function SettingsPanel({
               <OptionWheel
                 blur={0.58}
                 curve={0.68}
+                defaultSelected={selectedIndex}
                 fade={0.14}
                 fontSize={2.42}
                 inset={96}

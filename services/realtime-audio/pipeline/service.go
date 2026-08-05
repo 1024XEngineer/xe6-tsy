@@ -30,6 +30,7 @@ type AudioChunk struct {
 	TurnID     string
 	PlaybackID string
 	SequenceNo int64
+	Encoding   string
 	Data       []byte
 }
 
@@ -235,7 +236,7 @@ func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext
 				}
 				playing = true
 			}
-			if err := s.audio.Publish(ctx, AudioChunk{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, SequenceNo: chunk.SequenceNo, Data: append([]byte(nil), chunk.Data...)}); err != nil {
+			if err := s.audio.Publish(ctx, AudioChunk{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, SequenceNo: chunk.SequenceNo, Encoding: chunk.Encoding, Data: append([]byte(nil), chunk.Data...)}); err != nil {
 				return playing, fmt.Errorf("publish audio chunk: %w", err)
 			}
 		}

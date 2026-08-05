@@ -110,15 +110,25 @@ func TestNormalizeTTSAudio(t *testing.T) {
 
 	pcm := []byte{1, 0, 2, 0}
 	wav := makeWAV(pcm)
-	norm := normalizeTTSAudio(wav)
+	norm := normalizeTTSAudio(wav, "")
 	if norm.encoding != "pcm_s16le" || string(norm.data) != string(pcm) {
 		t.Fatalf("wav normalize = %#v", norm)
 	}
 
 	raw := []byte{0xff, 0xfb, 1, 2, 3, 4}
-	norm = normalizeTTSAudio(raw)
+	norm = normalizeTTSAudio(raw, "")
 	if norm.encoding != "audio_container" || string(norm.data) != string(raw) {
 		t.Fatalf("container normalize = %#v", norm)
+	}
+}
+
+func TestNormalizeTTSAudioHonorsDeclaredRawPCM(t *testing.T) {
+	t.Parallel()
+
+	rawPCM := []byte{0x52, 0x49, 0x46, 0x46, 0x01, 0x00}
+	norm := normalizeTTSAudio(rawPCM, "pcm_s16le")
+	if norm.encoding != "pcm_s16le" || string(norm.data) != string(rawPCM) {
+		t.Fatalf("raw PCM normalize = %#v", norm)
 	}
 }
 

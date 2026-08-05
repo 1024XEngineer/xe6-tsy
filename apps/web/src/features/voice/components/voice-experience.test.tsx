@@ -213,6 +213,23 @@ describe("VoiceExperience", () => {
     expect(screen.getByText("05")).toBeInTheDocument();
   });
 
+  it("uses a localized custom drawer to choose the source language", () => {
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const sourcePicker = screen.getByRole("button", { name: /源语言，当前/ });
+    fireEvent.click(sourcePicker);
+
+    expect(screen.getByRole("listbox", { name: "源语言选项" })).toBeInTheDocument();
+    const russianOption = screen.getByRole("option", {
+      name: /Русский.*俄语.*ru-RU/,
+    });
+    fireEvent.click(russianOption);
+
+    expect(screen.queryByRole("listbox", { name: "源语言选项" })).toBeNull();
+    expect(sourcePicker).toHaveAccessibleName(/源语言，当前Русский/);
+  });
+
   it("keeps the settings wheel open while showing the history preview", async () => {
     render(<VoiceExperience />);
 

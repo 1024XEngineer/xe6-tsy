@@ -1,6 +1,8 @@
 export type LanguageCode = string;
 
 export const LANGUAGE_LABELS: Record<string, string> = {
+  "it-IT": "Italian",
+  "es-ES": "Spanish",
   "zh-CN": "中文",
   "en-US": "English",
   "ja-JP": "日本語",
@@ -14,6 +16,22 @@ export const LANGUAGE_LABELS: Record<string, string> = {
   "vi-VN": "Tiếng Việt",
 };
 
+export const LANGUAGE_TRANSLATIONS: Record<string, string> = {
+  "it-IT": "Italian",
+  "es-ES": "Spanish",
+  "zh-CN": "中文（简体）",
+  "en-US": "英语（美国）",
+  "ja-JP": "日语",
+  "ko-KR": "韩语",
+  "fr-FR": "法语",
+  "de-DE": "德语",
+  "ru-RU": "俄语",
+  "pt-BR": "葡萄牙语（巴西）",
+  "th-TH": "泰语",
+  "id-ID": "印度尼西亚语",
+  "vi-VN": "越南语",
+};
+
 export const SUPPORTED_LANGUAGES: LanguageCode[] = [
   "zh-CN",
   "en-US",
@@ -23,17 +41,20 @@ export const SUPPORTED_LANGUAGES: LanguageCode[] = [
   "de-DE",
   "ru-RU",
   "pt-BR",
-  "th-TH",
-  "id-ID",
-  "vi-VN",
+  "it-IT",
+  "es-ES",
 ];
 
 export function languageLabel(code: string): string {
   return LANGUAGE_LABELS[code as LanguageCode] ?? code;
 }
 
+export function languageTranslation(code: string): string {
+  return LANGUAGE_TRANSLATIONS[code] ?? code;
+}
+
 export function isLanguageCode(value: string): value is LanguageCode {
-  return /^[a-z]{2,3}(?:-[A-Z][a-z]{3})?-[A-Z]{2}$/.test(value);
+  return SUPPORTED_LANGUAGES.includes(value);
 }
 
 export type VoiceSessionConfig = {

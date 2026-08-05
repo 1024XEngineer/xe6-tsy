@@ -18,6 +18,7 @@ type Request struct {
 // AudioChunk is one ordered unit of synthesized audio.
 type AudioChunk struct {
 	SequenceNo int64
+	Encoding   string
 	Data       []byte
 }
 

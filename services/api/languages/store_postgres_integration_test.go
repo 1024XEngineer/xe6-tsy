@@ -71,6 +71,73 @@ func TestPostgresMigrationsAndSupportedLanguages(t *testing.T) {
 	}
 }
 
+func TestQwenRealtimeCatalogMigrationRepairsMissingLanguages(t *testing.T) {
+	pool := openTestPool(t)
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+CREATE TEMP TABLE supported_languages (
+    language_code      VARCHAR(10) PRIMARY KEY,
+    display_name       VARCHAR(64) NOT NULL,
+    display_name_en    VARCHAR(64) NOT NULL DEFAULT '',
+    supports_as_source BOOLEAN NOT NULL DEFAULT TRUE,
+    supports_as_target BOOLEAN NOT NULL DEFAULT TRUE,
+    sort_order         INT NOT NULL DEFAULT 0,
+    is_active          BOOLEAN NOT NULL DEFAULT TRUE
+) ON COMMIT DROP;
+INSERT INTO supported_languages (language_code, display_name, display_name_en)
+VALUES
+    ('th-TH', 'Thai', 'Thai'),
+    ('id-ID', 'Indonesian', 'Indonesian'),
+    ('vi-VN', 'Vietnamese', 'Vietnamese');`)
+	if err != nil {
+		t.Fatalf("seed incomplete catalog: %v", err)
+	}
+
+	migration, err := migrationFS.ReadFile("migrations/004_qwen_realtime_language_intersection.sql")
+	if err != nil {
+		t.Fatalf("read Qwen catalog migration: %v", err)
+	}
+	if _, err := tx.Exec(ctx, string(migration)); err != nil {
+		t.Fatalf("apply Qwen catalog migration: %v", err)
+	}
+
+	rows, err := tx.Query(ctx, `SELECT language_code, is_active FROM supported_languages`)
+	if err != nil {
+		t.Fatalf("query migrated catalog: %v", err)
+	}
+	defer rows.Close()
+
+	active := make(map[string]bool)
+	for rows.Next() {
+		var code string
+		var isActive bool
+		if err := rows.Scan(&code, &isActive); err != nil {
+			t.Fatalf("scan migrated language: %v", err)
+		}
+		active[code] = isActive
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migrated catalog: %v", err)
+	}
+
+	for _, code := range []string{"ja-JP", "ko-KR", "fr-FR", "de-DE", "ru-RU", "pt-BR", "it-IT", "es-ES"} {
+		if !active[code] {
+			t.Errorf("expected %s to be present and active", code)
+		}
+	}
+	for _, code := range []string{"th-TH", "id-ID", "vi-VN"} {
+		if active[code] {
+			t.Errorf("expected %s to be inactive", code)
+		}
+	}
+}
+
 func TestPostgresCreateActiveConfigLifecycle(t *testing.T) {
 	pool := openTestPool(t)
 	store := NewPostgresStore(pool, fixedClock{at: time.Date(2026, 7, 27, 2, 0, 0, 0, time.UTC)})

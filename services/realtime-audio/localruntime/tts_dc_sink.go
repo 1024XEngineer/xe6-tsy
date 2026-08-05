@@ -33,6 +33,7 @@ var _ pipeline.AudioChunkSink = (*DataChannelTTSAudioSink)(nil)
 type ttsBuffer struct {
 	sessionID string
 	turnID    string
+	encoding  string
 	pcm       []byte
 }
 
@@ -74,6 +75,9 @@ func (s *DataChannelTTSAudioSink) Publish(ctx context.Context, chunk pipeline.Au
 	if chunk.SessionID != "" {
 		buf.sessionID = chunk.SessionID
 	}
+	if chunk.Encoding != "" {
+		buf.encoding = chunk.Encoding
+	}
 	buf.pcm = append(buf.pcm, chunk.Data...)
 	return nil
 }
@@ -95,7 +99,7 @@ func (s *DataChannelTTSAudioSink) Complete(ctx context.Context, sessionID, playb
 	// Prefer raw PCM when the provider returned a complete WAV; keeps browser
 	// playback on the pcm_s16le path. Containers that are not WAV stay intact
 	// and are reassembled client-side before decodeAudioData.
-	audio := normalizeTTSAudio(buf.pcm)
+	audio := normalizeTTSAudio(buf.pcm, buf.encoding)
 	pieces := splitBytes(audio.data, maxTTSPCMChunkBytes)
 	for i, piece := range pieces {
 		if err := s.publish(ctx, sessionID, playbackID, buf.turnID, int64(i+1), i == len(pieces)-1, audio.encoding, piece); err != nil {
@@ -117,7 +121,10 @@ type normalizedTTSAudio struct {
 	encoding string
 }
 
-func normalizeTTSAudio(raw []byte) normalizedTTSAudio {
+func normalizeTTSAudio(raw []byte, declaredEncoding string) normalizedTTSAudio {
+	if declaredEncoding == "pcm_s16le" {
+		return normalizedTTSAudio{data: raw, encoding: declaredEncoding}
+	}
 	if pcm, ok := wavPCMData(raw); ok {
 		return normalizedTTSAudio{data: pcm, encoding: "pcm_s16le"}
 	}

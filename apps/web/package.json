@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node ./scripts/sync-kws-models.mjs",
+    "prebuild": "node ./scripts/sync-kws-models.mjs",
+    "postinstall": "node ./scripts/sync-kws-models.mjs --optional",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

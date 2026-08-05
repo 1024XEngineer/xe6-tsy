@@ -4,14 +4,21 @@
 
 ## 文件
 
-| 路径 | 说明 |
-|------|------|
-| `encoder.onnx` / `decoder.onnx` / `joiner.onnx` | int8 模型权重 |
-| `tokens.txt` / `keywords.txt` | 词表与「小灵，开始/停止翻译」 |
-| `wasm/` | 同域 sherpa-onnx WASM（避免 CDN Tracking Prevention） |
+| 路径 | 说明 | 是否入库 |
+|------|------|----------|
+| `encoder.onnx` / `decoder.onnx` / `joiner.onnx` | int8 模型权重 | 否（自动下载） |
+| `tokens.txt` / `keywords.txt` | 词表与「小灵，开始/停止翻译」 | 是 |
+| `wasm/*.js` | sherpa-onnx 胶水脚本 | 是 |
+| `wasm/*.wasm` | WASM 二进制（约 13MB） | 否（自动下载） |
 
-大文件默认不入库。同步：
+## 自动同步
 
-```powershell
-pnpm --dir apps/web run sync-kws-models
-```
+无需手动步骤。下列命令在资源缺失时会拉取：
+
+- `npm install`（`postinstall --optional`，离线失败只警告）
+- `npm run dev`（`predev`）
+- `npm run build`（`prebuild`）
+
+也可手动：`npm run sync-kws-models`。
+
+跳过：`LINGOW_SKIP_KWS_SYNC=1`。

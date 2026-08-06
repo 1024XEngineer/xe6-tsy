@@ -103,6 +103,69 @@ func TestWebRTCConnectionReaderMapsStatesAndErrors(t *testing.T) {
 	if !errors.Is(err, sessions.ErrWebRTCNotReady) {
 		t.Fatalf("not found error = %v, want ErrWebRTCNotReady", err)
 	}
+
+	boom := errors.New("connection boom")
+	for _, test := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "request", err: controlplane.ErrClientRequest, want: sessions.ErrInvalidRequest},
+		{name: "unauthorized", err: controlplane.ErrClientUnauthorized, want: sessions.ErrUnauthorized},
+		{name: "dependency", err: controlplane.ErrClientDependency, want: sessions.ErrInvalidDependency},
+		{name: "canceled", err: context.Canceled, want: context.Canceled},
+		{name: "deadline", err: context.DeadlineExceeded, want: context.DeadlineExceeded},
+		{name: "unknown", err: boom, want: sessions.ErrWebRTCUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reader, err := NewWebRTCConnectionReader(connectionClientFake{err: test.err})
+			if err != nil {
+				t.Fatalf("NewWebRTCConnectionReader() error = %v", err)
+			}
+			_, err = reader.GetConnectionState(t.Context(), "session-1")
+			if !errors.Is(err, test.want) {
+				t.Fatalf("GetConnectionState() error = %v, want %v", err, test.want)
+			}
+			if test.name == "canceled" || test.name == "deadline" || test.name == "unknown" {
+				if !errors.Is(err, test.err) {
+					t.Fatalf("GetConnectionState() error = %v, want cause %v", err, test.err)
+				}
+			}
+		})
+	}
+
+	t.Run("rejects_mismatched_snapshot", func(t *testing.T) {
+		reader, err := NewWebRTCConnectionReader(connectionClientFake{snapshot: realtimev1.ConnectionSnapshot{
+			SessionID:    "other",
+			ConnectionID: "connection-1",
+			State:        realtimev1.ConnectionConnected,
+			Version:      1,
+			UpdatedAt:    now,
+		}})
+		if err != nil {
+			t.Fatalf("NewWebRTCConnectionReader() error = %v", err)
+		}
+		_, err = reader.GetConnectionState(t.Context(), "session-1")
+		if !errors.Is(err, sessions.ErrWebRTCUnavailable) {
+			t.Fatalf("GetConnectionState() error = %v, want ErrWebRTCUnavailable", err)
+		}
+	})
+
+	t.Run("rejects_missing_updated_at", func(t *testing.T) {
+		reader, err := NewWebRTCConnectionReader(connectionClientFake{snapshot: realtimev1.ConnectionSnapshot{
+			SessionID:    "session-1",
+			ConnectionID: "connection-1",
+			State:        realtimev1.ConnectionConnected,
+			Version:      1,
+		}})
+		if err != nil {
+			t.Fatalf("NewWebRTCConnectionReader() error = %v", err)
+		}
+		_, err = reader.GetConnectionState(t.Context(), "session-1")
+		if !errors.Is(err, sessions.ErrWebRTCUnavailable) {
+			t.Fatalf("GetConnectionState() error = %v, want ErrWebRTCUnavailable", err)
+		}
+	})
 }
 
 func TestRealtimeLifecycleMapsCommandsSnapshotsAndErrors(t *testing.T) {
@@ -160,6 +223,23 @@ func TestRealtimeLifecycleMapsCommandsSnapshotsAndErrors(t *testing.T) {
 	if !errors.Is(err, sessions.ErrRuntimeSnapshotNotFound) {
 		t.Fatalf("GetRuntimeState() error = %v, want ErrRuntimeSnapshotNotFound", err)
 	}
+
+	client.runtimeErr = nil
+	lastError := "runtime_failed"
+	client.runtime = realtimev1.RuntimeSnapshot{
+		SessionID:        "session-1",
+		StartOperationID: "operation-1",
+		RuntimeState:     realtimev1.RuntimeFailed,
+		LastErrorCode:    &lastError,
+		UpdatedAt:        now,
+	}
+	snapshot, err := lifecycle.GetRuntimeState(t.Context(), "session-1")
+	if err != nil {
+		t.Fatalf("GetRuntimeState(runtime failed) error = %v", err)
+	}
+	if snapshot.RuntimeState != sessions.RuntimeFailed || snapshot.LastErrorCode == nil || *snapshot.LastErrorCode != lastError {
+		t.Fatalf("GetRuntimeState(runtime failed) snapshot = %#v", snapshot)
+	}
 }
 
 func TestRealtimeLifecycleRejectsUnknownMappings(t *testing.T) {
@@ -183,6 +263,196 @@ func TestRealtimeLifecycleRejectsUnknownMappings(t *testing.T) {
 	})
 	if !errors.Is(err, sessions.ErrInvalidRequest) {
 		t.Fatalf("Stop(unknown reason) error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestRealtimeLifecycleMapsBoundaryErrors(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	boom := errors.New("boom")
+
+	t.Run("start", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			err  error
+			want error
+		}{
+			{name: "request", err: controlplane.ErrClientRequest, want: sessions.ErrInvalidRequest},
+			{name: "unauthorized", err: controlplane.ErrClientUnauthorized, want: sessions.ErrUnauthorized},
+			{name: "dependency", err: controlplane.ErrClientDependency, want: sessions.ErrInvalidDependency},
+			{name: "canceled", err: context.Canceled, want: context.Canceled},
+			{name: "deadline", err: context.DeadlineExceeded, want: context.DeadlineExceeded},
+			{name: "unknown", err: boom, want: sessions.ErrRealtimeStartFailed},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				lifecycle, err := NewRealtimeLifecycle(&lifecycleClientFake{
+					runtime: realtimev1.RuntimeSnapshot{
+						SessionID:        "session-1",
+						StartOperationID: "operation-1",
+						RuntimeState:     realtimev1.RuntimeListening,
+						UpdatedAt:        now,
+					},
+					startErr: test.err,
+				})
+				if err != nil {
+					t.Fatalf("NewRealtimeLifecycle() error = %v", err)
+				}
+				_, err = lifecycle.Start(t.Context(), sessions.StartRealtimeCommand{
+					SessionID:   "session-1",
+					OperationID: "operation-1",
+				})
+				if !errors.Is(err, test.want) {
+					t.Fatalf("Start() error = %v, want %v", err, test.want)
+				}
+				if test.name == "canceled" || test.name == "deadline" || test.name == "unknown" {
+					if !errors.Is(err, test.err) {
+						t.Fatalf("Start() error = %v, want cause %v", err, test.err)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("stop", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			err  error
+			want error
+		}{
+			{name: "request", err: controlplane.ErrClientRequest, want: sessions.ErrInvalidRequest},
+			{name: "unauthorized", err: controlplane.ErrClientUnauthorized, want: sessions.ErrUnauthorized},
+			{name: "dependency", err: controlplane.ErrClientDependency, want: sessions.ErrInvalidDependency},
+			{name: "canceled", err: context.Canceled, want: context.Canceled},
+			{name: "deadline", err: context.DeadlineExceeded, want: context.DeadlineExceeded},
+			{name: "unknown", err: boom, want: sessions.ErrRealtimeStopFailed},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				lifecycle, err := NewRealtimeLifecycle(&lifecycleClientFake{
+					runtime: realtimev1.RuntimeSnapshot{
+						SessionID:        "session-1",
+						StartOperationID: "operation-1",
+						RuntimeState:     realtimev1.RuntimeListening,
+						UpdatedAt:        now,
+					},
+					stopErr: test.err,
+				})
+				if err != nil {
+					t.Fatalf("NewRealtimeLifecycle() error = %v", err)
+				}
+				_, err = lifecycle.Stop(t.Context(), sessions.StopRealtimeCommand{
+					SessionID: "session-1",
+					TraceID:   "trace-stop",
+					Reason:    sessions.EndReasonUserRequested,
+					EndedAt:   now,
+				})
+				if !errors.Is(err, test.want) {
+					t.Fatalf("Stop() error = %v, want %v", err, test.want)
+				}
+				if test.name == "canceled" || test.name == "deadline" || test.name == "unknown" {
+					if !errors.Is(err, test.err) {
+						t.Fatalf("Stop() error = %v, want cause %v", err, test.err)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("runtime", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			err  error
+			want error
+		}{
+			{name: "not_found", err: controlplane.ErrRuntimeNotFound, want: sessions.ErrRuntimeSnapshotNotFound},
+			{name: "request", err: controlplane.ErrClientRequest, want: sessions.ErrInvalidRequest},
+			{name: "unauthorized", err: controlplane.ErrClientUnauthorized, want: sessions.ErrUnauthorized},
+			{name: "dependency", err: controlplane.ErrClientDependency, want: sessions.ErrInvalidDependency},
+			{name: "canceled", err: context.Canceled, want: context.Canceled},
+			{name: "deadline", err: context.DeadlineExceeded, want: context.DeadlineExceeded},
+			{name: "unknown", err: boom, want: sessions.ErrRuntimeUnavailable},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				lifecycle, err := NewRealtimeLifecycle(&lifecycleClientFake{
+					runtime: realtimev1.RuntimeSnapshot{
+						SessionID:        "session-1",
+						StartOperationID: "operation-1",
+						RuntimeState:     realtimev1.RuntimeListening,
+						UpdatedAt:        now,
+					},
+					runtimeErr: test.err,
+				})
+				if err != nil {
+					t.Fatalf("NewRealtimeLifecycle() error = %v", err)
+				}
+				_, err = lifecycle.GetRuntimeState(t.Context(), "session-1")
+				if !errors.Is(err, test.want) {
+					t.Fatalf("GetRuntimeState() error = %v, want %v", err, test.want)
+				}
+				if test.name == "canceled" || test.name == "deadline" || test.name == "unknown" {
+					if !errors.Is(err, test.err) {
+						t.Fatalf("GetRuntimeState() error = %v, want cause %v", err, test.err)
+					}
+				}
+			})
+		}
+	})
+}
+
+func TestRealtimeLifecycleRejectsInvalidSnapshots(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	lastError := "runtime_failed"
+	lifecycle, err := NewRealtimeLifecycle(&lifecycleClientFake{
+		runtime: realtimev1.RuntimeSnapshot{
+			SessionID:        "session-1",
+			StartOperationID: "operation-1",
+			RuntimeState:     realtimev1.RuntimeFailed,
+			LastErrorCode:    &lastError,
+			UpdatedAt:        now,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRealtimeLifecycle() error = %v", err)
+	}
+
+	snapshot, err := lifecycle.GetRuntimeState(t.Context(), "session-1")
+	if err != nil {
+		t.Fatalf("GetRuntimeState() error = %v", err)
+	}
+	if snapshot.RuntimeState != sessions.RuntimeFailed || snapshot.LastErrorCode == nil || *snapshot.LastErrorCode != lastError {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+
+	for _, test := range []struct {
+		name    string
+		runtime realtimev1.RuntimeSnapshot
+	}{
+		{
+			name: "session_mismatch",
+			runtime: realtimev1.RuntimeSnapshot{
+				SessionID:        "other",
+				StartOperationID: "operation-1",
+				RuntimeState:     realtimev1.RuntimeListening,
+				UpdatedAt:        now,
+			},
+		},
+		{
+			name: "missing_updated_at",
+			runtime: realtimev1.RuntimeSnapshot{
+				SessionID:        "session-1",
+				StartOperationID: "operation-1",
+				RuntimeState:     realtimev1.RuntimeListening,
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lifecycle, err := NewRealtimeLifecycle(&lifecycleClientFake{runtime: test.runtime})
+			if err != nil {
+				t.Fatalf("NewRealtimeLifecycle() error = %v", err)
+			}
+			_, err = lifecycle.GetRuntimeState(t.Context(), "session-1")
+			if !errors.Is(err, sessions.ErrRuntimeUnavailable) {
+				t.Fatalf("GetRuntimeState() error = %v, want ErrRuntimeUnavailable", err)
+			}
+		})
 	}
 }
 

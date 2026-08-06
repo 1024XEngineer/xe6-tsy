@@ -18,6 +18,7 @@ paths:
       responses:
         '202': { description: Accepted, content: { application/json: { schema: { type: object, required: [challenge_id], properties: { challenge_id: { type: string } } } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /auth/phone/login:
     post:
@@ -26,6 +27,8 @@ paths:
       responses:
         '200': { description: Verified, content: { application/json: { schema: { $ref: '#/components/schemas/AuthResult' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /auth/token/refresh:
     post:
@@ -34,6 +37,7 @@ paths:
       responses:
         '200': { description: Refreshed, content: { application/json: { schema: { $ref: '#/components/schemas/Tokens' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /auth/logout:
     post:
@@ -42,6 +46,7 @@ paths:
       responses:
         '204': { description: Logged out }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /account/me:
     get:
@@ -50,6 +55,109 @@ paths:
       responses:
         '200': { description: Current account, content: { application/json: { schema: { $ref: '#/components/schemas/Account' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions:
+    post:
+      operationId: createVoiceSession
+      security: [{ accountContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateVoiceSessionRequest' }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    get:
+      operationId: listVoiceSessions
+      security: [{ accountContext: [] }]
+      parameters:
+        - { name: status, in: query, required: false, schema: { $ref: '#/components/schemas/VoiceSessionStatus' } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: Persistent session page, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSessionListPage' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}:
+    get:
+      operationId: getVoiceSession
+      security: [{ accountContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200': { description: Session detail with runtime snapshot, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSessionDetail' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/start:
+    post:
+      operationId: startVoiceSession
+      security: [{ accountContext: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/SessionID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200': { description: Started session, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/end:
+    post:
+      operationId: endVoiceSession
+      security: [{ accountContext: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/SessionID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EndVoiceSessionRequest' }
+      responses:
+        '200': { description: Ended or terminal session, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/state:
+    get:
+      operationId: getVoiceSessionState
+      security: [{ accountContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200': { description: Session business and runtime state, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSessionStateSnapshot' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/realtime-ticket:
+    post:
+      operationId: mintVoiceSessionRealtimeTicket
+      description: >
+        Issues a short-lived HMAC realtime ticket for the session owner so the
+        browser can join the realtime control plane (WebRTC signaling).
+      security: [{ accountContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200':
+          description: Realtime ticket for one session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RealtimeTicket' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /voice-sessions/{id}/usage:
     get:
@@ -122,6 +230,164 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets:
+    get:
+      operationId: listMessageTargets
+      security: [{ accountContext: [] }]
+      parameters: [{ name: channel, in: query, required: false, schema: { $ref: '#/components/schemas/Channel' } }]
+      responses:
+        '200': { description: Bound targets, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/MessageTarget' } } } } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/wechat/bind:
+    post:
+      operationId: bindWeChatTarget
+      security: [{ accountContext: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BindWeChatRequest' } } } }
+      responses:
+        '200': { description: Bound target, content: { application/json: { schema: { $ref: '#/components/schemas/MessageTarget' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/wechat/{destination_ref}:
+    delete:
+      operationId: unbindWeChatTarget
+      security: [{ accountContext: [] }]
+      parameters: [{ name: destination_ref, in: path, required: true, schema: { type: string } }]
+      responses:
+        '204': { description: Target revoked }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/email/verification-codes:
+    post:
+      operationId: requestEmailBindVerification
+      security: [{ accountContext: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, minLength: 3, format: email }
+                destination_ref: { type: string, minLength: 1 }
+      responses:
+        '202': { description: Verification token accepted for delivery }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/email/bind:
+    post:
+      operationId: bindEmailTarget
+      security: [{ accountContext: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BindEmailRequest' } } } }
+      responses:
+        '200': { description: Bound target, content: { application/json: { schema: { $ref: '#/components/schemas/MessageTarget' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/email/{destination_ref}:
+    delete:
+      operationId: unbindEmailTarget
+      security: [{ accountContext: [] }]
+      parameters: [{ name: destination_ref, in: path, required: true, schema: { type: string } }]
+      responses:
+        '204': { description: Target revoked }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /realtime/v1/sessions/{session_id}/start:
+    servers:
+      - url: /
+    post:
+      operationId: startRealtimeSession
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RealtimeStartRequest' }
+      responses:
+        '200':
+          description: Runtime started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: Runtime is owned by another Start operation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RuntimeOperationConflictError' }
+  /realtime/v1/sessions/{session_id}/stop:
+    servers:
+      - url: /
+    post:
+      operationId: stopRealtimeSession
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RealtimeStopRequest' }
+      responses:
+        '200':
+          description: Runtime stopped
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /realtime/v1/sessions/{session_id}/runtime:
+    servers:
+      - url: /
+    get:
+      operationId: getRealtimeRuntimeSnapshot
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Current runtime snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /realtime/v1/sessions/{session_id}/connection:
+    servers:
+      - url: /
+    get:
+      operationId: getRealtimeConnectionSnapshot
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Current WebRTC connection snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebRTCConnectionSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No current WebRTC connection exists for the Session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebRTCConnectionError' }
 components:
   securitySchemes:
     accountContext:
@@ -129,6 +395,10 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Access token validated by authentication middleware; account_id comes from the trusted request context.
+    realtimeTicket:
+      type: http
+      scheme: bearer
+      description: HMAC-signed ticket authorizing access to one realtime Session.
   parameters:
     SessionID: { name: id, in: path, required: true, schema: { type: string } }
     MessageID: { name: message_id, in: path, required: true, schema: { type: string } }
@@ -139,7 +409,13 @@ components:
       content: { application/json: { schema: { type: object, additionalProperties: false, required: [refresh_token], properties: { refresh_token: { type: string, minLength: 1 } } } } }
   responses:
     BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-    Unauthorized: { description: Missing or invalid account context, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Unauthorized: { description: Missing or invalid authorization credentials, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Forbidden: { description: Authenticated account does not own the requested resource, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Conflict: { description: Request conflicts with current resource state or idempotency identity, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    UnprocessableEntity: { description: Request is syntactically valid but unsupported by the service contract, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    ServiceUnavailable: { description: Required downstream service is temporarily unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    TooManyRequests: { description: Phone verification requests are temporarily rate limited, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotImplemented: { description: Business implementation is intentionally pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
     RealtimeRuntimeState:
@@ -148,23 +424,179 @@ components:
     RealtimeRuntimeErrorCode:
       type: string
       enum: [realtime_start_failed, realtime_stop_failed]
+    ControlPlaneErrorCode:
+      type: string
+      enum: [runtime_operation_conflict]
+    RuntimeOperationConflictError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/RuntimeOperationConflictErrorBody' }
+    RuntimeOperationConflictErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        message: { type: string }
+    RealtimeStartRequest:
+      type: object
+      additionalProperties: false
+      required: [operation_id]
+      properties:
+        operation_id: { type: string, minLength: 1 }
+        trace_id: { type: string }
+        started_by: { type: string }
+    RealtimeStopRequest:
+      type: object
+      additionalProperties: false
+      required: [reason, ended_at]
+      properties:
+        trace_id: { type: string }
+        reason: { type: string, enum: [user_requested, operator_cancelled, client_disconnected] }
+        ended_at: { type: string, format: date-time }
     RealtimeRuntimeSnapshot:
       type: object
       additionalProperties: false
-      required: [session_id, runtime_state, current_turn_id, current_playback_id, last_error_code, updated_at]
+      required: [session_id, start_operation_id, runtime_state, current_turn_id, current_playback_id, last_error_code, updated_at]
       properties:
         session_id: { type: string }
+        start_operation_id: { type: string }
         runtime_state: { $ref: '#/components/schemas/RealtimeRuntimeState' }
         current_turn_id: { type: [string, 'null'] }
         current_playback_id: { type: [string, 'null'] }
         last_error_code: { type: [string, 'null'] }
         updated_at: { type: string, format: date-time }
+    VoiceSessionStatus:
+      type: string
+      enum: [created, active, ended, failed]
+    EndVoiceSessionReason:
+      type: string
+      enum: [user_requested, operator_cancelled, client_disconnected]
+    VoiceSessionAudioConfig:
+      type: object
+      additionalProperties: false
+      required: [codec, sample_rate_hz, channels, echo_cancellation, noise_suppression, auto_gain_control]
+      properties:
+        codec: { type: string, enum: [opus] }
+        sample_rate_hz: { type: integer, enum: [48000] }
+        channels: { type: integer, enum: [1] }
+        echo_cancellation: { type: boolean }
+        noise_suppression: { type: boolean }
+        auto_gain_control: { type: boolean }
+    VoiceSessionCapabilities:
+      type: object
+      additionalProperties: false
+      required: [webrtc, data_channel, microphone, speaker, speaker_diarization]
+      properties:
+        webrtc: { type: boolean }
+        data_channel: { type: boolean }
+        microphone: { type: boolean }
+        speaker: { type: boolean }
+        speaker_diarization: { type: boolean }
+    CreateVoiceSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [capabilities]
+      properties:
+        audio_config: { $ref: '#/components/schemas/VoiceSessionAudioConfig' }
+        capabilities: { $ref: '#/components/schemas/VoiceSessionCapabilities' }
+    EndVoiceSessionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason: { $ref: '#/components/schemas/EndVoiceSessionReason' }
+    VoiceSession:
+      type: object
+      additionalProperties: false
+      required: [id, account_id, status, audio_config, capabilities, started_at, ended_at, created_at]
+      properties:
+        id: { type: string }
+        account_id: { type: string }
+        status: { $ref: '#/components/schemas/VoiceSessionStatus' }
+        audio_config: { $ref: '#/components/schemas/VoiceSessionAudioConfig' }
+        capabilities: { $ref: '#/components/schemas/VoiceSessionCapabilities' }
+        started_at: { type: [string, 'null'], format: date-time }
+        ended_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+    VoiceSessionDetail:
+      type: object
+      additionalProperties: false
+      required: [id, account_id, status, runtime_state, audio_config, capabilities, current_turn_id, current_playback_id, last_error_code, retryable, runtime_updated_at, started_at, ended_at, created_at]
+      properties:
+        id: { type: string }
+        account_id: { type: string }
+        status: { $ref: '#/components/schemas/VoiceSessionStatus' }
+        runtime_state: { $ref: '#/components/schemas/RealtimeRuntimeState' }
+        audio_config: { $ref: '#/components/schemas/VoiceSessionAudioConfig' }
+        capabilities: { $ref: '#/components/schemas/VoiceSessionCapabilities' }
+        current_turn_id: { type: [string, 'null'] }
+        current_playback_id: { type: [string, 'null'] }
+        last_error_code: { type: [string, 'null'] }
+        retryable: { type: boolean }
+        runtime_updated_at: { type: string, format: date-time }
+        started_at: { type: [string, 'null'], format: date-time }
+        ended_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+    VoiceSessionListItem:
+      type: object
+      additionalProperties: false
+      required: [id, account_id, status, started_at, ended_at, created_at]
+      properties:
+        id: { type: string }
+        account_id: { type: string }
+        status: { $ref: '#/components/schemas/VoiceSessionStatus' }
+        started_at: { type: [string, 'null'], format: date-time }
+        ended_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+    VoiceSessionListPage:
+      type: object
+      additionalProperties: false
+      required: [sessions, next_cursor]
+      properties:
+        sessions: { type: array, items: { $ref: '#/components/schemas/VoiceSessionListItem' } }
+        next_cursor: { type: [string, 'null'] }
+    VoiceSessionStateSnapshot:
+      type: object
+      additionalProperties: false
+      required: [session_id, status, runtime_state, current_turn_id, current_playback_id, last_error_code, retryable, runtime_updated_at]
+      properties:
+        session_id: { type: string }
+        status: { $ref: '#/components/schemas/VoiceSessionStatus' }
+        runtime_state: { $ref: '#/components/schemas/RealtimeRuntimeState' }
+        current_turn_id: { type: [string, 'null'] }
+        current_playback_id: { type: [string, 'null'] }
+        last_error_code: { type: [string, 'null'] }
+        retryable: { type: boolean }
+        runtime_updated_at: { type: string, format: date-time }
+    RealtimeTicket:
+      type: object
+      additionalProperties: false
+      required: [ticket, session_id, expires_at]
+      properties:
+        ticket: { type: string, description: HMAC-signed realtime bearer ticket }
+        session_id: { type: string }
+        expires_at: { type: string, format: date-time }
     WebRTCConnectionState:
       type: string
       enum: [new, connecting, connected, disconnected, failed, closed]
     WebRTCErrorCode:
       type: string
       enum: [webrtc_connection_not_found, webrtc_connection_not_ready, webrtc_connection_failed]
+    WebRTCConnectionError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/WebRTCConnectionErrorBody' }
+    WebRTCConnectionErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/WebRTCErrorCode' }
+        message: { type: string }
     WebRTCConnectionSnapshot:
       type: object
       additionalProperties: false
@@ -196,7 +628,12 @@ components:
       type: object
       additionalProperties: false
       required: [challenge_id, code]
-      properties: { challenge_id: { type: string }, code: { type: string }, anonymous_account_id: { type: string } }
+      properties:
+        challenge_id: { type: string }
+        code: { type: string }
+        anonymous_account_id:
+          type: string
+          description: When supplied, the request must include a Bearer access token for this same anonymous account.
     Stage: { type: string, enum: [asr, translation, tts, diarization] }
     UsageSummary:
       type: object
@@ -218,7 +655,7 @@ components:
               audio_duration_ms: { type: integer, format: int64, minimum: 0 }
               cost_amount: { type: string }
               currency: { type: string }
-    Channel: { type: string, enum: [email] }
+    Channel: { type: string, enum: [email, wechat] }
     CreateMessageRequest:
       type: object
       additionalProperties: false
@@ -257,6 +694,27 @@ components:
       type: object
       required: [account_id, channel, enabled, verified, updated_at]
       properties: { account_id: { type: string }, channel: { $ref: '#/components/schemas/Channel' }, enabled: { type: boolean }, verified: { type: boolean }, updated_at: { type: string, format: date-time } }
+    MessageTarget:
+      type: object
+      required: [destination_ref, channel, verified, updated_at]
+      properties:
+        destination_ref: { type: string }
+        channel: { $ref: '#/components/schemas/Channel' }
+        verified: { type: boolean }
+        revoked_at: { type: [string, 'null'], format: date-time }
+        updated_at: { type: string, format: date-time }
+    BindWeChatRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code: { type: string, minLength: 1, description: 'WeChat OAuth login code exchanged server-side for OpenID' }
+    BindEmailRequest:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token: { type: string, minLength: 1, description: 'One-time email verification token; dev mode accepts dev: prefixed addresses' }
     Error:
       type: object
       required: [error]

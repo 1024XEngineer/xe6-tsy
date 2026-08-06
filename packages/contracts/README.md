@@ -18,6 +18,13 @@
 语言配置模块的 HTTP/内部类型与空接口目前暂放在
 `services/api/languages`（Issue #88）。待本目录 OpenAPI / 生成流水线就绪后，应迁回此处作为唯一契约源。
 
+P0 收尾豁免（2026-07-30）：
+
+- 生产装配已接线真实 `SessionOwner` 与 sessions start 的 `LanguageConfigReader`；
+- OpenAPI `/languages` 与 `language-config(s)` 路径仍未写入本目录，前端与实现以
+  Issue #88 与 `services/api/languages` 为准，不视为 P0 阻塞缺口；
+- 迁回本目录时需同步 schema、生成物与 API/realtime 消费者。
+
 ## 规则
 
 - 所有跨端字段先改 contracts，再改实现。

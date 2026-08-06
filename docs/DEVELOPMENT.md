@@ -36,9 +36,13 @@ cd services/realtime-audio && go run .
 APP_ENV=local
 API_ADDR=:8080
 REALTIME_ADDR=:8090
+LINGOW_SESSION_RUNTIME=disabled
+REALTIME_BASE_URL=http://127.0.0.1:8090
+REALTIME_TICKET_SECRET=
+REALTIME_HTTP_TIMEOUT=5s
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/lingow?sslmode=disable
 REDIS_URL=redis://localhost:6379/0
-JWT_SECRET=local-dev-only
+JWT_SECRET=local-dev-only-secret-change-me-1234
 ASR_PROVIDER=mock
 LLM_PROVIDER=mock
 TTS_PROVIDER=mock
@@ -89,19 +93,17 @@ services/realtime-audio/
 - API 类型从 `packages/contracts` 生成，不手写重复 DTO。
 - UI 组件只处理展示和交互，不直接拼实时音频协议。
 - 业务调用统一放在 `features/*/api.ts` 或 `lib/api/*`。
-- 状态管理先用 Vue 组件局部状态和少量共享 store，避免过早引入复杂全局状态。
+- 状态管理先用 React 组件局部状态和少量共享 hook/store，避免过早引入复杂全局状态。
 
 建议前端结构：
 
 ```text
 apps/web/
-├── app/
-├── features/
-│   ├── conversation/
-│   ├── language/
-│   └── sessions/
-├── components/
-└── lib/
+├── src/app/
+├── src/features/
+│   └── voice/
+├── public/
+└── package.json
 
 apps/mobile/
 ├── app/

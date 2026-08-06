@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -97,41 +98,45 @@ func TestPipelineSpeakerTimeoutProducesPendingAttribution(t *testing.T) {
 	}
 }
 
-func TestPipelineMissingSpeakerInputsProducePendingAttribution(t *testing.T) {
-	tests := []struct {
-		name     string
-		speakers recordsv1.SpeakerAttributionReader
-		result   asr.FinalResult
-	}{
-		{
-			name:   "speaker reader missing",
-			result: asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", ProviderSpeakerID: "speaker-1", Provider: "mock-asr", Model: "v1"},
-		},
-		{
-			name:     "provider speaker ID missing",
-			speakers: &fixedSpeakerReader{participantID: "participant-1"},
-			result:   asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"},
-		},
+func TestPipelineMissingSpeakerReaderProducesPendingAttribution(t *testing.T) {
+	finalSink := &recordingFinalSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+		FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
+		Runtime: &recordingRuntimeReporter{},
+	})
+	if err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", ProviderSpeakerID: "speaker-1", Provider: "mock-asr", Model: "v1",
+	}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
 	}
+	event := finalSink.events[0]
+	if event.ParticipantID != nil || event.AttributionStatus != recordsv1.AttributionPending || event.SpeakerCode != recordsv1.PendingSpeakerCode {
+		t.Fatalf("FinalTurn attribution = %#v", event)
+	}
+}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			finalSink := &recordingFinalSink{}
-			service := NewPipelineService(PipelineDependencies{
-				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
-				TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
-				Speakers:   test.speakers, FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
-				Runtime: &recordingRuntimeReporter{},
-			})
-
-			if err := service.HandleASRFinal(context.Background(), testTurn(), test.result); err != nil {
-				t.Fatalf("HandleASRFinal() error = %v", err)
-			}
-			event := finalSink.events[0]
-			if event.ParticipantID != nil || event.AttributionStatus != recordsv1.AttributionPending || event.SpeakerCode != recordsv1.PendingSpeakerCode {
-				t.Fatalf("FinalTurn attribution = %#v", event)
-			}
-		})
+func TestPipelineDefaultsMissingProviderSpeakerIDWhenReaderWired(t *testing.T) {
+	finalSink := &recordingFinalSink{}
+	speakers := &fixedSpeakerReader{participantID: "participant-1"}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+		Speakers:   speakers, FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
+		Runtime: &recordingRuntimeReporter{},
+	})
+	if err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+	}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	event := finalSink.events[0]
+	if event.ParticipantID == nil || *event.ParticipantID != "participant-1" || event.AttributionStatus != recordsv1.AttributionProvisional {
+		t.Fatalf("FinalTurn attribution = %#v", event)
+	}
+	if speakers.observation.ProviderSpeakerID != "local-mic" {
+		t.Fatalf("ProviderSpeakerID = %q, want local-mic default", speakers.observation.ProviderSpeakerID)
 	}
 }
 
@@ -431,6 +436,43 @@ func TestPipelineCancellationClosesBlockedTTSStream(t *testing.T) {
 	}
 }
 
+func TestPipelineCompletesPlaybackAfterTTSFinishes(t *testing.T) {
+	audioSink := &recordingPlaybackSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
+			Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
+			Result: tts.Result{Provider: "mock-tts", Model: "v1"},
+		}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: audioSink, Runtime: &recordingRuntimeReporter{},
+	})
+	if err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	if !reflect.DeepEqual(audioSink.completed, []string{"playback_turn-1"}) || len(audioSink.cancelled) != 0 {
+		t.Fatalf("completed = %#v, cancelled = %#v", audioSink.completed, audioSink.cancelled)
+	}
+}
+
+func TestPipelineCancelsPlaybackAfterTTSError(t *testing.T) {
+	wantErr := errors.New("TTS finish failed")
+	audioSink := &recordingPlaybackSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
+			Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}}, FinishErr: wantErr,
+		}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: audioSink, Runtime: &recordingRuntimeReporter{},
+	})
+	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	if len(audioSink.completed) != 0 || !reflect.DeepEqual(audioSink.cancelled, []string{"playback_turn-1"}) {
+		t.Fatalf("completed = %#v, cancelled = %#v", audioSink.completed, audioSink.cancelled)
+	}
+}
+
 func TestPipelineIgnoresPartialASREvents(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "unused"}}
 	service := NewPipelineService(PipelineDependencies{Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}), FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{}})
@@ -473,6 +515,22 @@ func (s *recordingUsageSink) Publish(_ context.Context, fact UsageFact) error {
 type recordingAudioSink struct {
 	chunks []AudioChunk
 	err    error
+}
+
+type recordingPlaybackSink struct {
+	recordingAudioSink
+	completed []string
+	cancelled []string
+}
+
+func (s *recordingPlaybackSink) Complete(_ context.Context, _, playbackID string) error {
+	s.completed = append(s.completed, playbackID)
+	return nil
+}
+
+func (s *recordingPlaybackSink) Cancel(_ context.Context, _, playbackID, _ string) error {
+	s.cancelled = append(s.cancelled, playbackID)
+	return nil
 }
 
 func (s *recordingAudioSink) Publish(_ context.Context, chunk AudioChunk) error {

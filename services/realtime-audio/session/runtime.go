@@ -46,6 +46,40 @@ func (s *LifecycleService) SetProcessingState(ctx context.Context, update Proces
 	return nil
 }
 
+// SetRuntimeFailed records a terminal media-pipeline failure without changing
+// business session state. Stop transitions win if shutdown is already active.
+func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if sessionID == "" {
+		return ErrSessionIDRequired
+	}
+
+	unlock := s.locks.lock(sessionID)
+	defer unlock()
+
+	current, err := s.deps.Runtimes.Get(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("read runtime for failure update: %w", err)
+	}
+	if current.SessionID != sessionID {
+		return fmt.Errorf("%w: runtime belongs to %q", ErrRuntimeIdentityConflict, current.SessionID)
+	}
+	if current.RuntimeState == RuntimeStopped || current.RuntimeState == RuntimeStopping || current.RuntimeState == RuntimeFailed {
+		return nil
+	}
+	current.RuntimeState = RuntimeFailed
+	current.CurrentTurnID = nil
+	current.CurrentPlaybackID = nil
+	current.LastErrorCode = nil
+	current.UpdatedAt = s.deps.Now()
+	if err := s.deps.Runtimes.Save(ctx, current); err != nil {
+		return fmt.Errorf("save runtime failure: %w", err)
+	}
+	return nil
+}
+
 func validateRuntimeUpdate(update ProcessingStateUpdate) error {
 	if update.SessionID == "" {
 		return ErrSessionIDRequired
@@ -106,3 +140,4 @@ func equalString(left, right *string) bool {
 }
 
 var _ RuntimeStateReporter = (*LifecycleService)(nil)
+var _ RuntimeFailureReporter = (*LifecycleService)(nil)

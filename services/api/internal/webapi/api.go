@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -44,28 +45,55 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	mux.Handle("POST /api/v1/outbound-deliveries/{message_id}/retry", a.authenticate(http.HandlerFunc(a.retryMessage)))
 	mux.Handle("GET /api/v1/account/message-preferences", a.authenticate(http.HandlerFunc(a.preferences)))
 	mux.Handle("PUT /api/v1/account/message-preferences/{channel}", a.authenticate(http.HandlerFunc(a.putPreference)))
+	mux.Handle("GET /api/v1/account/message-targets", a.authenticate(http.HandlerFunc(a.listMessageTargets)))
+	mux.Handle("POST /api/v1/account/message-targets/email/verification-codes", a.authenticate(http.HandlerFunc(a.requestEmailBindVerification)))
+	mux.Handle("POST /api/v1/account/message-targets/email/bind", a.authenticate(http.HandlerFunc(a.bindEmailTarget)))
+	mux.Handle("DELETE /api/v1/account/message-targets/email/{destination_ref}", a.authenticate(http.HandlerFunc(a.unbindEmailTarget)))
+	mux.Handle("POST /api/v1/account/message-targets/wechat/bind", a.authenticate(http.HandlerFunc(a.bindWeChatTarget)))
+	mux.Handle("DELETE /api/v1/account/message-targets/wechat/{destination_ref}", a.authenticate(http.HandlerFunc(a.unbindWeChatTarget)))
 	return mux
 }
 
 // authenticate accepts only a verified Bearer token and replaces any preexisting
 // account context with the identity returned by the verifier.
 func (a *API) authenticate(next http.Handler) http.Handler {
+	return Authenticate(a.tokens, next)
+}
+
+// Authenticate validates the HTTP Bearer token and injects the resulting
+// account identity into the request context. It is shared by module routers
+// that are mounted beside the member-5 routes (for example language and voice
+// record handlers), so every user-facing protected route has the same
+// authentication boundary.
+func Authenticate(tokens accounts.AccessTokenVerifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		parts := strings.Fields(r.Header.Get("Authorization"))
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || a.tokens == nil {
+		if next == nil {
 			writeError(w, r, domain.ErrUnauthorized)
 			return
 		}
-
-		claims, err := a.tokens.VerifyAccessToken(r.Context(), parts[1])
-		if err != nil || claims.AccountID == "" {
+		ctx, err := AuthenticatedContext(r.Context(), r.Header.Get("Authorization"), tokens)
+		if err != nil {
 			writeError(w, r, domain.ErrUnauthorized)
 			return
 		}
-
-		ctx := WithAccountID(r.Context(), claims.AccountID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// AuthenticatedContext validates a Bearer credential and returns a context
+// containing only the account identity established by the verifier. Keeping
+// this helper separate lets conditional auth flows (such as optional
+// anonymous-account binding during phone login) reuse the exact same parser.
+func AuthenticatedContext(ctx context.Context, authorization string, tokens accounts.AccessTokenVerifier) (context.Context, error) {
+	parts := strings.Fields(authorization)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || tokens == nil {
+		return nil, domain.ErrUnauthorized
+	}
+	claims, err := tokens.VerifyAccessToken(ctx, parts[1])
+	if err != nil || claims.AccountID == "" {
+		return nil, domain.ErrUnauthorized
+	}
+	return WithAccountID(ctx, claims.AccountID), nil
 }
 
 // errorResponse is the shared public error envelope defined by the OpenAPI contract.
@@ -101,6 +129,8 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusNotFound, "not_found"
 	case errors.Is(err, domain.ErrConflict):
 		status, code = http.StatusConflict, "conflict"
+	case errors.Is(err, domain.ErrRateLimited):
+		status, code = http.StatusTooManyRequests, "rate_limited"
 	}
 	var response errorResponse
 	response.Error.Code = code
@@ -179,7 +209,21 @@ func (a *API) verifyPhone(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}
-	result, err := a.accounts.VerifyPhone(r.Context(), request.ChallengeID, request.Code, request.AnonymousAccountID)
+	ctx := r.Context()
+	if request.AnonymousAccountID != "" {
+		var err error
+		ctx, err = AuthenticatedContext(ctx, r.Header.Get("Authorization"), a.tokens)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		accountID, ok := AccountIDFromContext(ctx)
+		if !ok || accountID != request.AnonymousAccountID {
+			writeError(w, r, domain.ErrForbidden)
+			return
+		}
+	}
+	result, err := a.accounts.VerifyPhone(ctx, request.ChallengeID, request.Code, request.AnonymousAccountID)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -307,7 +351,7 @@ func (a *API) retryMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if r.Header.Get("Idempotency-Key") == "" {
+	if key := r.Header.Get("Idempotency-Key"); key == "" || len(key) > delivery.MaxIdempotencyKeyLength {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}
@@ -357,6 +401,128 @@ func (a *API) putPreference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) listMessageTargets(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var channel *delivery.Channel
+	if raw := strings.TrimSpace(r.URL.Query().Get("channel")); raw != "" {
+		value := delivery.Channel(raw)
+		if !delivery.IsSupportedChannel(value) {
+			writeError(w, r, domain.ErrInvalidArgument)
+			return
+		}
+		channel = &value
+	}
+	result, err := a.delivery.ListMessageTargets(r.Context(), id, channel)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": result})
+}
+
+func (a *API) requestEmailBindVerification(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var request struct {
+		Email          string `json:"email"`
+		DestinationRef string `json:"destination_ref"`
+	}
+	if decodeJSON(r, &request) != nil || strings.TrimSpace(request.Email) == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	if err := a.delivery.RequestEmailBindVerification(r.Context(), id, request.Email, request.DestinationRef); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (a *API) bindEmailTarget(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var request struct {
+		Token string `json:"token"`
+	}
+	if decodeJSON(r, &request) != nil || strings.TrimSpace(request.Token) == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	result, err := a.delivery.BindEmailTarget(r.Context(), id, request.Token)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) unbindEmailTarget(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	destinationRef := strings.TrimSpace(r.PathValue("destination_ref"))
+	if destinationRef == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	if err := a.delivery.RevokeMessageTarget(r.Context(), id, delivery.ChannelEmail, destinationRef); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) bindWeChatTarget(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var request struct {
+		Code string `json:"code"`
+	}
+	if decodeJSON(r, &request) != nil || strings.TrimSpace(request.Code) == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	result, err := a.delivery.BindWeChatTarget(r.Context(), id, request.Code)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) unbindWeChatTarget(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	destinationRef := strings.TrimSpace(r.PathValue("destination_ref"))
+	if destinationRef == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	if err := a.delivery.RevokeMessageTarget(r.Context(), id, delivery.ChannelWeChat, destinationRef); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // hasDuplicates also rejects empty identifiers so Turn selection stays unambiguous.

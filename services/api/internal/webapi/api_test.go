@@ -19,10 +19,22 @@ import (
 )
 
 type deliveryFake struct {
-	created          delivery.CreateInput
-	retryAccountID   string
-	retryMessageID   string
-	retryIdempotency string
+	created              delivery.CreateInput
+	retryAccountID       string
+	retryMessageID       string
+	retryIdempotency     string
+	targets              []delivery.MessageTarget
+	listAccountID        string
+	listChannel          *delivery.Channel
+	bindAccountID        string
+	bindToken            string
+	revokeAccountID      string
+	revokeChannel        delivery.Channel
+	revokeRef            string
+	bindEmailErr         error
+	emailVerificationErr error
+	listTargetsErr       error
+	revokeErr            error
 }
 
 type tokenVerifierFake struct{}
@@ -32,6 +44,36 @@ func (tokenVerifierFake) VerifyAccessToken(_ context.Context, token string) (acc
 		return accounts.AccessTokenClaims{}, domain.ErrUnauthorized
 	}
 	return accounts.AccessTokenClaims{AccountID: "account-1", SessionID: "session-1"}, nil
+}
+
+type accountFake struct {
+	verifyPhoneCalled bool
+	verifyPhoneCtx    context.Context
+	verifyPhoneAnon   string
+	phoneChallengeErr error
+}
+
+func (f *accountFake) CreateAnonymous(context.Context) (accounts.AuthResult, error) {
+	return accounts.AuthResult{}, domain.ErrNotImplemented
+}
+func (f *accountFake) CreatePhoneChallenge(context.Context, string) (string, error) {
+	if f.phoneChallengeErr != nil {
+		return "", f.phoneChallengeErr
+	}
+	return "", domain.ErrNotImplemented
+}
+func (f *accountFake) VerifyPhone(ctx context.Context, _, _, anonymousAccountID string) (accounts.AuthResult, error) {
+	f.verifyPhoneCalled = true
+	f.verifyPhoneCtx = ctx
+	f.verifyPhoneAnon = anonymousAccountID
+	return accounts.AuthResult{Account: accounts.Account{ID: "registered-account"}}, nil
+}
+func (f *accountFake) Refresh(context.Context, string) (accounts.Tokens, error) {
+	return accounts.Tokens{}, domain.ErrNotImplemented
+}
+func (f *accountFake) Logout(context.Context, string) error { return domain.ErrNotImplemented }
+func (f *accountFake) Me(context.Context, string) (accounts.Account, error) {
+	return accounts.Account{}, domain.ErrNotImplemented
 }
 
 func authenticate(request *http.Request) *http.Request {
@@ -57,6 +99,44 @@ func (*deliveryFake) Preferences(context.Context, string) ([]delivery.Preference
 }
 func (*deliveryFake) PutPreference(context.Context, string, delivery.Channel, bool) (delivery.Preference, error) {
 	return delivery.Preference{}, domain.ErrNotImplemented
+}
+func (f *deliveryFake) ListMessageTargets(_ context.Context, accountID string, channel *delivery.Channel) ([]delivery.MessageTarget, error) {
+	f.listAccountID = accountID
+	f.listChannel = channel
+	if f.listTargetsErr != nil {
+		return nil, f.listTargetsErr
+	}
+	return f.targets, nil
+}
+func (f *deliveryFake) RequestEmailBindVerification(_ context.Context, accountID, email, destinationRef string) error {
+	f.bindAccountID = accountID
+	f.bindToken = email + ":" + destinationRef
+	if f.emailVerificationErr != nil {
+		return f.emailVerificationErr
+	}
+	return f.bindEmailErr
+}
+func (f *deliveryFake) BindEmailTarget(_ context.Context, accountID, token string) (delivery.MessageTarget, error) {
+	f.bindAccountID = accountID
+	f.bindToken = token
+	if f.bindEmailErr != nil {
+		return delivery.MessageTarget{}, f.bindEmailErr
+	}
+	return delivery.MessageTarget{DestinationRef: "primary-email", Channel: delivery.ChannelEmail, Verified: true}, nil
+}
+func (f *deliveryFake) BindWeChatTarget(_ context.Context, accountID, code string) (delivery.MessageTarget, error) {
+	f.bindAccountID = accountID
+	f.bindToken = code
+	if f.bindEmailErr != nil {
+		return delivery.MessageTarget{}, f.bindEmailErr
+	}
+	return delivery.MessageTarget{DestinationRef: "primary-wechat", Channel: delivery.ChannelWeChat, Verified: true}, nil
+}
+func (f *deliveryFake) RevokeMessageTarget(_ context.Context, accountID string, channel delivery.Channel, destinationRef string) error {
+	f.revokeAccountID = accountID
+	f.revokeChannel = channel
+	f.revokeRef = destinationRef
+	return f.revokeErr
 }
 
 func TestCreateMessagePassesAuthenticatedAccount(t *testing.T) {
@@ -94,6 +174,30 @@ func TestInvalidMessageDoesNotReachService(t *testing.T) {
 	}
 	if fake.created.AccountID != "" {
 		t.Fatal("service was called for an invalid request")
+	}
+}
+
+func TestPhoneChallengeRateLimitUsesRetryableHTTPStatus(t *testing.T) {
+	fake := &accountFake{phoneChallengeErr: domain.ErrRateLimited}
+	handler := webapi.New(fake, usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verification-codes", strings.NewReader(`{"phone":"+8613800000000"}`))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusTooManyRequests)
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error.Code != "rate_limited" {
+		t.Fatalf("error code = %q, want rate_limited", payload.Error.Code)
 	}
 }
 
@@ -250,6 +354,24 @@ func TestRetryPassesMessageResourceID(t *testing.T) {
 	}
 }
 
+func TestRetryRejectsOversizedIdempotencyKey(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", nil)
+	request = authenticate(request)
+	request.Header.Set("Idempotency-Key", strings.Repeat("k", delivery.MaxIdempotencyKeyLength+1))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.retryMessageID != "" {
+		t.Fatal("oversized retry key reached service")
+	}
+}
+
 func TestFormalRoutesReachUseCases(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -272,6 +394,12 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 		{"retry outbound delivery", http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", "", true, true},
 		{"get message preferences", http.MethodGet, "/api/v1/account/message-preferences", "", true, false},
 		{"update message preference", http.MethodPut, "/api/v1/account/message-preferences/email", `{"enabled":true}`, true, false},
+		{"list message targets", http.MethodGet, "/api/v1/account/message-targets", "", true, false},
+		{"request email bind verification", http.MethodPost, "/api/v1/account/message-targets/email/verification-codes", `{"email":"user@example.test"}`, true, false},
+		{"bind email target", http.MethodPost, "/api/v1/account/message-targets/email/bind", `{"token":"dev:user@example.test"}`, true, false},
+		{"unbind email target", http.MethodDelete, "/api/v1/account/message-targets/email/primary-email", "", true, false},
+		{"bind wechat target", http.MethodPost, "/api/v1/account/message-targets/wechat/bind", `{"code":"oauth-code"}`, true, false},
+		{"unbind wechat target", http.MethodDelete, "/api/v1/account/message-targets/wechat/primary-wechat", "", true, false},
 	}
 
 	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
@@ -322,5 +450,286 @@ func TestInvalidBearerTokenCannotReuseInjectedAccountContext(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuthenticateMiddlewareInjectsVerifiedIdentity(t *testing.T) {
+	var gotAccountID string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAccountID, _ = webapi.AccountIDFromContext(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := webapi.Authenticate(tokenVerifierFake{}, next)
+	request := httptest.NewRequest(http.MethodGet, "/protected", nil)
+	request.Header.Set("Authorization", "Bearer access-token")
+	request.Header.Set("X-Account-ID", "forged-account")
+	request = request.WithContext(webapi.WithAccountID(request.Context(), "preexisting-account"))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if gotAccountID != "account-1" {
+		t.Fatalf("account context = %q, want verified account", gotAccountID)
+	}
+}
+
+func TestPhoneBindingRequiresBearerForMatchingAnonymousAccount(t *testing.T) {
+	tests := []struct {
+		name       string
+		authorize  string
+		anonymous  string
+		wantStatus int
+		wantCall   bool
+	}{
+		{name: "missing token", anonymous: "account-1", wantStatus: http.StatusUnauthorized},
+		{name: "mismatched account", authorize: "Bearer access-token", anonymous: "other-account", wantStatus: http.StatusForbidden},
+		{name: "matching account", authorize: "Bearer access-token", anonymous: "account-1", wantStatus: http.StatusOK, wantCall: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &accountFake{}
+			handler := webapi.New(fake, usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/phone/login", strings.NewReader(`{"challenge_id":"challenge-1","code":"123456","anonymous_account_id":"`+test.anonymous+`"}`))
+			if test.authorize != "" {
+				request.Header.Set("Authorization", test.authorize)
+			}
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if fake.verifyPhoneCalled != test.wantCall {
+				t.Fatalf("VerifyPhone called = %v, want %v", fake.verifyPhoneCalled, test.wantCall)
+			}
+			if test.wantCall {
+				accountID, ok := webapi.AccountIDFromContext(fake.verifyPhoneCtx)
+				if !ok || accountID != "account-1" {
+					t.Fatalf("service context account = %q (ok=%v), want account-1", accountID, ok)
+				}
+				if fake.verifyPhoneAnon != "account-1" {
+					t.Fatalf("anonymous account ID = %q, want account-1", fake.verifyPhoneAnon)
+				}
+			}
+		})
+	}
+}
+
+func TestPhoneLoginWithoutAnonymousBindingRemainsPublic(t *testing.T) {
+	fake := &accountFake{}
+	handler := webapi.New(fake, usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/phone/login", strings.NewReader(`{"challenge_id":"challenge-1","code":"123456"}`))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if !fake.verifyPhoneCalled {
+		t.Fatal("public phone login did not reach account service")
+	}
+}
+
+func TestListMessageTargetsPassesAuthenticatedAccountAndChannelFilter(t *testing.T) {
+	fake := &deliveryFake{targets: []delivery.MessageTarget{{DestinationRef: "primary-email", Channel: delivery.ChannelEmail, Verified: true}}}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/account/message-targets?channel=email", nil)
+	request = authenticate(request)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.listAccountID != "account-1" || fake.listChannel == nil || *fake.listChannel != delivery.ChannelEmail {
+		t.Fatalf("list input = (%q, %v)", fake.listAccountID, fake.listChannel)
+	}
+}
+
+func TestListMessageTargetsRejectsUnsupportedChannel(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/account/message-targets?channel=sms", nil)
+	request = authenticate(request)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.listAccountID != "" {
+		t.Fatal("unsupported channel reached service")
+	}
+}
+
+func TestBindEmailTargetPassesTokenToService(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/email/bind", strings.NewReader(`{"token":"dev:user@example.test"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.bindAccountID != "account-1" || fake.bindToken != "dev:user@example.test" {
+		t.Fatalf("bind input = (%q, %q)", fake.bindAccountID, fake.bindToken)
+	}
+}
+
+func TestBindEmailTargetRejectsMissingToken(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/email/bind", strings.NewReader(`{"token":" "}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.bindAccountID != "" {
+		t.Fatal("invalid bind request reached service")
+	}
+}
+
+func TestRequestEmailBindVerificationPassesAuthenticatedAccount(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/email/verification-codes", strings.NewReader(`{"email":"user@example.test","destination_ref":"work-email"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	if fake.bindAccountID != "account-1" || fake.bindToken != "user@example.test:work-email" {
+		t.Fatalf("verification input = (%q, %q)", fake.bindAccountID, fake.bindToken)
+	}
+}
+
+func TestRequestEmailBindVerificationRejectsMissingEmail(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/email/verification-codes", strings.NewReader(`{"email":" "}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if fake.bindAccountID != "" {
+		t.Fatal("invalid verification request reached service")
+	}
+}
+
+func TestEmailBindVerificationRateLimitUsesRetryableHTTPStatus(t *testing.T) {
+	fake := &deliveryFake{emailVerificationErr: domain.ErrRateLimited}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/email/verification-codes", strings.NewReader(`{"email":"user@example.test"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusTooManyRequests)
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error.Code != "rate_limited" {
+		t.Fatalf("error code = %q, want rate_limited", payload.Error.Code)
+	}
+}
+
+func TestUnbindEmailTargetPassesDestinationRef(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/account/message-targets/email/primary-email", nil)
+	request = authenticate(request)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNoContent, response.Body.String())
+	}
+	if fake.revokeAccountID != "account-1" || fake.revokeChannel != delivery.ChannelEmail || fake.revokeRef != "primary-email" {
+		t.Fatalf("revoke input = (%q, %q, %q)", fake.revokeAccountID, fake.revokeChannel, fake.revokeRef)
+	}
+}
+
+func TestBindWeChatTargetInvalidOAuthCodeReturnsBadRequest(t *testing.T) {
+	fake := &deliveryFake{bindEmailErr: domain.ErrInvalidArgument}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/wechat/bind", strings.NewReader(`{"code":"expired-code"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+}
+
+func TestBindWeChatTargetPassesCodeToService(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/wechat/bind", strings.NewReader(`{"code":"oauth-code-1"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.bindAccountID != "account-1" || fake.bindToken != "oauth-code-1" {
+		t.Fatalf("bind input = (%q, %q)", fake.bindAccountID, fake.bindToken)
+	}
+}
+
+func TestUnbindWeChatTargetPassesDestinationRef(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/account/message-targets/wechat/work-wechat", nil)
+	request = authenticate(request)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNoContent, response.Body.String())
+	}
+	if fake.revokeAccountID != "account-1" || fake.revokeChannel != delivery.ChannelWeChat || fake.revokeRef != "work-wechat" {
+		t.Fatalf("revoke input = (%q, %q, %q)", fake.revokeAccountID, fake.revokeChannel, fake.revokeRef)
 	}
 }

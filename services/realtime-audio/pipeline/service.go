@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -35,6 +36,13 @@ type AudioChunk struct {
 // AudioChunkSink accepts synthesized chunks for downstream playback.
 type AudioChunkSink interface {
 	Publish(ctx context.Context, chunk AudioChunk) error
+}
+
+// AudioPlaybackLifecycle closes the playback event sequence after chunks have started.
+// It is optional so existing sinks remain valid.
+type AudioPlaybackLifecycle interface {
+	Complete(ctx context.Context, sessionID, playbackID string) error
+	Cancel(ctx context.Context, sessionID, playbackID, reason string) error
 }
 
 // PipelineDependencies wires provider and event boundaries for one service.
@@ -113,6 +121,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err := s.publishUsage(ctx, turn, "asr", result.Provider, result.Model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
 		return fmt.Errorf("publish ASR usage: %w", err)
 	}
+	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
 	target, ok := targetLanguage(turn.LanguageConfig, result.SourceLanguage)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
@@ -169,12 +178,16 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return finalTurnAcceptedError("start TTS", err)
 	}
 	defer stream.Close()
-	if err := s.publishTTSChunks(ctx, turn, playbackID, stream.Chunks()); err != nil {
-		return finalTurnAcceptedError("stream TTS audio", err)
+	played, err := s.publishTTSChunks(ctx, turn, playbackID, stream.Chunks())
+	if err != nil {
+		return finalTurnAcceptedError("stream TTS audio", errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_stream_failed", played)))
 	}
 	ttsResult, err := stream.Finish(ctx)
 	if err != nil {
-		return finalTurnAcceptedError("finish TTS", err)
+		return finalTurnAcceptedError("finish TTS", errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_finish_failed", played)))
+	}
+	if err := s.completePlayback(ctx, turn.SessionID, playbackID, played); err != nil {
+		return finalTurnAcceptedError("complete playback", err)
 	}
 	if err := s.publishUsage(ctx, turn, "tts", ttsResult.Provider, ttsResult.Model, ttsResult.AudioDuration.Milliseconds(), 0, 0, ttsResult.CostAmount, ttsResult.Currency); err != nil {
 		return finalTurnAcceptedError("publish TTS usage", err)
@@ -186,27 +199,45 @@ func finalTurnAcceptedError(operation string, err error) error {
 	return fmt.Errorf("%w: %s: %w", ErrFinalTurnAccepted, operation, err)
 }
 
-func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, chunks <-chan tts.AudioChunk) error {
+func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, chunks <-chan tts.AudioChunk) (bool, error) {
 	playing := false
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return playing, ctx.Err()
 		case chunk, ok := <-chunks:
 			if !ok {
-				return nil
+				return playing, nil
 			}
 			if !playing {
 				if err := s.reportRuntime(ctx, turn, session.RuntimePlaying, playbackID); err != nil {
-					return fmt.Errorf("report playing runtime: %w", err)
+					return false, fmt.Errorf("report playing runtime: %w", err)
 				}
 				playing = true
 			}
 			if err := s.audio.Publish(ctx, AudioChunk{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, SequenceNo: chunk.SequenceNo, Data: append([]byte(nil), chunk.Data...)}); err != nil {
-				return fmt.Errorf("publish audio chunk: %w", err)
+				return playing, fmt.Errorf("publish audio chunk: %w", err)
 			}
 		}
 	}
+}
+
+func (s *PipelineService) completePlayback(ctx context.Context, sessionID, playbackID string, played bool) error {
+	lifecycle, ok := s.audio.(AudioPlaybackLifecycle)
+	if !played || !ok {
+		return nil
+	}
+	return lifecycle.Complete(ctx, sessionID, playbackID)
+}
+
+func (s *PipelineService) cancelPlayback(ctx context.Context, sessionID, playbackID, reason string, played bool) error {
+	lifecycle, ok := s.audio.(AudioPlaybackLifecycle)
+	if !played || !ok {
+		return nil
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	return lifecycle.Cancel(cleanupCtx, sessionID, playbackID, reason)
 }
 
 func (s *PipelineService) validate() error {
@@ -239,13 +270,18 @@ func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider
 }
 
 func (s *PipelineService) resolveSpeaker(ctx context.Context, turn TurnContext, result asr.FinalResult, startedAt, endedAt time.Time) recordsv1.SpeakerAttribution {
-	if s.speakers == nil || result.ProviderSpeakerID == "" {
+	if s.speakers == nil {
 		return pendingSpeakerAttribution()
+	}
+	providerSpeakerID := strings.TrimSpace(result.ProviderSpeakerID)
+	if providerSpeakerID == "" {
+		// Single-mic demos have no diarization; still allocate a provisional participant.
+		providerSpeakerID = "local-mic"
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, s.speakerTimeout)
 	defer cancel()
 	attribution, err := s.speakers.GetProvisionalAttribution(lookupCtx, recordsv1.SpeakerObservation{
-		SessionID: turn.SessionID, TurnID: turn.ID, ProviderSpeakerID: result.ProviderSpeakerID,
+		SessionID: turn.SessionID, TurnID: turn.ID, ProviderSpeakerID: providerSpeakerID,
 		StartedAt: startedAt, EndedAt: endedAt,
 		AudioStartMS: result.AudioStart.Milliseconds(), AudioEndMS: result.AudioEnd.Milliseconds(),
 	})
@@ -284,8 +320,9 @@ func turnBounds(turn TurnContext, result asr.FinalResult, fallback time.Time) (t
 }
 
 func targetLanguage(config session.LanguageConfigSnapshot, source string) (string, bool) {
+	source = asr.NormalizeLanguage(source)
 	for _, pair := range config.LanguagePairs {
-		if pair.Source == source {
+		if asr.NormalizeLanguage(pair.Source) == source {
 			return pair.Target, true
 		}
 	}

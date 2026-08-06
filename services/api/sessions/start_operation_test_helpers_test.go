@@ -40,8 +40,55 @@ func (r *startOperationRepository) GetOwned(
 	return r.session, nil
 }
 
+func (r *startOperationRepository) GetSession(
+	ctx context.Context,
+	sessionID string,
+) (SessionSnapshot, error) {
+	r.mu.Lock()
+	accountID := r.session.AccountID
+	r.mu.Unlock()
+	session, err := r.GetOwned(ctx, accountID, sessionID)
+	if err != nil {
+		return SessionSnapshot{}, err
+	}
+	return SessionSnapshot{
+		SessionID: session.ID,
+		AccountID: session.AccountID,
+		Status:    session.Status,
+		StartedAt: session.StartedAt,
+		EndedAt:   session.EndedAt,
+	}, nil
+}
+
 func (*startOperationRepository) List(context.Context, ListFilter) (ListPage, error) {
 	return ListPage{}, ErrNotImplemented
+}
+
+func (r *startOperationRepository) GetStartOperation(
+	_ context.Context,
+	accountID string,
+	sessionID string,
+	idempotencyKey string,
+) (StartOperation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.session.ID != sessionID || r.session.AccountID != accountID {
+		return StartOperation{}, ErrVoiceSessionNotFound
+	}
+	if r.operation == nil {
+		return StartOperation{}, ErrStartOperationNotFound
+	}
+	if r.operation.IdempotencyKey != idempotencyKey {
+		switch r.operation.Status {
+		case StartOperationPending,
+			StartOperationCompensating,
+			StartOperationCompensationFailed:
+			return StartOperation{}, ErrSessionStartInProgress
+		default:
+			return StartOperation{}, ErrStartOperationNotFound
+		}
+	}
+	return *r.operation, nil
 }
 
 func (r *startOperationRepository) BeginStartOperation(
@@ -195,6 +242,27 @@ func (*startOperationRepository) GetEndIntent(
 	string,
 ) (EndIntent, error) {
 	return EndIntent{}, ErrNotImplemented
+}
+
+func (*startOperationRepository) ClaimPendingEndIntent(
+	context.Context,
+	ClaimEndIntentParams,
+) (EndIntent, bool, error) {
+	return EndIntent{}, false, ErrNotImplemented
+}
+
+func (*startOperationRepository) RetryClaimedEndIntent(
+	context.Context,
+	RetryEndIntentParams,
+) error {
+	return ErrNotImplemented
+}
+
+func (*startOperationRepository) CompleteClaimedEndIntent(
+	context.Context,
+	CompleteClaimedEndIntentParams,
+) error {
+	return ErrNotImplemented
 }
 
 func (*startOperationRepository) CompleteEndIntent(

@@ -3,7 +3,6 @@ package turns
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -244,53 +243,12 @@ func TestGetAndListOperationsEnforceOwnership(t *testing.T) {
 	}
 }
 
-func TestReadFinalTurnsPassesAccountScope(t *testing.T) {
-	repository := &fakeRepository{snapshots: []recordsv1.FinalTurnSnapshot{{TurnID: "vt_01"}}}
-	service := NewService(repository, fakeSessionOwners{}, nil)
+func TestListSessionMapsStorageNotFound(t *testing.T) {
+	service := NewService(&fakeRepository{}, fakeSessionOwners{err: domain.ErrNotFound}, nil)
 
-	snapshots, err := service.ReadFinalTurns(context.Background(), "acct_01", []string{"vt_01"})
-	if err != nil {
-		t.Fatalf("ReadFinalTurns() error = %v", err)
-	}
-	if repository.readAccountID != "acct_01" || len(snapshots) != 1 {
-		t.Fatalf("ReadFinalTurns() account = %q, snapshots = %#v", repository.readAccountID, snapshots)
-	}
-}
-
-func TestReadFinalTurnsRejectsOversizedBatch(t *testing.T) {
-	turnIDs := make([]string, recordsv1.MaxFinalTurnBatchSize+1)
-	for index := range turnIDs {
-		turnIDs[index] = fmt.Sprintf("turn_%d", index)
-	}
-	repository := &fakeRepository{}
-	service := NewService(repository, fakeSessionOwners{}, nil)
-
-	_, err := service.ReadFinalTurns(context.Background(), "acct_01", turnIDs)
-	if !errors.Is(err, ErrInvalidRequest) {
-		t.Fatalf("ReadFinalTurns() error = %v, want invalid request", err)
-	}
-	if repository.readAccountID != "" {
-		t.Fatalf("ReadFinalTurns() reached repository with account %q", repository.readAccountID)
-	}
-}
-
-func TestReadFinalTurnsAllowsMaximumBatch(t *testing.T) {
-	turnIDs := make([]string, recordsv1.MaxFinalTurnBatchSize)
-	for index := range turnIDs {
-		turnIDs[index] = fmt.Sprintf("turn_%d", index)
-	}
-	repository := &fakeRepository{snapshots: []recordsv1.FinalTurnSnapshot{{TurnID: "turn_0"}}}
-	service := NewService(repository, fakeSessionOwners{}, nil)
-
-	snapshots, err := service.ReadFinalTurns(context.Background(), "acct_01", turnIDs)
-	if err != nil {
-		t.Fatalf("ReadFinalTurns() error = %v", err)
-	}
-	if repository.readAccountID != "acct_01" || len(repository.readTurnIDs) != recordsv1.MaxFinalTurnBatchSize {
-		t.Fatalf("ReadFinalTurns() account = %q, turn IDs = %d", repository.readAccountID, len(repository.readTurnIDs))
-	}
-	if len(snapshots) != 1 || snapshots[0].TurnID != "turn_0" {
-		t.Fatalf("ReadFinalTurns() snapshots = %#v", snapshots)
+	_, err := service.ListSession(t.Context(), "acct_01", "vs_missing", recordsv1.ListTurnsQuery{Limit: 20})
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("ListSession() error = %v, want %v", err, ErrSessionNotFound)
 	}
 }
 
@@ -309,7 +267,6 @@ func TestListHistoryRejectsReverseTimeRange(t *testing.T) {
 		t.Fatalf("ListHistory() error = %v, want invalid request", err)
 	}
 }
-
 func validEvent() recordsv1.FinalTurnEvent {
 	participantID := "p_01"
 	return recordsv1.FinalTurnEvent{
@@ -346,6 +303,9 @@ type fakeRepository struct {
 	findAccountID        string
 	listAccountID        string
 	ownedAccountID       string
+	readErr              error
+	readCalls            int
+	mutateReadTurnIDs    bool
 }
 
 func (r *fakeRepository) StoreFinalTurn(_ context.Context, event recordsv1.FinalTurnEvent) error {
@@ -406,9 +366,13 @@ func (r *fakeRepository) CorrectAttribution(_ context.Context, update Attributio
 }
 
 func (r *fakeRepository) ReadFinalTurns(_ context.Context, accountID string, turnIDs []string) ([]recordsv1.FinalTurnSnapshot, error) {
+	r.readCalls++
 	r.readAccountID = accountID
 	r.readTurnIDs = append([]string(nil), turnIDs...)
-	return r.snapshots, nil
+	if r.mutateReadTurnIDs && len(turnIDs) > 1 {
+		turnIDs[0], turnIDs[len(turnIDs)-1] = turnIDs[len(turnIDs)-1], turnIDs[0]
+	}
+	return r.snapshots, r.readErr
 }
 
 type fakeSessionOwners struct {

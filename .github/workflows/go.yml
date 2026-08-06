@@ -1,0 +1,264 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - "**"
+      - "!xgopilot/**"
+  pull_request:
+    branches: [ "**" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - packages/contracts
+          - services/api
+          - services/realtime-audio
+        include:
+          - module: packages/contracts
+            coverage: contracts
+          - module: services/api
+            coverage: api
+          - module: services/realtime-audio
+            coverage: realtime-audio
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Build Go code
+        run: go build ./...
+
+      - name: Test Go code
+        run: go test -count=1 -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Print coverage
+        run: go tool cover -func=coverage.out | tee coverage.txt
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage-${{ matrix.coverage }}
+          path: |
+            ${{ matrix.module }}/coverage.out
+            ${{ matrix.module }}/coverage.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  coverage-gate:
+    name: Coverage Gate
+    if: github.event_name == 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Download current coverage reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: go-coverage-*
+          path: coverage/current
+          github-token: ${{ github.token }}
+
+      - name: Resolve baseline run
+        id: baseline
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const baseBranch = context.payload.pull_request.base.ref;
+            const workflows = await github.paginate(
+              github.rest.actions.listRepoWorkflows,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              },
+            );
+            const testWorkflow = workflows.find((workflow) => workflow.name === "Test");
+            if (!testWorkflow) {
+              core.warning("Unable to find the Test workflow; coverage gate skipped");
+              core.setOutput("available", "false");
+              return;
+            }
+
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRuns,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: testWorkflow.id,
+                branch: baseBranch,
+                event: "push",
+                status: "completed",
+                per_page: 100,
+              },
+            );
+            const expectedArtifacts = [
+              "go-coverage-contracts",
+              "go-coverage-api",
+              "go-coverage-realtime-audio",
+            ];
+            let baseline = null;
+            for (const run of runs.filter((candidate) => candidate.conclusion === "success")) {
+              const artifacts = await github.paginate(
+                github.rest.actions.listWorkflowRunArtifacts,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: run.id,
+                  per_page: 100,
+                },
+              );
+              const hasCoverageArtifacts = expectedArtifacts.every((name) =>
+                artifacts.some((artifact) => artifact.name === name),
+              );
+              if (hasCoverageArtifacts) {
+                baseline = run;
+                break;
+              }
+            }
+            if (!baseline) {
+              core.warning(
+                "No successful Test run has a complete coverage artifact baseline; coverage gate skipped",
+              );
+              core.setOutput("available", "false");
+              return;
+            }
+
+            core.setOutput("run_id", String(baseline.id));
+            core.setOutput("branch", baseBranch);
+            core.setOutput("available", "true");
+
+      - name: Warn when coverage baseline is unavailable
+        if: steps.baseline.outputs.available != 'true'
+        run: >-
+          echo "Coverage gate skipped because the base branch has no complete
+          coverage artifact baseline yet."
+
+      - name: Download baseline coverage reports
+        if: steps.baseline.outputs.available == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: go-coverage-*
+          path: coverage/baseline
+          run-id: ${{ steps.baseline.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Enforce coverage gate
+        if: steps.baseline.outputs.available == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+
+            const modules = [
+              { artifact: "go-coverage-contracts", label: "packages/contracts" },
+              { artifact: "go-coverage-api", label: "services/api" },
+              { artifact: "go-coverage-realtime-audio", label: "services/realtime-audio" },
+            ];
+
+            function parseCoverageProfile(content, moduleLabel) {
+              const files = new Map();
+              let totalStatements = 0;
+              let coveredStatements = 0;
+
+              for (const line of content.split(/\r?\n/)) {
+                if (!line || line.startsWith("mode:")) {
+                  continue;
+                }
+
+                const match = line.match(/^(.*):\d+\.\d+,\d+\.\d+\s+(\d+)\s+(\d+)$/);
+                if (!match) {
+                  continue;
+                }
+
+                const file = moduleLabel + "/" + match[1];
+                const statements = Number(match[2]);
+                const hits = Number(match[3]);
+                const covered = hits > 0 ? statements : 0;
+
+                totalStatements += statements;
+                coveredStatements += covered;
+
+                const current = files.get(file) ?? { totalStatements: 0, coveredStatements: 0 };
+                current.totalStatements += statements;
+                current.coveredStatements += covered;
+                files.set(file, current);
+              }
+
+              return { files, totalStatements, coveredStatements };
+            }
+
+            function readCoverageTree(rootDir) {
+              const files = new Map();
+              let totalStatements = 0;
+              let coveredStatements = 0;
+
+              for (const module of modules) {
+                const profilePath = path.join(rootDir, module.artifact, "coverage.out");
+                const content = fs.readFileSync(profilePath, "utf8");
+                const parsed = parseCoverageProfile(content, module.label);
+
+                totalStatements += parsed.totalStatements;
+                coveredStatements += parsed.coveredStatements;
+
+                for (const [file, stats] of parsed.files) {
+                  const current = files.get(file) ?? { totalStatements: 0, coveredStatements: 0 };
+                  current.totalStatements += stats.totalStatements;
+                  current.coveredStatements += stats.coveredStatements;
+                  files.set(file, current);
+                }
+              }
+
+              return { files, totalStatements, coveredStatements };
+            }
+
+            function percent(stats) {
+              if (stats.totalStatements === 0) {
+                return 0;
+              }
+              return (stats.coveredStatements / stats.totalStatements) * 100;
+            }
+
+            const current = readCoverageTree(path.join("coverage", "current"));
+            const baseline = readCoverageTree(path.join("coverage", "baseline"));
+            const currentTotal = percent(current);
+            const baselineTotal = percent(baseline);
+
+            if (currentTotal + 1e-9 < baselineTotal) {
+              core.setFailed(
+                "Total coverage " +
+                  currentTotal.toFixed(1) +
+                  "% is below baseline " +
+                  baselineTotal.toFixed(1) +
+                  "%",
+              );
+            }

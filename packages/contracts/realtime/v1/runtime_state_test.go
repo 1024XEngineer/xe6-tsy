@@ -59,7 +59,7 @@ func TestOpenAPIRuntimeContractMatchesGoTypes(t *testing.T) {
 	}
 
 	snapshot := spec.Components.Schemas["RealtimeRuntimeSnapshot"]
-	wantFields := []string{"session_id", "runtime_state", "current_turn_id", "current_playback_id", "last_error_code", "updated_at"}
+	wantFields := []string{"session_id", "start_operation_id", "runtime_state", "current_turn_id", "current_playback_id", "last_error_code", "updated_at"}
 	if !reflect.DeepEqual(snapshot.Required, wantFields) {
 		t.Fatalf("RealtimeRuntimeSnapshot required = %v, want %v", snapshot.Required, wantFields)
 	}

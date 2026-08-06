@@ -31,13 +31,23 @@ var (
 	ErrUnauthorized           = errors.New(string(CodeUnauthorized))
 	ErrVoiceSessionNotFound   = errors.New(string(CodeVoiceSessionNotFound))
 	ErrEndIntentNotFound      = errors.New(string(CodeEndIntentNotFound))
-	ErrConcurrentTransition   = errors.New(string(CodeSessionStateConflict))
+	ErrSessionStateConflict   = errors.New(string(CodeSessionStateConflict))
+	ErrConcurrentTransition   = ErrSessionStateConflict
 	ErrIdempotencyKeyConflict = errors.New(string(CodeIdempotencyKeyConflict))
 	ErrSessionStartInProgress = errors.New(string(CodeSessionStartInProgress))
+	ErrLanguageConfigNotReady = errors.New(string(CodeLanguageConfigNotReady))
+	ErrWebRTCNotReady         = errors.New(string(CodeWebRTCNotReady))
+	ErrRealtimeAlreadyRunning = errors.New(string(CodeRealtimeAlreadyRunning))
 	ErrUnsupportedAudio       = errors.New(string(CodeUnsupportedAudio))
+	ErrRealtimeStartFailed    = errors.New(string(CodeRealtimeStartFailed))
+	ErrRealtimeStopFailed     = errors.New(string(CodeRealtimeStopFailed))
 	ErrRuntimeUnavailable     = errors.New(string(CodeRuntimeUnavailable))
+	ErrWebRTCUnavailable      = errors.New(string(CodeWebRTCUnavailable))
 	// ErrRuntimeSnapshotNotFound is an adapter-only signal whose query meaning
 	// depends on the persisted business state.
 	ErrRuntimeSnapshotNotFound = errors.New("sessions: runtime snapshot not found")
-	ErrNotImplemented          = errors.New(string(CodeNotImplemented))
+	// ErrStartOperationNotFound is an internal repository signal used to
+	// distinguish a new Start request from recovery of a durable operation.
+	ErrStartOperationNotFound = errors.New("sessions: start operation not found")
+	ErrNotImplemented         = errors.New(string(CodeNotImplemented))
 )

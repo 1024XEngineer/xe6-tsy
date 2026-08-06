@@ -22,6 +22,12 @@ type SessionOwnerReader interface {
 	AccountIDForSession(context.Context, string) (string, error)
 }
 
+// CanonicalAccountResolver lets persistent owner adapters compare accounts
+// across an anonymous-to-registered merge without changing stored fact ownership.
+type CanonicalAccountResolver interface {
+	CanonicalAccountID(context.Context, string) (string, error)
+}
+
 // Service defines usage recording and query use cases consumed by adapters.
 type Service interface {
 	// Record validates ownership and measurement rules before idempotent persistence.

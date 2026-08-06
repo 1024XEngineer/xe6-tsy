@@ -39,7 +39,10 @@ type Config struct {
 	SampleRate      int
 	VADThreshold    float64
 	SilenceDuration time.Duration
-	Dialer          *websocket.Dialer
+	// DisableServerVAD omits Qwen turn_detection so a local segmenter owns
+	// utterance boundaries (avoids double VAD / duplicate finals).
+	DisableServerVAD bool
+	Dialer           *websocket.Dialer
 }
 
 // Provider starts Qwen realtime ASR streams.
@@ -93,7 +96,8 @@ func (p *Provider) StartStream(ctx context.Context, request asr.StreamRequest) (
 	s := &stream{
 		conn: conn, cancel: cancel, model: p.config.Model, provider: p.config.Provider,
 		sampleRate: p.config.SampleRate, sourceLanguage: request.SourceLanguage,
-		events: make(chan asr.Event, eventBufferSize+1), done: make(chan struct{}), readDone: make(chan struct{}),
+		manualMode: p.config.DisableServerVAD,
+		events:     make(chan asr.Event, eventBufferSize+1), done: make(chan struct{}), readDone: make(chan struct{}),
 	}
 	if err := s.write(streamCtx, sessionUpdateEvent(request.SourceLanguage, p.config)); err != nil {
 		cancel()
@@ -109,18 +113,25 @@ func sessionUpdateEvent(language string, config Config) map[string]any {
 	if language != "" {
 		transcription["language"] = languageCode(language)
 	}
+	session := map[string]any{
+		"input_audio_format":        "pcm",
+		"sample_rate":               config.SampleRate,
+		"input_audio_transcription": transcription,
+	}
+	if config.DisableServerVAD {
+		// Manual mode: client owns utterance cuts via input_audio_buffer.commit.
+		// Explicit JSON null is required; omitting the field keeps server_vad.
+		session["turn_detection"] = nil
+	} else {
+		session["turn_detection"] = map[string]any{
+			"type":                "server_vad",
+			"threshold":           config.VADThreshold,
+			"silence_duration_ms": config.SilenceDuration.Milliseconds(),
+		}
+	}
 	return map[string]any{
-		"type": "session.update",
-		"session": map[string]any{
-			"input_audio_format":        "pcm",
-			"sample_rate":               config.SampleRate,
-			"input_audio_transcription": transcription,
-			"turn_detection": map[string]any{
-				"type":                "server_vad",
-				"threshold":           config.VADThreshold,
-				"silence_duration_ms": config.SilenceDuration.Milliseconds(),
-			},
-		},
+		"type":    "session.update",
+		"session": session,
 	}
 }
 
@@ -173,6 +184,7 @@ type stream struct {
 	provider       string
 	sampleRate     int
 	sourceLanguage string
+	manualMode     bool
 	events         chan asr.Event
 	done           chan struct{}
 	readDone       chan struct{}
@@ -212,6 +224,13 @@ func (s *stream) Finish(ctx context.Context) (asr.FinalResult, error) {
 		return result, err
 	}
 	s.finish.Do(func() {
+		if s.manualMode {
+			if err := s.write(ctx, map[string]any{"type": "input_audio_buffer.commit"}); err != nil {
+				s.setError(fmt.Errorf("commit ASR audio buffer: %w", err))
+				s.shutdown()
+				return
+			}
+		}
 		if err := s.write(ctx, map[string]any{"type": "session.finish"}); err != nil {
 			s.setError(err)
 			s.shutdown()
@@ -349,9 +368,9 @@ func (s *stream) handleEvent(data []byte) error {
 			s.emitEvent(asr.Event{Type: asr.EventPartial, Text: text})
 		}
 	case "conversation.item.input_audio_transcription.completed":
-		sourceLanguage := s.sourceLanguage
+		sourceLanguage := asr.NormalizeLanguage(s.sourceLanguage)
 		if sourceLanguage == "" {
-			sourceLanguage = event.Language
+			sourceLanguage = asr.NormalizeLanguage(event.Language)
 		}
 		result := asr.FinalResult{
 			Text: event.Transcript, SourceLanguage: sourceLanguage,

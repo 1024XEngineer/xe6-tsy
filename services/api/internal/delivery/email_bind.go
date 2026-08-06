@@ -1,0 +1,174 @@
+package delivery
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"net/mail"
+	"strings"
+	"time"
+
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
+	"github.com/oklog/ulid/v2"
+)
+
+const (
+	emailBindChallengeTTL            = 15 * time.Minute
+	emailBindChallengeCooldown       = time.Minute
+	emailBindChallengeWindow         = time.Hour
+	emailBindChallengeWindowMaxSends = 5
+	emailBindChallengeRestoreTimeout = 3 * time.Second
+)
+
+// EmailBindChallenge is a short-lived ownership proof before persisting a destination.
+type EmailBindChallenge struct {
+	ID             string
+	AccountID      string
+	DestinationRef string
+	Email          string
+	TokenHash      string
+	ExpiresAt      time.Time
+	UsedAt         *time.Time
+	CreatedAt      time.Time
+}
+
+// EmailBindChallengeRepository stores one-time email bind tokens durably.
+type EmailBindChallengeRepository interface {
+	CreateEmailBindChallenge(context.Context, EmailBindChallenge) error
+	ConsumeEmailBindChallenge(context.Context, string, string) (EmailBindChallenge, error)
+	// RestoreEmailBindChallenge makes a consumed challenge retryable after a downstream failure.
+	RestoreEmailBindChallenge(context.Context, string) error
+}
+
+type resolvedEmailBindToken struct {
+	DestinationRef string
+	Email          string
+	ChallengeID    string
+}
+
+func enforceEmailBindRateLimit(latest *time.Time, sends int64, now time.Time) error {
+	if latest != nil && now.Before(latest.Add(emailBindChallengeCooldown)) {
+		return domain.ErrRateLimited
+	}
+	if sends >= emailBindChallengeWindowMaxSends {
+		return domain.ErrRateLimited
+	}
+	return nil
+}
+
+// EmailBindSender delivers one-time bind tokens to an inbox without logging the secret.
+type EmailBindSender interface {
+	SendBindToken(context.Context, string, string, string) error
+}
+
+// LogEmailBindSender records bind tokens in structured logs for local development.
+type LogEmailBindSender struct{}
+
+func (LogEmailBindSender) SendBindToken(_ context.Context, email, destinationRef, token string) error {
+	if strings.TrimSpace(token) == "" {
+		return domain.ErrInvalidArgument
+	}
+	if _, err := validateBindEmail(email); err != nil {
+		return err
+	}
+	fmt.Printf("email bind token destination_ref=%s email=%s token=%s\n", destinationRef, email, token)
+	return nil
+}
+
+func hashEmailBindToken(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func generateEmailBindToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate email bind token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func normalizeBindEmail(email string) (string, error) {
+	return validateBindEmail(email)
+}
+
+// validateBindEmail rejects control characters and non addr-spec addresses before SMTP use.
+func validateBindEmail(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", domain.ErrInvalidArgument
+	}
+	for _, r := range raw {
+		if r < 0x20 || r == 0x7f {
+			return "", domain.ErrInvalidArgument
+		}
+	}
+	if strings.ContainsAny(raw, "<>\"") {
+		return "", domain.ErrInvalidArgument
+	}
+	parsed, err := mail.ParseAddress(raw)
+	if err != nil || parsed.Name != "" {
+		return "", domain.ErrInvalidArgument
+	}
+	normalized := strings.ToLower(strings.TrimSpace(parsed.Address))
+	if normalized == "" || !strings.Contains(normalized, "@") {
+		return "", domain.ErrInvalidArgument
+	}
+	if strings.ToLower(raw) != normalized {
+		return "", domain.ErrInvalidArgument
+	}
+	return normalized, nil
+}
+
+func normalizeBindDestinationRef(destinationRef string) string {
+	destinationRef = strings.TrimSpace(destinationRef)
+	if destinationRef == "" {
+		return "primary-email"
+	}
+	return destinationRef
+}
+
+// resolveEmailBindToken accepts local dev tokens or a consumed verification token.
+func resolveEmailBindToken(
+	ctx context.Context,
+	appEnv, token, accountID string,
+	challenges EmailBindChallengeRepository,
+) (resolvedEmailBindToken, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return resolvedEmailBindToken{}, domain.ErrInvalidArgument
+	}
+	if strings.HasPrefix(token, "dev:") {
+		destinationRef, email, err := parseDevEmailBindToken(appEnv, token)
+		if err != nil {
+			return resolvedEmailBindToken{}, err
+		}
+		return resolvedEmailBindToken{DestinationRef: destinationRef, Email: email}, nil
+	}
+	if challenges == nil || accountID == "" {
+		return resolvedEmailBindToken{}, domain.ErrNotImplemented
+	}
+	challenge, err := challenges.ConsumeEmailBindChallenge(ctx, accountID, hashEmailBindToken(token))
+	if err != nil {
+		return resolvedEmailBindToken{}, err
+	}
+	return resolvedEmailBindToken{
+		DestinationRef: challenge.DestinationRef,
+		Email:          challenge.Email,
+		ChallengeID:    challenge.ID,
+	}, nil
+}
+
+func newEmailBindChallenge(accountID, destinationRef, email, tokenHash string, now time.Time) EmailBindChallenge {
+	return EmailBindChallenge{
+		ID:             "email_bind_" + ulid.Make().String(),
+		AccountID:      accountID,
+		DestinationRef: destinationRef,
+		Email:          email,
+		TokenHash:      tokenHash,
+		ExpiresAt:      now.Add(emailBindChallengeTTL),
+		CreatedAt:      now,
+	}
+}

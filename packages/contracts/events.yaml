@@ -1,0 +1,144 @@
+asyncapi: 3.0.0
+info:
+  title: Lingow Internal Events
+  version: 0.1.0
+  description: Internal contracts exchanged between Lingow services.
+channels:
+  usageRecorded:
+    address: usage.recorded
+    messages:
+      usageRecorded:
+        $ref: '#/components/messages/UsageRecorded'
+  finalTurn:
+    address: translation.final
+    messages:
+      finalTurn:
+        $ref: '#/components/messages/FinalTurn'
+operations:
+  consumeUsageRecorded:
+    action: receive
+    channel:
+      $ref: '#/channels/usageRecorded'
+  sendFinalTurn:
+    action: send
+    channel:
+      $ref: '#/channels/finalTurn'
+  consumeFinalTurn:
+    action: receive
+    channel:
+      $ref: '#/channels/finalTurn'
+components:
+  messages:
+    UsageRecorded:
+      name: usage.recorded
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/UsageRecordedPayload'
+    FinalTurn:
+      name: translation.final
+      title: Final translation turn
+      summary: A durable final translation record accepted before TTS or playback completes.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/FinalTurnEvent'
+  schemas:
+    UsageRecordedPayload:
+      type: object
+      additionalProperties: false
+      required: [event_version, id, trace_id, idempotency_key, account_id, session_id, turn_id, service_type, provider, model, input_tokens, output_tokens, audio_duration_ms, cost_amount, currency, occurred_at]
+      properties:
+        event_version: { type: integer, const: 1, description: Payload schema version. }
+        id: { type: string, minLength: 1 }
+        trace_id: { type: string, minLength: 1 }
+        idempotency_key: { type: string, minLength: 1, maxLength: 200 }
+        account_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        turn_id: { type: string, minLength: 1 }
+        service_type: { type: string, enum: [asr, translation, tts, diarization] }
+        provider: { type: string, minLength: 1 }
+        model: { type: string, minLength: 1 }
+        input_tokens: { type: integer, format: int64, minimum: 0, description: Translation input usage measured in tokens; zero for non-token services. }
+        output_tokens: { type: integer, format: int64, minimum: 0, description: Translation output usage measured in tokens; zero for non-token services. }
+        audio_duration_ms: { type: integer, format: int64, minimum: 0, description: Billable audio duration in milliseconds; zero for non-audio services. }
+        cost_amount: { type: string, pattern: '^(?:|(?:0|[1-9][0-9]*)(?:\.[0-9]+)?)$', description: Decimal amount, or an empty string when cost is not available. }
+        currency: { type: string, pattern: '^(?:|[A-Z]{3})$', description: ISO 4217 currency, or an empty string when cost is not available. }
+        occurred_at: { type: string, format: date-time }
+    AttributionStatus:
+      type: string
+      enum: [pending, provisional, confirmed, corrected]
+    FinalTurnEvent:
+      type: object
+      additionalProperties: false
+      description: A final translation event. Producers emit it after translation final succeeds and do not wait for TTS acceptance or playback. Partial ASR or translation data must never use this topic. Consumers compare the SHA-256 hash of the complete event JSON for every idempotency-key conflict; only an identical payload is a replay.
+      required: [event_version, event_id, trace_id, turn_id, session_id, participant_id, sequence_no, source_language, target_language, language_config_version, source_text, translated_text, speaker_code, speaker_label_snapshot, speaker_confidence, attribution_status, started_at, ended_at, occurred_at]
+      properties:
+        event_version:
+          type: integer
+          const: 1
+          description: Payload schema version.
+        event_id:
+          type: string
+          minLength: 1
+          description: Durable idempotency key. A replay preserves this value; an existing event_id with any different payload is a conflict.
+        trace_id:
+          type: string
+          minLength: 1
+        turn_id:
+          type: string
+          minLength: 1
+          description: Immutable business-turn key. An existing turn_id with any different payload is a conflict.
+        session_id:
+          type: string
+          minLength: 1
+          description: Together with sequence_no, identifies one immutable turn within a session. A conflicting duplicate is rejected.
+        participant_id:
+          type: [string, 'null']
+        sequence_no:
+          type: integer
+          format: int64
+          minimum: 1
+        source_language:
+          type: string
+          minLength: 1
+        target_language:
+          type: string
+          minLength: 1
+        language_config_version:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The version fixed by realtime at the start of this turn. It is required for every new event.
+        source_text:
+          type: string
+          minLength: 1
+        translated_text:
+          type: string
+          minLength: 1
+        tts_enabled:
+          type: boolean
+          description: Whether this target-language route may synthesize and play TTS.
+        delivery_enabled:
+          type: boolean
+          description: Whether this final turn may create automatic outbound messages.
+        speaker_code:
+          type: string
+          minLength: 1
+          description: The participant speaker code when attributed; speaker_pending when attribution_status is pending and participant_id is null. Realtime production emits pending evidence-only events.
+        speaker_label_snapshot:
+          type: [string, 'null']
+        provider_speaker_id:
+          type: [string, 'null']
+          description: Stable provider or diarization cluster key scoped to this session. Optional; when absent the async resolver must not guess attribution.
+        speaker_confidence:
+          type: [number, 'null']
+        attribution_status:
+          $ref: '#/components/schemas/AttributionStatus'
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        occurred_at:
+          type: string
+          format: date-time

@@ -1,0 +1,275 @@
+name: Backend Release
+
+run-name: >-
+  ${{
+    github.ref_type == 'tag'
+      && format('Release {0}', github.ref_name)
+      || 'Tip Build'
+  }}
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-go:
+    name: Verify Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - packages/contracts
+          - services/api
+          - services/realtime-audio
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+
+    steps:
+      - name: Check out target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Verify Go formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'The following Go files are not formatted:\n%s\n' "$unformatted"
+            exit 1
+          fi
+
+      - name: Build Go code
+        run: go build ./...
+
+      - name: Test Go code
+        run: go test -count=1 -race ./...
+
+  verify-integration:
+    name: Verify API Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lingow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d lingow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: services/api
+
+    env:
+      RECORDSTORE_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/lingow_test?sslmode=disable
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/lingow_test?sslmode=disable
+      JWT_SECRET: ci-integration-secret-1234567890123456
+      REALTIME_TICKET_SECRET: ci-realtime-ticket-secret-1234567890
+      LINGOW_SESSION_RUNTIME: disabled
+
+    steps:
+      - name: Check out target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Run API integration tests
+        run: go test -count=1 -tags=integration ./...
+
+  build-backend:
+    name: Build Backend Artifacts
+    needs:
+      - verify-go
+      - verify-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+
+      - name: Build backend binaries
+        shell: bash
+        run: |
+          mkdir -p dist
+
+          cd services/api
+          go build -trimpath -ldflags "-s -w" -o ../../dist/lingow-api-linux-amd64 .
+
+          cd ../realtime-audio
+          go build -trimpath -ldflags "-s -w" -o ../../dist/lingow-realtime-audio-linux-amd64 .
+
+          cd ../..
+          sha256sum dist/* > dist/checksums.txt
+
+      - name: Upload backend artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-artifacts-${{ github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    name: Publish GitHub Release
+    if: github.ref_type == 'tag' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: build-backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Download backend artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-artifacts-${{ github.sha }}
+          path: dist
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          release_tag_pattern='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          git fetch --tags --force
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            if [[ ! "${GITHUB_REF_NAME}" =~ $release_tag_pattern ]]; then
+              printf 'Release tag %s must match vMAJOR.MINOR.PATCH\n' "${GITHUB_REF_NAME}"
+              exit 1
+            fi
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "create_tag=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          current="$(git tag --points-at "$GITHUB_SHA" --sort=-v:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')"
+          if [ -n "$current" ]; then
+            echo "tag=${current}" >> "$GITHUB_OUTPUT"
+            echo "create_tag=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          latest="$(git tag --sort=-v:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }')"
+          if [ -z "$latest" ]; then
+            next="v0.1.0"
+          elif [[ "$latest" =~ $release_tag_pattern ]]; then
+            [[ "$latest" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[2]}"
+            patch="${BASH_REMATCH[3]}"
+            next="v${major}.${minor}.$((patch + 1))"
+          else
+            printf 'Latest release tag %s is not a vMAJOR.MINOR.PATCH tag\n' "$latest"
+            exit 1
+          fi
+
+          echo "tag=${next}" >> "$GITHUB_OUTPUT"
+          echo "create_tag=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create release tag
+        if: steps.release.outputs.create_tag == 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_TAG" "$GITHUB_SHA" -m "$RELEASE_TAG"
+          git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Check existing GitHub Release
+        id: github_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          if ! release_status="$(gh release view "$RELEASE_TAG" --json isDraft,assets --jq '
+            def asset_names: [.assets[].name];
+            if .isDraft then
+              "draft"
+            elif (asset_names | contains(["lingow-api-linux-amd64", "lingow-realtime-audio-linux-amd64", "checksums.txt"])) then
+              "complete"
+            else
+              "incomplete"
+            end
+          ' 2>/dev/null)"; then
+            echo "status=missing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$release_status" = "complete" ]; then
+            echo "status=complete" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf 'Release %s exists but is %s; clean it up before rerunning.\n' "$RELEASE_TAG" "$release_status"
+          exit 1
+
+      - name: Create GitHub Release
+        if: steps.github_release.outputs.status == 'missing'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/* \
+            --verify-tag \
+            --generate-notes

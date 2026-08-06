@@ -1,0 +1,7 @@
+go 1.26
+
+use (
+	./packages/contracts
+	./services/api
+	./services/realtime-audio
+)

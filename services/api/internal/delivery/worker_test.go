@@ -19,6 +19,7 @@ type workerQueueStub struct {
 	nackErr    error
 	acks       []string
 	nacks      []string
+	nackTimes  []time.Time
 }
 
 func (q *workerQueueStub) Enqueue(context.Context, string, string) error { return nil }
@@ -48,10 +49,11 @@ func (q *workerQueueStub) Ack(_ context.Context, receipt string) error {
 	return q.ackErr
 }
 
-func (q *workerQueueStub) Nack(_ context.Context, receipt string, _ time.Time) error {
+func (q *workerQueueStub) Nack(_ context.Context, receipt string, deadline time.Time) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.nacks = append(q.nacks, receipt)
+	q.nackTimes = append(q.nackTimes, deadline)
 	return q.nackErr
 }
 
@@ -247,6 +249,50 @@ func TestWorkerStopsWhenContextIsCancelled(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("worker did not stop after cancellation")
+	}
+}
+
+func TestWorkerRunRejectsNilContextAndMissingDependencies(t *testing.T) {
+	if err := NewWorker(&workerQueueStub{}).Run(nil); !errors.Is(err, ErrWorkerNotConfigured) {
+		t.Fatalf("Run(nil) error = %v, want worker not configured", err)
+	}
+	if err := NewConfiguredWorker(&workerQueueStub{}, WorkerDependencies{}).Run(context.Background()); !errors.Is(err, ErrWorkerNotConfigured) {
+		t.Fatalf("Run() error = %v, want worker not configured", err)
+	}
+}
+
+func TestWorkerProcessRejectsNilContext(t *testing.T) {
+	queue, repository, provider, worker := newWorkerFixture()
+
+	if err := worker.Process(nil, QueueMessage{AttemptID: "attempt-1", Receipt: "receipt-1"}); !errors.Is(err, ErrWorkerNotConfigured) {
+		t.Fatalf("Process(nil) error = %v, want worker not configured", err)
+	}
+	if provider.calls != 0 || repository.getAttemptCall != 0 || len(queue.acks) != 0 || len(queue.nacks) != 0 {
+		t.Fatalf("provider=%d reads=%d acks=%d nacks=%d, want no work", provider.calls, repository.getAttemptCall, len(queue.acks), len(queue.nacks))
+	}
+}
+
+func TestWorkerRunSurfacesReceiveFailure(t *testing.T) {
+	queue, _, _, worker := newWorkerFixture()
+	queue.receiveErr = errors.New("broker unavailable")
+
+	err := worker.Run(t.Context())
+	if err == nil || !errors.Is(err, queue.receiveErr) {
+		t.Fatalf("Run() error = %v, want receive error", err)
+	}
+}
+
+func TestWorkerRunStopsAfterProcessFailure(t *testing.T) {
+	queue, _, provider, worker := newWorkerFixture()
+	queue.items = []QueueMessage{{AttemptID: "attempt-1", Receipt: "receipt-1"}}
+	provider.err = errors.New("provider connection reset")
+
+	err := worker.Run(t.Context())
+	if err == nil || !errors.Is(err, provider.err) {
+		t.Fatalf("Run() error = %v, want process error", err)
+	}
+	if provider.calls != 1 || len(queue.acks) != 0 || len(queue.nacks) != 1 {
+		t.Fatalf("provider=%d acks=%d nacks=%d, want one failed delivery", provider.calls, len(queue.acks), len(queue.nacks))
 	}
 }
 
@@ -657,6 +703,40 @@ func TestWorkerRunStopsOnReceiveCancellation(t *testing.T) {
 	}
 	if len(queue.acks) != 0 || len(queue.nacks) != 0 {
 		t.Fatalf("acks=%d nacks=%d, want no settlement", len(queue.acks), len(queue.nacks))
+	}
+}
+
+func TestRetryAfterFailureRejectsNilQueue(t *testing.T) {
+	if err := RetryAfterFailure(context.Background(), nil, QueueMessage{Receipt: "receipt-1"}, 1); !errors.Is(err, ErrWorkerNotConfigured) {
+		t.Fatalf("RetryAfterFailure() error = %v, want worker not configured", err)
+	}
+}
+
+func TestRetryAfterFailureNormalizesAttemptAndCapsDelay(t *testing.T) {
+	tests := []struct {
+		name    string
+		attempt int
+		min     time.Duration
+		max     time.Duration
+	}{
+		{name: "normalizes zero", attempt: 0, min: 900 * time.Millisecond, max: 3 * time.Second},
+		{name: "caps large values", attempt: 61, min: 59 * time.Minute, max: 61 * time.Minute},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			queue := &workerQueueStub{}
+			before := time.Now()
+			if err := RetryAfterFailure(context.Background(), queue, QueueMessage{Receipt: "receipt-1"}, test.attempt); err != nil {
+				t.Fatalf("RetryAfterFailure() error = %v", err)
+			}
+			if len(queue.nackTimes) != 1 {
+				t.Fatalf("RetryAfterFailure() recorded %d nacks, want 1", len(queue.nackTimes))
+			}
+			delay := queue.nackTimes[0].Sub(before)
+			if delay < test.min || delay > test.max {
+				t.Fatalf("RetryAfterFailure() delay = %v, want within [%v, %v]", delay, test.min, test.max)
+			}
+		})
 	}
 }
 

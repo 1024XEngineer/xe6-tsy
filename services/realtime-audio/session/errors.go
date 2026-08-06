@@ -30,6 +30,7 @@ var (
 )
 
 const (
-	ErrorCodeStartFailed = string(realtimev1.RuntimeErrorStartFailed)
-	ErrorCodeStopFailed  = string(realtimev1.RuntimeErrorStopFailed)
+	ErrorCodeStartFailed    = string(realtimev1.RuntimeErrorStartFailed)
+	ErrorCodeStopFailed     = string(realtimev1.RuntimeErrorStopFailed)
+	ErrorCodePipelineFailed = string(realtimev1.RuntimeErrorPipelineFailed)
 )

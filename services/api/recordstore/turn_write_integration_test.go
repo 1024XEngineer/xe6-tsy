@@ -237,6 +237,8 @@ func TestTurnWriterRollsBackPendingTurnWhenAttributionTaskCannotEnqueue(t *testi
 	event := finalTurnEvent("event_missing_session", "turn_missing_session", "session_missing", 1)
 	event.ParticipantID = nil
 	event.AttributionStatus = recordsv1.AttributionPending
+	providerSpeakerID := "cluster_01"
+	event.ProviderSpeakerID = &providerSpeakerID
 
 	if err := NewTurnWriter(pool).StoreFinalTurn(t.Context(), event); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("StoreFinalTurn() error = %v, want not found", err)

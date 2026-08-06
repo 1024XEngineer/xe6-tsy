@@ -220,7 +220,7 @@ export function useVoiceSession() {
           ? `（${snapshot.last_error_code}）`
           : "";
         setHintMessage(
-          `实时管道已失败${code}。信令/建连可能已成功，但 ASR→翻译 worker 退出了；请重启 start-local 后再试，并确认说话时有声音输入。`,
+          `实时管道已失败${code}。请在 realtime-audio 日志中按当前 session ID 查找「realtime pipeline worker failed」以确认具体失败阶段，重启后再试。`,
         );
       } else if (snapshot.last_error_code) {
         setHintMessage(`last_error_code: ${snapshot.last_error_code}`);

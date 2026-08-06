@@ -26,3 +26,39 @@ func TestNeedsAsyncAttribution(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldEnqueueAttributionRequiresProviderEvidence(t *testing.T) {
+	providerSpeakerID := "cluster_01"
+	blankProviderSpeakerID := "  "
+	tests := []struct {
+		name  string
+		event recordsv1.FinalTurnEvent
+		want  bool
+	}{
+		{
+			name:  "pending with provider evidence",
+			event: recordsv1.FinalTurnEvent{AttributionStatus: recordsv1.AttributionPending, ProviderSpeakerID: &providerSpeakerID},
+			want:  true,
+		},
+		{
+			name:  "pending without provider evidence",
+			event: recordsv1.FinalTurnEvent{AttributionStatus: recordsv1.AttributionPending},
+		},
+		{
+			name:  "pending with blank provider evidence",
+			event: recordsv1.FinalTurnEvent{AttributionStatus: recordsv1.AttributionPending, ProviderSpeakerID: &blankProviderSpeakerID},
+		},
+		{
+			name:  "confirmed with provider evidence",
+			event: recordsv1.FinalTurnEvent{AttributionStatus: recordsv1.AttributionConfirmed, ProviderSpeakerID: &providerSpeakerID},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := shouldEnqueueAttribution(test.event); got != test.want {
+				t.Fatalf("shouldEnqueueAttribution() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}

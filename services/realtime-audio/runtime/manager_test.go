@@ -1,9 +1,12 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -202,6 +205,8 @@ func TestManagerReportsTerminalFailureAndAllowsRetry(t *testing.T) {
 	}
 	openCalls := 0
 	deps := testDependencies(first, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	var logs bytes.Buffer
+	deps.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	deps.Runtime = reporter
 	deps.FrameSources = FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
 		openCalls++
@@ -229,6 +234,12 @@ func TestManagerReportsTerminalFailureAndAllowsRetry(t *testing.T) {
 	case <-reporter.failureCalled:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for RuntimeFailed report")
+	}
+	logOutput := logs.String()
+	for _, want := range []string{"realtime pipeline worker failed", "session-1", "operation-1", "trace-1", "ASR unavailable"} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("terminal failure log %q does not contain %q", logOutput, want)
+		}
 	}
 	if !manager.PipelineActive(snapshot.SessionID) {
 		t.Fatal("terminal worker was reported inactive before failure settlement")

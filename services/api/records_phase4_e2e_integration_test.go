@@ -414,23 +414,28 @@ func (f *recordsPhase4Fixture) publishFinalTurns(t *testing.T) recordsPhase4Turn
 	}
 
 	// The realtime producer never writes participant rows; the API attribution worker owns the
-	// mapping. Draining the three enqueued tasks (attributed turn resolves, the two turns without
-	// a provider key fail permanently) mirrors the production async chain.
-	f.resolveAttributionTasks(t)
+	// mapping. Only the turn with provider evidence is enqueued; the other two remain pending.
+	f.resolveAttributionTask(t)
 	return result
 }
 
-func (f *recordsPhase4Fixture) resolveAttributionTasks(t *testing.T) {
+func (f *recordsPhase4Fixture) resolveAttributionTask(t *testing.T) {
 	t.Helper()
+	var taskCount int
+	if err := f.pool.QueryRow(t.Context(), "SELECT COUNT(*) FROM attribution_tasks").Scan(&taskCount); err != nil {
+		t.Fatalf("count attribution tasks: %v", err)
+	}
+	if taskCount != 1 {
+		t.Fatalf("attribution tasks = %d, want 1 with provider evidence", taskCount)
+	}
+
 	store := recordstore.NewAttributionTaskStore(f.pool)
-	for range 3 {
-		delivery, err := store.Receive(t.Context())
-		if err != nil {
-			t.Fatalf("receive attribution task: %v", err)
-		}
-		if err := f.records.AttributionWorker.Process(t.Context(), delivery); err != nil {
-			t.Fatalf("attribution worker Process() error = %v", err)
-		}
+	delivery, err := store.Receive(t.Context())
+	if err != nil {
+		t.Fatalf("receive attribution task: %v", err)
+	}
+	if err := f.records.AttributionWorker.Process(t.Context(), delivery); err != nil {
+		t.Fatalf("attribution worker Process() error = %v", err)
 	}
 }
 

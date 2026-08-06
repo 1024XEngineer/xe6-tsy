@@ -111,9 +111,14 @@ worker owns receipt settlement and persistence into `voice_turns`.
 
 Speaker evidence: the pipeline copies a non-empty `asr.FinalResult.ProviderSpeakerID` into the
 FinalTurn event as `provider_speaker_id`. When the ASR/diarization provider returns no speaker key,
-the turn stays `pending` and no participant is created; there is no implicit `local-mic` fallback,
-because a missing cluster key is not evidence of a single speaker. The API async attribution worker
-uses this persisted key to build the stable participant mapping and confirm/correct the turn.
+the turn stays `pending`, no attribution task or participant is created, and there is no implicit
+`local-mic` fallback because a missing cluster key is not evidence of a single speaker. When a key
+exists, the API async attribution worker uses it to build the stable participant mapping and
+confirm/correct the turn.
+
+Terminal media worker failures set `last_error_code=realtime_pipeline_failed` and emit a structured
+`realtime pipeline worker failed` log with `session_id`, `operation_id`, `trace_id`, and the complete
+wrapped error. This log is the diagnostic source for failures after signaling and lifecycle Start.
 
 Official protocol references:
 

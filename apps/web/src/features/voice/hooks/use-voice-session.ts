@@ -467,9 +467,16 @@ export function useVoiceSession() {
           void startRef.current();
           return;
         }
-        if (!runningRef.current && !sessionIdRef.current) return;
-        setHintMessage(`已识别「${keyword}」，正在停止传译…`);
-        void endRef.current();
+        if (command === "stop") {
+          if (!runningRef.current && !sessionIdRef.current) return;
+          setHintMessage(`已识别「${keyword}」，正在停止传译…`);
+          void endRef.current();
+          return;
+        }
+        if (command === "listen") {
+          // Temporary verify hook until command-mode behavior lands.
+          console.log(`[wake] listen recognized: ${keyword}`);
+        }
       },
       onStatus: (status, detail) => {
         setWakeStatus(status);

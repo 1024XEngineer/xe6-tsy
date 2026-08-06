@@ -4,7 +4,7 @@
  */
 
 import {
-  classifyWakeKeyword,
+  resolveWakeTrigger,
   type WakeCommand,
 } from "./keywords";
 import {
@@ -25,6 +25,7 @@ export type WakeListenerStatus =
   | "error";
 
 export type WakeListenerHandlers = {
+  /** Second arg is the canonical catalog label (never a 小林 alias). */
   onCommand: (command: WakeCommand, keyword: string) => void;
   onStatus?: (status: WakeListenerStatus, detail?: string) => void;
 };
@@ -168,10 +169,10 @@ export class WakeWordListener {
   private emitKeyword(keyword: string): void {
     const now = Date.now();
     if (now - this.lastFireAt < COOLDOWN_MS) return;
-    const command = classifyWakeKeyword(keyword);
-    if (!command) return;
+    const trigger = resolveWakeTrigger(keyword);
+    if (!trigger) return;
     this.lastFireAt = now;
-    this.handlers.onCommand(command, keyword);
+    this.handlers.onCommand(trigger.command, trigger.label);
   }
 
   /** Clone mic tracks for WebRTC so TTS mute / session close won't stop KWS. */

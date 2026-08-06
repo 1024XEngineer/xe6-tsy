@@ -71,9 +71,9 @@ moduleA = AccountSessionModule {
 
 关键代码边界：
 
-- `services/api/sessions/service.go`：会话 Use Case 和依赖组合；
-- `services/api/sessions/ports.go`：Repository、RealtimeLifecycle 等业务端口；
-- `services/api/sessions/model.go`：`VoiceSession`、`StartOperation` 和业务状态模型。
+- [services/api/sessions/service.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/services/api/sessions/service.go)：会话 Use Case 和依赖组合；
+- [services/api/sessions/ports.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/services/api/sessions/ports.go)：Repository、RealtimeLifecycle 等业务端口；
+- [services/api/sessions/model.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/services/api/sessions/model.go)：`VoiceSession`、`StartOperation` 和业务状态模型。
 
 ### 3.2 moduleB：语言配置与实时接入模块
 
@@ -122,9 +122,9 @@ moduleB = LanguageAndRealtimeAccessModule {
 
 关键代码边界：
 
-- `services/api/languages/`：语言列表和会话语言配置；
-- `services/api/realtimeaccess/`：实时生命周期适配和 ticket 边界；
-- `packages/contracts/realtime/v1/`：Start、Stop、ticket 和运行时协议。
+- [services/api/languages/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/api/languages)：语言列表和会话语言配置；
+- [services/api/realtimeaccess/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/api/realtimeaccess)：实时生命周期适配和 ticket 边界；
+- [packages/contracts/realtime/v1/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/packages/contracts/realtime/v1)：Start、Stop、ticket 和运行时协议。
 
 ### 3.3 moduleC：实时转译模块
 
@@ -150,7 +150,7 @@ moduleC = RealtimeTranslationModule {
         "language_config_version": 3         // 本 Turn 开始时固定使用的语言配置版本
     }
 
-    OutputC =====> moduleD 输出，并向 Client 发布实时事件
+    OutputC =====> Client 发布实时事件
 
     {
         "client_events": [                   // 事件类型示意；事件按时间独立产生，并非一次返回整个数组
@@ -174,7 +174,12 @@ moduleC = RealtimeTranslationModule {
                 "type": "playback.finished", // Opus 下行模式产生的播放完成事件
                 "playback_id": "playback_turn_001" // 与 started 事件相同的播放标识
             }
-        ],
+        ]
+    }
+
+    OutputC =====> moduleD 提交已确认事实
+
+    {
         "translation_final": {               // 交给记录模块可靠保存的最终转译事实
             "event_id": "event_001",        // 事件幂等标识；重试必须保持 ID 和 payload 不变
             "turn_id": "turn_001",          // 当前一句话对应的业务 Turn 唯一标识
@@ -208,72 +213,16 @@ moduleC = RealtimeTranslationModule {
 
 `moduleC` 负责验证 ticket、建立 WebRTC、接收音频，并编排 `VAD -> ASR -> Translation -> TTS`。partial 结果只用于临时展示或上下文纠偏；只有 ASR final 才能触发翻译、TTS、FinalTurn 和正式用量记录。播放期间如果检测到新的语音输入，实时状态机负责停止当前播放并恢复听音。
 
-当前代码中的本地 Segmenter 是先完成句末切分，再把完整语音片段送入 ASR；因此上面的 `asr.partial` 表达的是目标实时事件契约。若验收要求用户说话期间持续展示 partial，还需要将音频持续送入 ASR，并由句末检测触发 Finish。
-
-#### 3.3.1 事件分层与当前实现状态
-
-上面 `client_events` 中的数组仅用于集中展示可能涉及的事件类型，不代表服务端会在一个响应中一次性返回这些事件。真实运行中，事件会随着 ASR、翻译和播放进度分别产生，而且并非所有事件当前都会发送给客户端。
-
-| 事件 | 当前后端用途 | 当前是否发送客户端 | 当前 Web 是否消费 |
-| --- | --- | --- | --- |
-| `asr.partial` | ASR Provider 的临时识别结果；当前 Pipeline 忽略非 final 事件 | 否 | 否 |
-| `asr.final` | 触发翻译、Final Turn、用量记录和 TTS | 不作为独立事件发送 | 否；最终原文包含在 `translation.final` 中 |
-| `translation.final` | 配置数据库时可靠写入 Recordstore，同时形成客户端字幕 | 是，通过 DataChannel 尽力而为发送 | 是 |
-| `tts.audio` | PCM 下行模式下向浏览器发送 TTS 音频分片 | PCM 模式发送 | 是，由浏览器重组并播放 |
-| `playback.started` | Opus 下行模式下更新播放状态并表示音频开始 | Opus 模式发送 | 当前未显式消费 |
-| `playback.finished` | Opus 下行模式下结束播放状态 | Opus 模式发送 | 当前未显式消费 |
-
-内部 ASR 事件的当前处理链路是：
-
-```text
-ASR Provider
-  -> asr.partial
-       -> 当前 Pipeline 忽略
-       -> 未来可以转发客户端用于实时字幕
-
-  -> asr.final
-       -> Translation
-       -> FinalTurn Publish
-       -> Usage Publish
-       -> TTS
-       -> Playback
-```
-
-`translation.final` 会在同一业务事实形成后交付到两个不同方向，但两个方向的可靠性要求不同：
-
-```text
-translation.final
-  -> DataChannel -> Client
-       // 用于即时字幕展示，当前本地实时链路采用尽力而为发送
-
-  -> Durable Outbox -> Recordstore
-       // 启用数据库集成时，用于幂等持久化 VoiceTurn 并支持可靠重试
-```
-
-TTS 客户端交互取决于下行模式：
-
-```text
-REALTIME_TTS_DOWNLINK=none
-  -> 不发送 TTS 音频
-
-REALTIME_TTS_DOWNLINK=pcm
-  -> DataChannel 发送 tts.audio
-  -> Web 重组 PCM 或音频容器后在本地播放
-
-REALTIME_TTS_DOWNLINK=opus
-  -> WebRTC TTS audio track 播放
-  -> DataChannel 发送 playback.started / playback.finished
-```
-
-因此，当前实现中 `asr.partial` 和 `asr.final` 属于实时服务内部处理事件；`translation.final` 同时服务于客户端展示和后端持久化；`tts.audio` 与 `playback.*` 是否发送，则由 TTS 下行模式决定。`usage.recorded` 是后端事件，不发送给客户端；启用 usage outbox 后才具备持久化和可靠重试能力。
-
 关键代码边界：
 
-- `services/realtime-audio/controlplane/http.go`：实时 Start、Stop、runtime 和 WebRTC 控制面；
-- `services/realtime-audio/runtime/manager.go`：每个 Session 的媒体运行时装配和生命周期；
-- `services/realtime-audio/vad/`、`segment/`：音频帧和句末检测；
-- `services/realtime-audio/pipeline/`：ASR、翻译、TTS 编排；
-- `services/realtime-audio/asr/`、`translate/`、`tts/`：Provider 替换边界。
+- [services/realtime-audio/controlplane/http.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/services/realtime-audio/controlplane/http.go)：实时 Start、Stop、runtime 和 WebRTC 控制面；
+- [services/realtime-audio/runtime/manager.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/services/realtime-audio/runtime/manager.go)：每个 Session 的媒体运行时装配和生命周期；
+- [services/realtime-audio/vad/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/realtime-audio/vad) 与 [services/realtime-audio/segment/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/realtime-audio/segment)：语音活动检测和句末分段；
+- [services/realtime-audio/pipeline/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/realtime-audio/pipeline)：ASR、翻译、TTS 和事件交付编排；
+- [services/realtime-audio/asr/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/realtime-audio/asr)、[services/realtime-audio/translate/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/realtime-audio/translate) 与 [services/realtime-audio/tts/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/realtime-audio/tts)：外部 Provider 的替换边界。
+
+
+
 
 ### 3.4 moduleD：记录与用量模块
 
@@ -335,35 +284,56 @@ moduleD = RecordAndUsageModule {
 
 关键代码边界：
 
-- `packages/contracts/records/v1/records.go`：`FinalTurnEvent`、`FinalTurnSink` 和 `FinalTurnConsumer`；
-- `services/realtime-audio/pipeline/postgres_outbox.go`：实时侧 Final Turn durable outbox；
-- `services/api/recordstore/composition.go`：记录服务和 Final Turn consumer 的组合；
-- `services/api/turns/`、`services/api/participants/`：Final Turn、说话人和历史查询。
+- [packages/contracts/records/v1/records.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/packages/contracts/records/v1/records.go)：`FinalTurnEvent`、`FinalTurnSink` 和 `FinalTurnConsumer` 契约；
+- [services/realtime-audio/pipeline/postgres_outbox.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/services/realtime-audio/pipeline/postgres_outbox.go)：实时侧 Final Turn 可靠事件发件箱；
+- [services/api/recordstore/composition.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/services/api/recordstore/composition.go)：记录服务和 Final Turn consumer 的组合；
+- [services/api/turns/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/api/turns) 与 [services/api/participants/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/api/participants)：Final Turn、说话人归属和历史读取；
+- [services/api/internal/usage/](https://github.com/1024XEngineer/xe6-tsy/tree/dev/services/api/internal/usage)：用量事实消费、幂等记录和汇总。
 
-## 4. 结束会话控制链路
+### 3.5 结束会话：moduleA 与 moduleC 协作
 
-结束会话不是简单地修改一个数据库字段，而是一次跨服务的停止确认：
+结束会话不是新的独立模块，而是 `moduleA` 协调 `moduleC` 完成的一次跨服务停止确认：
 
 ```text
-Client
-  ---> moduleA: EndSession(
-           session_id,  // 需要结束的业务 Session 唯一标识
-           reason       // 用户主动结束、客户端断开或其他标准结束原因
-       )
-  ---> moduleC: Stop(
-           session_id   // 要求 realtime-audio 清理的 Session 唯一标识
-       )
-  <--- moduleC: RuntimeStopped(
-           runtime_snapshot // realtime-audio 返回的权威 stopped 运行时快照
-       )
-  <--- moduleA: SessionEnded(
-           status = "ended" // realtime 停止后由 API 持久化的最终业务状态
-       )
+moduleA.EndSession {
+
+    Client =====> moduleA：发送 EndSession 请求
+
+    {
+        "session_id": "sess_001",           // 需要结束的业务 Session 唯一标识
+        "reason": "user_requested"           // 结束原因，例如用户主动结束或客户端断开
+    }
+
+    moduleA =====> moduleC：发送 Stop 请求
+
+    {
+        "session_id": "sess_001"            // 要求 realtime-audio 停止并清理的 Session
+    }
+
+    moduleC =====> moduleA：返回 RuntimeStopped
+
+    {
+        "runtime_snapshot": "stopped"       // realtime-audio 返回的权威停止状态快照
+    }
+
+    moduleA =====> Client：返回 SessionEnded
+
+    {
+        "session_id": "sess_001",           // 已完成停止流程的业务 Session
+        "status": "ended"                   // moduleA 持久化并返回的最终业务状态
+    }
+}
 ```
 
 API 只有在 realtime-audio 确认 Pipeline、Provider Context、Track、DataChannel 和 PeerConnection 都已停止后，才把业务 Session 标记为 `ended`。Stop 必须幂等，失败时保持未结束状态并允许重试，避免出现“业务会话已经结束但音频仍然运行”的不一致。
 
-## 5. 状态所有权
+关键代码位置：
+
+- [services/api/sessions/service_end.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/services/api/sessions/service_end.go)：`moduleA` 的结束会话协调逻辑；
+- [services/realtime-audio/controlplane/http.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/services/realtime-audio/controlplane/http.go)：`moduleC` 的 Stop 接口和运行时停止确认；
+- [packages/contracts/realtime/v1/controlplane.go](https://github.com/1024XEngineer/xe6-tsy/blob/dev/packages/contracts/realtime/v1/controlplane.go)：跨模块 Start、Stop 和运行时状态契约。
+
+## 4. 状态所有权
 
 ```text
 services/api/sessions
@@ -384,7 +354,7 @@ services/api/internal/usage
 
 这些状态可以通过 `session_id` 关联，但不能由多个模块同时维护。API 查询实时快照，却不复制实时播放状态机；realtime-audio 产生 FinalTurn 和 UsageFact，却不直接拥有账户归属和长期历史。
 
-## 6. 架构验收标准
+## 5. 架构验收标准
 
 沿着本文链路，客户端必须能够完成：
 
@@ -403,11 +373,11 @@ services/api/internal/usage
 
 每个跨模块输入输出都必须能在 `packages/contracts`、对应 Go/TypeScript 消费者和测试中找到一致定义。当前工作树仍需关注公开 Session HTTP 入口、realtime 进程装配和真实客户端消费者是否已完整接线；模块内部能力存在不等于端到端链路已经完成。
 
-## 7. 结合时序图与伪代码的纯中文讲解稿
+## 6. 结合时序图与伪代码的纯中文讲解稿
 
 下面这份稿子按“先讲用户故事，再走时序图，最后落到四个模块和关键实现”的顺序组织，正常语速约需八至十分钟。方括号中的内容是讲解提示，不需要念出来。
 
-### 7.1 开场：先说明架构主线
+### 6.1 开场：先说明架构主线
 
 【指向时序图中的全部参与方】
 
@@ -419,7 +389,7 @@ services/api/internal/usage
 
 这里需要注意，图上的四个模块表示四类业务责任，不代表一定要部署成四套独立服务。当前实现主要是业务服务和实时音频服务两套服务，只是在每套服务内部继续按照职责拆分。
 
-### 7.2 第一阶段：认证并创建业务会话
+### 6.2 第一阶段：认证并创建业务会话
 
 【指向用户、客户端和业务服务之间的前三条消息，再指向第一个模块】
 
@@ -431,7 +401,7 @@ services/api/internal/usage
 
 从代码架构上看，这一部分内部又分为三层：用例层负责组织创建、开始和结束会话的业务流程；依赖接口层负责隔离数据库和实时服务；状态模型层负责约束会话能够怎样变化。这里体现的原则是，业务会话状态只能由业务服务维护，客户端和实时音频服务都不能自行修改。
 
-### 7.3 第二阶段：固定语言配置并取得实时凭证
+### 6.3 第二阶段：固定语言配置并取得实时凭证
 
 【指向客户端设置语言、业务服务返回接入信息，再指向第二个模块】
 
@@ -445,7 +415,7 @@ services/api/internal/usage
 
 从代码架构上看，这一部分由语言配置模块负责校验语言组合和管理版本，由实时接入模块负责签发短期凭证，再由公共契约层统一约束双方交接的数据含义。
 
-### 7.4 第三阶段：建立实时连接并处理一句话
+### 6.4 第三阶段：建立实时连接并处理一句话
 
 【指向客户端连接实时音频服务、用户发送音频和内部处理链路，再指向第三个模块】
 
@@ -461,7 +431,7 @@ services/api/internal/usage
 
 从代码架构上看，这一部分分为连接适配层、音频预处理层、句末检测层、流程编排层和外部能力适配层。连接适配层只处理音频和实时消息；流程编排层只决定各处理步骤的先后顺序；外部能力适配层负责接入不同的识别、翻译和语音合成供应商。因此后续更换供应商时，不需要重写整条业务流程。
 
-### 7.5 第四阶段：区分客户端实时通知和后端可靠事实
+### 6.5 第四阶段：区分客户端实时通知和后端可靠事实
 
 【指向实时音频服务发往客户端、记录模块和业务服务的三条消息，再指向第三个模块的输出】
 
@@ -477,7 +447,7 @@ services/api/internal/usage
 
 同样，实时音频服务向业务服务提交用量的箭头也是逻辑关系。开启可靠用量投递后，实时服务会把用量事实写入缓存系统提供的消息流，业务服务中的用量任务再读取、幂等记录并确认。它既不是客户端通知，也不是同步网络请求。如果没有开启对应的可靠投递配置，当前实现只会在实时服务进程内暂存用量，不具备跨进程可靠交付能力。
 
-### 7.6 第五阶段：持久化最终话轮和用量
+### 6.6 第五阶段：持久化最终话轮和用量
 
 【指向第四个模块和客户端查询最终记录的消息】
 
@@ -491,7 +461,7 @@ services/api/internal/usage
 
 从代码架构上看，这一部分由公共契约层定义最终话轮的完整结构，由可靠事件表和后台消费任务负责交接，再由记录服务和用量服务分别完成幂等保存。
 
-### 7.7 第六阶段：可靠结束整个会话
+### 6.7 第六阶段：可靠结束整个会话
 
 【指向时序图最后五条消息和结束会话控制链路】
 
@@ -503,7 +473,7 @@ services/api/internal/usage
 
 这里再次体现了状态所有权。业务服务管理已经创建、正在进行、已经结束和处理失败等业务状态；实时音频服务管理正在听音、正在识别、正在翻译、正在播放等运行状态；客户端只负责展示状态，不在本地复制任何一套后端状态机。
 
-### 7.8 收尾总结
+### 6.8 收尾总结
 
 【重新指向整张时序图】
 

@@ -12,7 +12,6 @@
 
 - 当前 `AGENTS.md`
 - 如果是前端代码，读 `apps/AGENTS.md`，如果是后端代码，读 `services/AGENTS.md`;
-- docs/`项目前后端统一开发规范.md`；
 - 根目录 `README.md`；
 - 改动目录内最近的 `README.md`；
 - 本次工作关联的 Issue、Proposal 和验收标准。

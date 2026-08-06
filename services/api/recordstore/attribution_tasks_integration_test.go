@@ -441,8 +441,10 @@ func TestAttributionTaskReceiveReturnsOnCancelledContext(t *testing.T) {
 func seedAttributionTask(t *testing.T, pool *pgxpool.Pool, eventID, turnID, sessionID string, sequenceNo int64) {
 	t.Helper()
 	insertOwnedSession(t, pool, sessionID, "acct_01")
+	providerID := "cluster_01"
 	event := finalTurnEvent(eventID, turnID, sessionID, sequenceNo)
 	event.ParticipantID = nil
+	event.ProviderSpeakerID = &providerID
 	event.AttributionStatus = recordsv1.AttributionPending
 	if err := NewTurnWriter(pool).StoreFinalTurn(t.Context(), event); err != nil {
 		t.Fatalf("StoreFinalTurn() error = %v", err)

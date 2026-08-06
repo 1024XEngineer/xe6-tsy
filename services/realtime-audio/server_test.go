@@ -208,9 +208,9 @@ func TestRunShutsDownAfterStart(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, secretEnv(strings.Repeat("u", 32)), func(server *http.Server) error {
-			close(started)
 			shutdownStarted := make(chan struct{})
 			server.RegisterOnShutdown(func() { close(shutdownStarted) })
+			close(started)
 			<-shutdownStarted
 			return http.ErrServerClosed
 		})

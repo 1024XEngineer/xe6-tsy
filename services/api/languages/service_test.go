@@ -262,6 +262,58 @@ func TestValidateP0LanguagePairs(t *testing.T) {
 	}
 }
 
+func TestServiceListConfigHistory(t *testing.T) {
+	store := &historyStoreFake{
+		MemoryStore: NewMemoryStore(nil, nil),
+		items: []LanguageConfig{
+			{SessionID: "vs_1", Version: 2},
+			{SessionID: "vs_1", Version: 1},
+		},
+		nextCursor: "1",
+	}
+	svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})
+
+	items, next, err := svc.ListConfigHistory(t.Context(), "acct_1", "vs_1", "2", 1)
+	if err != nil {
+		t.Fatalf("ListConfigHistory() error = %v", err)
+	}
+	if !store.called {
+		t.Fatal("ListConfigs() was not called")
+	}
+	if store.query.SessionID != "vs_1" || store.query.Cursor != "2" || store.query.Limit != 1 {
+		t.Fatalf("ListConfigs query = %#v", store.query)
+	}
+	if len(items) != 2 || items[0].Version != 2 || next != "1" {
+		t.Fatalf("items=%#v next=%q", items, next)
+	}
+}
+
+func TestServiceListConfigHistoryRejectsUnauthorized(t *testing.T) {
+	tests := []struct {
+		name      string
+		accountID string
+		want      error
+	}{
+		{name: "missing_account", want: ErrUnauthenticated},
+		{name: "forbidden", accountID: "acct_other", want: ErrForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &historyStoreFake{MemoryStore: NewMemoryStore(nil, nil)}
+			svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})
+
+			_, _, err := svc.ListConfigHistory(t.Context(), tt.accountID, "vs_1", "", 20)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("ListConfigHistory() error = %v, want %v", err, tt.want)
+			}
+			if store.called {
+				t.Fatal("ListConfigs() should not be called")
+			}
+		})
+	}
+}
+
 // concurrentIdempotencyStore forces both callers to miss the pre-insert lookup,
 // then lets both enter CreateActiveConfig so one hits ErrIdempotencyConflict.
 type concurrentIdempotencyStore struct {
@@ -309,4 +361,19 @@ func (s *concurrentIdempotencyStore) CreateActiveConfig(ctx context.Context, inp
 		close(second)
 	}
 	return s.MemoryStore.CreateActiveConfig(ctx, input)
+}
+
+type historyStoreFake struct {
+	*MemoryStore
+	called     bool
+	query      ListConfigsQuery
+	items      []LanguageConfig
+	nextCursor string
+	err        error
+}
+
+func (s *historyStoreFake) ListConfigs(_ context.Context, query ListConfigsQuery) ([]LanguageConfig, string, error) {
+	s.called = true
+	s.query = query
+	return append([]LanguageConfig(nil), s.items...), s.nextCursor, s.err
 }

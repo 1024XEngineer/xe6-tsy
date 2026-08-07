@@ -21,6 +21,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad/silero"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -211,7 +212,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		return nil, fmt.Errorf("load provider config: %w", err)
 	}
 	providerConfig = applySubtitleOnlyOverrides(cfg, providerConfig)
-	// Local energy VAD owns utterance cuts; disable Qwen server_vad unless set.
+	// Local Silero (or energy) VAD owns utterance cuts; disable Qwen server_vad unless set.
 	if strings.TrimSpace(os.Getenv("ASR_SERVER_VAD")) == "" {
 		providerConfig.ASR.ServerVAD = false
 	}
@@ -233,28 +234,27 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		voiceID = "Cherry"
 	}
 
+	newSegmenter, err := newLocalVADSegmenterFactory(os.Getenv)
+	if err != nil {
+		return nil, fmt.Errorf("configure local VAD: %w", err)
+	}
+
 	manager, err := runtime.NewManager(providerConfig, mockOfflineProviders(cfg.SourceLanguage), runtime.Dependencies{
 		FrameSources: localruntime.WebRTCFrameSources{
 			Media:          connections,
 			SourceLanguage: cfg.SourceLanguage,
 			Languages:      languages,
 		},
-		NewSegmenter: func() (*vad.Segmenter, error) {
-			return vad.NewSegmenter(localruntime.EnergySpeechClassifier{Threshold: 0.01}, vad.Options{
-				SilenceAfter:  800 * time.Millisecond,
-				MaxDuration:   12 * time.Second,
-				PrefixPadding: 500 * time.Millisecond,
-			})
-		},
-		Languages:  languages,
-		FinalTurns: finalTurns,
-		Usage:      usage,
-		Audio:      audioSink,
-		Runtime:    runtimeBridge,
-		VoiceID:    voiceID,
-		Logger:     slog.Default(),
-		Latency:    slog.Default(),
-		Now:        now,
+		NewSegmenter: newSegmenter,
+		Languages:    languages,
+		FinalTurns:   finalTurns,
+		Usage:        usage,
+		Audio:        audioSink,
+		Runtime:      runtimeBridge,
+		VoiceID:      voiceID,
+		Logger:       slog.Default(),
+		Latency:      slog.Default(),
+		Now:          now,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure runtime manager: %w", err)
@@ -316,6 +316,66 @@ func usageOutboxEnabled(getenv func(string) string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+const (
+	localVADSilenceAfter  = 800 * time.Millisecond
+	localVADMaxDuration   = 12 * time.Second
+	localVADPrefixPadding = 500 * time.Millisecond
+)
+
+// newLocalVADSegmenterFactory wires the process-local utterance cutter used by
+// every realtime session. Silero is the default production classifier; energy
+// remains an explicit LOCAL_VAD_PROVIDER=energy fallback for environments
+// without ONNX Runtime.
+func newLocalVADSegmenterFactory(getenv func(string) string) (runtime.SegmenterFactory, error) {
+	cfg := silero.LoadLocalConfigFromEnv(getenv)
+	options := vad.Options{
+		SilenceAfter:  localVADSilenceAfter,
+		MaxDuration:   localVADMaxDuration,
+		PrefixPadding: localVADPrefixPadding,
+	}
+	switch cfg.Provider {
+	case silero.ProviderEnergy:
+		slog.Info("realtime-audio local VAD provider", "provider", silero.ProviderEnergy)
+		return func() (*vad.Segmenter, error) {
+			return vad.NewSegmenter(localruntime.EnergySpeechClassifier{Threshold: 0.01}, options)
+		}, nil
+	case silero.ProviderSilero:
+		if _, err := os.Stat(cfg.LibraryPath); err != nil {
+			slog.Info("silero VAD onnxruntime missing; downloading official release",
+				"version", "1.24.1",
+				"dest", "third_party/onnxruntime",
+			)
+		}
+		if err := silero.EnsureAssets(&cfg); err != nil {
+			return nil, fmt.Errorf("prepare silero VAD assets: %w", err)
+		}
+		rt, err := silero.NewRuntime(silero.RuntimeConfig{
+			LibraryPath:  cfg.LibraryPath,
+			ModelPath:    cfg.ModelPath,
+			Threshold:    cfg.Threshold,
+			NegThreshold: cfg.NegThreshold,
+		})
+		if err != nil {
+			return nil, err
+		}
+		slog.Info("realtime-audio local VAD provider",
+			"provider", silero.ProviderSilero,
+			"model_path", cfg.ModelPath,
+			"library_path", cfg.LibraryPath,
+			"threshold", cfg.Threshold,
+		)
+		return func() (*vad.Segmenter, error) {
+			classifier, err := rt.NewClassifier()
+			if err != nil {
+				return nil, err
+			}
+			return vad.NewSegmenter(classifier, options)
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported LOCAL_VAD_PROVIDER %q (want %q or %q)", cfg.Provider, silero.ProviderSilero, silero.ProviderEnergy)
 	}
 }
 

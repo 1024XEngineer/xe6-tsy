@@ -116,7 +116,7 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		"text_bytes", len(result.Text),
 	)
 	if strings.TrimSpace(result.Text) == "" || isTrivialASRText(result.Text) {
-		// Energy VAD / Manual commit can produce empty or filler cuts; keep listening.
+		// Local VAD / Manual commit can produce empty or filler cuts; keep listening.
 		if err := p.pipeline.reportListening(ctx, turn); err != nil {
 			return turn, err
 		}

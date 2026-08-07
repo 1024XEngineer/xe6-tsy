@@ -20,7 +20,7 @@ func (r *PostgresRepository) ListAutomaticTurnRetryCandidates(ctx context.Contex
 		language_config_version,status,target_count,settled_count,succeeded_count,
 		failed_count,fallback_operation_id,created_at,updated_at
 		FROM automatic_turn_runs
-		WHERE status='partially_succeeded' AND succeeded_count>0 AND failed_count>0
+		WHERE status IN ('partially_succeeded','failed') AND failed_count>0
 		  AND EXISTS (
 			SELECT 1 FROM automatic_turn_settlements s
 			JOIN outbound_messages m ON m.id=s.message_id

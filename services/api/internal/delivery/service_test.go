@@ -298,6 +298,22 @@ func TestRetryAutomaticTurnFailuresOnlyRetriesFailedTargetsAfterPartialSuccess(t
 	}
 }
 
+func TestRetryAutomaticTurnFailuresRetriesAllTargetsAfterInitialFailure(t *testing.T) {
+	message := Message{ID: "message-1", AccountID: "account-1", Attempts: 1, Status: MessageStatusFailed}
+	repository := &atomicScheduleRepository{
+		retryRepositoryStub: retryRepositoryStub{current: map[string]Message{"account-1": message}},
+		existing:            AutomaticTurnRun{AccountID: "account-1", TurnID: "turn-1", Status: AutomaticTurnRunFailed, FailedCount: 1},
+		settlements:         []AutomaticTurnSettlement{{TurnID: "turn-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Status: AutomaticTurnSettlementFailed, MessageID: message.ID}},
+	}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	if err := service.RetryAutomaticTurnFailures(t.Context(), "account-1", "turn-1"); err != nil {
+		t.Fatalf("RetryAutomaticTurnFailures() error = %v", err)
+	}
+	if len(repository.retried) != 1 {
+		t.Fatalf("retried targets = %#v, want one retry", repository.retried)
+	}
+}
+
 func TestRecoverAutomaticTurnPlaysPersistedFallbackSnapshot(t *testing.T) {
 	run := AutomaticTurnRun{
 		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1",

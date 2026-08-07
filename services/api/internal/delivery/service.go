@@ -385,7 +385,7 @@ func (u *UseCases) RetryAutomaticTurnFailures(ctx context.Context, accountID, tu
 	if err != nil {
 		return err
 	}
-	if run.SucceededCount == 0 || run.FailedCount == 0 {
+	if run.FailedCount == 0 {
 		return nil
 	}
 	settlements, err := retryRepository.ListAutomaticTurnSettlements(ctx, accountID, turnID)

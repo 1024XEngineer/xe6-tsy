@@ -85,6 +85,77 @@ func TestServicePersistsPerTargetOutputRoutes(t *testing.T) {
 	}
 }
 
+func TestServiceValidatesInterpretationOutputPresets(t *testing.T) {
+	tests := []struct {
+		name    string
+		routes  []OutputRoute
+		wantErr bool
+	}{
+		{
+			name: "bidirectional_tts",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US", TTSEnabled: true},
+				{TargetLanguage: "zh-CN", TTSEnabled: true},
+			},
+		},
+		{
+			name: "single_zh_to_en",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US", TTSEnabled: true},
+				{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+			},
+		},
+		{
+			name: "single_en_to_zh",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US", DeliveryEnabled: true},
+				{TargetLanguage: "zh-CN", TTSEnabled: true},
+			},
+		},
+		{
+			name: "tts_and_delivery_enabled",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US", TTSEnabled: true, DeliveryEnabled: true},
+				{TargetLanguage: "zh-CN", TTSEnabled: true},
+			},
+			wantErr: true,
+		},
+		{
+			name: "both_outputs_disabled",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US"},
+				{TargetLanguage: "zh-CN", TTSEnabled: true},
+			},
+			wantErr: true,
+		},
+		{
+			name: "delivery_enabled_for_both_targets",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US", DeliveryEnabled: true},
+				{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewMemoryStore(nil, nil)
+			svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})
+			_, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "", CreateLanguageConfigRequest{
+				Languages:    bilingualPairs(),
+				OutputRoutes: tt.routes,
+			})
+			if tt.wantErr && !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("CreateConfig() error = %v, want invalid_request", err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("CreateConfig() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestServiceValidationAndAuthErrors(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})

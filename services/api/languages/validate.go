@@ -105,6 +105,7 @@ func normalizeOutputRoutes(pairs []LanguagePair, routes []OutputRoute) ([]Output
 	}
 
 	seen := make(map[string]struct{}, len(routes))
+	deliveryRoutes := 0
 	for _, route := range routes {
 		if route.TargetLanguage == "" {
 			return nil, fmt.Errorf("%w: output route target_language is required", ErrInvalidRequest)
@@ -115,12 +116,21 @@ func normalizeOutputRoutes(pairs []LanguagePair, routes []OutputRoute) ([]Output
 		if _, exists := seen[route.TargetLanguage]; exists {
 			return nil, fmt.Errorf("%w: duplicate output route %s", ErrInvalidLanguagePair, route.TargetLanguage)
 		}
+		if route.TTSEnabled == route.DeliveryEnabled {
+			return nil, fmt.Errorf("%w: output route %s must enable exactly one output", ErrInvalidRequest, route.TargetLanguage)
+		}
+		if route.DeliveryEnabled {
+			deliveryRoutes++
+		}
 		seen[route.TargetLanguage] = struct{}{}
 	}
 	for target := range targets {
 		if _, exists := seen[target]; !exists {
 			return nil, fmt.Errorf("%w: missing output route %s", ErrInvalidLanguagePair, target)
 		}
+	}
+	if deliveryRoutes > 1 {
+		return nil, fmt.Errorf("%w: only one output route may enable delivery", ErrInvalidRequest)
 	}
 	return append([]OutputRoute(nil), routes...), nil
 }

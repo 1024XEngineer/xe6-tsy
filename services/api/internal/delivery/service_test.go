@@ -269,7 +269,8 @@ func TestAutomaticTurnRunStatus(t *testing.T) {
 	}{
 		{name: "pending", targetCount: 2, settledCount: 1, succeededCount: 1, failedCount: 0, want: AutomaticTurnRunPending},
 		{name: "succeeded", targetCount: 2, settledCount: 2, succeededCount: 2, failedCount: 0, want: AutomaticTurnRunSucceeded},
-		{name: "failed", targetCount: 2, settledCount: 2, succeededCount: 1, failedCount: 1, want: AutomaticTurnRunFailed},
+		{name: "failed", targetCount: 2, settledCount: 2, succeededCount: 0, failedCount: 2, want: AutomaticTurnRunFailed},
+		{name: "mixed", targetCount: 2, settledCount: 2, succeededCount: 1, failedCount: 1, want: AutomaticTurnRunPending},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -280,10 +281,28 @@ func TestAutomaticTurnRunStatus(t *testing.T) {
 	}
 }
 
+func TestRetryAutomaticTurnFailuresOnlyRetriesFailedTargetsAfterPartialSuccess(t *testing.T) {
+	message := Message{ID: "message-1", AccountID: "account-1", Attempts: 1, Status: MessageStatusFailed}
+	repository := &atomicScheduleRepository{
+		retryRepositoryStub: retryRepositoryStub{current: map[string]Message{"account-1": message}},
+		existing:            AutomaticTurnRun{AccountID: "account-1", TurnID: "turn-1", SucceededCount: 1, FailedCount: 1},
+		settlements:         []AutomaticTurnSettlement{{TurnID: "turn-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Status: AutomaticTurnSettlementFailed, MessageID: message.ID}},
+	}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	if err := service.RetryAutomaticTurnFailures(t.Context(), "account-1", "turn-1"); err != nil {
+		t.Fatalf("RetryAutomaticTurnFailures() error = %v", err)
+	}
+	if len(repository.retried) != 1 || repository.retried[0].idempotencyKey != "auto:final_turn_retry:turn-1:wechat:primary-wechat:2" {
+		t.Fatalf("retried targets = %#v", repository.retried)
+	}
+}
+
 type atomicScheduleRepository struct {
 	retryRepositoryStub
-	record   AutomaticTurnScheduleRecord
-	existing AutomaticTurnRun
+	record      AutomaticTurnScheduleRecord
+	existing    AutomaticTurnRun
+	settlements []AutomaticTurnSettlement
+	retried     []automaticRetryRecord
 }
 
 func (r *atomicScheduleRepository) GetAutomaticTurnRun(context.Context, string, string) (AutomaticTurnRun, error) {
@@ -296,6 +315,19 @@ func (r *atomicScheduleRepository) GetAutomaticTurnRun(context.Context, string, 
 func (r *atomicScheduleRepository) ScheduleAutomaticTurn(_ context.Context, record AutomaticTurnScheduleRecord) error {
 	r.record = record
 	return nil
+}
+
+func (r *atomicScheduleRepository) ListAutomaticTurnSettlements(context.Context, string, string) ([]AutomaticTurnSettlement, error) {
+	return r.settlements, nil
+}
+
+type automaticRetryRecord struct {
+	messageID, idempotencyKey string
+}
+
+func (r *atomicScheduleRepository) RetryAutomaticTurnTarget(_ context.Context, _, _, messageID, idempotencyKey string) (Message, error) {
+	r.retried = append(r.retried, automaticRetryRecord{messageID: messageID, idempotencyKey: idempotencyKey})
+	return Message{ID: messageID}, nil
 }
 
 type automaticTurnReaderStub struct{}

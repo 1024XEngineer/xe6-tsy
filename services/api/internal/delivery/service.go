@@ -361,6 +361,42 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 	return nil
 }
 
+func (u *UseCases) RetryAutomaticTurnFailures(ctx context.Context, accountID, turnID string) error {
+	retryRepository, ok := u.repository.(AutomaticTurnRetryRepository)
+	if !ok {
+		return domain.ErrNotImplemented
+	}
+	scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository)
+	if !ok {
+		return domain.ErrNotImplemented
+	}
+	run, err := scheduler.GetAutomaticTurnRun(ctx, accountID, turnID)
+	if err != nil {
+		return err
+	}
+	if run.SucceededCount == 0 || run.FailedCount == 0 {
+		return nil
+	}
+	settlements, err := retryRepository.ListAutomaticTurnSettlements(ctx, accountID, turnID)
+	if err != nil {
+		return err
+	}
+	for _, settlement := range settlements {
+		if settlement.Status != AutomaticTurnSettlementFailed || settlement.MessageID == "" {
+			continue
+		}
+		message, err := u.Get(ctx, accountID, settlement.MessageID)
+		if err != nil {
+			return err
+		}
+		key := fmt.Sprintf("auto:final_turn_retry:%s:%s:%s:%d", turnID, settlement.Channel, settlement.DestinationRef, message.Attempts+1)
+		if _, err := retryRepository.RetryAutomaticTurnTarget(ctx, accountID, turnID, message.ID, key); err != nil {
+			return fmt.Errorf("retry automatic target %s: %w", settlement.DestinationRef, err)
+		}
+	}
+	return nil
+}
+
 func (u *UseCases) ListMessageTargets(ctx context.Context, accountID string, channel *Channel) ([]MessageTarget, error) {
 	repository := targetRepository(u.repository)
 	if repository == nil || accountID == "" {

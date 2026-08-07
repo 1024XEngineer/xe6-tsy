@@ -17,10 +17,14 @@ const (
 
 func automaticTurnRunStatus(targetCount, settledCount, succeededCount, failedCount int) AutomaticTurnRunStatus {
 	if targetCount > 0 && settledCount >= targetCount {
-		if failedCount > 0 {
+		switch {
+		case failedCount == 0:
+			return AutomaticTurnRunSucceeded
+		case succeededCount == 0:
 			return AutomaticTurnRunFailed
+		default:
+			return AutomaticTurnRunPending
 		}
-		return AutomaticTurnRunSucceeded
 	}
 	return AutomaticTurnRunPending
 }

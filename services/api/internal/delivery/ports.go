@@ -166,6 +166,11 @@ type AutomaticTurnSchedulerRepository interface {
 	ScheduleAutomaticTurn(context.Context, AutomaticTurnScheduleRecord) error
 }
 
+type AutomaticTurnRetryRepository interface {
+	ListAutomaticTurnSettlements(context.Context, string, string) ([]AutomaticTurnSettlement, error)
+	RetryAutomaticTurnTarget(context.Context, string, string, string, string) (Message, error)
+}
+
 // AutomaticTurnSettlementRepository stores and reads target-level outcomes.
 // It is an optional extension so existing lightweight repositories remain
 // source-compatible while production uses the durable implementation.

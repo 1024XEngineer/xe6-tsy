@@ -15,9 +15,15 @@ import (
 )
 
 const (
-	ortVersion     = "1.24.1"
-	ortDownloadUA  = "xe6-tsy-realtime-audio-silero"
-	defaultORTRoot = "third_party/onnxruntime"
+	ortVersion    = "1.24.1"
+	ortDownloadUA = "xe6-tsy-realtime-audio-silero"
+)
+
+var (
+	// defaultORTRoot and ortReleaseBaseURL are overridable in tests so EnsureAssets
+	// can exercise the offline download path without touching the repo tree.
+	defaultORTRoot    = "third_party/onnxruntime"
+	ortReleaseBaseURL = "https://github.com/microsoft/onnxruntime/releases/download/v" + ortVersion + "/"
 )
 
 // EnsureAssets makes sure the ONNX Runtime shared library exists for Silero.
@@ -65,7 +71,7 @@ func downloadONNXRuntime(destRoot string) (string, error) {
 		return "", fmt.Errorf("create onnxruntime dir: %w", err)
 	}
 
-	url := "https://github.com/microsoft/onnxruntime/releases/download/v" + ortVersion + "/" + asset
+	url := ortReleaseBaseURL + asset
 	archivePath := filepath.Join(destRoot, "ort-download"+filepath.Ext(asset))
 	if strings.HasSuffix(asset, ".tgz") {
 		archivePath = filepath.Join(destRoot, "ort-download.tgz")

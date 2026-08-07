@@ -21,6 +21,7 @@ import styles from "../voice.module.css";
 import { HistoryPreview, HistorySettings } from "./history-settings";
 import { OptionWheel } from "./option-wheel";
 import { UsageSettings } from "./usage-settings";
+import { DeliverySettings } from "./delivery-settings";
 
 const SETTINGS_ITEMS = [
   {
@@ -40,6 +41,12 @@ const SETTINGS_ITEMS = [
     label: "用量管理",
     value: "本月分钟数",
     description: "查看本月免费用量",
+  },
+  {
+    id: "delivery",
+    label: "投递管理",
+    value: "自动发送",
+    description: "绑定目标与查看发送状态",
   },
   {
     id: "session",
@@ -310,6 +317,8 @@ function SettingsDetail({
       return <HistoryPreview onOpen={onOpenHistory} />;
     case "usage":
       return <UsageSettings />;
+    case "delivery":
+      return <DeliverySettings />;
     case "about":
       return (
         <div className={styles.aboutView}>

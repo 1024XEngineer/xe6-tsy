@@ -288,7 +288,7 @@ describe("VoiceExperience", () => {
     expect(screen.getByRole("option", { name: "用量管理" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "关于" })).toBeInTheDocument();
     expect(screen.getByText("01")).toBeInTheDocument();
-    expect(screen.getByText("05")).toBeInTheDocument();
+    expect(screen.getByText("06")).toBeInTheDocument();
   });
 
   it("uses a localized custom drawer to choose the source language", () => {

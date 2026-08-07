@@ -156,6 +156,19 @@ describe("VoiceExperience", () => {
           });
         }
 
+        if (url.endsWith("/api/v1/account/message-preferences") && method === "GET") {
+          return jsonResponse({
+            items: [{
+              account_id: "acc-1",
+              channel: "email",
+              destination_ref: "person@example.com",
+              enabled: true,
+              verified: true,
+              updated_at: "2026-07-31T00:00:00Z",
+            }],
+          });
+        }
+
         if (url.includes("/state")) {
           return jsonResponse({
             session_id: "vs-1",
@@ -266,11 +279,12 @@ describe("VoiceExperience", () => {
     expect(sourcePicker).toHaveAccessibleName(/源语言，当前Русский/);
   });
 
-  it("selects single output mode and persists the preference", () => {
+  it("selects single output mode and persists the preference", async () => {
     render(<VoiceExperience />);
 
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
     const singleMode = screen.getByRole("button", { name: "单向输出" });
+    await waitFor(() => expect(singleMode).not.toBeDisabled());
     fireEvent.click(singleMode);
 
     expect(singleMode).toHaveAttribute("aria-pressed", "true");

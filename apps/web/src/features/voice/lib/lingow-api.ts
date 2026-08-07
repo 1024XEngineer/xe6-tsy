@@ -288,6 +288,30 @@ export async function listSupportedLanguages(
   return parseJson<SupportedLanguageListResponse>(response);
 }
 
+export async function hasReadyAutomaticTarget(
+  accessToken: string,
+): Promise<boolean> {
+  const response = await fetch("/api/v1/account/message-preferences", {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  const result = await parseJson<{
+    items: Array<{
+      channel: string;
+      destination_ref: string;
+      enabled: boolean;
+      verified: boolean;
+    }>;
+  }>(response);
+  return result.items.some(
+    (preference) =>
+      (preference.channel === "email" || preference.channel === "wechat") &&
+      preference.enabled &&
+      preference.verified &&
+      preference.destination_ref.trim() !== "",
+  );
+}
+
 export async function getAccountUsageSummary(
   accessToken: string,
   periodStart: string,

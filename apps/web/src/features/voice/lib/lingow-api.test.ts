@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createLanguageConfig,
   getAccountUsageSummary,
+  hasReadyAutomaticTarget,
   listSessionTurns,
   listSupportedLanguages,
   listVoiceSessions,
@@ -193,6 +194,66 @@ describe("getAccountUsageSummary", () => {
     expect(new Headers(calls[0]?.[1].headers).get("Authorization")).toBe(
       "Bearer access-1",
     );
+  });
+});
+
+describe("hasReadyAutomaticTarget", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requires an enabled verified preference with a destination", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        items: [
+          {
+            channel: "email",
+            destination_ref: "email-1",
+            enabled: true,
+            verified: true,
+          },
+        ],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hasReadyAutomaticTarget("access-1")).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/account/message-preferences",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it("rejects preferences that are disabled, unverified, or empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          items: [
+            {
+              channel: "email",
+              destination_ref: "disabled",
+              enabled: false,
+              verified: true,
+            },
+            {
+              channel: "wechat",
+              destination_ref: "unverified",
+              enabled: true,
+              verified: false,
+            },
+            {
+              channel: "email",
+              destination_ref: "   ",
+              enabled: true,
+              verified: true,
+            },
+          ],
+        }),
+      ),
+    );
+
+    await expect(hasReadyAutomaticTarget("access-1")).resolves.toBe(false);
   });
 });
 

@@ -8,6 +8,7 @@ import {
   endVoiceSession,
   getCurrentLanguageConfig,
   getVoiceSessionState,
+  hasReadyAutomaticTarget,
   listSessionTurns,
   mintRealtimeTicket,
   startVoiceSession,
@@ -335,6 +336,19 @@ export function useVoiceSession() {
       accessTokenRef.current = auth.tokens.access_token;
       accountIdRef.current = auth.account.id;
       setDebug((prev) => ({ ...prev, accountId: auth.account.id }));
+      if (configRef.current.outputMode === "single") {
+        const ready = await hasReadyAutomaticTarget(auth.tokens.access_token);
+        if (!ready) {
+          const fallbackConfig = {
+            ...configRef.current,
+            outputMode: "bidirectional" as const,
+          };
+          configRef.current = fallbackConfig;
+          setVoiceConfig(fallbackConfig);
+          saveVoiceConfig(fallbackConfig);
+          throw new Error("单向输出需要已启用且已验证的自动投递目标，已恢复双向播报");
+        }
+      }
       setStatusMessage("正在创建会话");
 
       const session = await createVoiceSession(auth.tokens.access_token);

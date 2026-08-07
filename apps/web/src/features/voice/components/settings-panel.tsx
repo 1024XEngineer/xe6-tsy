@@ -16,7 +16,7 @@ import {
   type InterpretationOutputMode,
   type VoiceSessionConfig,
 } from "../lib/languages";
-import { listSupportedLanguages } from "../lib/lingow-api";
+import { hasReadyAutomaticTarget, listSupportedLanguages } from "../lib/lingow-api";
 import styles from "../voice.module.css";
 import { HistoryPreview, HistorySettings } from "./history-settings";
 import { OptionWheel } from "./option-wheel";
@@ -195,6 +195,7 @@ function SettingsDetail({
   languageLabels,
   configSyncStatus,
   onOpenHistory,
+  singleOutputReady,
 }: {
   selectedId: SettingId;
   voiceConfig: VoiceSessionConfig;
@@ -205,6 +206,7 @@ function SettingsDetail({
   languageLabels: Readonly<Record<string, string>>;
   configSyncStatus: ConfigSyncStatus;
   onOpenHistory: (session: import("../lib/lingow-api").VoiceSession) => void;
+  singleOutputReady: boolean | null;
 }) {
   const [openLanguage, setOpenLanguage] = useState<"source" | "target" | null>(null);
 
@@ -247,6 +249,7 @@ function SettingsDetail({
                   className={
                     voiceConfig.outputMode === mode ? styles.segmentActive : ""
                   }
+                  disabled={mode === "single" && singleOutputReady !== true}
                   key={mode}
                   onClick={() => onConfigChange({ ...voiceConfig, outputMode: mode })}
                   type="button"
@@ -260,6 +263,11 @@ function SettingsDetail({
                 ? "当前源语言译文播报；反向译文自动投递，并保留 Final Turn。"
                 : "两种语言的译文都播报；翻译、投递记录和 Final Turn 始终保留。"}
             </p>
+            {singleOutputReady !== true ? (
+              <p className={styles.settingsState}>
+                单向输出需要已启用且已验证的自动投递目标。
+              </p>
+            ) : null}
             {outputModeStatusLabel(configSyncStatus) ? (
               <p className={styles.settingsState}>
                 {outputModeStatusLabel(configSyncStatus)}
@@ -337,6 +345,7 @@ export function SettingsPanel({
   const [languageOptions, setLanguageOptions] = useState<LanguageCode[]>(SUPPORTED_LANGUAGES);
   const [languageLoading, setLanguageLoading] = useState(true);
   const [languageLabels, setLanguageLabels] = useState<Record<string, string>>({});
+  const [singleOutputReady, setSingleOutputReady] = useState<boolean | null>(null);
   const panelRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const selected = SETTINGS_ITEMS[selectedIndex];
@@ -347,24 +356,35 @@ export function SettingsPanel({
     void (async () => {
       try {
         const auth = await getOrCreateAuthSession();
-        const result = await listSupportedLanguages(auth.tokens.access_token);
-        const options = result.languages
-          .filter((language) => language.supports_as_source && language.supports_as_target)
-          .map((language) => language.language_code)
-          .filter((code, index, all) => all.indexOf(code) === index);
-        if (!cancelled && options.length > 0) {
-          setLanguageOptions(options);
-          setLanguageLabels(
-            Object.fromEntries(
-              result.languages.map((language) => [
-                language.language_code,
-                language.display_name || language.display_name_en,
-              ]),
-            ),
+        const [languagesResult, readinessResult] = await Promise.allSettled([
+          listSupportedLanguages(auth.tokens.access_token),
+          hasReadyAutomaticTarget(auth.tokens.access_token),
+        ]);
+        if (languagesResult.status === "fulfilled") {
+          const options = languagesResult.value.languages
+            .filter((language) => language.supports_as_source && language.supports_as_target)
+            .map((language) => language.language_code)
+            .filter((code, index, all) => all.indexOf(code) === index);
+          if (!cancelled && options.length > 0) {
+            setLanguageOptions(options);
+            setLanguageLabels(
+              Object.fromEntries(
+                languagesResult.value.languages.map((language) => [
+                  language.language_code,
+                  language.display_name || language.display_name_en,
+                ]),
+              ),
+            );
+          }
+        }
+        if (!cancelled) {
+          setSingleOutputReady(
+            readinessResult.status === "fulfilled" ? readinessResult.value : false,
           );
         }
       } catch {
         // Keep the local catalog available while the API is unavailable.
+        if (!cancelled) setSingleOutputReady(false);
       } finally {
         if (!cancelled) setLanguageLoading(false);
       }
@@ -509,6 +529,7 @@ export function SettingsPanel({
                     languageLabels={languageLabels}
                     onConfigChange={onConfigChange}
                     onOpenHistory={(session) => setHistorySessionId(session.id)}
+                    singleOutputReady={singleOutputReady}
                     selectedId={selected.id}
                     voiceConfig={voiceConfig}
                   />

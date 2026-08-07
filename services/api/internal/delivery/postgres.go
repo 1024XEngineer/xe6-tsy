@@ -208,6 +208,9 @@ func (r *PostgresRepository) CompleteAttempt(ctx context.Context, attemptID, mes
 		if result.RowsAffected() != 1 {
 			return domain.ErrConflict
 		}
+		if err := settleAutomaticTurnTarget(ctx, tx, messageID, attemptStatus, code, now); err != nil {
+			return err
+		}
 		return nil
 	})
 	return mapDeliveryError(err)

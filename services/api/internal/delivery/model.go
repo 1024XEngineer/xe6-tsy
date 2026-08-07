@@ -15,6 +15,16 @@ const (
 	ChannelWeChat Channel = "wechat"
 )
 
+func automaticTurnRunStatus(targetCount, settledCount, succeededCount, failedCount int) AutomaticTurnRunStatus {
+	if targetCount > 0 && settledCount >= targetCount {
+		if failedCount > 0 {
+			return AutomaticTurnRunFailed
+		}
+		return AutomaticTurnRunSucceeded
+	}
+	return AutomaticTurnRunPending
+}
+
 // IsSupportedChannel reports whether a channel is accepted by the public
 // delivery contract. Keep this central so HTTP and use cases cannot drift.
 func IsSupportedChannel(channel Channel) bool {

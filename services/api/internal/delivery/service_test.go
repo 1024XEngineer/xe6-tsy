@@ -260,6 +260,26 @@ func TestScheduleFinalTurnUsesAtomicRepositoryWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestAutomaticTurnRunStatus(t *testing.T) {
+	tests := []struct {
+		name                        string
+		targetCount, settledCount   int
+		succeededCount, failedCount int
+		want                        AutomaticTurnRunStatus
+	}{
+		{name: "pending", targetCount: 2, settledCount: 1, succeededCount: 1, failedCount: 0, want: AutomaticTurnRunPending},
+		{name: "succeeded", targetCount: 2, settledCount: 2, succeededCount: 2, failedCount: 0, want: AutomaticTurnRunSucceeded},
+		{name: "failed", targetCount: 2, settledCount: 2, succeededCount: 1, failedCount: 1, want: AutomaticTurnRunFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := automaticTurnRunStatus(tt.targetCount, tt.settledCount, tt.succeededCount, tt.failedCount); got != tt.want {
+				t.Fatalf("automaticTurnRunStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 type atomicScheduleRepository struct {
 	retryRepositoryStub
 	record   AutomaticTurnScheduleRecord

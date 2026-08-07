@@ -166,6 +166,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	var languages session.LanguageConfigReader = staticLanguages
 	var sessions session.SessionReader = localruntime.TrustSessionReader{}
 	var durableFinalTurns recordsv1.FinalTurnSink
+	var fallbackReplays controlplane.FallbackPlaybackReplayStore
 	if apiDatabaseEnabled(os.Getenv) {
 		databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 		if databaseURL == "" {
@@ -190,6 +191,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			Fallback: staticLanguages,
 		}
 		durableFinalTurns = pipeline.NewPostgresFinalTurnSink(pool)
+		fallbackReplays = localruntime.PostgresFallbackPlaybackReplayStore{Pool: pool}
 	}
 
 	liveFinalTurns := localruntime.DataChannelFinalTurnSink{Media: connections}
@@ -273,11 +275,12 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	runtimeBridge.Set(lifecycle)
 
 	handler, err := controlplane.New(controlplane.Dependencies{
-		Lifecycle:   lifecycle,
-		Fallback:    manager,
-		Signaling:   signaling,
-		Connections: connections,
-		Tickets:     tickets,
+		Lifecycle:       lifecycle,
+		Fallback:        manager,
+		FallbackReplays: fallbackReplays,
+		Signaling:       signaling,
+		Connections:     connections,
+		Tickets:         tickets,
 		Config: localruntime.StaticWebRTCConfig{
 			ICEServers: []controlplane.ICEServer{{
 				URLs: []string{"stun:stun.l.google.com:19302"},

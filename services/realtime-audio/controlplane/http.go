@@ -51,6 +51,13 @@ type FallbackPlayback interface {
 	PlayFallback(context.Context, realtimev1.FallbackPlaybackRequest) error
 }
 
+// FallbackPlaybackReplayStore preserves accepted fallback commands across
+// realtime process restarts and rejects operation IDs reused with new payloads.
+type FallbackPlaybackReplayStore interface {
+	Accepted(context.Context, string, string, string) (bool, error)
+	RecordAccepted(context.Context, string, string, string) error
+}
+
 // Signaling is the existing ticket-aware WebRTC signaling service boundary.
 type Signaling interface {
 	Offer(context.Context, string, string, webrtc.OfferRequest) (webrtc.OfferResponse, error)
@@ -100,6 +107,7 @@ type AudioConfig struct {
 type Dependencies struct {
 	Lifecycle                  Lifecycle
 	Fallback                   FallbackPlayback
+	FallbackReplays            FallbackPlaybackReplayStore
 	Signaling                  Signaling
 	Connections                ConnectionReader
 	Tickets                    webrtc.TicketValidator
@@ -112,14 +120,15 @@ type Dependencies struct {
 
 // Handler serves the realtime control-plane routes.
 type Handler struct {
-	lifecycle   Lifecycle
-	fallback    FallbackPlayback
-	signaling   Signaling
-	connections ConnectionReader
-	tickets     webrtc.TicketValidator
-	config      ConfigReader
-	now         func() time.Time
-	mux         *http.ServeMux
+	lifecycle       Lifecycle
+	fallback        FallbackPlayback
+	fallbackReplays FallbackPlaybackReplayStore
+	signaling       Signaling
+	connections     ConnectionReader
+	tickets         webrtc.TicketValidator
+	config          ConfigReader
+	now             func() time.Time
+	mux             *http.ServeMux
 
 	replayMu                   sync.Mutex
 	replays                    map[string]*replayRecord
@@ -163,6 +172,7 @@ func New(dependencies Dependencies) (*Handler, error) {
 	h := &Handler{
 		lifecycle:                  dependencies.Lifecycle,
 		fallback:                   dependencies.Fallback,
+		fallbackReplays:            dependencies.FallbackReplays,
 		signaling:                  dependencies.Signaling,
 		connections:                dependencies.Connections,
 		tickets:                    dependencies.Tickets,
@@ -215,11 +225,30 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 		h.writeError(writer, request, ErrInvalidRequest)
 		return
 	}
+	payloadHash, err := bodyHash(body)
+	if err != nil {
+		h.writeError(writer, request, err)
+		return
+	}
 	replayKey := "fallback\x00" + sessionID + "\x00" + body.OperationID
 	h.handleReplayStatus(writer, request.Context(), sessionID, replayKey, body, http.StatusAccepted,
 		func() (any, error) {
+			if h.fallbackReplays != nil {
+				accepted, err := h.fallbackReplays.Accepted(request.Context(), sessionID, body.OperationID, payloadHash)
+				if err != nil {
+					return nil, err
+				}
+				if accepted {
+					return realtimev1.FallbackPlaybackReceipt{OperationID: body.OperationID, Status: realtimev1.FallbackPlaybackAlreadyAccepted}, nil
+				}
+			}
 			if err := h.fallback.PlayFallback(request.Context(), body); err != nil {
 				return nil, err
+			}
+			if h.fallbackReplays != nil {
+				if err := h.fallbackReplays.RecordAccepted(request.Context(), sessionID, body.OperationID, payloadHash); err != nil {
+					return nil, err
+				}
 			}
 			return realtimev1.FallbackPlaybackReceipt{OperationID: body.OperationID, Status: realtimev1.FallbackPlaybackAccepted}, nil
 		}, func(value any, replay bool) any {

@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 21 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 21", len(migrations))
+	if len(migrations) != 22 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 22", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -268,6 +268,20 @@ func TestEmbeddedMigrations(t *testing.T) {
 	} {
 		if !strings.Contains(automaticSettlements.SQL, expected) {
 			t.Fatalf("automatic-settlement migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackOperations := migrations[21]
+	if fallbackPlaybackOperations.Version != 22 || fallbackPlaybackOperations.Name != "realtime_fallback_playback_operations" {
+		t.Fatalf("migration = %#v, want version 22 named realtime_fallback_playback_operations", fallbackPlaybackOperations)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE realtime_fallback_playback_operations",
+		"PRIMARY KEY (session_id, operation_id)",
+		"payload_hash TEXT NOT NULL",
+	} {
+		if !strings.Contains(fallbackPlaybackOperations.SQL, expected) {
+			t.Fatalf("fallback-playback migration does not contain %q", expected)
 		}
 	}
 }

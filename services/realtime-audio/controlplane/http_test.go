@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,6 +83,36 @@ func TestHandlerAcceptsFallbackPlaybackIdempotently(t *testing.T) {
 	}
 	if firstReceipt.Status != realtimev1.FallbackPlaybackAccepted || secondReceipt.Status != realtimev1.FallbackPlaybackAlreadyAccepted {
 		t.Fatalf("fallback receipts = %#v, %#v", firstReceipt, secondReceipt)
+	}
+}
+
+func TestHandlerKeepsFallbackPlaybackIdempotentAcrossInstances(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
+	firstFixture := newFixture(t)
+	firstFallback := &fallbackPlaybackFake{}
+	firstFixture.controlHandler.fallback = firstFallback
+	firstFixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+
+	first := firstFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	secondFixture := newFixture(t)
+	secondFallback := &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallback = secondFallback
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+
+	if first.Code != http.StatusAccepted || second.Code != http.StatusAccepted {
+		t.Fatalf("fallback statuses = %d, %d", first.Code, second.Code)
+	}
+	if firstFallback.calls != 1 || secondFallback.calls != 0 {
+		t.Fatalf("fallback calls = %d, %d, want 1, 0", firstFallback.calls, secondFallback.calls)
+	}
+	var receipt realtimev1.FallbackPlaybackReceipt
+	if err := json.NewDecoder(second.Body).Decode(&receipt); err != nil {
+		t.Fatalf("decode replay receipt: %v", err)
+	}
+	if receipt.Status != realtimev1.FallbackPlaybackAlreadyAccepted {
+		t.Fatalf("replay receipt = %#v", receipt)
 	}
 }
 
@@ -613,6 +644,35 @@ type signalingFake struct {
 type fallbackPlaybackFake struct {
 	calls int
 	err   error
+}
+
+type fallbackReplayStoreFake struct {
+	mu       sync.Mutex
+	accepted map[string]string
+}
+
+func (s *fallbackReplayStoreFake) Accepted(_ context.Context, sessionID, operationID, payloadHash string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	storedHash, ok := s.accepted[sessionID+"\x00"+operationID]
+	if !ok {
+		return false, nil
+	}
+	if storedHash != payloadHash {
+		return false, webrtc.ErrIdempotencyPayloadConflict
+	}
+	return true, nil
+}
+
+func (s *fallbackReplayStoreFake) RecordAccepted(_ context.Context, sessionID, operationID, payloadHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := sessionID + "\x00" + operationID
+	if storedHash, ok := s.accepted[key]; ok && storedHash != payloadHash {
+		return webrtc.ErrIdempotencyPayloadConflict
+	}
+	s.accepted[key] = payloadHash
+	return nil
 }
 
 func (f *fallbackPlaybackFake) PlayFallback(_ context.Context, _ realtimev1.FallbackPlaybackRequest) error {

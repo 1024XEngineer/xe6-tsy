@@ -35,6 +35,8 @@ Turn 开始时固定读取输出规则
 
 渠道发送失败不阻塞翻译或 Final Turn 保存。首轮目标失败时只重试失败目标一次；所有目标仍失败时，系统使用已保存的译文补播当前 Turn。补播成功后，从下一 Turn 恢复双向 TTS；用户在此期间手动切换到更新版本时，以用户配置为准。
 
+realtime 在补播成功后持久化 `session_id + operation_id + payload_hash`；进程重启后的相同请求返回 `already_accepted`，不得再次播放，不同载荷复用同一操作号时返回冲突。
+
 ## 需要改动
 
 - 在语言配置快照中按 `target_language` 保存 `tts_enabled` 和 `delivery_enabled`，并在 Turn 开始时固定版本；API 同时派生返回 `output_mode=bidirectional|single`。

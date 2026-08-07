@@ -143,6 +143,19 @@ export type MessagePreference = {
   updated_at: string;
 };
 
+export type FinalTurnSnapshot = {
+  turn_id: string;
+  session_id: string;
+  participant_id: string | null;
+  speaker_label_snapshot: string | null;
+  source_language: string;
+  target_language: string;
+  language_config_version: number;
+  source_text: string;
+  translated_text: string;
+  created_at: string;
+};
+
 export type OutboundMessageStatus =
   | "queued"
   | "sending"
@@ -157,7 +170,7 @@ export type OutboundMessage = {
   channel: DeliveryChannel;
   destination_ref: string;
   snapshot_version: number;
-  turns: Array<{ turn_id: string; translated_text: string }>;
+  turns: FinalTurnSnapshot[];
   status: OutboundMessageStatus;
   attempts: number;
   last_error_code: string | null;

@@ -337,6 +337,26 @@ func TestRecoverAutomaticTurnLeavesPendingWhenPlaybackFails(t *testing.T) {
 	}
 }
 
+func TestRestoreAutomaticTurnMarksRunAfterBidirectionalConfig(t *testing.T) {
+	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
+		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1",
+		LanguageConfigVersion: 3, Status: AutomaticTurnRunFallbackPlayed,
+		FallbackOperationID: "fallback_turn-1",
+	}}
+	restorer := &outputRestorerFake{}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	service.ConfigureAutomaticOutputRestorer(restorer)
+	if err := service.RestoreAutomaticTurn(t.Context(), "account-1", "turn-1"); err != nil {
+		t.Fatalf("RestoreAutomaticTurn() error = %v", err)
+	}
+	if restorer.sessionID != "session-1" || restorer.expectedVersion != 3 || restorer.operationID != "restore_fallback_turn-1" {
+		t.Fatalf("restore input = %#v", restorer)
+	}
+	if !repository.restored {
+		t.Fatal("automatic turn was not marked restored")
+	}
+}
+
 type atomicScheduleRepository struct {
 	retryRepositoryStub
 	record         AutomaticTurnScheduleRecord
@@ -344,6 +364,7 @@ type atomicScheduleRepository struct {
 	settlements    []AutomaticTurnSettlement
 	retried        []automaticRetryRecord
 	fallbackPlayed bool
+	restored       bool
 }
 
 func (r *atomicScheduleRepository) GetAutomaticTurnRun(context.Context, string, string) (AutomaticTurnRun, error) {
@@ -389,9 +410,31 @@ func (r *atomicScheduleRepository) MarkAutomaticTurnFallbackPlayed(context.Conte
 	return nil
 }
 
+func (r *atomicScheduleRepository) ListAutomaticTurnRestoreCandidates(context.Context, int) ([]AutomaticTurnRun, error) {
+	return []AutomaticTurnRun{r.existing}, nil
+}
+
+func (r *atomicScheduleRepository) MarkAutomaticTurnRestored(context.Context, string, string) error {
+	r.restored = true
+	return nil
+}
+
 type fallbackPlayerFake struct {
 	request realtimev1.FallbackPlaybackRequest
 	err     error
+}
+
+type outputRestorerFake struct {
+	sessionID       string
+	expectedVersion int
+	operationID     string
+}
+
+func (f *outputRestorerFake) RestoreBidirectionalOutput(_ context.Context, _, sessionID string, expectedVersion int, operationID string) error {
+	f.sessionID = sessionID
+	f.expectedVersion = expectedVersion
+	f.operationID = operationID
+	return nil
 }
 
 func (f *fallbackPlayerFake) PlayFallback(_ context.Context, _ string, request realtimev1.FallbackPlaybackRequest) (realtimev1.FallbackPlaybackReceipt, error) {

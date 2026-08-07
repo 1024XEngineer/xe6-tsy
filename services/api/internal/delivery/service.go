@@ -27,6 +27,7 @@ type UseCases struct {
 	emailBindSender     EmailBindSender
 	wecomIdentity       WeComIdentityClient
 	fallback            AutomaticTurnFallbackPlayer
+	restorer            AutomaticTurnOutputRestorer
 }
 
 func NewUseCases() *UseCases { return &UseCases{} }
@@ -57,6 +58,10 @@ func (u *UseCases) ConfigureWeChatBinding(client WeComIdentityClient) {
 
 func (u *UseCases) ConfigureAutomaticFallback(player AutomaticTurnFallbackPlayer) {
 	u.fallback = player
+}
+
+func (u *UseCases) ConfigureAutomaticOutputRestorer(restorer AutomaticTurnOutputRestorer) {
+	u.restorer = restorer
 }
 
 // Create accepts selected final Turns and creates an asynchronous delivery task.
@@ -463,6 +468,48 @@ func (u *UseCases) RecoverAutomaticTurns(ctx context.Context, limit int) error {
 	}
 	for _, run := range candidates {
 		if err := u.RecoverAutomaticTurn(ctx, run.AccountID, run.TurnID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID string) error {
+	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
+	if !ok || u.restorer == nil {
+		return domain.ErrNotImplemented
+	}
+	scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository)
+	if !ok {
+		return domain.ErrNotImplemented
+	}
+	run, err := scheduler.GetAutomaticTurnRun(ctx, accountID, turnID)
+	if err != nil {
+		return err
+	}
+	if run.Status != AutomaticTurnRunFallbackPlayed {
+		return domain.ErrConflict
+	}
+	if err := u.restorer.RestoreBidirectionalOutput(ctx, run.AccountID, run.SessionID, int(run.LanguageConfigVersion), "restore_"+run.FallbackOperationID); err != nil {
+		return fmt.Errorf("restore bidirectional output: %w", err)
+	}
+	return repository.MarkAutomaticTurnRestored(ctx, accountID, turnID)
+}
+
+func (u *UseCases) RestoreAutomaticTurns(ctx context.Context, limit int) error {
+	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
+	if !ok || u.restorer == nil {
+		return domain.ErrNotImplemented
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	candidates, err := repository.ListAutomaticTurnRestoreCandidates(ctx, limit)
+	if err != nil {
+		return err
+	}
+	for _, run := range candidates {
+		if err := u.RestoreAutomaticTurn(ctx, run.AccountID, run.TurnID); err != nil {
 			return err
 		}
 	}

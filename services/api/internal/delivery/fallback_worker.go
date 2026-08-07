@@ -46,5 +46,8 @@ func (w *AutomaticTurnFallbackWorker) runOnce(ctx context.Context) error {
 	if err := w.service.RetryAutomaticTurns(ctx, 20); err != nil {
 		return err
 	}
-	return w.service.RecoverAutomaticTurns(ctx, 20)
+	if err := w.service.RecoverAutomaticTurns(ctx, 20); err != nil {
+		return err
+	}
+	return w.service.RestoreAutomaticTurns(ctx, 20)
 }

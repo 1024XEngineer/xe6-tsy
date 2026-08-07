@@ -372,6 +372,7 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 	return nil
 }
 
+// RetryAutomaticTurnFailures queues the remaining failed targets for a Final Turn.
 func (u *UseCases) RetryAutomaticTurnFailures(ctx context.Context, accountID, turnID string) error {
 	retryRepository, ok := u.repository.(AutomaticTurnRetryRepository)
 	if !ok {
@@ -411,6 +412,7 @@ func (u *UseCases) RetryAutomaticTurnFailures(ctx context.Context, accountID, tu
 	return nil
 }
 
+// RetryAutomaticTurns processes a bounded batch of automatic retry candidates.
 func (u *UseCases) RetryAutomaticTurns(ctx context.Context, limit int) error {
 	repository, ok := u.repository.(AutomaticTurnRetryRepository)
 	if !ok {
@@ -431,6 +433,7 @@ func (u *UseCases) RetryAutomaticTurns(ctx context.Context, limit int) error {
 	return nil
 }
 
+// RecoverAutomaticTurn plays and durably records one automatic fallback snapshot.
 func (u *UseCases) RecoverAutomaticTurn(ctx context.Context, accountID, turnID string) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
 	if !ok || u.fallback == nil {
@@ -454,6 +457,7 @@ func (u *UseCases) RecoverAutomaticTurn(ctx context.Context, accountID, turnID s
 	return nil
 }
 
+// RecoverAutomaticTurns processes a bounded batch of fallback playback candidates.
 func (u *UseCases) RecoverAutomaticTurns(ctx context.Context, limit int) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
 	if !ok || u.fallback == nil {
@@ -474,6 +478,7 @@ func (u *UseCases) RecoverAutomaticTurns(ctx context.Context, limit int) error {
 	return nil
 }
 
+// RestoreAutomaticTurn restores bidirectional output for one completed fallback.
 func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID string) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
 	if !ok || u.restorer == nil {
@@ -496,6 +501,7 @@ func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID s
 	return repository.MarkAutomaticTurnRestored(ctx, accountID, turnID)
 }
 
+// RestoreAutomaticTurns processes a bounded batch of output-restore candidates.
 func (u *UseCases) RestoreAutomaticTurns(ctx context.Context, limit int) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
 	if !ok || u.restorer == nil {

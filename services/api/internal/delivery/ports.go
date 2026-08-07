@@ -173,12 +173,14 @@ type AutomaticTurnSchedulerRepository interface {
 	ScheduleAutomaticTurn(context.Context, AutomaticTurnScheduleRecord) error
 }
 
+// AutomaticTurnRetryRepository stores and claims failed automatic target attempts.
 type AutomaticTurnRetryRepository interface {
 	ListAutomaticTurnRetryCandidates(context.Context, int) ([]AutomaticTurnRun, error)
 	ListAutomaticTurnSettlements(context.Context, string, string) ([]AutomaticTurnSettlement, error)
 	RetryAutomaticTurnTarget(context.Context, string, string, string, string) (Message, error)
 }
 
+// AutomaticTurnFallbackRepository claims and records fallback playback lifecycle state.
 type AutomaticTurnFallbackRepository interface {
 	ListAutomaticTurnRecoveryCandidates(context.Context, int) ([]AutomaticTurnRun, error)
 	ListAutomaticTurnRestoreCandidates(context.Context, int) ([]AutomaticTurnRun, error)
@@ -187,10 +189,12 @@ type AutomaticTurnFallbackRepository interface {
 	MarkAutomaticTurnRestored(context.Context, string, string) error
 }
 
+// AutomaticTurnOutputRestorer restores bidirectional output after fallback playback.
 type AutomaticTurnOutputRestorer interface {
 	RestoreBidirectionalOutput(context.Context, string, string, int, string) error
 }
 
+// AutomaticTurnFallbackPlayer plays the immutable translation fallback snapshot.
 type AutomaticTurnFallbackPlayer interface {
 	PlayFallback(context.Context, string, realtimev1.FallbackPlaybackRequest) (realtimev1.FallbackPlaybackReceipt, error)
 }

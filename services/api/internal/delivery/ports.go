@@ -159,3 +159,12 @@ type AutomaticPreferenceService interface {
 type FinalTurnScheduler interface {
 	ScheduleFinalTurn(context.Context, string, recordsv1.FinalTurnEvent) error
 }
+
+// AutomaticTurnSettlementRepository stores and reads target-level outcomes.
+// It is an optional extension so existing lightweight repositories remain
+// source-compatible while production uses the durable implementation.
+type AutomaticTurnSettlementRepository interface {
+	CreateAutomaticTurnSettlement(context.Context, AutomaticTurnSettlement) error
+	ListAutomaticTurnSettlements(context.Context, string, string) ([]AutomaticTurnSettlement, error)
+	UpdateAutomaticTurnSettlement(context.Context, AutomaticTurnSettlement) error
+}

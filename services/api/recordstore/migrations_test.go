@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 20 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 20", len(migrations))
+	if len(migrations) != 21 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 21", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -251,5 +251,20 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if !strings.Contains(historyIndexes.SQL, "voice_turns_session_history_order_idx") {
 		t.Fatal("history index migration does not create voice_turns_session_history_order_idx")
+	}
+
+	automaticSettlements := migrations[20]
+	if automaticSettlements.Version != 21 || automaticSettlements.Name != "automatic_turn_settlements" {
+		t.Fatalf("migration = %#v, want version 21 named automatic_turn_settlements", automaticSettlements)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE automatic_turn_settlements",
+		"automatic_turn_settlements_identity_key UNIQUE",
+		"status IN ('queued', 'succeeded', 'failed')",
+		"automatic_turn_settlements_account_turn_idx",
+	} {
+		if !strings.Contains(automaticSettlements.SQL, expected) {
+			t.Fatalf("automatic-settlement migration does not contain %q", expected)
+		}
 	}
 }

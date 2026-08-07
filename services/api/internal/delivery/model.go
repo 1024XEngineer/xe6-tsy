@@ -160,3 +160,29 @@ type Preference struct {
 	Verified       bool      `json:"verified"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
+
+// AutomaticTurnSettlementStatus is the durable aggregate state for one
+// automatic delivery target of a Final Turn.
+type AutomaticTurnSettlementStatus string
+
+const (
+	AutomaticTurnSettlementQueued    AutomaticTurnSettlementStatus = "queued"
+	AutomaticTurnSettlementSucceeded AutomaticTurnSettlementStatus = "succeeded"
+	AutomaticTurnSettlementFailed    AutomaticTurnSettlementStatus = "failed"
+)
+
+// AutomaticTurnSettlement records target-level delivery outcome without
+// copying provider credentials or mutable message content.
+type AutomaticTurnSettlement struct {
+	AccountID      string                        `json:"account_id"`
+	TurnID         string                        `json:"turn_id"`
+	SessionID      string                        `json:"session_id"`
+	TargetLanguage string                        `json:"target_language"`
+	Channel        Channel                       `json:"channel"`
+	DestinationRef string                        `json:"destination_ref"`
+	Status         AutomaticTurnSettlementStatus `json:"status"`
+	MessageID      string                        `json:"message_id,omitempty"`
+	ErrorCode      *string                       `json:"error_code,omitempty"`
+	CreatedAt      time.Time                     `json:"created_at"`
+	UpdatedAt      time.Time                     `json:"updated_at"`
+}

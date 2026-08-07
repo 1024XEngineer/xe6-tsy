@@ -39,6 +39,9 @@ func TestServiceCreateAndReadLifecycle(t *testing.T) {
 	if created.Version != 1 || created.Status != StatusActive {
 		t.Fatalf("unexpected create result: %#v", created)
 	}
+	if created.OutputMode != InterpretationOutputModeBidirectional {
+		t.Fatalf("created output mode = %q, want %q", created.OutputMode, InterpretationOutputModeBidirectional)
+	}
 
 	snap, err := svc.GetCurrentConfig(ctx, "vs_1")
 	if err != nil {
@@ -86,6 +89,9 @@ func TestServicePersistsPerTargetOutputRoutes(t *testing.T) {
 	}
 	if len(created.OutputRoutes) != 2 || created.OutputRoutes[0].DeliveryEnabled || !created.OutputRoutes[1].DeliveryEnabled {
 		t.Fatalf("created output routes = %#v", created.OutputRoutes)
+	}
+	if created.OutputMode != InterpretationOutputModeSingle {
+		t.Fatalf("created output mode = %q, want %q", created.OutputMode, InterpretationOutputModeSingle)
 	}
 	snapshot, err := svc.GetCurrentConfig(t.Context(), "vs_1")
 	if err != nil {

@@ -1,6 +1,17 @@
 package languages
 
-import "time"
+import (
+	"time"
+
+	languagesv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/languages/v1"
+)
+
+type InterpretationOutputMode = languagesv1.InterpretationOutputMode
+
+const (
+	InterpretationOutputModeBidirectional = languagesv1.InterpretationOutputModeBidirectional
+	InterpretationOutputModeSingle        = languagesv1.InterpretationOutputModeSingle
+)
 
 // Config status values for LanguageConfig / LanguageConfigSnapshot.
 const (
@@ -26,17 +37,18 @@ type OutputRoute struct {
 
 // LanguageConfig is the HTTP/API representation of a versioned session config.
 type LanguageConfig struct {
-	ID                 string         `json:"id"`
-	SessionID          string         `json:"session_id"`
-	Version            int            `json:"version"`
-	LanguagePairs      []LanguagePair `json:"language_pairs"`
-	OutputRoutes       []OutputRoute  `json:"output_routes"`
-	Status             string         `json:"status"` // active | superseded | expired
-	EffectiveFrom      time.Time      `json:"effective_from"`
-	EffectiveUntil     *time.Time     `json:"effective_until"`
-	CreatedBy          string         `json:"created_by"`
-	CreatedAt          time.Time      `json:"created_at"`
-	RequestFingerprint string         `json:"-"` // internal idempotency fingerprint
+	ID                 string                   `json:"id"`
+	SessionID          string                   `json:"session_id"`
+	Version            int                      `json:"version"`
+	LanguagePairs      []LanguagePair           `json:"language_pairs"`
+	OutputRoutes       []OutputRoute            `json:"output_routes"`
+	OutputMode         InterpretationOutputMode `json:"output_mode"`
+	Status             string                   `json:"status"` // active | superseded | expired
+	EffectiveFrom      time.Time                `json:"effective_from"`
+	EffectiveUntil     *time.Time               `json:"effective_until"`
+	CreatedBy          string                   `json:"created_by"`
+	CreatedAt          time.Time                `json:"created_at"`
+	RequestFingerprint string                   `json:"-"` // internal idempotency fingerprint
 }
 
 // LanguageConfigSnapshot is the internal read model for session management

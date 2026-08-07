@@ -152,3 +152,27 @@ func toSnapshot(cfg LanguageConfig) LanguageConfigSnapshot {
 		UpdatedAt:     cfg.CreatedAt,
 	}
 }
+
+func outputModeForRoutes(routes []OutputRoute) InterpretationOutputMode {
+	if len(routes) != 2 {
+		return ""
+	}
+	ttsRoutes := 0
+	deliveryRoutes := 0
+	for _, route := range routes {
+		if route.TTSEnabled {
+			ttsRoutes++
+		}
+		if route.DeliveryEnabled {
+			deliveryRoutes++
+		}
+	}
+	switch {
+	case ttsRoutes == 2 && deliveryRoutes == 0:
+		return InterpretationOutputModeBidirectional
+	case ttsRoutes == 1 && deliveryRoutes == 1:
+		return InterpretationOutputModeSingle
+	default:
+		return ""
+	}
+}

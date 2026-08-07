@@ -199,6 +199,7 @@ INSERT INTO voice_session_language_configs (
 		Version:            nextVersion,
 		LanguagePairs:      append([]LanguagePair(nil), input.LanguagePairs...),
 		OutputRoutes:       append([]OutputRoute(nil), routes...),
+		OutputMode:         outputModeForRoutes(routes),
 		Status:             StatusActive,
 		EffectiveFrom:      now,
 		EffectiveUntil:     nil,
@@ -312,6 +313,7 @@ func scanConfigRow(row rowScanner) (LanguageConfig, error) {
 		return LanguageConfig{}, fmt.Errorf("normalize output routes: %w", err)
 	}
 	cfg.OutputRoutes = routes
+	cfg.OutputMode = outputModeForRoutes(routes)
 	cfg.EffectiveFrom = cfg.EffectiveFrom.UTC()
 	cfg.CreatedAt = cfg.CreatedAt.UTC()
 	if cfg.EffectiveUntil != nil {

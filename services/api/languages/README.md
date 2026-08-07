@@ -6,7 +6,7 @@
 
 | 边界 | 行为 |
 | --- | --- |
-| HTTP | 四条 `/api/v1` 路由：目录 / 当前配置 / 创建切换 / 历史，支持按 target_language 配置输出路由 |
+| HTTP | 四条 `/api/v1` 路由：目录 / 当前配置 / 创建切换 / 历史，支持按 target_language 配置输出路由，并返回派生的 `output_mode` |
 | 内部端口 | `LanguageConfigReader`、`LanguageTargetResolver`（由 `Service` 实现） |
 | 存储 | Postgres（迁移 + `PostgresStore`）；单测用 `MemoryStore` |
 
@@ -41,3 +41,5 @@ snapshot, err := svc.GetCurrentConfig(ctx, sessionID)
 ```
 
 `GetCurrentConfig` **不接受 turnID**；轮内固定由实时转译模块本地快照完成。
+
+`output_mode` 只有两个值：`bidirectional`（两个方向都播报）和 `single`（当前源语言译文播报，反向译文自动投递）。活动会话切换配置时使用 `expected_version`，新快照从下一 Turn 开始生效；正在处理的 Turn 不被中途改写。

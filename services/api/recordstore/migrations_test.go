@@ -258,8 +258,10 @@ func TestEmbeddedMigrations(t *testing.T) {
 		t.Fatalf("migration = %#v, want version 21 named automatic_turn_settlements", automaticSettlements)
 	}
 	for _, expected := range []string{
+		"CREATE TABLE automatic_turn_runs",
 		"CREATE TABLE automatic_turn_settlements",
 		"automatic_turn_settlements_identity_key UNIQUE",
+		"automatic_turn_settlements_run_fk FOREIGN KEY",
 		"status IN ('queued', 'succeeded', 'failed')",
 		"automatic_turn_settlements_account_turn_idx",
 	} {

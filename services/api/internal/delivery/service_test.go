@@ -242,6 +242,42 @@ func TestScheduleFinalTurnCreatesOneIdempotentMessagePerPreference(t *testing.T)
 	}
 }
 
+func TestScheduleFinalTurnUsesAtomicRepositoryWhenAvailable(t *testing.T) {
+	repository := &atomicScheduleRepository{retryRepositoryStub: retryRepositoryStub{preference: Preference{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Enabled: true, Verified: true}}}
+	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
+	event := recordsv1.FinalTurnEvent{
+		TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1", TargetLanguage: "en-US",
+		TranslatedText: "translation", LanguageConfigVersion: 3, DeliveryEnabled: true,
+	}
+	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
+		t.Fatalf("ScheduleFinalTurn() error = %v", err)
+	}
+	if repository.record.Run.TargetCount != 1 || len(repository.record.Targets) != 1 {
+		t.Fatalf("atomic schedule = %#v, want one target", repository.record)
+	}
+	if repository.record.Run.FallbackOperationID != "fallback_turn-1" {
+		t.Fatalf("fallback operation = %q", repository.record.Run.FallbackOperationID)
+	}
+}
+
+type atomicScheduleRepository struct {
+	retryRepositoryStub
+	record   AutomaticTurnScheduleRecord
+	existing AutomaticTurnRun
+}
+
+func (r *atomicScheduleRepository) GetAutomaticTurnRun(context.Context, string, string) (AutomaticTurnRun, error) {
+	if r.existing.TurnID == "" {
+		return AutomaticTurnRun{}, domain.ErrNotFound
+	}
+	return r.existing, nil
+}
+
+func (r *atomicScheduleRepository) ScheduleAutomaticTurn(_ context.Context, record AutomaticTurnScheduleRecord) error {
+	r.record = record
+	return nil
+}
+
 type automaticTurnReaderStub struct{}
 
 func (automaticTurnReaderStub) ReadFinalTurns(context.Context, string, []string) ([]FinalTurnSnapshot, error) {

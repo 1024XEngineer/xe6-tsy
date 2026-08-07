@@ -160,6 +160,12 @@ type FinalTurnScheduler interface {
 	ScheduleFinalTurn(context.Context, string, recordsv1.FinalTurnEvent) error
 }
 
+// AutomaticTurnSchedulerRepository persists a complete automatic schedule.
+type AutomaticTurnSchedulerRepository interface {
+	GetAutomaticTurnRun(context.Context, string, string) (AutomaticTurnRun, error)
+	ScheduleAutomaticTurn(context.Context, AutomaticTurnScheduleRecord) error
+}
+
 // AutomaticTurnSettlementRepository stores and reads target-level outcomes.
 // It is an optional extension so existing lightweight repositories remain
 // source-compatible while production uses the durable implementation.

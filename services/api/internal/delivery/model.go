@@ -186,3 +186,50 @@ type AutomaticTurnSettlement struct {
 	CreatedAt      time.Time                     `json:"created_at"`
 	UpdatedAt      time.Time                     `json:"updated_at"`
 }
+
+// AutomaticTurnRunStatus is the aggregate state of all automatic targets for
+// one Final Turn.
+type AutomaticTurnRunStatus string
+
+const (
+	AutomaticTurnRunPending         AutomaticTurnRunStatus = "pending"
+	AutomaticTurnRunSucceeded       AutomaticTurnRunStatus = "succeeded"
+	AutomaticTurnRunFailed          AutomaticTurnRunStatus = "failed"
+	AutomaticTurnRunFallbackPending AutomaticTurnRunStatus = "fallback_pending"
+	AutomaticTurnRunFallbackPlayed  AutomaticTurnRunStatus = "fallback_played"
+	AutomaticTurnRunRestored        AutomaticTurnRunStatus = "restored"
+)
+
+// AutomaticTurnRun keeps the immutable fallback snapshot and target aggregate.
+type AutomaticTurnRun struct {
+	AccountID             string                 `json:"account_id"`
+	TurnID                string                 `json:"turn_id"`
+	SessionID             string                 `json:"session_id"`
+	TraceID               string                 `json:"trace_id"`
+	TargetLanguage        string                 `json:"target_language"`
+	TranslatedText        string                 `json:"translated_text"`
+	LanguageConfigVersion int64                  `json:"language_config_version"`
+	Status                AutomaticTurnRunStatus `json:"status"`
+	TargetCount           int                    `json:"target_count"`
+	SettledCount          int                    `json:"settled_count"`
+	SucceededCount        int                    `json:"succeeded_count"`
+	FailedCount           int                    `json:"failed_count"`
+	FallbackOperationID   string                 `json:"fallback_operation_id"`
+	CreatedAt             time.Time              `json:"created_at"`
+	UpdatedAt             time.Time              `json:"updated_at"`
+}
+
+// AutomaticTargetRecord contains all rows created atomically for one target.
+type AutomaticTargetRecord struct {
+	Message        Message
+	InitialAttempt DeliveryAttempt
+	Settlement     AutomaticTurnSettlement
+	IdempotencyKey string
+}
+
+// AutomaticTurnScheduleRecord contains one aggregate run and every target to
+// create in the same transaction.
+type AutomaticTurnScheduleRecord struct {
+	Run     AutomaticTurnRun
+	Targets []AutomaticTargetRecord
+}

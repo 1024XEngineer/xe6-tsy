@@ -271,6 +271,9 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 	if accountID == "" || event.TurnID == "" || !event.DeliveryEnabled {
 		return nil
 	}
+	if scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository); ok {
+		return u.scheduleAutomaticTurnAtomically(ctx, scheduler, accountID, event)
+	}
 	preferences, err := u.Preferences(ctx, accountID)
 	if err != nil {
 		return err
@@ -286,6 +289,74 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 		}); err != nil {
 			return fmt.Errorf("schedule final turn %s for %s: %w", event.TurnID, preference.Channel, err)
 		}
+	}
+	return nil
+}
+
+func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, scheduler AutomaticTurnSchedulerRepository, accountID string, event recordsv1.FinalTurnEvent) error {
+	if event.SessionID == "" || event.TraceID == "" || event.TargetLanguage == "" || event.TranslatedText == "" || event.LanguageConfigVersion < 1 {
+		return domain.ErrInvalidArgument
+	}
+	if u.turns == nil || u.destinations == nil {
+		return domain.ErrInvalidArgument
+	}
+	existing, err := scheduler.GetAutomaticTurnRun(ctx, accountID, event.TurnID)
+	if err == nil {
+		if existing.SessionID != event.SessionID || existing.TraceID != event.TraceID || existing.TargetLanguage != event.TargetLanguage ||
+			existing.TranslatedText != event.TranslatedText || existing.LanguageConfigVersion != event.LanguageConfigVersion {
+			return domain.ErrConflict
+		}
+		return nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	preferences, err := u.Preferences(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	turns, err := u.turns.ReadFinalTurns(ctx, accountID, []string{event.TurnID})
+	if err != nil {
+		return err
+	}
+	if len(turns) != 1 {
+		return domain.ErrNotFound
+	}
+	now := time.Now().UTC()
+	targets := make([]AutomaticTargetRecord, 0, len(preferences))
+	for _, preference := range preferences {
+		if !preference.Enabled || !preference.Verified || preference.DestinationRef == "" || !IsSupportedChannel(preference.Channel) {
+			continue
+		}
+		if _, err := u.destinations.ResolveVerifiedDestination(ctx, accountID, preference.Channel, preference.DestinationRef); err != nil {
+			return err
+		}
+		message := Message{
+			ID: "msg_" + ulid.Make().String(), AccountID: accountID, Channel: preference.Channel,
+			DestinationRef: preference.DestinationRef, SnapshotVersion: 1, Turns: cloneTurns(turns),
+			Status: MessageStatusQueued, Attempts: 1, CreatedAt: now, UpdatedAt: now,
+		}
+		attempt := DeliveryAttempt{ID: "attempt_" + ulid.Make().String(), MessageID: message.ID, AttemptNumber: 1, Status: AttemptStatusQueued, CreatedAt: now}
+		key := fmt.Sprintf("auto:final_turn:%s:%s:%s", event.TurnID, preference.Channel, preference.DestinationRef)
+		targets = append(targets, AutomaticTargetRecord{
+			Message: message, InitialAttempt: attempt, IdempotencyKey: key,
+			Settlement: AutomaticTurnSettlement{
+				AccountID: accountID, TurnID: event.TurnID, SessionID: event.SessionID,
+				TargetLanguage: event.TargetLanguage, Channel: preference.Channel,
+				DestinationRef: preference.DestinationRef, Status: AutomaticTurnSettlementQueued,
+				MessageID: message.ID, CreatedAt: now, UpdatedAt: now,
+			},
+		})
+	}
+	run := AutomaticTurnRun{
+		AccountID: accountID, TurnID: event.TurnID, SessionID: event.SessionID, TraceID: event.TraceID,
+		TargetLanguage: event.TargetLanguage, TranslatedText: event.TranslatedText,
+		LanguageConfigVersion: event.LanguageConfigVersion, Status: AutomaticTurnRunPending,
+		TargetCount: len(targets), FallbackOperationID: "fallback_" + event.TurnID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := scheduler.ScheduleAutomaticTurn(ctx, AutomaticTurnScheduleRecord{Run: run, Targets: targets}); err != nil {
+		return fmt.Errorf("schedule automatic turn atomically: %w", err)
 	}
 	return nil
 }

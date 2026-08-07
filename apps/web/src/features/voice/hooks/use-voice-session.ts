@@ -53,6 +53,8 @@ export type SessionDebugInfo = {
   wakeStatus: WakeListenerStatus;
 };
 
+export type ConfigSyncStatus = "idle" | "saving" | "applied" | "failed";
+
 function mapRuntimeToStatus(runtime: RuntimeState | null): string {
   switch (runtime) {
     case "starting":
@@ -145,6 +147,7 @@ export function useVoiceSession() {
   const [state, dispatch] = useReducer(sessionReducer, initialSession);
   const [statusMessage, setStatusMessage] = useState("正在准备麦克风");
   const [hintMessage, setHintMessage] = useState<string | null>(null);
+  const [configSyncStatus, setConfigSyncStatus] = useState<ConfigSyncStatus>("idle");
   const [voiceConfig, setVoiceConfig] = useState<VoiceSessionConfig>(() =>
     loadVoiceConfig(DEFAULT_VOICE_CONFIG),
   );
@@ -179,7 +182,11 @@ export function useVoiceSession() {
 
     const token = accessTokenRef.current;
     const sessionId = sessionIdRef.current;
-    if (!runningRef.current || !token || !sessionId) return;
+    if (!runningRef.current || !token || !sessionId) {
+      setConfigSyncStatus("idle");
+      return;
+    }
+    setConfigSyncStatus("saving");
 
     activeConfigUpdateChainRef.current = activeConfigUpdateChainRef.current
       .catch(() => undefined)
@@ -197,9 +204,11 @@ export function useVoiceSession() {
           expectedVersion,
         );
         activeLanguageConfigVersionRef.current = updated.version;
+        if (sessionIdRef.current === sessionId) setConfigSyncStatus("applied");
       })
       .catch((error) => {
         if (sessionIdRef.current === sessionId) {
+          setConfigSyncStatus("failed");
           setHintMessage(errorMessage(error, "切换输出模式失败"));
         }
       });
@@ -287,6 +296,7 @@ export function useVoiceSession() {
 
     sessionIdRef.current = null;
     activeLanguageConfigVersionRef.current = null;
+    setConfigSyncStatus("idle");
     dispatch({ type: "END" });
     setStatusMessage(
       wakeRef.current?.getStatus() === "listening"
@@ -460,6 +470,7 @@ export function useVoiceSession() {
       stopPolling();
       sessionIdRef.current = null;
       activeLanguageConfigVersionRef.current = null;
+      setConfigSyncStatus("idle");
       runningRef.current = false;
       dispatch({ type: "END" });
       setStatusMessage("联调失败");
@@ -555,6 +566,7 @@ export function useVoiceSession() {
       statusMessage,
       hintMessage: hintMessage ?? state.notice,
       voiceConfig,
+      configSyncStatus,
       updateConfig,
       debug,
       wakeStatus,
@@ -562,6 +574,7 @@ export function useVoiceSession() {
     }),
     [
       debug,
+      configSyncStatus,
       hintMessage,
       state,
       statusMessage,

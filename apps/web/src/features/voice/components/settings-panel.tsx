@@ -4,12 +4,16 @@ import { CaretDown, Check, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 
-import type { SessionDebugInfo } from "../hooks/use-voice-session";
+import type {
+  ConfigSyncStatus,
+  SessionDebugInfo,
+} from "../hooks/use-voice-session";
 import { getOrCreateAuthSession } from "../lib/auth-session";
 import {
   SUPPORTED_LANGUAGES,
   languageLabel,
   type LanguageCode,
+  type InterpretationOutputMode,
   type VoiceSessionConfig,
 } from "../lib/languages";
 import { listSupportedLanguages } from "../lib/lingow-api";
@@ -53,6 +57,23 @@ const SETTINGS_ITEMS = [
 
 type SettingId = (typeof SETTINGS_ITEMS)[number]["id"];
 const HISTORY_INDEX = SETTINGS_ITEMS.findIndex((item) => item.id === "history");
+
+function outputModeLabel(mode: InterpretationOutputMode): string {
+  return mode === "single" ? "单向输出" : "双向播报";
+}
+
+function outputModeStatusLabel(status: ConfigSyncStatus): string | null {
+  switch (status) {
+    case "saving":
+      return "正在应用到当前会话，下一句开始生效。";
+    case "applied":
+      return "已应用到当前会话，下一句开始生效。";
+    case "failed":
+      return "当前会话应用失败；本地偏好仍已保存。";
+    default:
+      return null;
+  }
+}
 
 const LANGUAGE_TRANSLATIONS: Record<string, string> = {
   "zh-CN": "中文（简体）",
@@ -172,6 +193,7 @@ function SettingsDetail({
   languageOptions,
   languageLoading,
   languageLabels,
+  configSyncStatus,
   onOpenHistory,
 }: {
   selectedId: SettingId;
@@ -181,6 +203,7 @@ function SettingsDetail({
   languageOptions: readonly LanguageCode[];
   languageLoading: boolean;
   languageLabels: Readonly<Record<string, string>>;
+  configSyncStatus: ConfigSyncStatus;
   onOpenHistory: (session: import("../lib/lingow-api").VoiceSession) => void;
 }) {
   const [openLanguage, setOpenLanguage] = useState<"source" | "target" | null>(null);
@@ -211,10 +234,42 @@ function SettingsDetail({
             open={openLanguage === "target"}
             value={voiceConfig.targetLanguage}
           />
+          <div className={styles.settingControlGroup}>
+            <span className={styles.settingControlLabel}>译音输出</span>
+            <div
+              aria-label="译音输出模式"
+              className={styles.segmentControl}
+              role="group"
+            >
+              {(["bidirectional", "single"] as const).map((mode) => (
+                <button
+                  aria-pressed={voiceConfig.outputMode === mode}
+                  className={
+                    voiceConfig.outputMode === mode ? styles.segmentActive : ""
+                  }
+                  key={mode}
+                  onClick={() => onConfigChange({ ...voiceConfig, outputMode: mode })}
+                  type="button"
+                >
+                  {outputModeLabel(mode)}
+                </button>
+              ))}
+            </div>
+            <p className={styles.settingsState}>
+              {voiceConfig.outputMode === "single"
+                ? "当前源语言译文播报；反向译文自动投递，并保留 Final Turn。"
+                : "两种语言的译文都播报；翻译、投递记录和 Final Turn 始终保留。"}
+            </p>
+            {outputModeStatusLabel(configSyncStatus) ? (
+              <p className={styles.settingsState}>
+                {outputModeStatusLabel(configSyncStatus)}
+              </p>
+            ) : null}
+          </div>
           <p>
             {languageLoading
               ? "正在同步 ASR / TTS 支持的语言..."
-              : "保存后，下一次会话会按此语言对开启双向翻译。"}
+              : "语言与输出设置会自动保存。活动会话会从下一句开始使用新配置。"}
           </p>
         </div>
       );
@@ -269,11 +324,13 @@ export function SettingsPanel({
   voiceConfig,
   onConfigChange,
   debug,
+  configSyncStatus,
 }: {
   onClose: () => void;
   voiceConfig: VoiceSessionConfig;
   onConfigChange: (next: VoiceSessionConfig) => void;
   debug: SessionDebugInfo;
+  configSyncStatus: ConfigSyncStatus;
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [historySessionId, setHistorySessionId] = useState<string | null>(null);
@@ -319,7 +376,7 @@ export function SettingsPanel({
 
   const selectedValue =
     selected.id === "language"
-      ? `${languageLabel(voiceConfig.sourceLanguage)} / ${languageLabel(voiceConfig.targetLanguage)}`
+      ? `${languageLabel(voiceConfig.sourceLanguage)} / ${languageLabel(voiceConfig.targetLanguage)} · ${outputModeLabel(voiceConfig.outputMode)}`
       : selected.id === "session"
         ? debug.sessionId
           ? debug.sessionId.slice(0, 18)
@@ -446,6 +503,7 @@ export function SettingsPanel({
                 <div className={styles.settingsDetailControls}>
                   <SettingsDetail
                     debug={debug}
+                    configSyncStatus={configSyncStatus}
                     languageLoading={languageLoading}
                     languageOptions={languageOptions}
                     languageLabels={languageLabels}

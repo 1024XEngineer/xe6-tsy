@@ -266,6 +266,22 @@ describe("VoiceExperience", () => {
     expect(sourcePicker).toHaveAccessibleName(/源语言，当前Русский/);
   });
 
+  it("selects single output mode and persists the preference", () => {
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const singleMode = screen.getByRole("button", { name: "单向输出" });
+    fireEvent.click(singleMode);
+
+    expect(singleMode).toHaveAttribute("aria-pressed", "true");
+    expect(JSON.parse(localStorage.getItem("lingow-voice-config-v2") ?? "{}")).toMatchObject({
+      outputMode: "single",
+    });
+    expect(
+      screen.getByText(/反向译文自动投递，并保留 Final Turn/),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the settings wheel open while showing the history preview", async () => {
     render(<VoiceExperience />);
 

@@ -1,7 +1,9 @@
 package silero
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net/http"
@@ -64,16 +66,25 @@ func downloadONNXRuntime(destRoot string) (string, error) {
 	}
 
 	url := "https://github.com/microsoft/onnxruntime/releases/download/v" + ortVersion + "/" + asset
-	zipPath := filepath.Join(destRoot, "ort-download.zip")
-	if err := downloadFile(url, zipPath); err != nil {
+	archivePath := filepath.Join(destRoot, "ort-download"+filepath.Ext(asset))
+	if strings.HasSuffix(asset, ".tgz") {
+		archivePath = filepath.Join(destRoot, "ort-download.tgz")
+	}
+	if err := downloadFile(url, archivePath); err != nil {
 		return "", err
 	}
-	defer os.Remove(zipPath)
+	defer os.Remove(archivePath)
 
 	extractRoot := filepath.Join(destRoot, "extract")
 	_ = os.RemoveAll(extractRoot)
-	if err := unzipArchive(zipPath, extractRoot); err != nil {
-		return "", err
+	if strings.HasSuffix(strings.ToLower(asset), ".zip") {
+		if err := unzipArchive(archivePath, extractRoot); err != nil {
+			return "", err
+		}
+	} else {
+		if err := untarGzipArchive(archivePath, extractRoot); err != nil {
+			return "", err
+		}
 	}
 	defer os.RemoveAll(extractRoot)
 
@@ -84,19 +95,45 @@ func downloadONNXRuntime(destRoot string) (string, error) {
 	if err := copyDirContents(inner, destRoot); err != nil {
 		return "", err
 	}
-	if st, err := os.Stat(libraryPath); err != nil || st.IsDir() {
-		return "", fmt.Errorf("onnxruntime download finished but %q is missing", libraryPath)
+	if resolved, err := resolveInstalledLibrary(destRoot, libraryRel); err == nil {
+		return resolved, nil
 	}
-	return libraryPath, nil
+	return "", fmt.Errorf("onnxruntime download finished but %q is missing", libraryPath)
+}
+
+func resolveInstalledLibrary(destRoot, libraryRel string) (string, error) {
+	candidates := []string{filepath.Join(destRoot, libraryRel)}
+	if runtime.GOOS != "windows" {
+		candidates = append(candidates,
+			filepath.Join(destRoot, "lib", "libonnxruntime.so"),
+			filepath.Join(destRoot, "lib", "libonnxruntime.so."+ortVersion),
+			filepath.Join(destRoot, "lib", "libonnxruntime.dylib"),
+			filepath.Join(destRoot, "lib", "libonnxruntime."+ortVersion+".dylib"),
+		)
+	}
+	for _, candidate := range candidates {
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("installed onnxruntime library not found under %s", destRoot)
 }
 
 func ortReleaseAsset() (asset string, libraryRel string, err error) {
-	// Auto-download currently covers the Windows local-dev path used by start-local.
-	// Other platforms can still point ONNXRUNTIME_SHARED_LIBRARY_PATH at a preinstalled library.
-	if runtime.GOOS == "windows" && runtime.GOARCH == "amd64" {
+	switch {
+	case runtime.GOOS == "windows" && runtime.GOARCH == "amd64":
 		return "onnxruntime-win-x64-" + ortVersion + ".zip", filepath.Join("lib", "onnxruntime.dll"), nil
+	case runtime.GOOS == "linux" && runtime.GOARCH == "amd64":
+		return "onnxruntime-linux-x64-" + ortVersion + ".tgz", filepath.Join("lib", "libonnxruntime.so"), nil
+	case runtime.GOOS == "linux" && runtime.GOARCH == "arm64":
+		return "onnxruntime-linux-aarch64-" + ortVersion + ".tgz", filepath.Join("lib", "libonnxruntime.so"), nil
+	case runtime.GOOS == "darwin" && runtime.GOARCH == "arm64":
+		return "onnxruntime-osx-arm64-" + ortVersion + ".tgz", filepath.Join("lib", "libonnxruntime.dylib"), nil
+	case runtime.GOOS == "darwin" && runtime.GOARCH == "amd64":
+		return "onnxruntime-osx-x86_64-" + ortVersion + ".tgz", filepath.Join("lib", "libonnxruntime.dylib"), nil
+	default:
+		return "", "", fmt.Errorf("automatic onnxruntime download is not supported on %s/%s; install the shared library and set ONNXRUNTIME_SHARED_LIBRARY_PATH", runtime.GOOS, runtime.GOARCH)
 	}
-	return "", "", fmt.Errorf("automatic onnxruntime download is not supported on %s/%s; install the shared library and set ONNXRUNTIME_SHARED_LIBRARY_PATH", runtime.GOOS, runtime.GOARCH)
 }
 
 func downloadFile(url, dest string) error {
@@ -171,6 +208,62 @@ func extractZipFile(file *zip.File, destDir string) error {
 	return err
 }
 
+func untarGzipArchive(tgzPath, destDir string) error {
+	f, err := os.Open(tgzPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("open onnxruntime tgz: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
+	}
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		name := filepath.Clean(header.Name)
+		if name == "." || strings.HasPrefix(name, "..") {
+			return fmt.Errorf("refusing unsafe tar path %q", header.Name)
+		}
+		target := filepath.Join(destDir, name)
+		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) && target != filepath.Clean(destDir) {
+			return fmt.Errorf("refusing tar path outside destination: %q", header.Name)
+		}
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return err
+			}
+			out.Close()
+		case tar.TypeSymlink:
+			// Skip symlinks; resolveInstalledLibrary accepts versioned .so names.
+			continue
+		}
+	}
+}
+
 func firstSubdir(root string) (string, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -194,6 +287,9 @@ func copyDirContents(srcDir, destDir string) error {
 			return err
 		}
 		if rel == "." {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
 		target := filepath.Join(destDir, rel)

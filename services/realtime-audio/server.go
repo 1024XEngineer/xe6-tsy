@@ -343,12 +343,6 @@ func newLocalVADSegmenterFactory(getenv func(string) string) (runtime.SegmenterF
 			return vad.NewSegmenter(localruntime.EnergySpeechClassifier{Threshold: 0.01}, options)
 		}, nil
 	case silero.ProviderSilero:
-		if _, err := os.Stat(cfg.LibraryPath); err != nil {
-			slog.Info("silero VAD onnxruntime missing; downloading official release",
-				"version", "1.24.1",
-				"dest", "third_party/onnxruntime",
-			)
-		}
 		if err := silero.EnsureAssets(&cfg); err != nil {
 			return nil, fmt.Errorf("prepare silero VAD assets: %w", err)
 		}

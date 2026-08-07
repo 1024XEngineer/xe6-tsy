@@ -108,6 +108,8 @@ func setMockProviderEnv(t *testing.T) {
 	t.Setenv("LLM_PROVIDER", "mock")
 	t.Setenv("TTS_PROVIDER", "mock")
 	t.Setenv("REALTIME_API_DATABASE", "")
+	// Unit tests stay offline: Silero needs ONNX Runtime shared libs.
+	t.Setenv("LOCAL_VAD_PROVIDER", "energy")
 }
 
 func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {
@@ -202,6 +204,7 @@ func TestRunRejectsMissingSecretWithoutListening(t *testing.T) {
 }
 
 func TestRunShutsDownAfterStart(t *testing.T) {
+	setMockProviderEnv(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
 
@@ -235,6 +238,7 @@ func TestRunShutsDownAfterStart(t *testing.T) {
 }
 
 func TestRunReturnsListenError(t *testing.T) {
+	setMockProviderEnv(t)
 	want := errors.New("listen failed")
 	err := run(context.Background(), secretEnv(strings.Repeat("v", 32)), func(*http.Server) error {
 		return want
@@ -245,6 +249,7 @@ func TestRunReturnsListenError(t *testing.T) {
 }
 
 func TestRunAcceptsListenerExit(t *testing.T) {
+	setMockProviderEnv(t)
 	err := run(context.Background(), secretEnv(strings.Repeat("w", 32)), func(*http.Server) error {
 		return nil
 	})
@@ -254,6 +259,7 @@ func TestRunAcceptsListenerExit(t *testing.T) {
 }
 
 func TestRunAcceptsServerClosedListenerExit(t *testing.T) {
+	setMockProviderEnv(t)
 	err := run(context.Background(), secretEnv(strings.Repeat("x", 32)), func(*http.Server) error {
 		return http.ErrServerClosed
 	})

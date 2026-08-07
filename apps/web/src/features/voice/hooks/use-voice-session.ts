@@ -6,6 +6,7 @@ import {
   createLanguageConfig,
   createVoiceSession,
   endVoiceSession,
+  getCurrentLanguageConfig,
   getVoiceSessionState,
   listSessionTurns,
   mintRealtimeTicket,
@@ -164,6 +165,8 @@ export function useVoiceSession() {
   const webrtcRef = useRef<WebRTCSessionHandles | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
+  const activeLanguageConfigVersionRef = useRef<number | null>(null);
+  const activeConfigUpdateChainRef = useRef<Promise<void>>(Promise.resolve());
   const wakeRef = useRef<WakeWordListener | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
@@ -173,6 +176,33 @@ export function useVoiceSession() {
     configRef.current = normalized;
     setVoiceConfig(normalized);
     saveVoiceConfig(normalized);
+
+    const token = accessTokenRef.current;
+    const sessionId = sessionIdRef.current;
+    if (!runningRef.current || !token || !sessionId) return;
+
+    activeConfigUpdateChainRef.current = activeConfigUpdateChainRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (!runningRef.current || sessionIdRef.current !== sessionId) return;
+        let expectedVersion = activeLanguageConfigVersionRef.current;
+        if (expectedVersion === null) {
+          const current = await getCurrentLanguageConfig(token, sessionId);
+          expectedVersion = current.version;
+        }
+        const updated = await createLanguageConfig(
+          token,
+          sessionId,
+          normalized,
+          expectedVersion,
+        );
+        activeLanguageConfigVersionRef.current = updated.version;
+      })
+      .catch((error) => {
+        if (sessionIdRef.current === sessionId) {
+          setHintMessage(errorMessage(error, "切换输出模式失败"));
+        }
+      });
   }, []);
 
   const stopPolling = useCallback(() => {
@@ -256,6 +286,7 @@ export function useVoiceSession() {
     }
 
     sessionIdRef.current = null;
+    activeLanguageConfigVersionRef.current = null;
     dispatch({ type: "END" });
     setStatusMessage(
       wakeRef.current?.getStatus() === "listening"
@@ -302,11 +333,12 @@ export function useVoiceSession() {
       setHintMessage(`session: ${session.id}`);
 
       setStatusMessage("正在配置语言");
-      await createLanguageConfig(
+      const languageConfig = await createLanguageConfig(
         auth.tokens.access_token,
         session.id,
         configRef.current,
       );
+      activeLanguageConfigVersionRef.current = languageConfig.version;
       setHintMessage(
         `${formatActivePair(configRef.current)} · ${session.id}`,
       );
@@ -427,6 +459,7 @@ export function useVoiceSession() {
       cleanupMedia();
       stopPolling();
       sessionIdRef.current = null;
+      activeLanguageConfigVersionRef.current = null;
       runningRef.current = false;
       dispatch({ type: "END" });
       setStatusMessage("联调失败");

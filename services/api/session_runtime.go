@@ -25,6 +25,7 @@ type sessionHTTPDependencies struct {
 	service     *sessions.Service
 	handler     *sessions.Handler
 	endRecovery backgroundWorker
+	realtime    *controlplane.Client
 }
 
 type sessionCompositionInputs struct {
@@ -141,6 +142,7 @@ func newSessionHTTPDependencies(inputs sessionCompositionInputs) (*sessionHTTPDe
 		service:     service,
 		handler:     handler,
 		endRecovery: endRecovery,
+		realtime:    client,
 	}, nil
 }
 

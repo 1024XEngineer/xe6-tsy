@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/oklog/ulid/v2"
@@ -25,6 +26,7 @@ type UseCases struct {
 	emailBindChallenges EmailBindChallengeRepository
 	emailBindSender     EmailBindSender
 	wecomIdentity       WeComIdentityClient
+	fallback            AutomaticTurnFallbackPlayer
 }
 
 func NewUseCases() *UseCases { return &UseCases{} }
@@ -51,6 +53,10 @@ func (u *UseCases) ConfigureEmailVerification(challenges EmailBindChallengeRepos
 // ConfigureWeChatBinding wires the WeCom OAuth client used to resolve bind codes.
 func (u *UseCases) ConfigureWeChatBinding(client WeComIdentityClient) {
 	u.wecomIdentity = client
+}
+
+func (u *UseCases) ConfigureAutomaticFallback(player AutomaticTurnFallbackPlayer) {
+	u.fallback = player
 }
 
 // Create accepts selected final Turns and creates an asynchronous delivery task.
@@ -389,9 +395,75 @@ func (u *UseCases) RetryAutomaticTurnFailures(ctx context.Context, accountID, tu
 		if err != nil {
 			return err
 		}
+		if message.Attempts >= maxAutomaticTargetAttempts {
+			continue
+		}
 		key := fmt.Sprintf("auto:final_turn_retry:%s:%s:%s:%d", turnID, settlement.Channel, settlement.DestinationRef, message.Attempts+1)
 		if _, err := retryRepository.RetryAutomaticTurnTarget(ctx, accountID, turnID, message.ID, key); err != nil {
 			return fmt.Errorf("retry automatic target %s: %w", settlement.DestinationRef, err)
+		}
+	}
+	return nil
+}
+
+func (u *UseCases) RetryAutomaticTurns(ctx context.Context, limit int) error {
+	repository, ok := u.repository.(AutomaticTurnRetryRepository)
+	if !ok {
+		return domain.ErrNotImplemented
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	candidates, err := repository.ListAutomaticTurnRetryCandidates(ctx, limit)
+	if err != nil {
+		return err
+	}
+	for _, run := range candidates {
+		if err := u.RetryAutomaticTurnFailures(ctx, run.AccountID, run.TurnID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (u *UseCases) RecoverAutomaticTurn(ctx context.Context, accountID, turnID string) error {
+	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
+	if !ok || u.fallback == nil {
+		return domain.ErrNotImplemented
+	}
+	run, err := repository.ClaimAutomaticTurnFallback(ctx, accountID, turnID)
+	if err != nil {
+		return err
+	}
+	_, err = u.fallback.PlayFallback(ctx, run.SessionID, realtimev1.FallbackPlaybackRequest{
+		OperationID: run.FallbackOperationID, SessionID: run.SessionID, TurnID: run.TurnID,
+		TargetLanguage: run.TargetLanguage, TranslatedText: run.TranslatedText,
+		LanguageConfigVersion: int(run.LanguageConfigVersion), TraceID: run.TraceID,
+	})
+	if err != nil {
+		return fmt.Errorf("play automatic fallback: %w", err)
+	}
+	if err := repository.MarkAutomaticTurnFallbackPlayed(ctx, accountID, turnID); err != nil {
+		return fmt.Errorf("mark automatic fallback played: %w", err)
+	}
+	return nil
+}
+
+func (u *UseCases) RecoverAutomaticTurns(ctx context.Context, limit int) error {
+	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
+	if !ok || u.fallback == nil {
+		return domain.ErrNotImplemented
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	candidates, err := repository.ListAutomaticTurnRecoveryCandidates(ctx, limit)
+	if err != nil {
+		return err
+	}
+	for _, run := range candidates {
+		if err := u.RecoverAutomaticTurn(ctx, run.AccountID, run.TurnID); err != nil {
+			return err
 		}
 	}
 	return nil

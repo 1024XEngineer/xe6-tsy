@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 )
 
@@ -167,8 +168,19 @@ type AutomaticTurnSchedulerRepository interface {
 }
 
 type AutomaticTurnRetryRepository interface {
+	ListAutomaticTurnRetryCandidates(context.Context, int) ([]AutomaticTurnRun, error)
 	ListAutomaticTurnSettlements(context.Context, string, string) ([]AutomaticTurnSettlement, error)
 	RetryAutomaticTurnTarget(context.Context, string, string, string, string) (Message, error)
+}
+
+type AutomaticTurnFallbackRepository interface {
+	ListAutomaticTurnRecoveryCandidates(context.Context, int) ([]AutomaticTurnRun, error)
+	ClaimAutomaticTurnFallback(context.Context, string, string) (AutomaticTurnRun, error)
+	MarkAutomaticTurnFallbackPlayed(context.Context, string, string) error
+}
+
+type AutomaticTurnFallbackPlayer interface {
+	PlayFallback(context.Context, string, realtimev1.FallbackPlaybackRequest) (realtimev1.FallbackPlaybackReceipt, error)
 }
 
 // AutomaticTurnSettlementRepository stores and reads target-level outcomes.

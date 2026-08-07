@@ -259,6 +259,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"CREATE TABLE automatic_turn_runs",
+		"partially_succeeded",
 		"CREATE TABLE automatic_turn_settlements",
 		"automatic_turn_settlements_identity_key UNIQUE",
 		"automatic_turn_settlements_run_fk FOREIGN KEY",

@@ -23,7 +23,7 @@ func automaticTurnRunStatus(targetCount, settledCount, succeededCount, failedCou
 		case succeededCount == 0:
 			return AutomaticTurnRunFailed
 		default:
-			return AutomaticTurnRunPending
+			return AutomaticTurnRunPartiallySucceeded
 		}
 	}
 	return AutomaticTurnRunPending
@@ -206,13 +206,16 @@ type AutomaticTurnSettlement struct {
 type AutomaticTurnRunStatus string
 
 const (
-	AutomaticTurnRunPending         AutomaticTurnRunStatus = "pending"
-	AutomaticTurnRunSucceeded       AutomaticTurnRunStatus = "succeeded"
-	AutomaticTurnRunFailed          AutomaticTurnRunStatus = "failed"
-	AutomaticTurnRunFallbackPending AutomaticTurnRunStatus = "fallback_pending"
-	AutomaticTurnRunFallbackPlayed  AutomaticTurnRunStatus = "fallback_played"
-	AutomaticTurnRunRestored        AutomaticTurnRunStatus = "restored"
+	AutomaticTurnRunPending            AutomaticTurnRunStatus = "pending"
+	AutomaticTurnRunSucceeded          AutomaticTurnRunStatus = "succeeded"
+	AutomaticTurnRunPartiallySucceeded AutomaticTurnRunStatus = "partially_succeeded"
+	AutomaticTurnRunFailed             AutomaticTurnRunStatus = "failed"
+	AutomaticTurnRunFallbackPending    AutomaticTurnRunStatus = "fallback_pending"
+	AutomaticTurnRunFallbackPlayed     AutomaticTurnRunStatus = "fallback_played"
+	AutomaticTurnRunRestored           AutomaticTurnRunStatus = "restored"
 )
+
+const maxAutomaticTargetAttempts = 2
 
 // AutomaticTurnRun keeps the immutable fallback snapshot and target aggregate.
 type AutomaticTurnRun struct {

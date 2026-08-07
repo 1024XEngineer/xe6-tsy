@@ -24,6 +24,10 @@ func settleAutomaticTurnTarget(ctx context.Context, tx pgx.Tx, messageID string,
 	if _, err := tx.Exec(ctx, `UPDATE automatic_turn_settlements SET status=$3,error_code=$4,updated_at=$5 WHERE account_id=$1 AND turn_id=$2 AND message_id=$6 AND status='queued'`, accountID, turnID, status, code, now, messageID); err != nil {
 		return err
 	}
+	return refreshAutomaticTurnRun(ctx, tx, accountID, turnID, now)
+}
+
+func refreshAutomaticTurnRun(ctx context.Context, tx pgx.Tx, accountID, turnID string, now time.Time) error {
 	var targetCount, settledCount, succeededCount, failedCount int
 	if err := tx.QueryRow(ctx, `
 		SELECT r.target_count,
@@ -37,6 +41,6 @@ func settleAutomaticTurnTarget(ctx context.Context, tx pgx.Tx, messageID string,
 		return err
 	}
 	runStatus := automaticTurnRunStatus(targetCount, settledCount, succeededCount, failedCount)
-	_, err = tx.Exec(ctx, `UPDATE automatic_turn_runs SET status=$3,settled_count=$4,succeeded_count=$5,failed_count=$6,updated_at=$7 WHERE account_id=$1 AND turn_id=$2`, accountID, turnID, runStatus, settledCount, succeededCount, failedCount, now)
+	_, err := tx.Exec(ctx, `UPDATE automatic_turn_runs SET status=$3,settled_count=$4,succeeded_count=$5,failed_count=$6,updated_at=$7 WHERE account_id=$1 AND turn_id=$2`, accountID, turnID, runStatus, settledCount, succeededCount, failedCount, now)
 	return err
 }

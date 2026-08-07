@@ -11,6 +11,39 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+func (r *PostgresRepository) ListAutomaticTurnRetryCandidates(ctx context.Context, limit int) ([]AutomaticTurnRun, error) {
+	if r == nil || r.pool == nil || limit <= 0 {
+		return nil, domain.ErrInvalidArgument
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT account_id,turn_id,session_id,trace_id,target_language,translated_text,
+		language_config_version,status,target_count,settled_count,succeeded_count,
+		failed_count,fallback_operation_id,created_at,updated_at
+		FROM automatic_turn_runs
+		WHERE status='partially_succeeded' AND succeeded_count>0 AND failed_count>0
+		  AND EXISTS (
+			SELECT 1 FROM automatic_turn_settlements s
+			JOIN outbound_messages m ON m.id=s.message_id
+			WHERE s.account_id=automatic_turn_runs.account_id AND s.turn_id=automatic_turn_runs.turn_id
+			  AND s.status='failed' AND m.attempts < $2
+		  )
+		ORDER BY updated_at ASC, turn_id ASC
+		LIMIT $1`, limit, maxAutomaticTargetAttempts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]AutomaticTurnRun, 0)
+	for rows.Next() {
+		var run AutomaticTurnRun
+		if err := rows.Scan(&run.AccountID, &run.TurnID, &run.SessionID, &run.TraceID, &run.TargetLanguage, &run.TranslatedText, &run.LanguageConfigVersion, &run.Status, &run.TargetCount, &run.SettledCount, &run.SucceededCount, &run.FailedCount, &run.FallbackOperationID, &run.CreatedAt, &run.UpdatedAt); err != nil {
+			return nil, err
+		}
+		result = append(result, run)
+	}
+	return result, rows.Err()
+}
+
 func (r *PostgresRepository) ListAutomaticTurnSettlements(ctx context.Context, accountID, turnID string) ([]AutomaticTurnSettlement, error) {
 	if r == nil || r.pool == nil || accountID == "" || turnID == "" {
 		return nil, domain.ErrInvalidArgument
@@ -60,7 +93,7 @@ func (r *PostgresRepository) RetryAutomaticTurnTarget(ctx context.Context, accou
 		if err := tx.QueryRow(ctx, `SELECT account_id,channel,destination_ref,status,attempts,last_error_code FROM outbound_messages WHERE id=$1 AND account_id=$2 FOR UPDATE`, messageID, accountID).Scan(&message.AccountID, &channel, &destinationRef, &status, &attempts, &lastErrorCode); err != nil {
 			return mapDeliveryError(err)
 		}
-		if status != MessageStatusFailed || (lastErrorCode != nil && *lastErrorCode == deliveryUnknownErrorCode) {
+		if status != MessageStatusFailed || attempts >= maxAutomaticTargetAttempts || (lastErrorCode != nil && *lastErrorCode == deliveryUnknownErrorCode) {
 			return domain.ErrConflict
 		}
 		var existingMessageID string
@@ -90,7 +123,7 @@ func (r *PostgresRepository) RetryAutomaticTurnTarget(ctx context.Context, accou
 		if _, err := tx.Exec(ctx, `UPDATE automatic_turn_settlements SET status='queued',error_code=NULL,updated_at=$4 WHERE account_id=$1 AND turn_id=$2 AND message_id=$3`, accountID, turnID, messageID, now); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE automatic_turn_runs SET status='pending',updated_at=$3 WHERE account_id=$1 AND turn_id=$2`, accountID, turnID, now); err != nil {
+		if err := refreshAutomaticTurnRun(ctx, tx, accountID, turnID, now); err != nil {
 			return err
 		}
 		message.Channel = channel

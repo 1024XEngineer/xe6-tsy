@@ -21,7 +21,7 @@ CREATE TABLE automatic_turn_runs (
     CONSTRAINT automatic_turn_runs_language_not_empty CHECK (target_language <> ''),
     CONSTRAINT automatic_turn_runs_translation_not_empty CHECK (translated_text <> ''),
     CONSTRAINT automatic_turn_runs_config_version_positive CHECK (language_config_version >= 1),
-    CONSTRAINT automatic_turn_runs_status_valid CHECK (status IN ('pending', 'succeeded', 'failed', 'fallback_pending', 'fallback_played', 'restored')),
+    CONSTRAINT automatic_turn_runs_status_valid CHECK (status IN ('pending', 'succeeded', 'partially_succeeded', 'failed', 'fallback_pending', 'fallback_played', 'restored')),
     CONSTRAINT automatic_turn_runs_counts_valid CHECK (
         target_count >= 0
         AND settled_count >= 0

@@ -125,6 +125,9 @@ func TestHTTPSingleOutputRequiresReadyDeliveryTarget(t *testing.T) {
 	if errBody.Error.Code != CodeDeliveryTargetRequired {
 		t.Fatalf("code=%q, want %q", errBody.Error.Code, CodeDeliveryTargetRequired)
 	}
+	if errBody.Error.Retryable || errBody.Error.Details == nil {
+		t.Fatalf("error metadata = %#v, want non-retryable error with details", errBody.Error)
+	}
 }
 
 func TestHTTPListLanguages(t *testing.T) {

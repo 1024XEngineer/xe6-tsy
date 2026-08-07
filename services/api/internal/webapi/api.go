@@ -41,6 +41,7 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	mux.Handle("GET /api/v1/voice-sessions/{id}/usage", a.authenticate(http.HandlerFunc(a.sessionUsage)))
 	mux.Handle("GET /api/v1/usage/summary", a.authenticate(http.HandlerFunc(a.accountUsage)))
 	mux.Handle("POST /api/v1/outbound-messages", a.authenticate(http.HandlerFunc(a.createMessage)))
+	mux.Handle("GET /api/v1/outbound-messages", a.authenticate(http.HandlerFunc(a.listMessages)))
 	mux.Handle("GET /api/v1/outbound-messages/{message_id}", a.authenticate(http.HandlerFunc(a.getMessage)))
 	mux.Handle("POST /api/v1/outbound-deliveries/{message_id}/retry", a.authenticate(http.HandlerFunc(a.retryMessage)))
 	mux.Handle("GET /api/v1/account/message-preferences", a.authenticate(http.HandlerFunc(a.preferences)))
@@ -329,6 +330,25 @@ func (a *API) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (a *API) listMessages(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	service, ok := a.delivery.(delivery.MessageListingService)
+	if !ok {
+		writeError(w, r, domain.ErrNotImplemented)
+		return
+	}
+	items, err := service.ListMessages(r.Context(), id, 20)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (a *API) getMessage(w http.ResponseWriter, r *http.Request) {

@@ -378,10 +378,18 @@ func (r *PostgresRepository) MarkOutboxFailed(ctx context.Context, id, reason st
 }
 
 func (r *PostgresRepository) scanMessage(ctx context.Context, query string, args ...any) (Message, error) {
+	return scanMessageRow(r.pool.QueryRow(ctx, query, args...))
+}
+
+type messageRowScanner interface {
+	Scan(...any) error
+}
+
+func scanMessageRow(row messageRowScanner) (Message, error) {
 	var message Message
 	var turns []byte
 	var lastError *string
-	err := r.pool.QueryRow(ctx, query, args...).Scan(&message.ID, &message.AccountID, &message.Channel, &message.DestinationRef, &message.SnapshotVersion, &turns, &message.Status, &message.Attempts, &lastError, &message.CreatedAt, &message.UpdatedAt)
+	err := row.Scan(&message.ID, &message.AccountID, &message.Channel, &message.DestinationRef, &message.SnapshotVersion, &turns, &message.Status, &message.Attempts, &lastError, &message.CreatedAt, &message.UpdatedAt)
 	if err != nil {
 		return Message{}, mapDeliveryError(err)
 	}

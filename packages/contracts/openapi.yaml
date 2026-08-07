@@ -244,6 +244,13 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /outbound-messages:
+    get:
+      operationId: listOutboundMessages
+      security: [{ accountContext: [] }]
+      responses:
+        '200': { description: Recent account messages, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Message' } } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
     post:
       operationId: createOutboundMessage
       security: [{ accountContext: [] }]

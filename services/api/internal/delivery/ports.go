@@ -148,6 +148,12 @@ type Service interface {
 	RevokeMessageTarget(context.Context, string, Channel, string) error
 }
 
+// MessageListingService exposes recent account-owned delivery state without
+// expanding lightweight Service implementations that do not persist messages.
+type MessageListingService interface {
+	ListMessages(context.Context, string, int) ([]Message, error)
+}
+
 // AutomaticPreferenceService is an optional extension used by the HTTP
 // adapter to select the single automatic destination for a channel without
 // breaking older lightweight Service fakes.

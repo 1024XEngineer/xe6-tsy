@@ -24,6 +24,9 @@ type deliveryFake struct {
 	retryMessageID       string
 	retryIdempotency     string
 	targets              []delivery.MessageTarget
+	messages             []delivery.Message
+	messageListAccountID string
+	messageListLimit     int
 	listAccountID        string
 	listChannel          *delivery.Channel
 	bindAccountID        string
@@ -84,6 +87,11 @@ func authenticate(request *http.Request) *http.Request {
 func (f *deliveryFake) Create(_ context.Context, input delivery.CreateInput) (delivery.Message, error) {
 	f.created = input
 	return delivery.Message{ID: "message-1", AccountID: input.AccountID, Channel: input.Channel}, nil
+}
+func (f *deliveryFake) ListMessages(_ context.Context, accountID string, limit int) ([]delivery.Message, error) {
+	f.messageListAccountID = accountID
+	f.messageListLimit = limit
+	return f.messages, nil
 }
 func (*deliveryFake) Get(context.Context, string, string) (delivery.Message, error) {
 	return delivery.Message{}, domain.ErrNotImplemented
@@ -157,6 +165,23 @@ func TestCreateMessagePassesAuthenticatedAccount(t *testing.T) {
 	}
 	if fake.created.AccountID != "account-1" || fake.created.IdempotencyKey != "create-message-1" || len(fake.created.TurnIDs) != 1 {
 		t.Fatalf("unexpected input: %#v", fake.created)
+	}
+}
+
+func TestListMessagesUsesAuthenticatedAccount(t *testing.T) {
+	fake := &deliveryFake{messages: []delivery.Message{{ID: "message-1", Status: delivery.MessageStatusSent}}}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := authenticate(httptest.NewRequest(http.MethodGet, "/api/v1/outbound-messages", nil))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if fake.messageListAccountID != "account-1" || fake.messageListLimit != 20 {
+		t.Fatalf("list input = %q, %d", fake.messageListAccountID, fake.messageListLimit)
+	}
+	if !strings.Contains(response.Body.String(), `"id":"message-1"`) {
+		t.Fatalf("body = %s", response.Body.String())
 	}
 }
 

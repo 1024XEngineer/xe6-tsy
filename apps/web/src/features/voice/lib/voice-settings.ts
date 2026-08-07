@@ -1,6 +1,7 @@
 import {
   isLanguageCode,
   type LanguageCode,
+  type InterpretationOutputMode,
   type VoiceSessionConfig,
 } from "./languages";
 
@@ -18,6 +19,7 @@ export function loadVoiceConfig(
     return normalizeVoiceConfig({
       sourceLanguage: saved.sourceLanguage ?? fallback.sourceLanguage,
       targetLanguage: saved.targetLanguage ?? fallback.targetLanguage,
+      outputMode: saved.outputMode ?? fallback.outputMode,
     });
   } catch {
     return fallback;
@@ -43,5 +45,8 @@ export function normalizeVoiceConfig(
     target = source === "zh-CN" ? "en-US" : "zh-CN";
   }
 
-  return { sourceLanguage: source, targetLanguage: target };
+  const outputMode: InterpretationOutputMode =
+    config.outputMode === "single" ? "single" : "bidirectional";
+
+  return { sourceLanguage: source, targetLanguage: target, outputMode };
 }

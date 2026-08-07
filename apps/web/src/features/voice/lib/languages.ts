@@ -57,14 +57,24 @@ export function isLanguageCode(value: string): value is LanguageCode {
   return SUPPORTED_LANGUAGES.includes(value);
 }
 
+export type InterpretationOutputMode = "bidirectional" | "single";
+
 export type VoiceSessionConfig = {
   sourceLanguage: LanguageCode;
   targetLanguage: LanguageCode;
+  outputMode: InterpretationOutputMode;
+};
+
+export type LanguageOutputRoute = {
+  target_language: LanguageCode;
+  tts_enabled: boolean;
+  delivery_enabled: boolean;
 };
 
 export const DEFAULT_VOICE_CONFIG: VoiceSessionConfig = {
   sourceLanguage: "zh-CN",
   targetLanguage: "en-US",
+  outputMode: "bidirectional",
 };
 
 export function bilingualPairs(config: VoiceSessionConfig): Array<{
@@ -74,6 +84,35 @@ export function bilingualPairs(config: VoiceSessionConfig): Array<{
   return [
     { source: config.sourceLanguage, target: config.targetLanguage },
     { source: config.targetLanguage, target: config.sourceLanguage },
+  ];
+}
+
+export function outputRoutes(config: VoiceSessionConfig): LanguageOutputRoute[] {
+  if (config.outputMode === "single") {
+    return [
+      {
+        target_language: config.targetLanguage,
+        tts_enabled: true,
+        delivery_enabled: false,
+      },
+      {
+        target_language: config.sourceLanguage,
+        tts_enabled: false,
+        delivery_enabled: true,
+      },
+    ];
+  }
+  return [
+    {
+      target_language: config.targetLanguage,
+      tts_enabled: true,
+      delivery_enabled: false,
+    },
+    {
+      target_language: config.sourceLanguage,
+      tts_enabled: true,
+      delivery_enabled: false,
+    },
   ];
 }
 

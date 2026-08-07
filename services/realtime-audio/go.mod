@@ -6,6 +6,7 @@ require github.com/1024XEngineer/xe6-tsy/packages/contracts v0.0.0
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/getcharzp/onnxruntime_purego v1.24.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pion/opus v0.1.0
@@ -18,6 +19,7 @@ require (
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/ebitengine/purego v0.9.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
@@ -36,6 +38,7 @@ require (
 	github.com/pion/transport/v4 v4.0.2 // indirect
 	github.com/pion/turn/v5 v5.0.12 // indirect
 	github.com/tphakala/simd v1.5.0 // indirect
+	github.com/up-zero/gotool v0.0.0-20260105010850-4a05e8fadd54 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect

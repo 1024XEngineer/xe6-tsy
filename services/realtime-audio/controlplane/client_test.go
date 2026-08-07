@@ -119,6 +119,36 @@ func TestClientStopCarriesReasonTimeAndReplaysByReason(t *testing.T) {
 	}
 }
 
+func TestClientPlayFallbackAcceptsIdempotentReceipts(t *testing.T) {
+	statuses := []realtimev1.FallbackPlaybackReceiptStatus{
+		realtimev1.FallbackPlaybackAccepted,
+		realtimev1.FallbackPlaybackAlreadyAccepted,
+	}
+	for _, status := range statuses {
+		t.Run(string(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != "/realtime/v1/sessions/session-1/fallback-playback" || request.Header.Get("Idempotency-Key") != "fallback:fallback-1" {
+					t.Fatalf("request path/header = %q, %q", request.URL.Path, request.Header.Get("Idempotency-Key"))
+				}
+				writer.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(writer).Encode(realtimev1.FallbackPlaybackReceipt{OperationID: "fallback-1", Status: status})
+			}))
+			defer server.Close()
+			client, err := NewClient(ClientConfig{BaseURL: server.URL, HTTP: server.Client(), Tickets: TicketSourceFunc(func(context.Context, string) (string, error) { return "ticket", nil })})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+			receipt, err := client.PlayFallback(t.Context(), "session-1", realtimev1.FallbackPlaybackRequest{
+				OperationID: "fallback-1", SessionID: "session-1", TurnID: "turn-1", TargetLanguage: "zh-CN",
+				TranslatedText: "translated", LanguageConfigVersion: 3, TraceID: "trace-1",
+			})
+			if err != nil || receipt.Status != status {
+				t.Fatalf("PlayFallback() = %#v, %v", receipt, err)
+			}
+		})
+	}
+}
+
 func TestClientStopAllowsEmptyTraceID(t *testing.T) {
 	endedAt := time.Unix(1700000060, 0).UTC()
 	observations := make(chan stopRequestObservation, 1)

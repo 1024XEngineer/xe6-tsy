@@ -59,6 +59,32 @@ func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
 	}
 }
 
+func TestHandlerAcceptsFallbackPlaybackIdempotently(t *testing.T) {
+	fixture := newFixture(t)
+	fallback := &fallbackPlaybackFake{}
+	fixture.controlHandler.fallback = fallback
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+
+	first := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	second := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if first.Code != http.StatusAccepted || second.Code != http.StatusAccepted {
+		t.Fatalf("fallback statuses = %d, %d", first.Code, second.Code)
+	}
+	if fallback.calls != 1 {
+		t.Fatalf("fallback calls = %d, want 1", fallback.calls)
+	}
+	var firstReceipt, secondReceipt realtimev1.FallbackPlaybackReceipt
+	if err := json.NewDecoder(first.Body).Decode(&firstReceipt); err != nil {
+		t.Fatalf("decode first receipt: %v", err)
+	}
+	if err := json.NewDecoder(second.Body).Decode(&secondReceipt); err != nil {
+		t.Fatalf("decode second receipt: %v", err)
+	}
+	if firstReceipt.Status != realtimev1.FallbackPlaybackAccepted || secondReceipt.Status != realtimev1.FallbackPlaybackAlreadyAccepted {
+		t.Fatalf("fallback receipts = %#v, %#v", firstReceipt, secondReceipt)
+	}
+}
+
 func TestHandlerDelegatesOfferCandidatesRuntimeAndConfig(t *testing.T) {
 	fixture := newFixture(t)
 
@@ -406,12 +432,13 @@ func TestHandlerRejectsWrongSessionTicketAndAcceptsRepeatedCandidate(t *testing.
 }
 
 type fixture struct {
-	handler     http.Handler
-	lifecycle   *lifecycleFake
-	signaling   *signalingFake
-	connections *connectionFake
-	tickets     *ticketFake
-	config      *configFake
+	handler        http.Handler
+	controlHandler *Handler
+	lifecycle      *lifecycleFake
+	signaling      *signalingFake
+	connections    *connectionFake
+	tickets        *ticketFake
+	config         *configFake
 }
 
 func newFixture(t *testing.T) fixture {
@@ -438,7 +465,7 @@ func newFixture(t *testing.T) fixture {
 		t.Fatalf("New() error = %v", err)
 	}
 	return fixture{
-		handler: handler, lifecycle: lifecycle,
+		handler: handler, controlHandler: handler, lifecycle: lifecycle,
 		signaling: handler.signaling.(*signalingFake), connections: connections,
 		tickets: tickets, config: config,
 	}
@@ -581,6 +608,16 @@ func (f *lifecycleFake) GetRuntimeState(context.Context, string) (session.Runtim
 type signalingFake struct {
 	offerCalls     int
 	candidateCalls int
+}
+
+type fallbackPlaybackFake struct {
+	calls int
+	err   error
+}
+
+func (f *fallbackPlaybackFake) PlayFallback(_ context.Context, _ realtimev1.FallbackPlaybackRequest) error {
+	f.calls++
+	return f.err
 }
 
 type connectionFake struct {

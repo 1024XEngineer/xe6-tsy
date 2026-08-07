@@ -59,6 +59,8 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, message = http.StatusUnprocessableEntity, CodeUnsupportedLanguage, err.Error()
 	case errors.Is(err, ErrInvalidLanguagePair):
 		status, code, message = http.StatusUnprocessableEntity, CodeInvalidLanguagePair, err.Error()
+	case errors.Is(err, ErrDeliveryTargetRequired):
+		status, code, message = http.StatusUnprocessableEntity, CodeDeliveryTargetRequired, "single output requires an enabled and verified delivery target"
 	case errors.Is(err, ErrUnsupportedSourceLanguage):
 		status, code, message = http.StatusUnprocessableEntity, CodeUnsupportedSourceLang, err.Error()
 	case errors.Is(err, ErrNotImplemented):

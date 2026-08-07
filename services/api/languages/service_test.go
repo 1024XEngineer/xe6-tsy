@@ -14,6 +14,17 @@ func bilingualPairs() []LanguagePair {
 	}
 }
 
+type deliveryReadinessStub struct {
+	ready bool
+	err   error
+	calls int
+}
+
+func (s *deliveryReadinessStub) HasReadyAutomaticTarget(context.Context, string) (bool, error) {
+	s.calls++
+	return s.ready, s.err
+}
+
 func TestServiceCreateAndReadLifecycle(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})
@@ -62,7 +73,7 @@ func TestServiceCreateAndReadLifecycle(t *testing.T) {
 
 func TestServicePersistsPerTargetOutputRoutes(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
-	svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})
+	svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"}, &deliveryReadinessStub{ready: true})
 	created, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "routes-1", CreateLanguageConfigRequest{
 		Languages: bilingualPairs(),
 		OutputRoutes: []OutputRoute{
@@ -141,7 +152,7 @@ func TestServiceValidatesInterpretationOutputPresets(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := NewMemoryStore(nil, nil)
-			svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})
+			svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"}, &deliveryReadinessStub{ready: true})
 			_, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "", CreateLanguageConfigRequest{
 				Languages:    bilingualPairs(),
 				OutputRoutes: tt.routes,
@@ -154,6 +165,68 @@ func TestServiceValidatesInterpretationOutputPresets(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestServiceRequiresReadyDeliveryTargetForSingleOutput(t *testing.T) {
+	singleRoutes := []OutputRoute{
+		{TargetLanguage: "en-US", TTSEnabled: true},
+		{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+	}
+
+	t.Run("ready target", func(t *testing.T) {
+		readiness := &deliveryReadinessStub{ready: true}
+		svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{"vs_1": "acct_1"}, readiness)
+		_, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "", CreateLanguageConfigRequest{
+			Languages: bilingualPairs(), OutputRoutes: singleRoutes,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig() error = %v", err)
+		}
+		if readiness.calls != 1 {
+			t.Fatalf("readiness calls = %d, want 1", readiness.calls)
+		}
+	})
+
+	t.Run("target unavailable", func(t *testing.T) {
+		readiness := &deliveryReadinessStub{}
+		svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{"vs_1": "acct_1"}, readiness)
+		_, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "", CreateLanguageConfigRequest{
+			Languages: bilingualPairs(), OutputRoutes: singleRoutes,
+		})
+		if !errors.Is(err, ErrDeliveryTargetRequired) {
+			t.Fatalf("CreateConfig() error = %v, want delivery_target_required", err)
+		}
+	})
+
+	t.Run("bidirectional skips readiness", func(t *testing.T) {
+		readiness := &deliveryReadinessStub{err: errors.New("must not be called")}
+		svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{"vs_1": "acct_1"}, readiness)
+		_, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "", CreateLanguageConfigRequest{
+			Languages: bilingualPairs(),
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig() error = %v", err)
+		}
+		if readiness.calls != 0 {
+			t.Fatalf("readiness calls = %d, want 0", readiness.calls)
+		}
+	})
+
+	t.Run("idempotent replay skips readiness", func(t *testing.T) {
+		readiness := &deliveryReadinessStub{ready: true}
+		svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{"vs_1": "acct_1"}, readiness)
+		req := CreateLanguageConfigRequest{Languages: bilingualPairs(), OutputRoutes: singleRoutes}
+		if _, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "single-replay", req); err != nil {
+			t.Fatalf("first CreateConfig() error = %v", err)
+		}
+		readiness.ready = false
+		if _, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "single-replay", req); err != nil {
+			t.Fatalf("replay CreateConfig() error = %v", err)
+		}
+		if readiness.calls != 1 {
+			t.Fatalf("readiness calls = %d, want 1", readiness.calls)
+		}
+	})
 }
 
 func TestServiceValidationAndAuthErrors(t *testing.T) {

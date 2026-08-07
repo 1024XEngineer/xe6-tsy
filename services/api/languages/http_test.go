@@ -94,6 +94,39 @@ func TestHTTPIdempotencyKeyTooLong(t *testing.T) {
 	}
 }
 
+func TestHTTPSingleOutputRequiresReadyDeliveryTarget(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	svc := NewService(store, MapSessionOwner{"vs_http": "acct_http"}, &deliveryReadinessStub{})
+	mux := http.NewServeMux()
+	NewHandler(svc, func(r *http.Request) (string, bool) {
+		return webapi.AccountIDFromContext(r.Context())
+	}).Register(mux, withoutAuthentication)
+
+	body, _ := json.Marshal(CreateLanguageConfigRequest{
+		Languages: bilingualPairs(),
+		OutputRoutes: []OutputRoute{
+			{TargetLanguage: "en-US", TTSEnabled: true},
+			{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_http/language-configs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s, want 422", rec.Code, rec.Body.String())
+	}
+	var errBody ErrorBody
+	if err := json.NewDecoder(rec.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if errBody.Error.Code != CodeDeliveryTargetRequired {
+		t.Fatalf("code=%q, want %q", errBody.Error.Code, CodeDeliveryTargetRequired)
+	}
+}
+
 func TestHTTPListLanguages(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	svc := NewService(store, MapSessionOwner{})

@@ -8,16 +8,22 @@ import (
 
 // Service is the language-configuration application service (issue #88).
 type Service struct {
-	store    Store
-	sessions SessionOwnerReader
+	store             Store
+	sessions          SessionOwnerReader
+	deliveryReadiness DeliveryReadinessReader
 }
 
-// NewService wires required store and session-ownership dependencies.
-func NewService(store Store, sessions SessionOwnerReader) *Service {
+// NewService wires required store and session-ownership dependencies. The
+// optional readiness reader is required before a single-output config can be created.
+func NewService(store Store, sessions SessionOwnerReader, readiness ...DeliveryReadinessReader) *Service {
 	if sessions == nil {
 		sessions = NotImplementedSessionOwner{}
 	}
-	return &Service{store: store, sessions: sessions}
+	var deliveryReadiness DeliveryReadinessReader
+	if len(readiness) > 0 {
+		deliveryReadiness = readiness[0]
+	}
+	return &Service{store: store, sessions: sessions, deliveryReadiness: deliveryReadiness}
 }
 
 var (
@@ -99,6 +105,18 @@ func (s *Service) CreateConfig(
 			return LanguageConfig{}, err
 		}
 	}
+	if hasDeliveryRoute(routes) {
+		if s.deliveryReadiness == nil {
+			return LanguageConfig{}, ErrDeliveryTargetRequired
+		}
+		ready, err := s.deliveryReadiness.HasReadyAutomaticTarget(ctx, accountID)
+		if err != nil {
+			return LanguageConfig{}, err
+		}
+		if !ready {
+			return LanguageConfig{}, ErrDeliveryTargetRequired
+		}
+	}
 
 	created, err := s.store.CreateActiveConfig(ctx, CreateConfigInput{
 		SessionID:          sessionID,
@@ -126,6 +144,15 @@ func (s *Service) CreateConfig(
 		return LanguageConfig{}, ErrIdempotencyConflict
 	}
 	return existing, nil
+}
+
+func hasDeliveryRoute(routes []OutputRoute) bool {
+	for _, route := range routes {
+		if route.DeliveryEnabled {
+			return true
+		}
+	}
+	return false
 }
 
 // GetCurrentConfig implements LanguageConfigReader for session management and

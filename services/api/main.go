@@ -249,7 +249,11 @@ func newLanguageDependenciesWithPool(
 	if err := languages.ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
-	svc := languages.NewService(languages.NewPostgresStore(pool, nil), sessions)
+	svc := languages.NewService(
+		languages.NewPostgresStore(pool, nil),
+		sessions,
+		delivery.NewPostgresRepository(pool),
+	)
 	slog.Info("language configuration service enabled")
 	accountID := func(r *http.Request) (string, bool) {
 		return internalwebapi.AccountIDFromContext(r.Context())

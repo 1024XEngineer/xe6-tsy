@@ -422,6 +422,32 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /realtime/v1/sessions/{session_id}/fallback-playback:
+    servers:
+      - url: /
+    post:
+      operationId: acceptFallbackPlayback
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FallbackPlaybackRequest' }
+      responses:
+        '202':
+          description: Fallback playback accepted durably or accepted previously
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FallbackPlaybackReceipt' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /realtime/v1/sessions/{session_id}/runtime:
     servers:
       - url: /
@@ -527,6 +553,28 @@ components:
         trace_id: { type: string }
         reason: { type: string, enum: [user_requested, operator_cancelled, client_disconnected] }
         ended_at: { type: string, format: date-time }
+    FallbackPlaybackRequest:
+      type: object
+      additionalProperties: false
+      required: [operation_id, session_id, turn_id, target_language, translated_text, language_config_version, trace_id]
+      properties:
+        operation_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        turn_id: { type: string, minLength: 1 }
+        target_language: { type: string, minLength: 1 }
+        translated_text: { type: string, minLength: 1 }
+        language_config_version: { type: integer, minimum: 1 }
+        trace_id: { type: string, minLength: 1 }
+    FallbackPlaybackReceiptStatus:
+      type: string
+      enum: [accepted, already_accepted]
+    FallbackPlaybackReceipt:
+      type: object
+      additionalProperties: false
+      required: [operation_id, status]
+      properties:
+        operation_id: { type: string, minLength: 1 }
+        status: { $ref: '#/components/schemas/FallbackPlaybackReceiptStatus' }
     RealtimeRuntimeSnapshot:
       type: object
       additionalProperties: false

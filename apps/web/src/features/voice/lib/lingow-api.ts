@@ -124,6 +124,47 @@ export type UsageSummary = {
   totals: UsageStageTotal[];
 };
 
+export type DeliveryChannel = "email" | "wechat";
+
+export type MessageTarget = {
+  destination_ref: string;
+  channel: DeliveryChannel;
+  verified: boolean;
+  revoked_at: string | null;
+  updated_at: string;
+};
+
+export type MessagePreference = {
+  account_id: string;
+  channel: DeliveryChannel;
+  destination_ref: string;
+  enabled: boolean;
+  verified: boolean;
+  updated_at: string;
+};
+
+export type OutboundMessageStatus =
+  | "queued"
+  | "sending"
+  | "sent"
+  | "failed"
+  | "retrying"
+  | "cancelled";
+
+export type OutboundMessage = {
+  id: string;
+  account_id: string;
+  channel: DeliveryChannel;
+  destination_ref: string;
+  snapshot_version: number;
+  turns: Array<{ turn_id: string; translated_text: string }>;
+  status: OutboundMessageStatus;
+  attempts: number;
+  last_error_code: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 function authHeaders(accessToken: string, idempotencyKey?: string): HeadersInit {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
@@ -313,6 +354,116 @@ export async function getAccountUsageSummary(
     cache: "no-store",
   });
   return parseJson<UsageSummary>(response);
+}
+
+export async function listMessageTargets(
+  accessToken: string,
+  channel?: DeliveryChannel,
+): Promise<{ items: MessageTarget[] }> {
+  const query = channel ? `?channel=${encodeURIComponent(channel)}` : "";
+  const response = await fetch(`/api/v1/account/message-targets${query}`, {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<{ items: MessageTarget[] }>(response);
+}
+
+export async function listMessagePreferences(
+  accessToken: string,
+): Promise<{ items: MessagePreference[] }> {
+  const response = await fetch("/api/v1/account/message-preferences", {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<{ items: MessagePreference[] }>(response);
+}
+
+export async function putMessagePreference(
+  accessToken: string,
+  channel: DeliveryChannel,
+  enabled: boolean,
+  destinationRef?: string,
+): Promise<MessagePreference> {
+  const response = await fetch(
+    `/api/v1/account/message-preferences/${encodeURIComponent(channel)}`,
+    {
+      method: "PUT",
+      headers: {
+        ...authHeaders(accessToken, newIdempotencyKey("preference")),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        enabled,
+        ...(destinationRef ? { destination_ref: destinationRef } : {}),
+      }),
+    },
+  );
+  return parseJson<MessagePreference>(response);
+}
+
+export async function requestEmailBindVerification(
+  accessToken: string,
+  email: string,
+  destinationRef?: string,
+): Promise<void> {
+  const response = await fetch(
+    "/api/v1/account/message-targets/email/verification-codes",
+    {
+      method: "POST",
+      headers: { ...authHeaders(accessToken), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email,
+        ...(destinationRef ? { destination_ref: destinationRef } : {}),
+      }),
+    },
+  );
+  if (!response.ok) await parseJson<never>(response);
+}
+
+export async function bindEmailTarget(
+  accessToken: string,
+  token: string,
+): Promise<MessageTarget> {
+  const response = await fetch("/api/v1/account/message-targets/email/bind", {
+    method: "POST",
+    headers: { ...authHeaders(accessToken), "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  return parseJson<MessageTarget>(response);
+}
+
+export async function bindWeChatTarget(
+  accessToken: string,
+  code: string,
+): Promise<MessageTarget> {
+  const response = await fetch("/api/v1/account/message-targets/wechat/bind", {
+    method: "POST",
+    headers: { ...authHeaders(accessToken), "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  return parseJson<MessageTarget>(response);
+}
+
+export async function revokeMessageTarget(
+  accessToken: string,
+  channel: DeliveryChannel,
+  destinationRef: string,
+): Promise<void> {
+  const response = await fetch(
+    `/api/v1/account/message-targets/${encodeURIComponent(channel)}/${encodeURIComponent(destinationRef)}`,
+    { method: "DELETE", headers: authHeaders(accessToken) },
+  );
+  if (!response.ok) await parseJson<never>(response);
+}
+
+export async function listOutboundMessages(
+  accessToken: string,
+): Promise<{ items: OutboundMessage[] }> {
+  const response = await fetch("/api/v1/outbound-messages", {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<{ items: OutboundMessage[] }>(response);
 }
 
 export async function refreshAccountTokens(

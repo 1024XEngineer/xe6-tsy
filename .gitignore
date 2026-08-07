@@ -4,3 +4,13 @@
 
 # Temporary inbound PCM WAV dumps from realtime-audio debug_inbound_wav.go
 debug-inbound-wav/
+
+# ONNX Runtime shared libs for local Silero VAD (auto-downloaded on first start)
+services/realtime-audio/third_party/onnxruntime/lib/
+services/realtime-audio/third_party/onnxruntime/include/
+services/realtime-audio/third_party/onnxruntime/GIT_COMMIT_ID
+services/realtime-audio/third_party/onnxruntime/LICENSE
+services/realtime-audio/third_party/onnxruntime/Privacy.md
+services/realtime-audio/third_party/onnxruntime/ThirdPartyNotices.txt
+services/realtime-audio/third_party/onnxruntime/VERSION_NUMBER
+!services/realtime-audio/third_party/onnxruntime/README.md

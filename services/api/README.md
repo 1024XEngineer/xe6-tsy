@@ -96,6 +96,8 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 并配置 `LINGOW_SMTP_*`。WeChat Work 通道通过 `POST /api/v1/account/message-targets/wechat/bind`
 绑定 OAuth code（local/test 支持 `dev:<userid>` 或 `dev:<destination_ref>:<userid>`），
 出站投递在配置 `LINGOW_WECOM_*` 后由 `WeComProvider` 发送应用消息。
+语言配置的单向输出只有在 delivery runtime 已启用且目标 channel provider 已配置时才会接受；
+否则返回 `delivery_target_required`，保持反向译文不被静默丢弃。
 
 ## 语音记录 HTTP 装配
 

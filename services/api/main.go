@@ -242,6 +242,7 @@ func newLanguageDependenciesWithPool(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	sessions languages.SessionOwnerReader,
+	readiness ...languages.DeliveryReadinessReader,
 ) (*languageHTTPDependencies, error) {
 	if pool == nil {
 		return nil, errors.New("language handler requires PostgreSQL pool")
@@ -249,11 +250,11 @@ func newLanguageDependenciesWithPool(
 	if err := languages.ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
-	svc := languages.NewService(
-		languages.NewPostgresStore(pool, nil),
-		sessions,
-		delivery.NewPostgresRepository(pool),
-	)
+	var deliveryReadiness languages.DeliveryReadinessReader
+	if len(readiness) > 0 {
+		deliveryReadiness = readiness[0]
+	}
+	svc := languages.NewService(languages.NewPostgresStore(pool, nil), sessions, deliveryReadiness)
 	slog.Info("language configuration service enabled")
 	accountID := func(r *http.Request) (string, bool) {
 		return internalwebapi.AccountIDFromContext(r.Context())

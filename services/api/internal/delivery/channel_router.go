@@ -29,11 +29,37 @@ func (r *ChannelRouter) Send(ctx context.Context, request SendRequest) error {
 	}
 }
 
+// SupportsChannel reports whether the router has a configured provider for a
+// channel. It is a composition-time capability check; provider health remains
+// handled by the delivery worker's retry and failure state machine.
+func (r *ChannelRouter) SupportsChannel(channel Channel) bool {
+	if r == nil {
+		return false
+	}
+	switch channel {
+	case ChannelEmail:
+		return providerConfigured(r.email)
+	case ChannelWeChat:
+		return providerConfigured(r.wechat)
+	default:
+		return false
+	}
+}
+
 func (r *ChannelRouter) send(ctx context.Context, provider Provider, request SendRequest) error {
 	if provider == nil {
 		return fmt.Errorf("%w: provider adapter is not wired", ErrProviderNotConfigured)
 	}
 	return provider.Send(ctx, request)
+}
+
+func providerConfigured(provider Provider) bool {
+	switch provider.(type) {
+	case nil, UnconfiguredProvider, *UnconfiguredProvider:
+		return false
+	default:
+		return true
+	}
 }
 
 func (r *ChannelRouter) SupportsProviderIdempotency() bool {

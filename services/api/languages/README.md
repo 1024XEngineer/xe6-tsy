@@ -42,4 +42,4 @@ snapshot, err := svc.GetCurrentConfig(ctx, sessionID)
 
 `GetCurrentConfig` **不接受 turnID**；轮内固定由实时转译模块本地快照完成。
 
-`output_mode` 只有两个值：`bidirectional`（两个方向都播报）和 `single`（当前源语言译文播报，反向译文自动投递）。活动会话切换配置时使用 `expected_version`，新快照从下一 Turn 开始生效；正在处理的 Turn 不被中途改写。
+`output_mode` 只有两个值：`bidirectional`（两个方向都播报）和 `single`（当前源语言译文播报，反向译文自动投递）。`single` 只有在 delivery runtime 已启用且目标 channel provider 已配置时才会接受；否则返回 `delivery_target_required`。活动会话切换配置时使用 `expected_version`，新快照从下一 Turn 开始生效；正在处理的 Turn 不被中途改写。

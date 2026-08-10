@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 23 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 23", len(migrations))
+	if len(migrations) != 24 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 24", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -297,6 +297,21 @@ func TestEmbeddedMigrations(t *testing.T) {
 	} {
 		if !strings.Contains(fallbackPlaybackClaims.SQL, expected) {
 			t.Fatalf("fallback-playback-claims migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackClaimTokens := migrations[23]
+	if fallbackPlaybackClaimTokens.Version != 24 || fallbackPlaybackClaimTokens.Name != "realtime_fallback_playback_claim_tokens" {
+		t.Fatalf("migration = %#v, want version 24 named realtime_fallback_playback_claim_tokens", fallbackPlaybackClaimTokens)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN processing_token TEXT",
+		"WHERE status = 'processing'",
+		"processing_token IS NOT NULL",
+		"processing_token IS NULL",
+	} {
+		if !strings.Contains(fallbackPlaybackClaimTokens.SQL, expected) {
+			t.Fatalf("fallback-playback-claim-token migration does not contain %q", expected)
 		}
 	}
 }

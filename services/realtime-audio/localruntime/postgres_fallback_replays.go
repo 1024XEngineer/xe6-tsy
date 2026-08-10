@@ -2,6 +2,8 @@ package localruntime
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -20,6 +22,14 @@ type PostgresFallbackPlaybackReplayStore struct {
 	Pool *pgxpool.Pool
 }
 
+func newFallbackPlaybackClaimToken() (string, error) {
+	buffer := make([]byte, 16)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", fmt.Errorf("generate fallback playback claim token: %w", err)
+	}
+	return hex.EncodeToString(buffer), nil
+}
+
 // Claim durably reserves an operation before media I/O. Expired processing
 // claims are conservatively settled as accepted because playback may already
 // have reached the audio device when the owner disappeared.
@@ -28,28 +38,34 @@ func (s PostgresFallbackPlaybackReplayStore) Claim(ctx context.Context, sessionI
 	if s.Pool == nil || sessionID == "" || operationID == "" || payloadHash == "" {
 		return claim, fmt.Errorf("fallback playback replay store dependency is required")
 	}
-	err := pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
+	claimToken, err := newFallbackPlaybackClaimToken()
+	if err != nil {
+		return claim, err
+	}
+	err = pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
 		result, err := tx.Exec(ctx, `
 			INSERT INTO realtime_fallback_playback_operations
-				(session_id,operation_id,payload_hash,status,processing_started_at)
-			VALUES ($1,$2,$3,'processing',CURRENT_TIMESTAMP)
-			ON CONFLICT (session_id,operation_id) DO NOTHING`, sessionID, operationID, payloadHash)
+				(session_id,operation_id,payload_hash,status,processing_started_at,processing_token)
+			VALUES ($1,$2,$3,'processing',CURRENT_TIMESTAMP,$4)
+			ON CONFLICT (session_id,operation_id) DO NOTHING`, sessionID, operationID, payloadHash, claimToken)
 		if err != nil {
 			return fmt.Errorf("claim fallback playback operation: %w", err)
 		}
 		if result.RowsAffected() == 1 {
 			claim.Status = controlplane.FallbackPlaybackClaimed
+			claim.Token = claimToken
 			return nil
 		}
 
 		var storedHash, status string
+		var storedToken *string
 		var processingStartedAt *time.Time
 		var databaseNow time.Time
 		if err := tx.QueryRow(ctx, `
-			SELECT payload_hash,status,processing_started_at,CURRENT_TIMESTAMP
+			SELECT payload_hash,status,processing_started_at,processing_token,CURRENT_TIMESTAMP
 			FROM realtime_fallback_playback_operations
 			WHERE session_id=$1 AND operation_id=$2 FOR UPDATE`, sessionID, operationID).
-			Scan(&storedHash, &status, &processingStartedAt, &databaseNow); err != nil {
+			Scan(&storedHash, &status, &processingStartedAt, &storedToken, &databaseNow); err != nil {
 			return fmt.Errorf("read claimed fallback playback operation: %w", err)
 		}
 		if storedHash != payloadHash {
@@ -65,7 +81,7 @@ func (s PostgresFallbackPlaybackReplayStore) Claim(ctx context.Context, sessionI
 			}
 			if _, err := tx.Exec(ctx, `
 				UPDATE realtime_fallback_playback_operations
-				SET status='accepted',accepted_at=CURRENT_TIMESTAMP,processing_started_at=NULL
+				SET status='accepted',accepted_at=CURRENT_TIMESTAMP,processing_started_at=NULL,processing_token=NULL
 				WHERE session_id=$1 AND operation_id=$2 AND status='processing'`, sessionID, operationID); err != nil {
 				return fmt.Errorf("settle expired fallback playback claim: %w", err)
 			}
@@ -80,14 +96,14 @@ func (s PostgresFallbackPlaybackReplayStore) Claim(ctx context.Context, sessionI
 
 // Complete records successful playback and accepts repeated completion after
 // an expired claim has already been conservatively settled.
-func (s PostgresFallbackPlaybackReplayStore) Complete(ctx context.Context, sessionID, operationID, payloadHash string) error {
-	if s.Pool == nil || sessionID == "" || operationID == "" || payloadHash == "" {
+func (s PostgresFallbackPlaybackReplayStore) Complete(ctx context.Context, sessionID, operationID, payloadHash, claimToken string) error {
+	if s.Pool == nil || sessionID == "" || operationID == "" || payloadHash == "" || claimToken == "" {
 		return fmt.Errorf("fallback playback replay store dependency is required")
 	}
 	result, err := s.Pool.Exec(ctx, `
 		UPDATE realtime_fallback_playback_operations
-		SET status='accepted',accepted_at=CURRENT_TIMESTAMP,processing_started_at=NULL
-		WHERE session_id=$1 AND operation_id=$2 AND payload_hash=$3 AND status='processing'`, sessionID, operationID, payloadHash)
+		SET status='accepted',accepted_at=CURRENT_TIMESTAMP,processing_started_at=NULL,processing_token=NULL
+		WHERE session_id=$1 AND operation_id=$2 AND payload_hash=$3 AND status='processing' AND processing_token=$4`, sessionID, operationID, payloadHash, claimToken)
 	if err != nil {
 		return fmt.Errorf("complete fallback playback operation: %w", err)
 	}
@@ -96,10 +112,11 @@ func (s PostgresFallbackPlaybackReplayStore) Complete(ctx context.Context, sessi
 	}
 
 	var storedHash, status string
+	var storedToken *string
 	err = s.Pool.QueryRow(ctx, `
-		SELECT payload_hash,status
+		SELECT payload_hash,status,processing_token
 		FROM realtime_fallback_playback_operations
-		WHERE session_id=$1 AND operation_id=$2`, sessionID, operationID).Scan(&storedHash, &status)
+		WHERE session_id=$1 AND operation_id=$2`, sessionID, operationID).Scan(&storedHash, &status, &storedToken)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("complete fallback playback operation: operation was not claimed")
 	}
@@ -112,7 +129,51 @@ func (s PostgresFallbackPlaybackReplayStore) Complete(ctx context.Context, sessi
 	if status == "accepted" {
 		return nil
 	}
+	if storedToken == nil || *storedToken != claimToken {
+		return fmt.Errorf("complete fallback playback operation: claim is no longer owned")
+	}
 	return fmt.Errorf("complete fallback playback operation: status is %q", status)
+}
+
+// Abort releases a claim only when the caller still owns the processing row.
+// A missing or already accepted row is treated as idempotent; a different
+// processing token is never modified by a stale caller.
+func (s PostgresFallbackPlaybackReplayStore) Abort(ctx context.Context, sessionID, operationID, payloadHash, claimToken string) error {
+	if s.Pool == nil || sessionID == "" || operationID == "" || payloadHash == "" || claimToken == "" {
+		return fmt.Errorf("fallback playback replay store dependency is required")
+	}
+	result, err := s.Pool.Exec(ctx, `
+		DELETE FROM realtime_fallback_playback_operations
+		WHERE session_id=$1 AND operation_id=$2 AND payload_hash=$3 AND status='processing' AND processing_token=$4`, sessionID, operationID, payloadHash, claimToken)
+	if err != nil {
+		return fmt.Errorf("abort fallback playback operation: %w", err)
+	}
+	if result.RowsAffected() == 1 {
+		return nil
+	}
+
+	var storedHash, status string
+	var storedToken *string
+	err = s.Pool.QueryRow(ctx, `
+		SELECT payload_hash,status,processing_token
+		FROM realtime_fallback_playback_operations
+		WHERE session_id=$1 AND operation_id=$2`, sessionID, operationID).Scan(&storedHash, &status, &storedToken)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read aborted fallback playback operation: %w", err)
+	}
+	if storedHash != payloadHash {
+		return webrtc.ErrIdempotencyPayloadConflict
+	}
+	if status == "accepted" {
+		return nil
+	}
+	if storedToken == nil || *storedToken != claimToken {
+		return fmt.Errorf("abort fallback playback operation: claim is no longer owned")
+	}
+	return fmt.Errorf("abort fallback playback operation: status is %q", status)
 }
 
 var _ controlplane.FallbackPlaybackReplayStore = PostgresFallbackPlaybackReplayStore{}

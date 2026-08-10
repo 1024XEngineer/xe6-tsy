@@ -111,7 +111,7 @@ func validRuntimeProgressTransition(current, next RuntimeState) bool {
 	}
 	switch current {
 	case RuntimeListening:
-		return next == RuntimeASRProcessing || next == RuntimeTranslating
+		return next == RuntimeASRProcessing || next == RuntimeTranslating || next == RuntimeTTSProcessing
 	case RuntimeASRProcessing:
 		return next == RuntimeTranslating || next == RuntimeListening
 	case RuntimeTranslating:

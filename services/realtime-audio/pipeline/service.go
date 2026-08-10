@@ -192,36 +192,10 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if !route.TTSEnabled {
 		return nil
 	}
-	if s.tts == nil {
-		return finalTurnAcceptedError("start TTS", ErrPipelineDependencyRequired)
-	}
-	// TTS runs after durable text publication. TTS or playback failures therefore
-	// return ErrFinalTurnAccepted; callers may show degraded playback but must
-	// not create another FinalTurn.
 	playbackID := "playback_" + turn.ID
-	if err := s.reportRuntime(ctx, turn, session.RuntimeTTSProcessing, playbackID); err != nil {
-		return finalTurnAcceptedError("report TTS runtime", err)
-	}
-	ttsStartedAt := time.Now()
-	stream, err := s.tts.StartStream(ctx, tts.Request{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, Text: translationResult.Text, TargetLanguage: target, VoiceID: s.voiceID})
+	ttsResult, err := s.playTranslatedText(ctx, turn, target, translationResult.Text, playbackID)
 	if err != nil {
-		return finalTurnAcceptedError("start TTS", err)
-	}
-	s.logLatencyCheckpoint("tts_stream_started", turn, ttsStartedAt,
-		"playback_id", playbackID,
-		"target_language", target,
-	)
-	defer stream.Close()
-	played, err := s.publishTTSChunks(ctx, turn, playbackID, ttsStartedAt, stream.Chunks())
-	if err != nil {
-		return finalTurnAcceptedError("stream TTS audio", errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_stream_failed", played)))
-	}
-	ttsResult, err := stream.Finish(ctx)
-	if err != nil {
-		return finalTurnAcceptedError("finish TTS", errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_finish_failed", played)))
-	}
-	if err := s.completePlayback(ctx, turn.SessionID, playbackID, played); err != nil {
-		return finalTurnAcceptedError("complete playback", err)
+		return finalTurnAcceptedError("play translated text", err)
 	}
 	if err := s.publishUsage(ctx, turn, "tts", ttsResult.Provider, ttsResult.Model, ttsResult.AudioDuration.Milliseconds(), 0, 0, ttsResult.CostAmount, ttsResult.Currency); err != nil {
 		return finalTurnAcceptedError("publish TTS usage", err)

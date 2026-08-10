@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 20 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 20", len(migrations))
+	if len(migrations) != 25 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 25", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -251,5 +251,81 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if !strings.Contains(historyIndexes.SQL, "voice_turns_session_history_order_idx") {
 		t.Fatal("history index migration does not create voice_turns_session_history_order_idx")
+	}
+
+	automaticSettlements := migrations[20]
+	if automaticSettlements.Version != 21 || automaticSettlements.Name != "automatic_turn_settlements" {
+		t.Fatalf("migration = %#v, want version 21 named automatic_turn_settlements", automaticSettlements)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE automatic_turn_runs",
+		"partially_succeeded",
+		"CREATE TABLE automatic_turn_settlements",
+		"automatic_turn_settlements_identity_key UNIQUE",
+		"automatic_turn_settlements_run_fk FOREIGN KEY",
+		"status IN ('queued', 'succeeded', 'failed')",
+		"automatic_turn_settlements_account_turn_idx",
+	} {
+		if !strings.Contains(automaticSettlements.SQL, expected) {
+			t.Fatalf("automatic-settlement migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackOperations := migrations[21]
+	if fallbackPlaybackOperations.Version != 22 || fallbackPlaybackOperations.Name != "realtime_fallback_playback_operations" {
+		t.Fatalf("migration = %#v, want version 22 named realtime_fallback_playback_operations", fallbackPlaybackOperations)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE realtime_fallback_playback_operations",
+		"PRIMARY KEY (session_id, operation_id)",
+		"payload_hash TEXT NOT NULL",
+	} {
+		if !strings.Contains(fallbackPlaybackOperations.SQL, expected) {
+			t.Fatalf("fallback-playback migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackClaims := migrations[22]
+	if fallbackPlaybackClaims.Version != 23 || fallbackPlaybackClaims.Name != "realtime_fallback_playback_claims" {
+		t.Fatalf("migration = %#v, want version 23 named realtime_fallback_playback_claims", fallbackPlaybackClaims)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'",
+		"ADD COLUMN processing_started_at TIMESTAMPTZ",
+		"status IN ('processing', 'accepted')",
+		"realtime_fallback_playback_processing_idx",
+	} {
+		if !strings.Contains(fallbackPlaybackClaims.SQL, expected) {
+			t.Fatalf("fallback-playback-claims migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackClaimTokens := migrations[23]
+	if fallbackPlaybackClaimTokens.Version != 24 || fallbackPlaybackClaimTokens.Name != "realtime_fallback_playback_claim_tokens" {
+		t.Fatalf("migration = %#v, want version 24 named realtime_fallback_playback_claim_tokens", fallbackPlaybackClaimTokens)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN processing_token TEXT",
+		"WHERE status = 'processing'",
+		"processing_token IS NOT NULL",
+		"processing_token IS NULL",
+	} {
+		if !strings.Contains(fallbackPlaybackClaimTokens.SQL, expected) {
+			t.Fatalf("fallback-playback-claim-token migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackReclaimable := migrations[24]
+	if fallbackPlaybackReclaimable.Version != 25 || fallbackPlaybackReclaimable.Name != "realtime_fallback_playback_reclaimable" {
+		t.Fatalf("migration = %#v, want version 25 named realtime_fallback_playback_reclaimable", fallbackPlaybackReclaimable)
+	}
+	for _, expected := range []string{
+		"status IN ('processing', 'reclaimable', 'accepted')",
+		"status = 'reclaimable'",
+		"processing_token IS NULL",
+	} {
+		if !strings.Contains(fallbackPlaybackReclaimable.SQL, expected) {
+			t.Fatalf("fallback-playback-reclaimable migration does not contain %q", expected)
+		}
 	}
 }

@@ -11,18 +11,23 @@ import (
 )
 
 type retryRepositoryStub struct {
-	current       map[string]Message
-	created       []CreateRetryRecord
-	retryErr      error
-	lookup        Message
-	lookupErr     error
-	lookupAccount string
-	lookupKey     string
-	createLookup  Message
-	createErr     error
-	createCalls   int
-	preference    Preference
-	createdRecord []CreateMessageRecord
+	current             map[string]Message
+	created             []CreateRetryRecord
+	retryErr            error
+	lookup              Message
+	lookupErr           error
+	lookupAccount       string
+	lookupKey           string
+	getMessageAccountID string
+	getMessageID        string
+	createLookup        Message
+	createErr           error
+	createCalls         int
+	preference          Preference
+	listAccountID       string
+	putPreference       Preference
+	putPreferenceCalls  int
+	createdRecord       []CreateMessageRecord
 }
 
 func (r *retryRepositoryStub) CreateMessage(_ context.Context, record CreateMessageRecord) error {
@@ -33,7 +38,9 @@ func (r *retryRepositoryStub) CreateMessage(_ context.Context, record CreateMess
 	return nil
 }
 
-func (r *retryRepositoryStub) GetMessage(_ context.Context, accountID, _ string) (Message, error) {
+func (r *retryRepositoryStub) GetMessage(_ context.Context, accountID, messageID string) (Message, error) {
+	r.getMessageAccountID = accountID
+	r.getMessageID = messageID
 	message, ok := r.current[accountID]
 	if !ok {
 		return Message{}, domain.ErrNotFound
@@ -76,7 +83,8 @@ func (r *retryRepositoryStub) SetAttemptStatus(context.Context, string, Delivery
 	return nil
 }
 
-func (r *retryRepositoryStub) ListPreferences(context.Context, string) ([]Preference, error) {
+func (r *retryRepositoryStub) ListPreferences(_ context.Context, accountID string) ([]Preference, error) {
+	r.listAccountID = accountID
 	if r.preference.AccountID == "" {
 		return nil, nil
 	}
@@ -84,8 +92,33 @@ func (r *retryRepositoryStub) ListPreferences(context.Context, string) ([]Prefer
 }
 
 func (r *retryRepositoryStub) PutPreference(_ context.Context, preference Preference) (Preference, error) {
+	r.putPreferenceCalls++
+	r.putPreference = preference
 	r.preference = preference
 	return preference, nil
+}
+
+type preferenceDestinationStub struct {
+	calls     int
+	accountID string
+	channel   Channel
+	reference string
+	result    VerifiedDestination
+	err       error
+}
+
+func (d *preferenceDestinationStub) ResolveVerifiedDestination(_ context.Context, accountID string, channel Channel, reference string) (VerifiedDestination, error) {
+	d.calls++
+	d.accountID = accountID
+	d.channel = channel
+	d.reference = reference
+	if d.err != nil {
+		return VerifiedDestination{}, d.err
+	}
+	if d.result.AccountID == "" {
+		return VerifiedDestination{AccountID: accountID, Channel: channel, DestinationRef: reference, ProviderTarget: "opaque"}, nil
+	}
+	return d.result, nil
 }
 
 func TestPutPreferenceDoesNotClaimVerification(t *testing.T) {
@@ -98,6 +131,91 @@ func TestPutPreferenceDoesNotClaimVerification(t *testing.T) {
 	}
 	if preference.Verified || repository.preference.Verified {
 		t.Fatal("PutPreference() must leave destination verification to the repository")
+	}
+}
+
+func TestGetReturnsAccountScopedMessage(t *testing.T) {
+	repository := &retryRepositoryStub{current: map[string]Message{
+		"account-1": {ID: "message-1", AccountID: "account-1", Status: MessageStatusQueued},
+	}}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+
+	got, err := service.Get(context.Background(), "account-1", "message-1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.ID != "message-1" || got.AccountID != "account-1" {
+		t.Fatalf("Get() message = %#v", got)
+	}
+	if repository.getMessageAccountID != "account-1" || repository.getMessageID != "message-1" {
+		t.Fatalf("GetMessage() args = (%q, %q)", repository.getMessageAccountID, repository.getMessageID)
+	}
+}
+
+func TestGetAndPreferencesRejectMissingRepository(t *testing.T) {
+	service := NewPersistentUseCases(nil, nil, nil, nil)
+
+	if _, err := service.Get(context.Background(), "account-1", "message-1"); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("Get() error = %v, want not implemented", err)
+	}
+	if _, err := service.Preferences(context.Background(), "account-1"); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("Preferences() error = %v, want not implemented", err)
+	}
+}
+
+func TestPreferencesReturnsCurrentAccountSettings(t *testing.T) {
+	repository := &retryRepositoryStub{preference: Preference{
+		AccountID: "account-1",
+		Channel:   ChannelEmail,
+		Enabled:   true,
+	}}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+
+	got, err := service.Preferences(context.Background(), "account-1")
+	if err != nil {
+		t.Fatalf("Preferences() error = %v", err)
+	}
+	if len(got) != 1 || got[0].AccountID != "account-1" || repository.listAccountID != "account-1" {
+		t.Fatalf("Preferences() = %#v, listAccountID=%q", got, repository.listAccountID)
+	}
+}
+
+func TestPutPreferenceForDestinationResolvesAndPersistsOpaqueReference(t *testing.T) {
+	repository := &retryRepositoryStub{}
+	destinations := &preferenceDestinationStub{result: VerifiedDestination{
+		AccountID: "account-1", Channel: ChannelEmail, DestinationRef: "primary", ProviderTarget: "opaque",
+	}}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	service.destinations = destinations
+
+	preference, err := service.PutPreferenceForDestination(context.Background(), "account-1", ChannelEmail, true, "primary")
+	if err != nil {
+		t.Fatalf("PutPreferenceForDestination() error = %v", err)
+	}
+	if destinations.calls != 1 || destinations.accountID != "account-1" || destinations.channel != ChannelEmail || destinations.reference != "primary" {
+		t.Fatalf("ResolveVerifiedDestination() = %#v", destinations)
+	}
+	if repository.putPreferenceCalls != 1 || repository.putPreference.DestinationRef != "primary" || !repository.putPreference.Enabled {
+		t.Fatalf("PutPreference() record = %#v", repository.putPreference)
+	}
+	if preference.DestinationRef != "primary" || preference.Verified {
+		t.Fatalf("PutPreferenceForDestination() = %#v", preference)
+	}
+}
+
+func TestPutPreferenceForDestinationRejectsInvalidChannelAndLookupFailure(t *testing.T) {
+	repository := &retryRepositoryStub{}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	service.destinations = &preferenceDestinationStub{err: domain.ErrNotFound}
+
+	if _, err := service.PutPreferenceForDestination(context.Background(), "account-1", Channel("invalid"), true, "primary"); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("PutPreferenceForDestination() invalid channel error = %v, want invalid argument", err)
+	}
+	if _, err := service.PutPreferenceForDestination(context.Background(), "account-1", ChannelEmail, true, "primary"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("PutPreferenceForDestination() lookup error = %v, want not found", err)
+	}
+	if repository.putPreferenceCalls != 0 {
+		t.Fatalf("PutPreference() calls = %d, want 0 after lookup failure", repository.putPreferenceCalls)
 	}
 }
 

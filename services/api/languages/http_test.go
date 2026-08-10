@@ -110,6 +110,117 @@ func TestHTTPListLanguages(t *testing.T) {
 	}
 }
 
+func TestHTTPListConfigHistory(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	svc := NewService(store, MapSessionOwner{"vs_http": "acct_http"})
+	if _, err := svc.CreateConfig(t.Context(), "acct_http", "vs_http", "seed-1", CreateLanguageConfigRequest{
+		Languages: bilingualPairs(),
+	}); err != nil {
+		t.Fatalf("seed v1: %v", err)
+	}
+	if _, err := svc.CreateConfig(t.Context(), "acct_http", "vs_http", "seed-2", CreateLanguageConfigRequest{
+		Languages: bilingualPairs(),
+	}); err != nil {
+		t.Fatalf("seed v2: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(svc, func(r *http.Request) (string, bool) {
+		return webapi.AccountIDFromContext(r.Context())
+	}).Register(mux, withoutAuthentication)
+
+	t.Run("default_limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs", nil)
+		req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+
+		var resp ListLanguageConfigsResponse
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.Items) != 2 || resp.NextCursor != nil {
+			t.Fatalf("response=%#v", resp)
+		}
+		if resp.Items[0].Version != 2 || resp.Items[1].Version != 1 {
+			t.Fatalf("history order = %#v", resp.Items)
+		}
+	})
+
+	t.Run("paged", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs?limit=1", nil)
+		req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+
+		var first ListLanguageConfigsResponse
+		if err := json.NewDecoder(rec.Body).Decode(&first); err != nil {
+			t.Fatalf("decode first page: %v", err)
+		}
+		if len(first.Items) != 1 || first.NextCursor == nil || first.Items[0].Version != 2 {
+			t.Fatalf("first page=%#v", first)
+		}
+
+		req = httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs?limit=1&cursor="+*first.NextCursor, nil)
+		req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+		rec = httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+
+		var second ListLanguageConfigsResponse
+		if err := json.NewDecoder(rec.Body).Decode(&second); err != nil {
+			t.Fatalf("decode second page: %v", err)
+		}
+		if len(second.Items) != 1 || second.NextCursor != nil || second.Items[0].Version != 1 {
+			t.Fatalf("second page=%#v", second)
+		}
+	})
+
+	t.Run("invalid_limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs?limit=0", nil)
+		req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var errBody ErrorBody
+		if err := json.NewDecoder(rec.Body).Decode(&errBody); err != nil {
+			t.Fatalf("decode error body: %v", err)
+		}
+		if errBody.Error.Code != CodeInvalidRequest {
+			t.Fatalf("error code=%q", errBody.Error.Code)
+		}
+	})
+
+	t.Run("unauthenticated", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("forbidden", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs", nil)
+		req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_other"))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
 func withoutAuthentication(next http.Handler) http.Handler {
 	return next
 }

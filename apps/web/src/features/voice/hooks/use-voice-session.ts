@@ -57,6 +57,17 @@ export type SessionDebugInfo = {
 
 export type ConfigSyncStatus = "idle" | "saving" | "applied" | "failed";
 
+function sameVoiceConfig(
+  left: VoiceSessionConfig,
+  right: VoiceSessionConfig,
+): boolean {
+  return (
+    left.sourceLanguage === right.sourceLanguage &&
+    left.targetLanguage === right.targetLanguage &&
+    left.outputMode === right.outputMode
+  );
+}
+
 function mapRuntimeToStatus(runtime: RuntimeState | null): string {
   switch (runtime) {
     case "starting":
@@ -171,6 +182,7 @@ export function useVoiceSession() {
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
   const activeLanguageConfigVersionRef = useRef<number | null>(null);
+  const lastAppliedVoiceConfigRef = useRef<VoiceSessionConfig>(voiceConfig);
   const activeConfigUpdateChainRef = useRef<Promise<void>>(Promise.resolve());
   const wakeRef = useRef<WakeWordListener | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
@@ -206,13 +218,30 @@ export function useVoiceSession() {
           expectedVersion,
         );
         activeLanguageConfigVersionRef.current = updated.version;
-        if (sessionIdRef.current === sessionId) setConfigSyncStatus("applied");
+        lastAppliedVoiceConfigRef.current = normalized;
+        if (
+          sessionIdRef.current === sessionId &&
+          sameVoiceConfig(configRef.current, normalized)
+        ) {
+          setConfigSyncStatus("applied");
+        }
       })
       .catch((error) => {
-        if (sessionIdRef.current === sessionId) {
-          if (error instanceof ApiError && error.code === "version_conflict") {
-            activeLanguageConfigVersionRef.current = null;
-          }
+        if (
+          sessionIdRef.current === sessionId &&
+          error instanceof ApiError &&
+          error.code === "version_conflict"
+        ) {
+          activeLanguageConfigVersionRef.current = null;
+        }
+        if (
+          sessionIdRef.current === sessionId &&
+          sameVoiceConfig(configRef.current, normalized)
+        ) {
+          const previous = lastAppliedVoiceConfigRef.current;
+          configRef.current = previous;
+          setVoiceConfig(previous);
+          saveVoiceConfig(previous);
           setConfigSyncStatus("failed");
           setHintMessage(errorMessage(error, "切换输出模式失败"));
         }
@@ -341,7 +370,9 @@ export function useVoiceSession() {
       accountIdRef.current = auth.account.id;
       setDebug((prev) => ({ ...prev, accountId: auth.account.id }));
       if (configRef.current.outputMode === "single") {
-        const ready = await hasReadyAutomaticTarget(auth.tokens.access_token);
+        const ready = await hasReadyAutomaticTarget(
+          auth.tokens.access_token,
+        ).catch(() => false);
         if (!ready) {
           const fallbackConfig = {
             ...configRef.current,
@@ -350,7 +381,6 @@ export function useVoiceSession() {
           configRef.current = fallbackConfig;
           setVoiceConfig(fallbackConfig);
           saveVoiceConfig(fallbackConfig);
-          throw new Error("单向输出需要已启用且已验证的自动投递目标，已恢复双向播报");
         }
       }
       setStatusMessage("正在创建会话");
@@ -367,6 +397,7 @@ export function useVoiceSession() {
         configRef.current,
       );
       activeLanguageConfigVersionRef.current = languageConfig.version;
+      lastAppliedVoiceConfigRef.current = configRef.current;
       setHintMessage(
         `${formatActivePair(configRef.current)} · ${session.id}`,
       );

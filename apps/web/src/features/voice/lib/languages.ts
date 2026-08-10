@@ -117,5 +117,7 @@ export function outputRoutes(config: VoiceSessionConfig): LanguageOutputRoute[] 
 }
 
 export function formatActivePair(config: VoiceSessionConfig): string {
-  return `${languageLabel(config.sourceLanguage)} ⇄ ${languageLabel(config.targetLanguage)}`;
+  const modeLabel = config.outputMode === "single" ? "单向播报" : "双向播报";
+  const direction = config.outputMode === "single" ? "→" : "⇄";
+  return `${modeLabel} · ${languageLabel(config.sourceLanguage)} ${direction} ${languageLabel(config.targetLanguage)}`;
 }

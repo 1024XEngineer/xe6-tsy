@@ -231,6 +231,17 @@
   text-align: center;
 }
 
+.outputModeText {
+  position: relative;
+  z-index: 3;
+  margin: 0.8rem 0 0;
+  color: rgb(255 255 255 / 72%);
+  font-size: clamp(0.68rem, 0.82vw, 0.76rem);
+  font-weight: 520;
+  line-height: 1.45;
+  text-align: center;
+}
+
 .latestSlot {
   position: absolute;
   z-index: 3;
@@ -652,6 +663,52 @@
   border-color: rgb(255 255 255 / 72%);
   background: #f4f4f1;
   color: #080808;
+}
+
+.outputDirectionRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.7rem;
+  margin-top: 0.85rem;
+}
+
+.outputDirectionRow > span {
+  color: rgb(255 255 255 / 42%);
+  font-size: 0.64rem;
+}
+
+.outputDirectionRow strong {
+  min-width: 0;
+  overflow: hidden;
+  color: rgb(255 255 255 / 78%);
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outputDirectionSwap {
+  display: inline-grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 4px;
+  background: transparent;
+  color: rgb(255 255 255 / 68%);
+  cursor: pointer;
+}
+
+.outputDirectionSwap:hover {
+  border-color: rgb(255 255 255 / 48%);
+  color: #fff;
+}
+
+.outputDirectionSwap:focus-visible {
+  outline: 1px solid rgb(255 255 255 / 74%);
+  outline-offset: 2px;
 }
 
 .settingRows {

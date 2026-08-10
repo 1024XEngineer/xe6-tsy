@@ -5,6 +5,7 @@ import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { useState } from "react";
 
 import { useVoiceSession } from "../hooks/use-voice-session";
+import { formatActivePair } from "../lib/languages";
 import styles from "../voice.module.css";
 import { HistoryOverlay } from "./history-overlay";
 import { LatestTranslation } from "./latest-translation";
@@ -70,6 +71,9 @@ export function VoiceExperience() {
           transition={{ type: "spring", stiffness: 110, damping: 21 }}
         >
           <VoiceControl phase={state.phase} onActivate={handleToggle} />
+          <p aria-live="polite" className={styles.outputModeText}>
+            {formatActivePair(voiceConfig)}
+          </p>
           <motion.p
             animate={{ opacity: 1, y: 0 }}
             aria-live="polite"

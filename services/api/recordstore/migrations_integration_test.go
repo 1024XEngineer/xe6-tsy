@@ -52,6 +52,8 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{18, "final_turn_outbox_dead_letter"},
 		{19, "auto_delivery_destination"},
 		{20, "record_history_indexes"},
+		{21, "automatic_turn_settlements"},
+		{22, "realtime_fallback_playback_operations"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))

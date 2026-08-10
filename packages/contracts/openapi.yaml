@@ -494,7 +494,7 @@ components:
       enum: [stopped, starting, listening, asr_processing, translating, tts_processing, playing, stopping, failed]
     RealtimeRuntimeErrorCode:
       type: string
-      enum: [realtime_start_failed, realtime_stop_failed, realtime_pipeline_failed]
+      enum: [realtime_start_failed, realtime_stop_failed, realtime_pipeline_failed, realtime_translation_rejected]
     ControlPlaneErrorCode:
       type: string
       enum: [runtime_operation_conflict]

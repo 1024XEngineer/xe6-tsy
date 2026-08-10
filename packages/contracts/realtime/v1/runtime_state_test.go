@@ -25,6 +25,7 @@ var contractRuntimeErrorCodes = []RuntimeErrorCode{
 	RuntimeErrorStartFailed,
 	RuntimeErrorStopFailed,
 	RuntimeErrorPipelineFailed,
+	RuntimeErrorTranslationRejected,
 }
 
 func TestRuntimeStateContract(t *testing.T) {

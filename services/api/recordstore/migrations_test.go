@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 22 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 22", len(migrations))
+	if len(migrations) != 25 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 25", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -282,6 +282,50 @@ func TestEmbeddedMigrations(t *testing.T) {
 	} {
 		if !strings.Contains(fallbackPlaybackOperations.SQL, expected) {
 			t.Fatalf("fallback-playback migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackClaims := migrations[22]
+	if fallbackPlaybackClaims.Version != 23 || fallbackPlaybackClaims.Name != "realtime_fallback_playback_claims" {
+		t.Fatalf("migration = %#v, want version 23 named realtime_fallback_playback_claims", fallbackPlaybackClaims)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'",
+		"ADD COLUMN processing_started_at TIMESTAMPTZ",
+		"status IN ('processing', 'accepted')",
+		"realtime_fallback_playback_processing_idx",
+	} {
+		if !strings.Contains(fallbackPlaybackClaims.SQL, expected) {
+			t.Fatalf("fallback-playback-claims migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackClaimTokens := migrations[23]
+	if fallbackPlaybackClaimTokens.Version != 24 || fallbackPlaybackClaimTokens.Name != "realtime_fallback_playback_claim_tokens" {
+		t.Fatalf("migration = %#v, want version 24 named realtime_fallback_playback_claim_tokens", fallbackPlaybackClaimTokens)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN processing_token TEXT",
+		"WHERE status = 'processing'",
+		"processing_token IS NOT NULL",
+		"processing_token IS NULL",
+	} {
+		if !strings.Contains(fallbackPlaybackClaimTokens.SQL, expected) {
+			t.Fatalf("fallback-playback-claim-token migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackReclaimable := migrations[24]
+	if fallbackPlaybackReclaimable.Version != 25 || fallbackPlaybackReclaimable.Name != "realtime_fallback_playback_reclaimable" {
+		t.Fatalf("migration = %#v, want version 25 named realtime_fallback_playback_reclaimable", fallbackPlaybackReclaimable)
+	}
+	for _, expected := range []string{
+		"status IN ('processing', 'reclaimable', 'accepted')",
+		"status = 'reclaimable'",
+		"processing_token IS NULL",
+	} {
+		if !strings.Contains(fallbackPlaybackReclaimable.SQL, expected) {
+			t.Fatalf("fallback-playback-reclaimable migration does not contain %q", expected)
 		}
 	}
 }

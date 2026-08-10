@@ -27,15 +27,17 @@ const (
 	defaultReplayTTL                  = 10 * time.Minute
 	defaultReplayMaxEntries           = 4096
 	defaultReplayMaxEntriesPerSession = 64
+	defaultFallbackClaimRenewInterval = time.Minute
 )
 
 var (
-	ErrInvalidDependency     = errors.New("invalid control-plane dependency")
-	ErrInvalidRequest        = errors.New("invalid control-plane request")
-	ErrTicketRequired        = errors.New("realtime ticket is required")
-	ErrConfigSession         = errors.New("WebRTC config session mismatch")
-	ErrReplayCapacity        = errors.New("control-plane replay capacity exhausted")
-	ErrIdempotencyKeyTooLong = errors.New("idempotency key exceeds maximum length")
+	ErrInvalidDependency          = errors.New("invalid control-plane dependency")
+	ErrInvalidRequest             = errors.New("invalid control-plane request")
+	ErrTicketRequired             = errors.New("realtime ticket is required")
+	ErrConfigSession              = errors.New("WebRTC config session mismatch")
+	ErrReplayCapacity             = errors.New("control-plane replay capacity exhausted")
+	ErrIdempotencyKeyTooLong      = errors.New("idempotency key exceeds maximum length")
+	ErrFallbackPlaybackInProgress = errors.New("fallback playback is already in progress")
 )
 
 // Lifecycle is the realtime media lifecycle owned by session.LifecycleService.
@@ -51,11 +53,34 @@ type FallbackPlayback interface {
 	PlayFallback(context.Context, realtimev1.FallbackPlaybackRequest) error
 }
 
-// FallbackPlaybackReplayStore preserves accepted fallback commands across
-// realtime process restarts and rejects operation IDs reused with new payloads.
+// FallbackPlaybackClaimStatus reports whether a caller owns, is waiting on,
+// or is replaying one durable fallback operation.
+type FallbackPlaybackClaimStatus string
+
+const (
+	FallbackPlaybackClaimed    FallbackPlaybackClaimStatus = "claimed"
+	FallbackPlaybackProcessing FallbackPlaybackClaimStatus = "processing"
+	FallbackPlaybackAccepted   FallbackPlaybackClaimStatus = "accepted"
+)
+
+// FallbackPlaybackClaim describes durable ownership of one immutable fallback
+// command before the media side effect starts.
+type FallbackPlaybackClaim struct {
+	Status FallbackPlaybackClaimStatus
+	Token  string
+}
+
+// FallbackPlaybackReplayStore atomically claims fallback operations before
+// media I/O and resolves the claim after playback outcome is known.
 type FallbackPlaybackReplayStore interface {
-	Accepted(context.Context, string, string, string) (bool, error)
-	RecordAccepted(context.Context, string, string, string) error
+	Claim(context.Context, string, string, string) (FallbackPlaybackClaim, error)
+	Renew(context.Context, string, string, string, string) error
+	Complete(context.Context, string, string, string, string) error
+	Abort(context.Context, string, string, string, string) error
+}
+
+type fallbackPlaybackNotStarted interface {
+	FallbackPlaybackNotStarted()
 }
 
 // Signaling is the existing ticket-aware WebRTC signaling service boundary.
@@ -136,6 +161,7 @@ type Handler struct {
 	replayTTL                  time.Duration
 	replayMaxEntries           int
 	replayMaxEntriesPerSession int
+	fallbackClaimRenewInterval time.Duration
 }
 
 type replayRecord struct {
@@ -184,6 +210,7 @@ func New(dependencies Dependencies) (*Handler, error) {
 		replayTTL:                  dependencies.ReplayTTL,
 		replayMaxEntries:           dependencies.ReplayMaxEntries,
 		replayMaxEntriesPerSession: dependencies.ReplayMaxEntriesPerSession,
+		fallbackClaimRenewInterval: defaultFallbackClaimRenewInterval,
 	}
 	h.registerRoutes(defaultRoutePrefix)
 	return h, nil
@@ -233,20 +260,42 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 	replayKey := "fallback\x00" + sessionID + "\x00" + body.OperationID
 	h.handleReplayStatus(writer, request.Context(), sessionID, replayKey, body, http.StatusAccepted,
 		func() (any, error) {
+			claimToken := ""
 			if h.fallbackReplays != nil {
-				accepted, err := h.fallbackReplays.Accepted(request.Context(), sessionID, body.OperationID, payloadHash)
+				claim, err := h.fallbackReplays.Claim(request.Context(), sessionID, body.OperationID, payloadHash)
 				if err != nil {
 					return nil, err
 				}
-				if accepted {
+				switch claim.Status {
+				case FallbackPlaybackClaimed:
+					claimToken = claim.Token
+				case FallbackPlaybackProcessing:
+					return nil, ErrFallbackPlaybackInProgress
+				case FallbackPlaybackAccepted:
 					return realtimev1.FallbackPlaybackReceipt{OperationID: body.OperationID, Status: realtimev1.FallbackPlaybackAlreadyAccepted}, nil
+				default:
+					return nil, ErrInvalidDependency
 				}
 			}
-			if err := h.fallback.PlayFallback(request.Context(), body); err != nil {
-				return nil, err
+			playbackContext, stopHeartbeat := h.startFallbackClaimHeartbeat(
+				request.Context(), sessionID, body.OperationID, payloadHash, claimToken,
+			)
+			playbackErr := h.fallback.PlayFallback(playbackContext, body)
+			heartbeatErr := stopHeartbeat()
+			if playbackErr != nil {
+				if heartbeatErr != nil {
+					return nil, heartbeatErr
+				}
+				if h.fallbackReplays != nil && claimToken != "" && isFallbackPlaybackNotStarted(playbackErr) {
+					if abortErr := h.fallbackReplays.Abort(request.Context(), sessionID, body.OperationID, payloadHash, claimToken); abortErr != nil {
+						return nil, errors.Join(playbackErr, abortErr)
+					}
+				}
+				return nil, playbackErr
 			}
+			// Successful playback must be completed even when stopping the heartbeat cancels an in-flight renewal.
 			if h.fallbackReplays != nil {
-				if err := h.fallbackReplays.RecordAccepted(request.Context(), sessionID, body.OperationID, payloadHash); err != nil {
+				if err := h.fallbackReplays.Complete(request.Context(), sessionID, body.OperationID, payloadHash, claimToken); err != nil {
 					return nil, err
 				}
 			}
@@ -261,6 +310,49 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 			}
 			return receipt
 		})
+}
+
+func isFallbackPlaybackNotStarted(err error) bool {
+	var marker fallbackPlaybackNotStarted
+	return errors.As(err, &marker)
+}
+
+func (h *Handler) startFallbackClaimHeartbeat(ctx context.Context, sessionID, operationID, payloadHash, claimToken string) (context.Context, func() error) {
+	if h.fallbackReplays == nil || claimToken == "" || h.fallbackClaimRenewInterval <= 0 {
+		return ctx, func() error { return nil }
+	}
+
+	heartbeatContext, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(h.fallbackClaimRenewInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatContext.Done():
+				return
+			case <-ticker.C:
+				if err := h.fallbackReplays.Renew(heartbeatContext, sessionID, operationID, payloadHash, claimToken); err != nil {
+					errCh <- err
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	return heartbeatContext, func() error {
+		cancel()
+		<-done
+		select {
+		case err := <-errCh:
+			return err
+		default:
+			return nil
+		}
+	}
 }
 
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -650,6 +742,8 @@ func mapError(err error) (int, string) {
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, ErrReplayCapacity):
 		return http.StatusServiceUnavailable, "replay_capacity_exhausted"
+	case errors.Is(err, ErrFallbackPlaybackInProgress):
+		return http.StatusConflict, "fallback_playback_in_progress"
 	case errors.Is(err, ErrInvalidDependency):
 		return http.StatusNotImplemented, "not_implemented"
 	case errors.Is(err, context.DeadlineExceeded):

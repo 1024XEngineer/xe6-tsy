@@ -184,7 +184,7 @@ type AutomaticTurnRetryRepository interface {
 type AutomaticTurnFallbackRepository interface {
 	ListAutomaticTurnRecoveryCandidates(context.Context, int) ([]AutomaticTurnRun, error)
 	ListAutomaticTurnRestoreCandidates(context.Context, int) ([]AutomaticTurnRun, error)
-	ClaimAutomaticTurnFallback(context.Context, string, string) (AutomaticTurnRun, error)
+	ClaimAutomaticTurnFallback(context.Context, string, string) (AutomaticTurnRun, bool, error)
 	MarkAutomaticTurnFallbackPlayed(context.Context, string, string) error
 	MarkAutomaticTurnRestored(context.Context, string, string) error
 }

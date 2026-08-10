@@ -166,13 +166,13 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 // begins, while the request context still bounds the caller's wait.
 func (m *Manager) PlayFallback(ctx context.Context, request realtimev1.FallbackPlaybackRequest) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return pipeline.MarkFallbackPlaybackNotStarted(err)
 	}
 	if m == nil || m.playback == nil {
-		return ErrDependencyRequired
+		return pipeline.MarkFallbackPlaybackNotStarted(ErrDependencyRequired)
 	}
 	if request.SessionID == "" {
-		return ErrSessionIDRequired
+		return pipeline.MarkFallbackPlaybackNotStarted(ErrSessionIDRequired)
 	}
 
 	unlock := m.locks.lock(request.SessionID)
@@ -181,7 +181,7 @@ func (m *Manager) PlayFallback(ctx context.Context, request realtimev1.FallbackP
 	if item == nil || !item.active || item.stopping || item.terminal || item.finished {
 		m.mu.Unlock()
 		unlock()
-		return session.ErrRuntimeNotFound
+		return pipeline.MarkFallbackPlaybackNotStarted(session.ErrRuntimeNotFound)
 	}
 	runCtx := item.ctx
 	accountID := item.request.AccountID

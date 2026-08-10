@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const automaticFallbackClaimLease = 5 * time.Minute
+
 func (r *PostgresRepository) ListAutomaticTurnRecoveryCandidates(ctx context.Context, limit int) ([]AutomaticTurnRun, error) {
 	if r == nil || r.pool == nil || limit <= 0 {
 		return nil, domain.ErrInvalidArgument
@@ -62,11 +64,12 @@ func (r *PostgresRepository) ListAutomaticTurnRestoreCandidates(ctx context.Cont
 	return result, rows.Err()
 }
 
-func (r *PostgresRepository) ClaimAutomaticTurnFallback(ctx context.Context, accountID, turnID string) (AutomaticTurnRun, error) {
+func (r *PostgresRepository) ClaimAutomaticTurnFallback(ctx context.Context, accountID, turnID string) (AutomaticTurnRun, bool, error) {
 	if r == nil || r.pool == nil || accountID == "" || turnID == "" {
-		return AutomaticTurnRun{}, domain.ErrInvalidArgument
+		return AutomaticTurnRun{}, false, domain.ErrInvalidArgument
 	}
 	var run AutomaticTurnRun
+	claimed := false
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `
 			SELECT account_id,turn_id,session_id,trace_id,target_language,translated_text,
@@ -80,23 +83,29 @@ func (r *PostgresRepository) ClaimAutomaticTurnFallback(ctx context.Context, acc
 		if err != nil {
 			return mapDeliveryError(err)
 		}
-		if run.Status == AutomaticTurnRunFallbackPending {
-			return nil
-		}
-		eligible := (run.TargetCount == 0 && run.Status == AutomaticTurnRunPending) ||
-			(run.TargetCount > 0 && run.Status == AutomaticTurnRunFailed && run.FailedCount == run.TargetCount)
-		if !eligible {
-			return domain.ErrConflict
-		}
 		now := time.Now().UTC()
+		if run.Status == AutomaticTurnRunFallbackPending {
+			// A fresh pending row is owned by another worker. An expired lease may
+			// retry the same operation because realtime durably deduplicates it.
+			if now.Before(run.UpdatedAt.Add(automaticFallbackClaimLease)) {
+				return nil
+			}
+		} else {
+			eligible := (run.TargetCount == 0 && run.Status == AutomaticTurnRunPending) ||
+				(run.TargetCount > 0 && run.Status == AutomaticTurnRunFailed && run.FailedCount == run.TargetCount)
+			if !eligible {
+				return domain.ErrConflict
+			}
+		}
 		if _, err := tx.Exec(ctx, `UPDATE automatic_turn_runs SET status='fallback_pending',updated_at=$3 WHERE account_id=$1 AND turn_id=$2`, accountID, turnID, now); err != nil {
 			return err
 		}
 		run.Status = AutomaticTurnRunFallbackPending
 		run.UpdatedAt = now
+		claimed = true
 		return nil
 	})
-	return run, err
+	return run, claimed, err
 }
 
 func (r *PostgresRepository) MarkAutomaticTurnFallbackPlayed(ctx context.Context, accountID, turnID string) error {

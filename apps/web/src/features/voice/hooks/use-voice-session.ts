@@ -22,6 +22,7 @@ import {
   languageLabel,
   type VoiceSessionConfig,
 } from "../lib/languages";
+import { ApiError } from "../lib/http";
 import { parseTranslationFinal } from "../lib/translation-events";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
 import {
@@ -209,6 +210,9 @@ export function useVoiceSession() {
       })
       .catch((error) => {
         if (sessionIdRef.current === sessionId) {
+          if (error instanceof ApiError && error.code === "version_conflict") {
+            activeLanguageConfigVersionRef.current = null;
+          }
           setConfigSyncStatus("failed");
           setHintMessage(errorMessage(error, "切换输出模式失败"));
         }

@@ -109,6 +109,7 @@ export function DeliverySettings() {
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     const requestId = window.setTimeout(() => {
       void load();
     }, 0);

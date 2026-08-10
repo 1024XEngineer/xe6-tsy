@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { saveAuthSession } from "../lib/auth-session";
@@ -87,7 +88,11 @@ describe("DeliverySettings", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<DeliverySettings />);
+    render(
+      <StrictMode>
+        <DeliverySettings />
+      </StrictMode>,
+    );
 
     expect(await screen.findByText("person@example.com")).toBeInTheDocument();
     expect(screen.getByText("邮箱 · person@example.com")).toBeInTheDocument();

@@ -13,7 +13,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type PostgresRepository struct{ pool *pgxpool.Pool }
+type postgresPool interface {
+	Begin(context.Context) (pgx.Tx, error)
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type PostgresRepository struct{ pool postgresPool }
 
 const deliveryAttemptTopic = "delivery.attempt.queued"
 

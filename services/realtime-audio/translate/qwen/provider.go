@@ -20,6 +20,9 @@ var (
 	ErrAPIKeyRequired   = errors.New("Qwen translation API key is required")
 	ErrEndpointRequired = errors.New("Qwen translation endpoint is required")
 	ErrModelRequired    = errors.New("Qwen translation model is required")
+	// errNonTranslationOutput is returned when the model still answers or refuses
+	// after one reinforced retry instead of producing a translation.
+	errNonTranslationOutput = errors.New("Qwen translation returned a non-translation response")
 )
 
 // Config contains the OpenAI-compatible endpoint and model settings.
@@ -69,11 +72,37 @@ func (p *Provider) Translate(ctx context.Context, request translate.Request) (tr
 	if strings.TrimSpace(request.Text) == "" {
 		return translate.Result{}, errors.New("translation text is required")
 	}
+
+	result, err := p.translateOnce(ctx, request, buildSystemPrompt(request.SourceLanguage, request.TargetLanguage))
+	if err != nil {
+		return translate.Result{}, err
+	}
+	if !translationLooksInvalid(result.Text, request.TargetLanguage) {
+		result.LatencyMS = time.Since(startedAt).Milliseconds()
+		return result, nil
+	}
+
+	// One reinforced retry keeps latency bounded while recovering from common
+	// prompt-injection refusals that abandon the translation task.
+	retried, err := p.translateOnce(ctx, request, buildReinforcedSystemPrompt(request.SourceLanguage, request.TargetLanguage))
+	if err != nil {
+		return translate.Result{}, err
+	}
+	retried.InputTokens += result.InputTokens
+	retried.OutputTokens += result.OutputTokens
+	if translationLooksInvalid(retried.Text, request.TargetLanguage) {
+		return translate.Result{}, errNonTranslationOutput
+	}
+	retried.LatencyMS = time.Since(startedAt).Milliseconds()
+	return retried, nil
+}
+
+func (p *Provider) translateOnce(ctx context.Context, request translate.Request, systemPrompt string) (translate.Result, error) {
 	body := chatRequest{
 		Model: p.config.Model,
 		Messages: []chatMessage{
-			{Role: "system", Content: fmt.Sprintf("Translate from %s to %s. Return only the translation without explanation.", request.SourceLanguage, request.TargetLanguage)},
-			{Role: "user", Content: request.Text},
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: buildUserContent(request.Text)},
 		},
 		Stream:         false,
 		EnableThinking: p.config.EnableThinking,
@@ -114,9 +143,11 @@ func (p *Provider) Translate(ctx context.Context, request translate.Request) (tr
 		return translate.Result{}, errors.New("Qwen translation returned no content")
 	}
 	return translate.Result{
-		Text: response.Choices[0].Message.Content, Provider: p.config.Provider, Model: p.config.Model,
-		InputTokens: response.Usage.PromptTokens, OutputTokens: response.Usage.CompletionTokens,
-		LatencyMS: time.Since(startedAt).Milliseconds(),
+		Text:         response.Choices[0].Message.Content,
+		Provider:     p.config.Provider,
+		Model:        p.config.Model,
+		InputTokens:  response.Usage.PromptTokens,
+		OutputTokens: response.Usage.CompletionTokens,
 	}, nil
 }
 

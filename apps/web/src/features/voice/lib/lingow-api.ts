@@ -394,21 +394,18 @@ export async function listMessagePreferences(
 export async function putMessagePreference(
   accessToken: string,
   channel: DeliveryChannel,
+  destinationRef: string,
   enabled: boolean,
-  destinationRef?: string,
 ): Promise<MessagePreference> {
   const response = await fetch(
-    `/api/v1/account/message-preferences/${encodeURIComponent(channel)}`,
+    `/api/v1/account/message-preferences/${encodeURIComponent(channel)}/${encodeURIComponent(destinationRef)}`,
     {
       method: "PUT",
       headers: {
         ...authHeaders(accessToken, newIdempotencyKey("preference")),
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        enabled,
-        ...(destinationRef ? { destination_ref: destinationRef } : {}),
-      }),
+      body: JSON.stringify({ enabled }),
     },
   );
   return parseJson<MessagePreference>(response);

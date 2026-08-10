@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -244,24 +245,21 @@ func (u *UseCases) Preferences(ctx context.Context, accountID string) ([]Prefere
 	return u.repository.ListPreferences(ctx, accountID)
 }
 
-func (u *UseCases) PutPreference(ctx context.Context, accountID string, channel Channel, enabled bool) (Preference, error) {
-	return u.putPreference(ctx, accountID, channel, enabled, "")
-}
-
-// PutPreferenceForDestination enables a channel and pins its automatic
-// delivery target to one verified account destination.
-func (u *UseCases) PutPreferenceForDestination(ctx context.Context, accountID string, channel Channel, enabled bool, destinationRef string) (Preference, error) {
-	return u.putPreference(ctx, accountID, channel, enabled, destinationRef)
-}
-
-func (u *UseCases) putPreference(ctx context.Context, accountID string, channel Channel, enabled bool, destinationRef string) (Preference, error) {
+// PutPreference changes one destination's automatic-delivery opt-in. Enabling
+// always resolves the target first so a stale or revoked destination cannot be
+// made ready for single-output mode.
+func (u *UseCases) PutPreference(ctx context.Context, accountID string, channel Channel, destinationRef string, enabled bool) (Preference, error) {
 	if u.repository == nil {
 		return Preference{}, domain.ErrNotImplemented
 	}
-	if accountID == "" || !IsSupportedChannel(channel) {
+	destinationRef = strings.TrimSpace(destinationRef)
+	if accountID == "" || !IsSupportedChannel(channel) || destinationRef == "" {
 		return Preference{}, domain.ErrInvalidArgument
 	}
-	if destinationRef != "" && u.destinations != nil {
+	if enabled {
+		if u.destinations == nil {
+			return Preference{}, domain.ErrNotImplemented
+		}
 		if _, err := u.destinations.ResolveVerifiedDestination(ctx, accountID, channel, destinationRef); err != nil {
 			return Preference{}, err
 		}
@@ -272,7 +270,7 @@ func (u *UseCases) putPreference(ctx context.Context, accountID string, channel 
 	return u.repository.PutPreference(ctx, Preference{AccountID: accountID, Channel: channel, DestinationRef: destinationRef, Enabled: enabled, UpdatedAt: time.Now().UTC()})
 }
 
-// ScheduleFinalTurn creates one independent message for each enabled channel
+// ScheduleFinalTurn creates one independent message for each enabled target
 // preference after the record-store consumer has committed the Final Turn.
 // Replays are harmless because Create uses the stable per-turn idempotency key.
 func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, event recordsv1.FinalTurnEvent) error {

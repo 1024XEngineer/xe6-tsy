@@ -236,7 +236,7 @@ describe("delivery settings API", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uses account delivery routes and sends the selected destination", async () => {
+  it("uses account delivery routes and targets the selected destination", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("verification-codes")) return new Response(null, { status: 202 });
@@ -282,7 +282,7 @@ describe("delivery settings API", () => {
     await listMessageTargets("access-1", "email");
     await listMessagePreferences("access-1");
     await listOutboundMessages("access-1");
-    await putMessagePreference("access-1", "email", true, "email-1");
+    await putMessagePreference("access-1", "email", "email-1", true);
     await requestEmailBindVerification("access-1", "person@example.com");
     await bindEmailTarget("access-1", "dev:person@example.com");
     await bindWeChatTarget("access-1", "oauth-code");
@@ -293,12 +293,9 @@ describe("delivery settings API", () => {
       expect.objectContaining({ cache: "no-store" }),
     );
     const preferenceCall = fetchMock.mock.calls.find(([input]) =>
-      String(input).includes("message-preferences/email"),
+      String(input).includes("message-preferences/email/email-1"),
     );
-    expect(JSON.parse(String(preferenceCall?.[1]?.body))).toEqual({
-      enabled: true,
-      destination_ref: "email-1",
-    });
+    expect(JSON.parse(String(preferenceCall?.[1]?.body))).toEqual({ enabled: true });
     expect(new Headers(preferenceCall?.[1]?.headers).get("Idempotency-Key")).toMatch(
       /^preference-/,
     );

@@ -140,8 +140,8 @@ export function DeliverySettings() {
       const updated = await putMessagePreference(
         auth.tokens.access_token,
         channel,
+        destinationRef,
         enabled,
-        destinationRef || undefined,
       );
       setPreferences((current) => [
         ...current.filter((preference) => preference.channel !== channel),

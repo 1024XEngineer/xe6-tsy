@@ -45,7 +45,7 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	mux.Handle("GET /api/v1/outbound-messages/{message_id}", a.authenticate(http.HandlerFunc(a.getMessage)))
 	mux.Handle("POST /api/v1/outbound-deliveries/{message_id}/retry", a.authenticate(http.HandlerFunc(a.retryMessage)))
 	mux.Handle("GET /api/v1/account/message-preferences", a.authenticate(http.HandlerFunc(a.preferences)))
-	mux.Handle("PUT /api/v1/account/message-preferences/{channel}", a.authenticate(http.HandlerFunc(a.putPreference)))
+	mux.Handle("PUT /api/v1/account/message-preferences/{channel}/{destination_ref}", a.authenticate(http.HandlerFunc(a.putPreference)))
 	mux.Handle("GET /api/v1/account/message-targets", a.authenticate(http.HandlerFunc(a.listMessageTargets)))
 	mux.Handle("POST /api/v1/account/message-targets/email/verification-codes", a.authenticate(http.HandlerFunc(a.requestEmailBindVerification)))
 	mux.Handle("POST /api/v1/account/message-targets/email/bind", a.authenticate(http.HandlerFunc(a.bindEmailTarget)))
@@ -106,6 +106,18 @@ type errorResponse struct {
 		Retryable bool           `json:"retryable"`
 		Details   map[string]any `json:"details"`
 	} `json:"error"`
+}
+
+type outboundMessageListResponse struct {
+	Items []delivery.Message `json:"items"`
+}
+
+type preferenceListResponse struct {
+	Items []delivery.Preference `json:"items"`
+}
+
+type messageTargetListResponse struct {
+	Items []delivery.MessageTarget `json:"items"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -348,7 +360,7 @@ func (a *API) listMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, outboundMessageListResponse{Items: items})
 }
 
 func (a *API) getMessage(w http.ResponseWriter, r *http.Request) {
@@ -394,7 +406,7 @@ func (a *API) preferences(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": result})
+	writeJSON(w, http.StatusOK, preferenceListResponse{Items: result})
 }
 
 func (a *API) putPreference(w http.ResponseWriter, r *http.Request) {
@@ -409,23 +421,18 @@ func (a *API) putPreference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Enabled        *bool  `json:"enabled"`
-		DestinationRef string `json:"destination_ref,omitempty"`
+		Enabled *bool `json:"enabled"`
 	}
 	if decodeJSON(r, &request) != nil || request.Enabled == nil {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}
-	var result delivery.Preference
-	if request.DestinationRef != "" {
-		if service, ok := a.delivery.(delivery.AutomaticPreferenceService); ok {
-			result, err = service.PutPreferenceForDestination(r.Context(), id, channel, *request.Enabled, request.DestinationRef)
-		} else {
-			err = domain.ErrInvalidArgument
-		}
-	} else {
-		result, err = a.delivery.PutPreference(r.Context(), id, channel, *request.Enabled)
+	destinationRef := strings.TrimSpace(r.PathValue("destination_ref"))
+	if destinationRef == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
 	}
+	result, err := a.delivery.PutPreference(r.Context(), id, channel, destinationRef, *request.Enabled)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -453,7 +460,7 @@ func (a *API) listMessageTargets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": result})
+	writeJSON(w, http.StatusOK, messageTargetListResponse{Items: result})
 }
 
 func (a *API) requestEmailBindVerification(w http.ResponseWriter, r *http.Request) {

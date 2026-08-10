@@ -96,7 +96,7 @@ describe("DeliverySettings", () => {
     fireEvent.click(screen.getByRole("button", { name: "开启邮箱自动发送" }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/v1/account/message-preferences/email",
+        "/api/v1/account/message-preferences/email/person%40example.com",
         expect.objectContaining({ method: "PUT" }),
       );
     });

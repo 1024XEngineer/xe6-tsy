@@ -132,10 +132,10 @@ type Service interface {
 	Get(context.Context, string, string) (Message, error)
 	// Retry creates the next attempt for an eligible failed message idempotently.
 	Retry(context.Context, string, string, string) (Message, error)
-	// Preferences returns the current account's channel settings.
+	// Preferences returns the current account's target-level automatic delivery settings.
 	Preferences(context.Context, string) ([]Preference, error)
-	// PutPreference updates whether the account enables one supported channel.
-	PutPreference(context.Context, string, Channel, bool) (Preference, error)
+	// PutPreference updates whether one verified destination receives automatic delivery.
+	PutPreference(context.Context, string, Channel, string, bool) (Preference, error)
 	// ListMessageTargets returns account-owned destination bindings.
 	ListMessageTargets(context.Context, string, *Channel) ([]MessageTarget, error)
 	// BindEmailTarget verifies and stores one email destination for the account.
@@ -152,13 +152,6 @@ type Service interface {
 // expanding lightweight Service implementations that do not persist messages.
 type MessageListingService interface {
 	ListMessages(context.Context, string, int) ([]Message, error)
-}
-
-// AutomaticPreferenceService is an optional extension used by the HTTP
-// adapter to select the single automatic destination for a channel without
-// breaking older lightweight Service fakes.
-type AutomaticPreferenceService interface {
-	PutPreferenceForDestination(context.Context, string, Channel, bool, string) (Preference, error)
 }
 
 // FinalTurnScheduler creates one immutable asynchronous message for an

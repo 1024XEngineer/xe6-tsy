@@ -96,7 +96,7 @@ func TestMessageTargetRepositoryRevokeMissingTargetReturnsNotFound(t *testing.T)
 	}
 }
 
-func TestMessagePreferencePersistsSelectedDestinationAndEnabled(t *testing.T) {
+func TestMessagePreferencesPersistEnabledTargetsIndependently(t *testing.T) {
 	pool := testDatabase(t)
 	if err := Migrate(t.Context(), pool); err != nil {
 		t.Fatalf("Migrate() error = %v", err)
@@ -118,30 +118,45 @@ func TestMessagePreferencePersistsSelectedDestinationAndEnabled(t *testing.T) {
 	if _, err := service.BindEmailTarget(t.Context(), accountID, "dev:primary-email:preference@example.test"); err != nil {
 		t.Fatalf("BindEmailTarget() error = %v", err)
 	}
+	if _, err := service.BindEmailTarget(t.Context(), accountID, "dev:backup-email:backup@example.test"); err != nil {
+		t.Fatalf("BindEmailTarget() error = %v", err)
+	}
 
-	preference, err := service.PutPreference(t.Context(), accountID, delivery.ChannelEmail, true)
+	preference, err := service.PutPreference(t.Context(), accountID, delivery.ChannelEmail, "primary-email", true)
 	if err != nil {
 		t.Fatalf("PutPreference() error = %v", err)
 	}
 	if preference.DestinationRef != "primary-email" || !preference.Enabled || !preference.Verified {
-		t.Fatalf("stored preference = %#v, want selected verified destination and enabled", preference)
+		t.Fatalf("stored preference = %#v, want enabled verified primary target", preference)
+	}
+	preference, err = service.PutPreference(t.Context(), accountID, delivery.ChannelEmail, "backup-email", true)
+	if err != nil {
+		t.Fatalf("PutPreference() error = %v", err)
+	}
+	if preference.DestinationRef != "backup-email" || !preference.Enabled || !preference.Verified {
+		t.Fatalf("stored preference = %#v, want enabled verified backup target", preference)
 	}
 
 	preferences, err := service.Preferences(t.Context(), accountID)
 	if err != nil {
 		t.Fatalf("Preferences() error = %v", err)
 	}
-	if len(preferences) != 1 || preferences[0].DestinationRef != "primary-email" || !preferences[0].Enabled || !preferences[0].Verified {
-		t.Fatalf("listed preferences = %#v, want selected verified destination and enabled", preferences)
+	if len(preferences) != 2 {
+		t.Fatalf("listed preferences = %#v, want two enabled verified destinations", preferences)
 	}
 
-	preference, err = service.PutPreferenceForDestination(
-		t.Context(), accountID, delivery.ChannelEmail, false, "primary-email",
-	)
+	preference, err = service.PutPreference(t.Context(), accountID, delivery.ChannelEmail, "primary-email", false)
 	if err != nil {
-		t.Fatalf("PutPreferenceForDestination(disable) error = %v", err)
+		t.Fatalf("PutPreference(disable) error = %v", err)
 	}
 	if preference.DestinationRef != "primary-email" || preference.Enabled || !preference.Verified {
-		t.Fatalf("disabled preference = %#v, want selected verified destination and disabled", preference)
+		t.Fatalf("disabled preference = %#v, want disabled verified primary target", preference)
+	}
+	preferences, err = service.Preferences(t.Context(), accountID)
+	if err != nil {
+		t.Fatalf("Preferences() after disable error = %v", err)
+	}
+	if len(preferences) != 2 || !preferences[0].Enabled || preferences[0].DestinationRef != "backup-email" || preferences[1].Enabled || preferences[1].DestinationRef != "primary-email" {
+		t.Fatalf("listed preferences after disable = %#v", preferences)
 	}
 }

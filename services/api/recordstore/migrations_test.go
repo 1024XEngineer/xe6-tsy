@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 25 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 25", len(migrations))
+	if len(migrations) != 26 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 26", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -326,6 +326,20 @@ func TestEmbeddedMigrations(t *testing.T) {
 	} {
 		if !strings.Contains(fallbackPlaybackReclaimable.SQL, expected) {
 			t.Fatalf("fallback-playback-reclaimable migration does not contain %q", expected)
+		}
+	}
+
+	targetLevelPreferences := migrations[25]
+	if targetLevelPreferences.Version != 26 || targetLevelPreferences.Name != "target_level_message_preferences" {
+		t.Fatalf("migration = %#v, want version 26 named target_level_message_preferences", targetLevelPreferences)
+	}
+	for _, expected := range []string{
+		"DELETE FROM message_preferences",
+		"ALTER COLUMN destination_ref SET NOT NULL",
+		"PRIMARY KEY (account_id, channel, destination_ref)",
+	} {
+		if !strings.Contains(targetLevelPreferences.SQL, expected) {
+			t.Fatalf("target-level preference migration does not contain %q", expected)
 		}
 	}
 }

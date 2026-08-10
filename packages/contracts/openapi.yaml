@@ -248,7 +248,7 @@ paths:
       operationId: listOutboundMessages
       security: [{ accountContext: [] }]
       responses:
-        '200': { description: Recent account messages, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Message' } } } } } } }
+        '200': { description: Recent account messages, content: { application/json: { schema: { $ref: '#/components/schemas/OutboundMessageListResponse' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
     post:
@@ -286,7 +286,7 @@ paths:
       operationId: listMessagePreferences
       security: [{ accountContext: [] }]
       responses:
-        '200': { description: Preferences, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Preference' } } } } } } }
+        '200': { description: Preferences, content: { application/json: { schema: { $ref: '#/components/schemas/MessagePreferenceListResponse' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /account/automatic-delivery-readiness:
@@ -297,12 +297,14 @@ paths:
         '200': { description: Automatic delivery readiness for single output, content: { application/json: { schema: { $ref: '#/components/schemas/AutomaticDeliveryReadiness' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
-  /account/message-preferences/{channel}:
+  /account/message-preferences/{channel}/{destination_ref}:
     put:
-      operationId: putMessagePreference
+      operationId: putMessageTargetPreference
       security: [{ accountContext: [] }]
-      parameters: [{ name: channel, in: path, required: true, schema: { $ref: '#/components/schemas/Channel' } }]
-      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [enabled], properties: { enabled: { type: boolean }, destination_ref: { type: string, description: 'One verified automatic destination for this channel' } } } } } }
+      parameters:
+        - { name: channel, in: path, required: true, schema: { $ref: '#/components/schemas/Channel' } }
+        - { name: destination_ref, in: path, required: true, schema: { type: string, minLength: 1 } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateMessagePreferenceRequest' } } } }
       responses:
         '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/Preference' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -314,7 +316,7 @@ paths:
       security: [{ accountContext: [] }]
       parameters: [{ name: channel, in: query, required: false, schema: { $ref: '#/components/schemas/Channel' } }]
       responses:
-        '200': { description: Bound targets, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/MessageTarget' } } } } } } }
+        '200': { description: Bound targets, content: { application/json: { schema: { $ref: '#/components/schemas/MessageTargetListResponse' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
@@ -881,10 +883,28 @@ components:
         last_error_code: { type: [string, 'null'] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    OutboundMessageListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Message' } }
     Preference:
       type: object
       required: [account_id, channel, destination_ref, enabled, verified, updated_at]
       properties: { account_id: { type: string }, channel: { $ref: '#/components/schemas/Channel' }, destination_ref: { type: string }, enabled: { type: boolean }, verified: { type: boolean }, updated_at: { type: string, format: date-time } }
+    MessagePreferenceListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Preference' } }
+    UpdateMessagePreferenceRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
     AutomaticDeliveryReadiness:
       type: object
       additionalProperties: false
@@ -900,6 +920,12 @@ components:
         verified: { type: boolean }
         revoked_at: { type: [string, 'null'], format: date-time }
         updated_at: { type: string, format: date-time }
+    MessageTargetListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/MessageTarget' } }
     BindWeChatRequest:
       type: object
       additionalProperties: false

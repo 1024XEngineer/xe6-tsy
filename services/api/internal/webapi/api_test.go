@@ -29,6 +29,13 @@ type deliveryFake struct {
 	messageListLimit     int
 	listAccountID        string
 	listChannel          *delivery.Channel
+	preferences          []delivery.Preference
+	preferencesErr       error
+	putPreferenceAccount string
+	putPreferenceChannel delivery.Channel
+	putPreferenceRef     string
+	putPreferenceEnabled bool
+	putPreferenceErr     error
 	bindAccountID        string
 	bindToken            string
 	revokeAccountID      string
@@ -102,11 +109,22 @@ func (f *deliveryFake) Retry(_ context.Context, accountID, messageID, idempotenc
 	f.retryIdempotency = idempotencyKey
 	return delivery.Message{ID: messageID, AccountID: accountID, Status: delivery.MessageStatusRetrying}, nil
 }
-func (*deliveryFake) Preferences(context.Context, string) ([]delivery.Preference, error) {
-	return nil, domain.ErrNotImplemented
+func (f *deliveryFake) Preferences(_ context.Context, accountID string) ([]delivery.Preference, error) {
+	f.listAccountID = accountID
+	if f.preferencesErr != nil {
+		return nil, f.preferencesErr
+	}
+	return f.preferences, nil
 }
-func (*deliveryFake) PutPreference(context.Context, string, delivery.Channel, bool) (delivery.Preference, error) {
-	return delivery.Preference{}, domain.ErrNotImplemented
+func (f *deliveryFake) PutPreference(_ context.Context, accountID string, channel delivery.Channel, destinationRef string, enabled bool) (delivery.Preference, error) {
+	f.putPreferenceAccount = accountID
+	f.putPreferenceChannel = channel
+	f.putPreferenceRef = destinationRef
+	f.putPreferenceEnabled = enabled
+	if f.putPreferenceErr != nil {
+		return delivery.Preference{}, f.putPreferenceErr
+	}
+	return delivery.Preference{AccountID: accountID, Channel: channel, DestinationRef: destinationRef, Enabled: enabled, Verified: true}, nil
 }
 func (f *deliveryFake) ListMessageTargets(_ context.Context, accountID string, channel *delivery.Channel) ([]delivery.MessageTarget, error) {
 	f.listAccountID = accountID
@@ -435,7 +453,7 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 		{"get outbound message", http.MethodGet, "/api/v1/outbound-messages/message-1", "", true, false},
 		{"retry outbound delivery", http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", "", true, true},
 		{"get message preferences", http.MethodGet, "/api/v1/account/message-preferences", "", true, false},
-		{"update message preference", http.MethodPut, "/api/v1/account/message-preferences/email", `{"enabled":true}`, true, false},
+		{"update message preference", http.MethodPut, "/api/v1/account/message-preferences/email/primary-email", `{"enabled":true}`, true, false},
 		{"list message targets", http.MethodGet, "/api/v1/account/message-targets", "", true, false},
 		{"request email bind verification", http.MethodPost, "/api/v1/account/message-targets/email/verification-codes", `{"email":"user@example.test"}`, true, false},
 		{"bind email target", http.MethodPost, "/api/v1/account/message-targets/email/bind", `{"token":"dev:user@example.test"}`, true, false},
@@ -608,6 +626,70 @@ func TestListMessageTargetsRejectsUnsupportedChannel(t *testing.T) {
 	}
 	if fake.listAccountID != "" {
 		t.Fatal("unsupported channel reached service")
+	}
+}
+
+func TestPutMessagePreferencePassesAuthenticatedTarget(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/account/message-preferences/email/work-email", strings.NewReader(`{"enabled":true}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.putPreferenceAccount != "account-1" || fake.putPreferenceChannel != delivery.ChannelEmail || fake.putPreferenceRef != "work-email" || !fake.putPreferenceEnabled {
+		t.Fatalf("preference input = (%q, %q, %q, %t)", fake.putPreferenceAccount, fake.putPreferenceChannel, fake.putPreferenceRef, fake.putPreferenceEnabled)
+	}
+}
+
+func TestPutMessagePreferenceRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "unsupported channel", path: "/api/v1/account/message-preferences/sms/work-email", body: `{"enabled":true}`},
+		{name: "missing enabled", path: "/api/v1/account/message-preferences/email/work-email", body: `{}`},
+		{name: "invalid json", path: "/api/v1/account/message-preferences/email/work-email", body: `{`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &deliveryFake{}
+			handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+			request := httptest.NewRequest(http.MethodPut, test.path, strings.NewReader(test.body))
+			request = authenticate(request)
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+			if fake.putPreferenceAccount != "" {
+				t.Fatal("invalid preference request reached service")
+			}
+		})
+	}
+}
+
+func TestPutMessagePreferenceReturnsServiceError(t *testing.T) {
+	fake := &deliveryFake{putPreferenceErr: domain.ErrNotFound}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/account/message-preferences/email/missing", strings.NewReader(`{"enabled":true}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNotFound, response.Body.String())
 	}
 }
 

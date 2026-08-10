@@ -282,6 +282,14 @@ paths:
         '200': { description: Preferences, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Preference' } } } } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/automatic-delivery-readiness:
+    get:
+      operationId: getAutomaticDeliveryReadiness
+      security: [{ accountContext: [] }]
+      responses:
+        '200': { description: Automatic delivery readiness for single output, content: { application/json: { schema: { $ref: '#/components/schemas/AutomaticDeliveryReadiness' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /account/message-preferences/{channel}:
     put:
       operationId: putMessagePreference
@@ -822,6 +830,12 @@ components:
       type: object
       required: [account_id, channel, destination_ref, enabled, verified, updated_at]
       properties: { account_id: { type: string }, channel: { $ref: '#/components/schemas/Channel' }, destination_ref: { type: string }, enabled: { type: boolean }, verified: { type: boolean }, updated_at: { type: string, format: date-time } }
+    AutomaticDeliveryReadiness:
+      type: object
+      additionalProperties: false
+      required: [ready]
+      properties:
+        ready: { type: boolean }
     MessageTarget:
       type: object
       required: [destination_ref, channel, verified, updated_at]

@@ -98,6 +98,8 @@ func TestBuildMuxAuthenticatesLanguageRoutes(t *testing.T) {
 	}{
 		{name: "missing token", path: "/api/v1/languages", wantStatus: http.StatusUnauthorized},
 		{name: "valid token", path: "/api/v1/languages", accessToken: "account-token", wantStatus: http.StatusNotImplemented},
+		{name: "readiness missing token", path: "/api/v1/account/automatic-delivery-readiness", wantStatus: http.StatusUnauthorized},
+		{name: "readiness valid token", path: "/api/v1/account/automatic-delivery-readiness", accessToken: "account-token", wantStatus: http.StatusNotImplemented},
 		{name: "unknown language route", path: "/api/v1/languages/unknown", accessToken: "account-token", wantStatus: http.StatusNotFound},
 	}
 	for _, test := range tests {

@@ -202,55 +202,21 @@ describe("hasReadyAutomaticTarget", () => {
     vi.unstubAllGlobals();
   });
 
-  it("requires an enabled verified preference with a destination", async () => {
-    const fetchMock = vi.fn(async () =>
-      jsonResponse({
-        items: [
-          {
-            channel: "email",
-            destination_ref: "email-1",
-            enabled: true,
-            verified: true,
-          },
-        ],
-      }),
-    );
+  it("uses server-computed automatic delivery readiness", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ready: true }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(hasReadyAutomaticTarget("access-1")).resolves.toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/v1/account/message-preferences",
+      "/api/v1/account/automatic-delivery-readiness",
       expect.objectContaining({ cache: "no-store" }),
     );
   });
 
-  it("rejects preferences that are disabled, unverified, or empty", async () => {
+  it("returns false when the server reports delivery is unavailable", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        jsonResponse({
-          items: [
-            {
-              channel: "email",
-              destination_ref: "disabled",
-              enabled: false,
-              verified: true,
-            },
-            {
-              channel: "wechat",
-              destination_ref: "unverified",
-              enabled: true,
-              verified: false,
-            },
-            {
-              channel: "email",
-              destination_ref: "   ",
-              enabled: true,
-              verified: true,
-            },
-          ],
-        }),
-      ),
+      vi.fn(async () => jsonResponse({ ready: false })),
     );
 
     await expect(hasReadyAutomaticTarget("access-1")).resolves.toBe(false);

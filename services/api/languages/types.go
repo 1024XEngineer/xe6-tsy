@@ -78,6 +78,12 @@ type ListLanguagesResponse struct {
 	Languages []SupportedLanguage `json:"languages"`
 }
 
+// AutomaticDeliveryReadinessResponse reports whether single output can use
+// the configured automatic delivery runtime for the authenticated account.
+type AutomaticDeliveryReadinessResponse struct {
+	Ready bool `json:"ready"`
+}
+
 // CreateLanguageConfigRequest is the body for POST .../language-configs.
 type CreateLanguageConfigRequest struct {
 	Languages       []LanguagePair `json:"languages"`

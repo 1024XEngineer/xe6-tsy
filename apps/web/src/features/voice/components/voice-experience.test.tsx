@@ -156,17 +156,8 @@ describe("VoiceExperience", () => {
           });
         }
 
-        if (url.endsWith("/api/v1/account/message-preferences") && method === "GET") {
-          return jsonResponse({
-            items: [{
-              account_id: "acc-1",
-              channel: "email",
-              destination_ref: "person@example.com",
-              enabled: true,
-              verified: true,
-              updated_at: "2026-07-31T00:00:00Z",
-            }],
-          });
+        if (url.endsWith("/api/v1/account/automatic-delivery-readiness") && method === "GET") {
+          return jsonResponse({ ready: true });
         }
 
         if (url.includes("/state")) {

@@ -18,6 +18,7 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 		"/voice-sessions/{id}/state",
 		"/voice-sessions/{id}/realtime-ticket",
 		"/languages",
+		"/account/automatic-delivery-readiness",
 		"/voice-sessions/{id}/language-config",
 		"/voice-sessions/{id}/language-configs",
 	} {
@@ -79,6 +80,10 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 	request := schemas["CreateLanguageConfigRequest"].(map[string]any)
 	if !containsString(request["required"].([]any), "languages") {
 		t.Fatalf("CreateLanguageConfigRequest must require languages")
+	}
+	readiness := schemas["AutomaticDeliveryReadiness"].(map[string]any)
+	if !containsString(readiness["required"].([]any), "ready") {
+		t.Fatalf("AutomaticDeliveryReadiness must require ready")
 	}
 	createPath := paths["/voice-sessions/{id}/language-configs"].(map[string]any)
 	post := createPath["post"].(map[string]any)

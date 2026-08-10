@@ -36,6 +36,18 @@ func (s *Service) ListSupportedLanguages(ctx context.Context, activeOnly bool) (
 	return s.store.ListSupportedLanguages(ctx, activeOnly)
 }
 
+// AutomaticDeliveryReady returns the same account-scoped readiness used when
+// validating a single-output language configuration.
+func (s *Service) AutomaticDeliveryReady(ctx context.Context, accountID string) (bool, error) {
+	if accountID == "" {
+		return false, ErrUnauthenticated
+	}
+	if s.deliveryReadiness == nil {
+		return false, nil
+	}
+	return s.deliveryReadiness.HasReadyAutomaticTarget(ctx, accountID)
+}
+
 // GetActiveConfig returns the HTTP model for the session's active config.
 func (s *Service) GetActiveConfig(ctx context.Context, accountID, sessionID string) (LanguageConfig, error) {
 	if err := s.authorizeSession(ctx, accountID, sessionID); err != nil {
@@ -106,10 +118,7 @@ func (s *Service) CreateConfig(
 		}
 	}
 	if hasDeliveryRoute(routes) {
-		if s.deliveryReadiness == nil {
-			return LanguageConfig{}, ErrDeliveryTargetRequired
-		}
-		ready, err := s.deliveryReadiness.HasReadyAutomaticTarget(ctx, accountID)
+		ready, err := s.AutomaticDeliveryReady(ctx, accountID)
 		if err != nil {
 			return LanguageConfig{}, err
 		}

@@ -130,6 +130,41 @@ func TestHTTPSingleOutputRequiresReadyDeliveryTarget(t *testing.T) {
 	}
 }
 
+func TestHTTPAutomaticDeliveryReadiness(t *testing.T) {
+	tests := []struct {
+		name      string
+		readiness DeliveryReadinessReader
+		want      bool
+	}{
+		{name: "runtime unavailable", want: false},
+		{name: "runtime ready", readiness: &deliveryReadinessStub{ready: true}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{}, tt.readiness)
+			mux := http.NewServeMux()
+			NewHandler(svc, func(*http.Request) (string, bool) {
+				return "acct_http", true
+			}).Register(mux, withoutAuthentication)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/account/automatic-delivery-readiness", nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var response AutomaticDeliveryReadinessResponse
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.Ready != tt.want {
+				t.Fatalf("ready=%v, want %v", response.Ready, tt.want)
+			}
+		})
+	}
+}
+
 func TestHTTPListLanguages(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	svc := NewService(store, MapSessionOwner{})

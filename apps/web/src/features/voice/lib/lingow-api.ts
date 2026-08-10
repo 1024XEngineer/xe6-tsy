@@ -291,25 +291,12 @@ export async function listSupportedLanguages(
 export async function hasReadyAutomaticTarget(
   accessToken: string,
 ): Promise<boolean> {
-  const response = await fetch("/api/v1/account/message-preferences", {
+  const response = await fetch("/api/v1/account/automatic-delivery-readiness", {
     headers: authHeaders(accessToken),
     cache: "no-store",
   });
-  const result = await parseJson<{
-    items: Array<{
-      channel: string;
-      destination_ref: string;
-      enabled: boolean;
-      verified: boolean;
-    }>;
-  }>(response);
-  return result.items.some(
-    (preference) =>
-      (preference.channel === "email" || preference.channel === "wechat") &&
-      preference.enabled &&
-      preference.verified &&
-      preference.destination_ref.trim() !== "",
-  );
+  const result = await parseJson<{ ready: boolean }>(response);
+  return result.ready;
 }
 
 export async function getAccountUsageSummary(

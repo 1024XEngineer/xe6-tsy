@@ -25,6 +25,18 @@ func TestPostgresFallbackReplayStoreRejectsInvalidClaims(t *testing.T) {
 	if err := store.Complete(t.Context(), "session-1", "operation-1", "hash", ""); err == nil {
 		t.Fatal("Complete() succeeded with empty claim token")
 	}
+	if err := store.Renew(t.Context(), "", "operation-1", "hash", "token"); err == nil {
+		t.Fatal("Renew() succeeded with empty session ID")
+	}
+	if err := store.Renew(t.Context(), "session-1", "", "hash", "token"); err == nil {
+		t.Fatal("Renew() succeeded with empty operation ID")
+	}
+	if err := store.Renew(t.Context(), "session-1", "operation-1", "", "token"); err == nil {
+		t.Fatal("Renew() succeeded with empty payload hash")
+	}
+	if err := store.Renew(t.Context(), "session-1", "operation-1", "hash", ""); err == nil {
+		t.Fatal("Renew() succeeded with empty claim token")
+	}
 	if err := store.Abort(t.Context(), "", "operation-1", "hash", "token"); err == nil {
 		t.Fatal("Abort() succeeded with empty session ID")
 	}

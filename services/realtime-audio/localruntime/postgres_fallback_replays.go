@@ -109,8 +109,45 @@ func (s PostgresFallbackPlaybackReplayStore) Claim(ctx context.Context, sessionI
 	return claim, err
 }
 
-// Complete records successful playback and accepts repeated completion after
-// an expired claim has already been conservatively settled.
+func (s PostgresFallbackPlaybackReplayStore) Renew(ctx context.Context, sessionID, operationID, payloadHash, claimToken string) error {
+	if s.Pool == nil || sessionID == "" || operationID == "" || payloadHash == "" || claimToken == "" {
+		return fmt.Errorf("fallback playback replay store dependency is required")
+	}
+	result, err := s.Pool.Exec(ctx, `
+		UPDATE realtime_fallback_playback_operations
+		SET processing_started_at=CURRENT_TIMESTAMP
+		WHERE session_id=$1 AND operation_id=$2 AND payload_hash=$3
+			AND status='processing' AND processing_token=$4`, sessionID, operationID, payloadHash, claimToken)
+	if err != nil {
+		return fmt.Errorf("renew fallback playback operation: %w", err)
+	}
+	if result.RowsAffected() == 1 {
+		return nil
+	}
+
+	var storedHash, status string
+	var storedToken *string
+	err = s.Pool.QueryRow(ctx, `
+		SELECT payload_hash,status,processing_token
+		FROM realtime_fallback_playback_operations
+		WHERE session_id=$1 AND operation_id=$2`, sessionID, operationID).Scan(&storedHash, &status, &storedToken)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("renew fallback playback operation: operation was not claimed")
+	}
+	if err != nil {
+		return fmt.Errorf("read renewed fallback playback operation: %w", err)
+	}
+	if storedHash != payloadHash {
+		return webrtc.ErrIdempotencyPayloadConflict
+	}
+	if storedToken == nil || *storedToken != claimToken {
+		return fmt.Errorf("renew fallback playback operation: claim is no longer owned")
+	}
+	return fmt.Errorf("renew fallback playback operation: status is %q", status)
+}
+
+// Complete records successful playback and accepts repeated completion of an
+// operation that is already accepted.
 func (s PostgresFallbackPlaybackReplayStore) Complete(ctx context.Context, sessionID, operationID, payloadHash, claimToken string) error {
 	if s.Pool == nil || sessionID == "" || operationID == "" || payloadHash == "" || claimToken == "" {
 		return fmt.Errorf("fallback playback replay store dependency is required")

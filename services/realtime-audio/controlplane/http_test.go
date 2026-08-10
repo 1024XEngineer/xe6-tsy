@@ -150,6 +150,76 @@ func TestHandlerClaimsFallbackBeforeConcurrentCrossInstancePlayback(t *testing.T
 	}
 }
 
+func TestHandlerRenewsActiveFallbackClaim(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string), renewed: make(chan struct{})}
+	fixture := newFixture(t)
+	fixture.controlHandler.fallbackClaimRenewInterval = 10 * time.Millisecond
+	firstFallback := &blockingFallbackPlaybackFake{entered: make(chan struct{}), release: make(chan struct{})}
+	fixture.controlHandler.fallback = firstFallback
+	fixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	}()
+	<-firstFallback.entered
+	select {
+	case <-store.renewed:
+	case <-time.After(time.Second):
+		t.Fatal("fallback claim was not renewed while playback was active")
+	}
+	secondFixture := newFixture(t)
+	secondFixture.controlHandler.fallback = &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("active replay status = %d, body=%s; want conflict", second.Code, second.Body.String())
+	}
+	close(firstFallback.release)
+	if first := <-done; first.Code != http.StatusAccepted {
+		t.Fatalf("first fallback status = %d, body=%s", first.Code, first.Body.String())
+	}
+}
+
+func TestHandlerStopsFallbackWhenClaimRenewalFails(t *testing.T) {
+	store := &fallbackReplayStoreFake{
+		accepted: make(map[string]string),
+		renewed:  make(chan struct{}),
+		renewErr: errors.New("renew unavailable"),
+	}
+	fixture := newFixture(t)
+	fixture.controlHandler.fallbackClaimRenewInterval = 10 * time.Millisecond
+	firstFallback := &blockingFallbackPlaybackFake{entered: make(chan struct{}), release: make(chan struct{})}
+	fixture.controlHandler.fallback = firstFallback
+	fixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	}()
+	<-firstFallback.entered
+	select {
+	case <-store.renewed:
+	case <-time.After(time.Second):
+		t.Fatal("fallback claim renewal was not attempted")
+	}
+	select {
+	case first := <-done:
+		if first.Code != http.StatusInternalServerError {
+			t.Fatalf("renewal failure status = %d, body=%s", first.Code, first.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fallback did not stop after claim renewal failure")
+	}
+	secondFixture := newFixture(t)
+	secondFixture.controlHandler.fallback = &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("retry after renewal failure status = %d, body=%s; want conflict", second.Code, second.Body.String())
+	}
+}
+
 func TestHandlerRetriesFallbackAfterExpiredProcessingClaim(t *testing.T) {
 	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
 	firstFixture := newFixture(t)
@@ -807,6 +877,9 @@ type fallbackReplayStoreFake struct {
 	processing          map[string]bool
 	tokens              map[string]string
 	reconcileProcessing bool
+	renewErr            error
+	renewed             chan struct{}
+	renewCount          int
 	completeErr         error
 	abortErr            error
 	aborted             int
@@ -843,6 +916,24 @@ func (s *fallbackReplayStoreFake) Claim(_ context.Context, sessionID, operationI
 		return FallbackPlaybackClaim{Status: FallbackPlaybackProcessing}, nil
 	}
 	return FallbackPlaybackClaim{Status: FallbackPlaybackAccepted}, nil
+}
+
+func (s *fallbackReplayStoreFake) Renew(_ context.Context, sessionID, operationID, payloadHash, claimToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.renewCount++
+	if s.renewCount == 1 && s.renewed != nil {
+		close(s.renewed)
+	}
+	if s.renewErr != nil {
+		return s.renewErr
+	}
+	key := sessionID + "\x00" + operationID
+	storedHash, ok := s.accepted[key]
+	if !ok || storedHash != payloadHash || !s.processing[key] || s.tokens[key] != claimToken {
+		return errors.New("claim is no longer owned")
+	}
+	return nil
 }
 
 func (s *fallbackReplayStoreFake) Complete(_ context.Context, sessionID, operationID, payloadHash, claimToken string) error {

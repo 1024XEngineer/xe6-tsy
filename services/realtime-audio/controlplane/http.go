@@ -27,6 +27,7 @@ const (
 	defaultReplayTTL                  = 10 * time.Minute
 	defaultReplayMaxEntries           = 4096
 	defaultReplayMaxEntriesPerSession = 64
+	defaultFallbackClaimRenewInterval = time.Minute
 )
 
 var (
@@ -73,6 +74,7 @@ type FallbackPlaybackClaim struct {
 // media I/O and resolves the claim after playback outcome is known.
 type FallbackPlaybackReplayStore interface {
 	Claim(context.Context, string, string, string) (FallbackPlaybackClaim, error)
+	Renew(context.Context, string, string, string, string) error
 	Complete(context.Context, string, string, string, string) error
 	Abort(context.Context, string, string, string, string) error
 }
@@ -159,6 +161,7 @@ type Handler struct {
 	replayTTL                  time.Duration
 	replayMaxEntries           int
 	replayMaxEntriesPerSession int
+	fallbackClaimRenewInterval time.Duration
 }
 
 type replayRecord struct {
@@ -207,6 +210,7 @@ func New(dependencies Dependencies) (*Handler, error) {
 		replayTTL:                  dependencies.ReplayTTL,
 		replayMaxEntries:           dependencies.ReplayMaxEntries,
 		replayMaxEntriesPerSession: dependencies.ReplayMaxEntriesPerSession,
+		fallbackClaimRenewInterval: defaultFallbackClaimRenewInterval,
 	}
 	h.registerRoutes(defaultRoutePrefix)
 	return h, nil
@@ -273,13 +277,21 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 					return nil, ErrInvalidDependency
 				}
 			}
-			if err := h.fallback.PlayFallback(request.Context(), body); err != nil {
-				if h.fallbackReplays != nil && claimToken != "" && isFallbackPlaybackNotStarted(err) {
+			playbackContext, stopHeartbeat := h.startFallbackClaimHeartbeat(
+				request.Context(), sessionID, body.OperationID, payloadHash, claimToken,
+			)
+			playbackErr := h.fallback.PlayFallback(playbackContext, body)
+			heartbeatErr := stopHeartbeat()
+			if heartbeatErr != nil {
+				return nil, heartbeatErr
+			}
+			if playbackErr != nil {
+				if h.fallbackReplays != nil && claimToken != "" && isFallbackPlaybackNotStarted(playbackErr) {
 					if abortErr := h.fallbackReplays.Abort(request.Context(), sessionID, body.OperationID, payloadHash, claimToken); abortErr != nil {
-						return nil, errors.Join(err, abortErr)
+						return nil, errors.Join(playbackErr, abortErr)
 					}
 				}
-				return nil, err
+				return nil, playbackErr
 			}
 			if h.fallbackReplays != nil {
 				if err := h.fallbackReplays.Complete(request.Context(), sessionID, body.OperationID, payloadHash, claimToken); err != nil {
@@ -302,6 +314,44 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 func isFallbackPlaybackNotStarted(err error) bool {
 	var marker fallbackPlaybackNotStarted
 	return errors.As(err, &marker)
+}
+
+func (h *Handler) startFallbackClaimHeartbeat(ctx context.Context, sessionID, operationID, payloadHash, claimToken string) (context.Context, func() error) {
+	if h.fallbackReplays == nil || claimToken == "" || h.fallbackClaimRenewInterval <= 0 {
+		return ctx, func() error { return nil }
+	}
+
+	heartbeatContext, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(h.fallbackClaimRenewInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatContext.Done():
+				return
+			case <-ticker.C:
+				if err := h.fallbackReplays.Renew(heartbeatContext, sessionID, operationID, payloadHash, claimToken); err != nil {
+					errCh <- err
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	return heartbeatContext, func() error {
+		cancel()
+		<-done
+		select {
+		case err := <-errCh:
+			return err
+		default:
+			return nil
+		}
+	}
 }
 
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {

@@ -11,6 +11,7 @@ import {
   hasReadyAutomaticTarget,
   listSessionTurns,
   mintRealtimeTicket,
+  RUNTIME_ERROR_TRANSLATION_REJECTED,
   startVoiceSession,
   type RuntimeState,
   type VoiceTurn,
@@ -95,7 +96,7 @@ function mapRuntimePhase(
 }
 
 function mapRuntimeFailureHint(code: string | null): string {
-  if (code === "realtime_translation_rejected") {
+  if (code === RUNTIME_ERROR_TRANSLATION_REJECTED) {
     return "译文模型出现了意外行为，已拒绝本次服务。请结束会话后重试。";
   }
   const codePart = code ? `（${code}）` : "";

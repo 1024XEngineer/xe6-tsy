@@ -15,6 +15,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/ingress"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
@@ -107,6 +108,27 @@ func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 	}
 	if source.CloseCalls() != 1 {
 		t.Fatalf("source close calls = %d, want 1", source.CloseCalls())
+	}
+}
+
+func TestManagerExposesSessionScopedCommandCapture(t *testing.T) {
+	manager, _ := newOwnershipTestManager(t)
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1", Status: "created"}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	window, err := manager.ArmCommandCapture(context.Background(), snapshot.SessionID, "capture-1", ingress.DefaultCommandWindow)
+	if err != nil {
+		t.Fatalf("ArmCommandCapture() error = %v", err)
+	}
+	if window.Mode != ingress.ModeCommandCapture || window.CaptureID != "capture-1" {
+		t.Fatalf("command window = %#v", window)
+	}
+	if err := manager.CancelCommandCapture(snapshot.SessionID, "capture-1"); err != nil {
+		t.Fatalf("CancelCommandCapture() error = %v", err)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
 	}
 }
 

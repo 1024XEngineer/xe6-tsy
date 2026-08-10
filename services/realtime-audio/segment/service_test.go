@@ -51,6 +51,33 @@ func TestServiceProcessesOnlyFinalizedUtterances(t *testing.T) {
 	}
 }
 
+func TestServiceResetsActiveVADWhenIngressGenerationChanges(t *testing.T) {
+	base := time.Unix(40, 0)
+	source := &fakeSource{frames: []audio.Frame{
+		testFrame(t, 1, base),
+		testFrame(t, 1, base.Add(100*time.Millisecond)),
+		testFrame(t, 0, base.Add(200*time.Millisecond)),
+	}}
+	processor := &fakeProcessor{}
+	boundary := &generationBoundary{changeAt: base.Add(100 * time.Millisecond)}
+	segmenter, err := vad.NewSegmenter(energyClassifier{}, vad.Options{
+		SilenceAfter: 50 * time.Millisecond, MaxDuration: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSegmenter() error = %v", err)
+	}
+	service, err := NewService(Dependencies{Source: source, Segmenter: segmenter, Processor: boundaryProcessor{boundary: boundary, processor: processor}})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	if err := service.Run(context.Background(), Request{SessionID: "session-1"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(processor.requests) != 1 || len(processor.requests[0].AudioChunks) != 2 {
+		t.Fatalf("requests after generation reset = %#v, want only post-switch utterance", processor.requests)
+	}
+}
+
 func TestServiceKeepsReadingWhileTurnProcessingIsBusy(t *testing.T) {
 	base := time.Unix(100, 0)
 	source := &trackingSource{exhausted: make(chan struct{}), frames: []audio.Frame{
@@ -243,6 +270,35 @@ func (s *fakeSource) Close() error {
 type fakeProcessor struct {
 	requests []pipeline.TurnProcessRequest
 	err      error
+}
+
+type generationBoundary struct {
+	changeAt   time.Time
+	generation uint64
+}
+
+func (b *generationBoundary) BeforeFrame(_ context.Context, at time.Time) error {
+	if b.generation == 0 && !at.Before(b.changeAt) {
+		b.generation = 1
+	}
+	return nil
+}
+
+func (b *generationBoundary) Generation() uint64 { return b.generation }
+
+type boundaryProcessor struct {
+	boundary  *generationBoundary
+	processor *fakeProcessor
+}
+
+func (p boundaryProcessor) BeforeFrame(ctx context.Context, at time.Time) error {
+	return p.boundary.BeforeFrame(ctx, at)
+}
+
+func (p boundaryProcessor) Generation() uint64 { return p.boundary.Generation() }
+
+func (p boundaryProcessor) ProcessAudio(ctx context.Context, request pipeline.TurnProcessRequest) (pipeline.TurnContext, error) {
+	return p.processor.ProcessAudio(ctx, request)
 }
 
 type blockingProcessor struct {

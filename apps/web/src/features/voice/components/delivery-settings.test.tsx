@@ -93,12 +93,110 @@ describe("DeliverySettings", () => {
     expect(screen.getByText("邮箱 · person@example.com")).toBeInTheDocument();
     expect(screen.getByText("已发送")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "开启邮箱自动发送" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "person@example.com" }));
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/v1/account/message-preferences/email/person%40example.com",
         expect.objectContaining({ method: "PUT" }),
       );
+    });
+  });
+
+  it("keeps other enabled targets when one target changes", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/message-targets")) {
+        return jsonResponse({
+          items: [
+            {
+              destination_ref: "first@example.com",
+              channel: "email",
+              verified: true,
+              revoked_at: null,
+              updated_at: "2026-08-07T00:00:00Z",
+            },
+            {
+              destination_ref: "second@example.com",
+              channel: "email",
+              verified: true,
+              revoked_at: null,
+              updated_at: "2026-08-07T00:00:00Z",
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/message-preferences")) {
+        return jsonResponse({
+          items: [
+            {
+              account_id: "acc-delivery",
+              channel: "email",
+              destination_ref: "first@example.com",
+              enabled: true,
+              verified: true,
+              updated_at: "2026-08-07T00:00:00Z",
+            },
+            {
+              account_id: "acc-delivery",
+              channel: "email",
+              destination_ref: "second@example.com",
+              enabled: false,
+              verified: true,
+              updated_at: "2026-08-07T00:00:00Z",
+            },
+          ],
+        });
+      }
+      if (url.endsWith("/outbound-messages")) return jsonResponse({ items: [] });
+      if (
+        url.endsWith("/message-preferences/email/second%40example.com") &&
+        init?.method === "PUT"
+      ) {
+        return jsonResponse({
+          account_id: "acc-delivery",
+          channel: "email",
+          destination_ref: "second@example.com",
+          enabled: true,
+          verified: true,
+          updated_at: "2026-08-07T00:00:01Z",
+        });
+      }
+      if (
+        url.endsWith("/message-preferences/email/first%40example.com") &&
+        init?.method === "PUT"
+      ) {
+        return jsonResponse({
+          account_id: "acc-delivery",
+          channel: "email",
+          destination_ref: "first@example.com",
+          enabled: false,
+          verified: true,
+          updated_at: "2026-08-07T00:00:02Z",
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DeliverySettings />);
+
+    const firstTarget = await screen.findByRole("checkbox", {
+      name: "first@example.com",
+    });
+    const secondTarget = screen.getByRole("checkbox", {
+      name: "second@example.com",
+    });
+
+    expect(firstTarget).toBeChecked();
+    expect(secondTarget).not.toBeChecked();
+
+    fireEvent.click(secondTarget);
+    await waitFor(() => expect(secondTarget).toBeChecked());
+
+    fireEvent.click(firstTarget);
+    await waitFor(() => {
+      expect(firstTarget).not.toBeChecked();
+      expect(secondTarget).toBeChecked();
     });
   });
 });

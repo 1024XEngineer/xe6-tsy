@@ -80,7 +80,9 @@ export function DeliverySettings() {
   const [emailToken, setEmailToken] = useState("");
   const [emailVerificationSent, setEmailVerificationSent] = useState(false);
   const [wechatCode, setWechatCode] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busyOperations, setBusyOperations] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
@@ -121,11 +123,31 @@ export function DeliverySettings() {
     [targets],
   );
 
-  const preferenceFor = (channel: DeliveryChannel) =>
-    preferences.find((preference) => preference.channel === channel);
+  const preferenceForTarget = (
+    channel: DeliveryChannel,
+    destinationRef: string,
+  ) =>
+    preferences.find(
+      (preference) =>
+        preference.channel === channel && preference.destination_ref === destinationRef,
+    );
 
   const targetsFor = (channel: DeliveryChannel) =>
     activeTargets.filter((target) => target.channel === channel);
+
+  const startOperation = (operation: string) => {
+    setBusyOperations((current) => new Set(current).add(operation));
+  };
+
+  const finishOperation = (operation: string) => {
+    setBusyOperations((current) => {
+      const next = new Set(current);
+      next.delete(operation);
+      return next;
+    });
+  };
+
+  const hasBusyOperation = busyOperations.size > 0;
 
   const updatePreference = async (
     channel: DeliveryChannel,
@@ -133,7 +155,8 @@ export function DeliverySettings() {
     destinationRef: string,
   ) => {
     if (enabled && !destinationRef) return;
-    setBusy(`preference:${channel}`);
+    const busyKey = `preference:${channel}:${destinationRef}`;
+    startOperation(busyKey);
     setError(null);
     try {
       const auth = await getOrCreateAuthSession();
@@ -144,19 +167,24 @@ export function DeliverySettings() {
         enabled,
       );
       setPreferences((current) => [
-        ...current.filter((preference) => preference.channel !== channel),
+        ...current.filter(
+          (preference) =>
+            preference.channel !== channel ||
+            preference.destination_ref !== destinationRef,
+        ),
         updated,
       ]);
     } catch (updateError) {
       setError(requestError(updateError));
     } finally {
-      setBusy(null);
+      finishOperation(busyKey);
     }
   };
 
   const requestEmailCode = async () => {
     if (!email.trim()) return;
-    setBusy("email:request");
+    const busyKey = "email:request";
+    startOperation(busyKey);
     setError(null);
     try {
       const auth = await getOrCreateAuthSession();
@@ -165,13 +193,14 @@ export function DeliverySettings() {
     } catch (bindError) {
       setError(requestError(bindError));
     } finally {
-      setBusy(null);
+      finishOperation(busyKey);
     }
   };
 
   const bindEmail = async () => {
     if (!emailToken.trim()) return;
-    setBusy("email:bind");
+    const busyKey = "email:bind";
+    startOperation(busyKey);
     setError(null);
     try {
       const auth = await getOrCreateAuthSession();
@@ -183,13 +212,14 @@ export function DeliverySettings() {
     } catch (bindError) {
       setError(requestError(bindError));
     } finally {
-      setBusy(null);
+      finishOperation(busyKey);
     }
   };
 
   const bindWeChat = async () => {
     if (!wechatCode.trim()) return;
-    setBusy("wechat:bind");
+    const busyKey = "wechat:bind";
+    startOperation(busyKey);
     setError(null);
     try {
       const auth = await getOrCreateAuthSession();
@@ -199,12 +229,13 @@ export function DeliverySettings() {
     } catch (bindError) {
       setError(requestError(bindError));
     } finally {
-      setBusy(null);
+      finishOperation(busyKey);
     }
   };
 
   const revoke = async (target: MessageTarget) => {
-    setBusy(`revoke:${target.channel}:${target.destination_ref}`);
+    const busyKey = `revoke:${target.channel}:${target.destination_ref}`;
+    startOperation(busyKey);
     setError(null);
     try {
       const auth = await getOrCreateAuthSession();
@@ -217,7 +248,7 @@ export function DeliverySettings() {
     } catch (revokeError) {
       setError(requestError(revokeError));
     } finally {
-      setBusy(null);
+      finishOperation(busyKey);
     }
   };
 
@@ -226,11 +257,11 @@ export function DeliverySettings() {
   return (
     <div className={styles.deliverySettings}>
       <div className={styles.deliveryIntro}>
-        <span>单向输出的反向译文会发送到这里选定的一个目标。</span>
+        <span>单向输出的反向译文会发送到所有已启用的目标。</span>
         <button
           aria-label="刷新投递设置"
           className={styles.deliveryRefresh}
-          disabled={busy !== null}
+          disabled={hasBusyOperation}
           onClick={() => void load()}
           type="button"
         >
@@ -242,58 +273,59 @@ export function DeliverySettings() {
 
       {CHANNELS.map((channel) => {
         const channelTargets = targetsFor(channel);
-        const preference = preferenceFor(channel);
-        const selectedRef = channelTargets.some(
-          (target) => target.destination_ref === preference?.destination_ref,
-        )
-          ? preference?.destination_ref ?? ""
-          : channelTargets[0]?.destination_ref ?? "";
+        const enabledTargetCount = channelTargets.filter(
+          (target) => preferenceForTarget(channel, target.destination_ref)?.enabled,
+        ).length;
         const Icon = channel === "email" ? EnvelopeSimple : Buildings;
         return (
           <section className={styles.deliverySection} key={channel}>
             <div className={styles.deliverySectionHeader}>
               <div>
                 <h3><Icon aria-hidden="true" size={17} />{channelLabel(channel)}</h3>
-                <p>{channelTargets.length ? `${channelTargets.length} 个已验证目标` : "还没有已验证目标"}</p>
+                <p>{channelTargets.length ? `${channelTargets.length} 个已验证目标，${enabledTargetCount} 个已启用` : "还没有已验证目标"}</p>
               </div>
-              {channelTargets.length ? (
-                <button
-                  aria-label={`${preference?.enabled ? "关闭" : "开启"}${channelLabel(channel)}自动发送`}
-                  aria-pressed={preference?.enabled ?? false}
-                  className={`${styles.settingToggle} ${preference?.enabled ? styles.settingToggleActive : ""}`}
-                  disabled={busy === `preference:${channel}`}
-                  onClick={() => void updatePreference(channel, !(preference?.enabled ?? false), selectedRef)}
-                  type="button"
-                >
-                  <span />
-                </button>
-              ) : null}
             </div>
 
             {channelTargets.length ? (
               <div className={styles.deliveryTargetList}>
-                {channelTargets.map((target) => (
-                  <div className={styles.deliveryTargetRow} key={target.destination_ref}>
-                    <label>
-                      <input
-                        checked={selectedRef === target.destination_ref}
-                        name={`delivery-${channel}`}
-                        onChange={() => void updatePreference(channel, preference?.enabled ?? false, target.destination_ref)}
-                        type="radio"
-                      />
-                      <span>{target.destination_ref}</span>
-                    </label>
-                    <button
-                      aria-label={`撤销${target.destination_ref}`}
-                      className={styles.deliveryRevoke}
-                      disabled={busy !== null}
-                      onClick={() => void revoke(target)}
-                      type="button"
-                    >
-                      <Trash aria-hidden="true" size={15} />
-                    </button>
-                  </div>
-                ))}
+                {channelTargets.map((target) => {
+                  const preference = preferenceForTarget(
+                    channel,
+                    target.destination_ref,
+                  );
+                  const preferenceBusy =
+                    busyOperations.has(
+                      `preference:${channel}:${target.destination_ref}`,
+                    );
+                  return (
+                    <div className={styles.deliveryTargetRow} key={target.destination_ref}>
+                      <label>
+                        <input
+                          checked={preference?.enabled ?? false}
+                          disabled={preferenceBusy}
+                          onChange={(event) =>
+                            void updatePreference(
+                              channel,
+                              event.target.checked,
+                              target.destination_ref,
+                            )
+                          }
+                          type="checkbox"
+                        />
+                        <span>{target.destination_ref}</span>
+                      </label>
+                      <button
+                        aria-label={`撤销${target.destination_ref}`}
+                        className={styles.deliveryRevoke}
+                        disabled={hasBusyOperation}
+                        onClick={() => void revoke(target)}
+                        type="button"
+                      >
+                        <Trash aria-hidden="true" size={15} />
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             ) : null}
 
@@ -322,7 +354,7 @@ export function DeliverySettings() {
                 ) : null}
                 <button
                   className={styles.deliveryAction}
-                  disabled={busy !== null || (emailVerificationSent ? !emailToken.trim() : !email.trim())}
+                  disabled={hasBusyOperation || (emailVerificationSent ? !emailToken.trim() : !email.trim())}
                   onClick={() => void (emailVerificationSent ? bindEmail() : requestEmailCode())}
                   type="button"
                 >
@@ -342,7 +374,7 @@ export function DeliverySettings() {
                 </label>
                 <button
                   className={styles.deliveryAction}
-                  disabled={busy !== null || !wechatCode.trim()}
+                  disabled={hasBusyOperation || !wechatCode.trim()}
                   onClick={() => void bindWeChat()}
                   type="button"
                 >

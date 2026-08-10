@@ -150,7 +150,7 @@ func TestHandlerClaimsFallbackBeforeConcurrentCrossInstancePlayback(t *testing.T
 	}
 }
 
-func TestHandlerDoesNotReplayFallbackAfterAmbiguousPlaybackFailure(t *testing.T) {
+func TestHandlerRetriesFallbackAfterExpiredProcessingClaim(t *testing.T) {
 	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
 	firstFixture := newFixture(t)
 	firstFixture.controlHandler.fallback = &fallbackPlaybackFake{err: errors.New("playback outcome unknown")}
@@ -170,8 +170,8 @@ func TestHandlerDoesNotReplayFallbackAfterAmbiguousPlaybackFailure(t *testing.T)
 	if second.Code != http.StatusAccepted {
 		t.Fatalf("ambiguous replay status = %d, body=%s", second.Code, second.Body.String())
 	}
-	if secondFallback.calls != 0 {
-		t.Fatalf("fallback replay calls = %d, want 0", secondFallback.calls)
+	if secondFallback.calls != 1 {
+		t.Fatalf("fallback replay calls = %d, want 1", secondFallback.calls)
 	}
 }
 
@@ -834,9 +834,11 @@ func (s *fallbackReplayStoreFake) Claim(_ context.Context, sessionID, operationI
 	}
 	if s.processing[key] {
 		if s.reconcileProcessing {
-			s.processing[key] = false
-			delete(s.tokens, key)
-			return FallbackPlaybackClaim{Status: FallbackPlaybackAccepted}, nil
+			if s.tokens == nil {
+				s.tokens = make(map[string]string)
+			}
+			s.tokens[key] = "reclaimed-" + key
+			return FallbackPlaybackClaim{Status: FallbackPlaybackClaimed, Token: s.tokens[key]}, nil
 		}
 		return FallbackPlaybackClaim{Status: FallbackPlaybackProcessing}, nil
 	}

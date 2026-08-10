@@ -31,8 +31,7 @@ func newFallbackPlaybackClaimToken() (string, error) {
 }
 
 // Claim durably reserves an operation before media I/O. Expired processing
-// claims are conservatively settled as accepted because playback may already
-// have reached the audio device when the owner disappeared.
+// claims become reclaimable and are retried by the new owner.
 func (s PostgresFallbackPlaybackReplayStore) Claim(ctx context.Context, sessionID, operationID, payloadHash string) (controlplane.FallbackPlaybackClaim, error) {
 	var claim controlplane.FallbackPlaybackClaim
 	if s.Pool == nil || sessionID == "" || operationID == "" || payloadHash == "" {
@@ -74,6 +73,15 @@ func (s PostgresFallbackPlaybackReplayStore) Claim(ctx context.Context, sessionI
 		switch status {
 		case "accepted":
 			claim.Status = controlplane.FallbackPlaybackAccepted
+		case "reclaimable":
+			if _, err := tx.Exec(ctx, `
+				UPDATE realtime_fallback_playback_operations
+				SET status='processing',accepted_at=NULL,processing_started_at=CURRENT_TIMESTAMP,processing_token=$3
+				WHERE session_id=$1 AND operation_id=$2 AND status='reclaimable'`, sessionID, operationID, claimToken); err != nil {
+				return fmt.Errorf("reclaim fallback playback claim: %w", err)
+			}
+			claim.Status = controlplane.FallbackPlaybackClaimed
+			claim.Token = claimToken
 		case "processing":
 			if processingStartedAt == nil || databaseNow.Before(processingStartedAt.Add(fallbackPlaybackClaimLease)) {
 				claim.Status = controlplane.FallbackPlaybackProcessing
@@ -81,11 +89,18 @@ func (s PostgresFallbackPlaybackReplayStore) Claim(ctx context.Context, sessionI
 			}
 			if _, err := tx.Exec(ctx, `
 				UPDATE realtime_fallback_playback_operations
-				SET status='accepted',accepted_at=CURRENT_TIMESTAMP,processing_started_at=NULL,processing_token=NULL
+				SET status='reclaimable',accepted_at=NULL,processing_started_at=NULL,processing_token=NULL
 				WHERE session_id=$1 AND operation_id=$2 AND status='processing'`, sessionID, operationID); err != nil {
-				return fmt.Errorf("settle expired fallback playback claim: %w", err)
+				return fmt.Errorf("mark expired fallback playback claim reclaimable: %w", err)
 			}
-			claim.Status = controlplane.FallbackPlaybackAccepted
+			if _, err := tx.Exec(ctx, `
+				UPDATE realtime_fallback_playback_operations
+				SET status='processing',processing_started_at=CURRENT_TIMESTAMP,processing_token=$3
+				WHERE session_id=$1 AND operation_id=$2 AND status='reclaimable'`, sessionID, operationID, claimToken); err != nil {
+				return fmt.Errorf("reclaim expired fallback playback claim: %w", err)
+			}
+			claim.Status = controlplane.FallbackPlaybackClaimed
+			claim.Token = claimToken
 		default:
 			return fmt.Errorf("fallback playback operation has unsupported status %q", status)
 		}

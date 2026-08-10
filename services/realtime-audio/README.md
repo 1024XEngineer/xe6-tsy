@@ -133,9 +133,12 @@ the turn stays `pending`, no attribution task or participant is created, and the
 exists, the API async attribution worker uses it to build the stable participant mapping and
 confirm/correct the turn.
 
-Terminal media worker failures set `last_error_code=realtime_pipeline_failed` and emit a structured
-`realtime pipeline worker failed` log with `session_id`, `operation_id`, `trace_id`, and the complete
-wrapped error. This log is the diagnostic source for failures after signaling and lifecycle Start.
+Terminal media worker failures emit a structured `realtime pipeline worker failed`
+log with `session_id`, `operation_id`, `trace_id`, `error_code`, and the complete
+wrapped error. `last_error_code` is usually `realtime_pipeline_failed`; when the
+translator abandons the task after a reinforced retry it is
+`realtime_translation_rejected` instead. This log is the diagnostic source for
+failures after signaling and lifecycle Start.
 
 Official protocol references:
 

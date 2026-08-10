@@ -94,6 +94,14 @@ function mapRuntimePhase(
   return "active";
 }
 
+function mapRuntimeFailureHint(code: string | null): string {
+  if (code === "realtime_translation_rejected") {
+    return "译文模型出现了意外行为，已拒绝本次服务。请结束会话后重试。";
+  }
+  const codePart = code ? `（${code}）` : "";
+  return `实时管道已失败${codePart}。请在 realtime-audio 日志中按当前 session ID 查找「realtime pipeline worker failed」以确认具体失败阶段，重启后再试。`;
+}
+
 function toTranslationTurn(turn: VoiceTurn): TranslationTurn {
   return {
     id: turn.id,
@@ -260,12 +268,7 @@ export function useVoiceSession() {
       }));
 
       if (snapshot.runtime_state === "failed") {
-        const code = snapshot.last_error_code
-          ? `（${snapshot.last_error_code}）`
-          : "";
-        setHintMessage(
-          `实时管道已失败${code}。请在 realtime-audio 日志中按当前 session ID 查找「realtime pipeline worker failed」以确认具体失败阶段，重启后再试。`,
-        );
+        setHintMessage(mapRuntimeFailureHint(snapshot.last_error_code));
       } else if (snapshot.last_error_code) {
         setHintMessage(`last_error_code: ${snapshot.last_error_code}`);
       }

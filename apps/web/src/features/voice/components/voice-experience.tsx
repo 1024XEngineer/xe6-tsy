@@ -18,6 +18,7 @@ export function VoiceExperience() {
     latestTurn,
     statusMessage,
     hintMessage,
+    automaticOutputMessage,
     voiceConfig,
     updateConfig,
     debug,
@@ -74,6 +75,11 @@ export function VoiceExperience() {
           <p aria-live="polite" className={styles.outputModeText}>
             {formatActivePair(voiceConfig)}
           </p>
+          {automaticOutputMessage ? (
+            <p className={styles.automaticOutputText} role="status">
+              {automaticOutputMessage}
+            </p>
+          ) : null}
           <motion.p
             animate={{ opacity: 1, y: 0 }}
             aria-live="polite"

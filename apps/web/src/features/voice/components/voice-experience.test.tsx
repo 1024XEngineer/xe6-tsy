@@ -53,6 +53,11 @@ describe("VoiceExperience", () => {
   let languageConfigVersion = 0;
   let conflictNextLanguageConfig = false;
   let automaticDeliveryReady = true;
+  let automaticOutputStatuses: Array<{
+    turn_id: string;
+    status: "fallback_pending" | "fallback_played" | "restored";
+    updated_at: string;
+  }> = [];
   let languageConfigExpectedVersions: Array<number | undefined> = [];
   let languageConfigRequests: Array<{
     expected_version?: number;
@@ -72,6 +77,7 @@ describe("VoiceExperience", () => {
     languageConfigVersion = 0;
     conflictNextLanguageConfig = false;
     automaticDeliveryReady = true;
+    automaticOutputStatuses = [];
     languageConfigExpectedVersions = [];
     languageConfigRequests = [];
     localStorage.clear();
@@ -160,7 +166,10 @@ describe("VoiceExperience", () => {
               { source: "zh-CN", target: "en-US" },
               { source: "en-US", target: "zh-CN" },
             ],
-            output_routes: [],
+            output_routes: [
+              { target_language: "en-US", tts_enabled: true, delivery_enabled: false },
+              { target_language: "zh-CN", tts_enabled: true, delivery_enabled: false },
+            ],
             output_mode: "bidirectional",
             status: "active",
             effective_from: "2026-07-31T00:00:00Z",
@@ -213,6 +222,10 @@ describe("VoiceExperience", () => {
 
         if (url.endsWith("/api/v1/account/automatic-delivery-readiness") && method === "GET") {
           return jsonResponse({ ready: automaticDeliveryReady });
+        }
+
+        if (url.endsWith("/automatic-output-status") && method === "GET") {
+          return jsonResponse({ items: automaticOutputStatuses });
         }
 
         if (url.includes("/state")) {
@@ -392,6 +405,54 @@ describe("VoiceExperience", () => {
       { target_language: "en-US", tts_enabled: true, delivery_enabled: false },
       { target_language: "zh-CN", tts_enabled: true, delivery_enabled: false },
     ]);
+  });
+
+  it("shows fallback playback while automatic delivery is recovering", async () => {
+    automaticOutputStatuses = [
+      {
+        turn_id: "turn-1",
+        status: "fallback_pending",
+        updated_at: "2026-07-31T00:00:04Z",
+      },
+    ];
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+
+    expect(
+      await screen.findByText("自动投递全部失败，正在补播反向译文。"),
+    ).toBeInTheDocument();
+  });
+
+  it("refreshes the authoritative output routes after automatic recovery", async () => {
+    automaticOutputStatuses = [
+      {
+        turn_id: "turn-1",
+        status: "restored",
+        updated_at: "2026-07-31T00:00:05Z",
+      },
+    ];
+    localStorage.setItem(
+      "lingow-voice-config-v2",
+      JSON.stringify({
+        sourceLanguage: "zh-CN",
+        targetLanguage: "en-US",
+        outputMode: "single",
+      }),
+    );
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+
+    expect(
+      await screen.findByText("自动投递失败，已恢复双向播报。"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("双向播报 · 中文 ⇄ English")).toBeInTheDocument();
+      expect(JSON.parse(localStorage.getItem("lingow-voice-config-v2") ?? "{}")).toMatchObject({
+        outputMode: "bidirectional",
+      });
+    });
   });
 
   it("keeps the settings wheel open while showing the history preview", async () => {

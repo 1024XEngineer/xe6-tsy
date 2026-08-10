@@ -39,6 +39,9 @@ type Event struct {
 	Frames    []audio.Frame
 	StartedAt time.Time
 	EndedAt   time.Time
+	// Generation is assigned by the audio ingress loop, not by VAD itself.
+	// It lets queued finals be discarded when the session mode changes.
+	Generation uint64
 }
 
 type Segmenter struct {
@@ -141,6 +144,17 @@ func (s *Segmenter) Flush(ctx context.Context, endedAt time.Time) ([]Event, erro
 	}
 	s.lastSeen = endedAt
 	return s.finalize(endedAt), nil
+}
+
+// Reset discards the active utterance and prefix padding while preserving the
+// timestamp validation boundary. Ingress uses it when switching modes so
+// audio spoken before a command window cannot enter that window.
+func (s *Segmenter) Reset() {
+	if s == nil {
+		return
+	}
+	s.resetActive()
+	s.prefixFrames = nil
 }
 
 func (s *Segmenter) start(frame audio.Frame) {

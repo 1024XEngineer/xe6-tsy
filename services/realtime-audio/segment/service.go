@@ -30,6 +30,14 @@ type TurnProcessor interface {
 	ProcessAudio(ctx context.Context, request pipeline.TurnProcessRequest) (pipeline.TurnContext, error)
 }
 
+// Boundary is an optional media boundary owned by the processor. The segment
+// loop calls it before each frame and tags generated finals with its current
+// generation so queued events cannot cross a mode switch.
+type Boundary interface {
+	BeforeFrame(context.Context, time.Time) error
+	Generation() uint64
+}
+
 // Request carries immutable session metadata used for every utterance read from a source.
 type Request struct {
 	SessionID      string
@@ -83,6 +91,11 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	boundary, _ := s.processor.(Boundary)
+	var generation uint64
+	if boundary != nil {
+		generation = boundary.Generation()
+	}
 	finalizedEvents := make(chan vad.Event, finalizedEventQueueCapacity)
 	processingErrors := make(chan error, 1)
 	workerDone := make(chan struct{})
@@ -122,6 +135,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 					loopErr = flushErr
 				} else {
 					for _, event := range events {
+						event.Generation = generation
 						s.logVADCheckpoint(request, event)
 						if event.Type == vad.EventFinal {
 							if err := enqueueFinalized(event); err != nil {
@@ -136,6 +150,17 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 			loopErr = fmt.Errorf("read audio frame: %w", err)
 			break
 		}
+		if boundary != nil {
+			if err := boundary.BeforeFrame(runCtx, frame.CapturedAt); err != nil {
+				loopErr = fmt.Errorf("prepare audio frame boundary: %w", err)
+				break
+			}
+			currentGeneration := boundary.Generation()
+			if currentGeneration != generation {
+				s.segmenter.Reset()
+				generation = currentGeneration
+			}
+		}
 		lastSeen = frame.CapturedAt
 		events, err := s.segmenter.Push(runCtx, frame)
 		if err != nil {
@@ -143,6 +168,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 			break
 		}
 		for _, event := range events {
+			event.Generation = generation
 			s.logVADCheckpoint(request, event)
 			if event.Type != vad.EventFinal {
 				continue
@@ -195,6 +221,7 @@ func (s *Service) handleEvents(ctx context.Context, request Request, events []va
 			SourceLanguage: request.SourceLanguage,
 			StartedAt:      event.StartedAt,
 			AudioChunks:    audioChunks(event.Frames),
+			Generation:     event.Generation,
 		})
 		if err != nil {
 			return fmt.Errorf("process audio Turn: %w", err)

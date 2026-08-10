@@ -11,6 +11,7 @@ import (
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/ingress"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
@@ -70,6 +71,7 @@ type Dependencies struct {
 	Usage        pipeline.UsageFactSink
 	Audio        pipeline.AudioChunkSink
 	Runtime      RuntimeReporter
+	Commands     ingress.CommandSink
 	Allocator    pipeline.TurnAllocator
 	VoiceID      string
 	Logger       *slog.Logger
@@ -94,6 +96,7 @@ type entry struct {
 	cancel      context.CancelFunc
 	source      *closeOnceSource
 	service     *segment.Service
+	dispatcher  *ingress.Dispatcher
 	request     segment.Request
 	ctx         context.Context
 	done        chan struct{}
@@ -226,8 +229,17 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		closeErr := owned.closeContext(ctx)
 		return errors.Join(fmt.Errorf("create VAD segmenter: %w", err), closeErr)
 	}
+	dispatcher, err := ingress.NewDispatcher(ingress.DispatcherDependencies{
+		Translation: m.processor,
+		Commands:    m.deps.Commands,
+		Now:         m.deps.Now,
+	})
+	if err != nil {
+		closeErr := owned.closeContext(ctx)
+		return errors.Join(fmt.Errorf("create audio ingress dispatcher: %w", err), closeErr)
+	}
 	service, err := segment.NewService(segment.Dependencies{
-		Source: owned, Segmenter: segmenter, Processor: m.processor, Latency: m.deps.Latency,
+		Source: owned, Segmenter: segmenter, Processor: dispatcher, Latency: m.deps.Latency,
 	})
 	if err != nil {
 		closeErr := owned.closeContext(ctx)
@@ -238,6 +250,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	runCtx, cancel := context.WithCancel(context.Background())
 	item = &entry{
 		cancel: cancel, source: owned, service: service,
+		dispatcher:  dispatcher,
 		ctx:         runCtx,
 		operationID: snapshot.StartOperationID,
 		request: segment.Request{
@@ -250,6 +263,63 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	m.entries[snapshot.SessionID] = item
 	m.mu.Unlock()
 	return nil
+}
+
+// ArmCommandCapture switches one session to the bounded command-capture mode.
+// The method is internal for now; the API command-window endpoint will call it
+// in the next phase after authorization and idempotency are defined.
+func (m *Manager) ArmCommandCapture(ctx context.Context, sessionID, captureID string, duration time.Duration) (ingress.CommandWindow, error) {
+	if err := ctx.Err(); err != nil {
+		return ingress.CommandWindow{}, err
+	}
+	if m == nil || sessionID == "" {
+		return ingress.CommandWindow{}, ErrSessionIDRequired
+	}
+	unlock := m.locks.lock(sessionID)
+	defer unlock()
+	m.mu.Lock()
+	item := m.entries[sessionID]
+	m.mu.Unlock()
+	if item == nil || item.dispatcher == nil {
+		return ingress.CommandWindow{}, ErrPipelineNotFound
+	}
+	return item.dispatcher.ArmCommandCapture(captureID, duration)
+}
+
+// CloseCommandCapture finalizes and publishes the captured command audio.
+func (m *Manager) CloseCommandCapture(ctx context.Context, sessionID, captureID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m == nil || sessionID == "" {
+		return ErrSessionIDRequired
+	}
+	unlock := m.locks.lock(sessionID)
+	defer unlock()
+	m.mu.Lock()
+	item := m.entries[sessionID]
+	m.mu.Unlock()
+	if item == nil || item.dispatcher == nil {
+		return ErrPipelineNotFound
+	}
+	return item.dispatcher.CloseCommandCapture(ctx, captureID)
+}
+
+// CancelCommandCapture discards an active command buffer during session stop
+// or a client-side cancellation.
+func (m *Manager) CancelCommandCapture(sessionID, captureID string) error {
+	if m == nil || sessionID == "" {
+		return ErrSessionIDRequired
+	}
+	unlock := m.locks.lock(sessionID)
+	defer unlock()
+	m.mu.Lock()
+	item := m.entries[sessionID]
+	m.mu.Unlock()
+	if item == nil || item.dispatcher == nil {
+		return ErrPipelineNotFound
+	}
+	return item.dispatcher.CancelCommandCapture(captureID)
 }
 
 // Activate starts the media loop for a prepared session.
@@ -395,6 +465,11 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	finished := item.finished
 	item.stopping = true
 	active := item.active
+	if item.dispatcher != nil {
+		// Stop is a terminal boundary: never publish a partial command after
+		// the session has begun shutting down.
+		_ = item.dispatcher.CancelCommandCapture("")
+	}
 	item.cancel()
 	m.mu.Unlock()
 

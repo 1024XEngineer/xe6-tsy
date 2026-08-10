@@ -30,6 +30,9 @@ type TurnProcessRequest struct {
 	SourceLanguage string
 	StartedAt      time.Time
 	AudioChunks    [][]byte
+	// Generation identifies the ingress mode snapshot that produced this
+	// request. A stale queued VAD final must not cross a mode boundary.
+	Generation uint64
 }
 
 // TurnProcessor connects ASR stream completion to the existing Turn and translation pipeline.

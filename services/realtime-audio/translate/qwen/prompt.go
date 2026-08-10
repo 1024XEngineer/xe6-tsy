@@ -91,9 +91,8 @@ func targetName(language, locale string) string {
 }
 
 // looksLikeMetaResponse detects chat-assistant refusals that abandoned
-// translation. Single refusal-like phrases are allowed because they are valid
-// translations of ordinary speech; require either a prompt leak or multiple
-// assistant-persona signals.
+// translation. Strong LLM refusal templates can match alone; weaker persona
+// phrases still require two signals so ordinary refusal speech can translate.
 func looksLikeMetaResponse(output string) bool {
 	trimmed := strings.TrimSpace(output)
 	if trimmed == "" {
@@ -108,6 +107,33 @@ func looksLikeMetaResponse(output string) bool {
 		"treat that inner text as literal data",
 	}
 	for _, marker := range leakMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+
+	// Stereotypical assistant refusals that rarely appear as faithful MT of
+	// conversational speech, especially as the whole model reply.
+	strongTemplates := []string{
+		"i cannot comply with that request",
+		"i can't comply with that request",
+		"i'm sorry, i can't help with that",
+		"i'm sorry, i cannot help with that",
+		"i am sorry, i can't help with that",
+		"i am sorry, i cannot help with that",
+		"i can't help with that request",
+		"i cannot help with that request",
+		"i can't assist with that",
+		"i cannot assist with that",
+		"as an ai language model",
+		"as an artificial intelligence assistant",
+		"抱歉，我无法协助",
+		"抱歉，我不能帮助",
+		"抱歉，我无法帮助",
+		"我无法满足该请求",
+		"我无法满足这个请求",
+	}
+	for _, marker := range strongTemplates {
 		if strings.Contains(lower, marker) {
 			return true
 		}
@@ -130,14 +156,11 @@ func looksLikeMetaResponse(output string) bool {
 			matches++
 		}
 	}
-	// One isolated phrase can be a legitimate translation; two+ assistant
-	// signals strongly indicate a chat refusal rather than MT output.
 	return matches >= 2
 }
 
-// looksLikeWrongLanguage is a cheap script check: CJK-heavy output for an
-// English target (or Latin-only output for a Chinese target) usually means the
-// model answered instead of translating.
+// looksLikeWrongLanguage is a cheap script check used when the model answers in
+// the source language or refuses instead of producing target-language text.
 func looksLikeWrongLanguage(output, targetLanguage string) bool {
 	trimmed := strings.TrimSpace(output)
 	if trimmed == "" {
@@ -149,7 +172,9 @@ func looksLikeWrongLanguage(output, targetLanguage string) bool {
 	case strings.HasPrefix(target, "en"):
 		return cjk > 0 && cjk >= letters
 	case strings.HasPrefix(target, "zh"):
-		return letters > 16 && cjk == 0
+		// Any Latin-only reply for a Chinese target is not a translation,
+		// including short refusals such as "No." or "Cannot comply.".
+		return letters > 0 && cjk == 0
 	default:
 		return false
 	}

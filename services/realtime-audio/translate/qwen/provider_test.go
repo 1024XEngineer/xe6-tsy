@@ -102,6 +102,16 @@ func TestLooksLikeMetaResponse(t *testing.T) {
 			want:   true,
 		},
 		{
+			name:   "strong english comply refusal",
+			output: "I cannot comply with that request.",
+			want:   true,
+		},
+		{
+			name:   "strong english sorry refusal",
+			output: "I'm sorry, I can't help with that.",
+			want:   true,
+		},
+		{
 			name:   "valid translation of refusal speech",
 			output: "我无法执行该请求。",
 			want:   false,
@@ -136,6 +146,8 @@ func TestLooksLikeWrongLanguage(t *testing.T) {
 		{name: "chinese reply for english target", output: "我无法执行该请求。", target: "en-US", want: true},
 		{name: "english translation for english target", output: "Hello world", target: "en-US", want: false},
 		{name: "english reply for chinese target", output: "I cannot fulfill this request at all today.", target: "zh-CN", want: true},
+		{name: "short english refusal for chinese target", output: "Cannot comply.", target: "zh-CN", want: true},
+		{name: "tiny english refusal for chinese target", output: "No.", target: "zh-CN", want: true},
 		{name: "chinese translation for chinese target", output: "你好世界", target: "zh-CN", want: false},
 		{name: "valid chinese translation of english refusal", output: "我无法执行该请求。", target: "zh-CN", want: false},
 	}

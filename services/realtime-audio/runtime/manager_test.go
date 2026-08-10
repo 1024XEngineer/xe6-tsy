@@ -158,16 +158,30 @@ func TestManagerPlayFallbackRejectsCanceledOrUnknownSession(t *testing.T) {
 	var nilManager *Manager
 	if err := nilManager.PlayFallback(t.Context(), request); !errors.Is(err, ErrDependencyRequired) {
 		t.Fatalf("nil manager PlayFallback() error = %v, want dependency error", err)
+	} else if !hasFallbackPlaybackNotStarted(err) {
+		t.Fatalf("nil manager PlayFallback() error = %v, want not-started marker", err)
 	}
 	manager, _ := newOwnershipTestManager(t)
 	if err := manager.PlayFallback(t.Context(), request); !errors.Is(err, session.ErrRuntimeNotFound) {
 		t.Fatalf("unknown session PlayFallback() error = %v, want runtime not found", err)
+	} else if !hasFallbackPlaybackNotStarted(err) {
+		t.Fatalf("unknown session PlayFallback() error = %v, want not-started marker", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if err := manager.PlayFallback(ctx, request); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled PlayFallback() error = %v, want context canceled", err)
+	} else if !hasFallbackPlaybackNotStarted(err) {
+		t.Fatalf("canceled PlayFallback() error = %v, want not-started marker", err)
 	}
+}
+
+func hasFallbackPlaybackNotStarted(err error) bool {
+	type fallbackPlaybackNotStarted interface {
+		FallbackPlaybackNotStarted()
+	}
+	var marker fallbackPlaybackNotStarted
+	return errors.As(err, &marker)
 }
 
 func TestManagerStartRequiresOperationID(t *testing.T) {

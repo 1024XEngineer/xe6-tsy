@@ -23,15 +23,35 @@ type FallbackPlayback struct {
 	PlaybackID            string
 }
 
+type fallbackPlaybackNotStartedError struct {
+	err error
+}
+
+func (e fallbackPlaybackNotStartedError) Error() string { return e.err.Error() }
+
+func (e fallbackPlaybackNotStartedError) Unwrap() error { return e.err }
+
+func (e fallbackPlaybackNotStartedError) FallbackPlaybackNotStarted() {}
+
+// MarkFallbackPlaybackNotStarted marks an error that happened before local
+// audio output could begin. The marker is consumed by the control plane to
+// release the durable replay claim without changing the original error.
+func MarkFallbackPlaybackNotStarted(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fallbackPlaybackNotStartedError{err: err}
+}
+
 // PlayFallback synthesizes one previously persisted translation without
 // translating or publishing another FinalTurn.
 func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayback) (returnErr error) {
 	if s == nil || s.tts == nil || s.usage == nil || s.audio == nil || s.runtime == nil {
-		return ErrPipelineDependencyRequired
+		return MarkFallbackPlaybackNotStarted(ErrPipelineDependencyRequired)
 	}
 	if input.SessionID == "" || input.TurnID == "" || input.AccountID == "" || input.TraceID == "" ||
 		input.TargetLanguage == "" || input.TranslatedText == "" || input.LanguageConfigVersion < 1 || input.PlaybackID == "" {
-		return ErrPipelineDependencyRequired
+		return MarkFallbackPlaybackNotStarted(ErrPipelineDependencyRequired)
 	}
 	turn := TurnContext{
 		ID: input.TurnID, SessionID: input.SessionID, AccountID: input.AccountID,
@@ -61,10 +81,10 @@ func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayba
 // providers or publishes a second durable record.
 func (s *PipelineService) playTranslatedText(ctx context.Context, turn TurnContext, targetLanguage, text, playbackID string) (tts.Result, error) {
 	if s.tts == nil {
-		return tts.Result{}, ErrPipelineDependencyRequired
+		return tts.Result{}, MarkFallbackPlaybackNotStarted(ErrPipelineDependencyRequired)
 	}
 	if err := s.reportRuntime(ctx, turn, session.RuntimeTTSProcessing, playbackID); err != nil {
-		return tts.Result{}, fmt.Errorf("report TTS runtime: %w", err)
+		return tts.Result{}, MarkFallbackPlaybackNotStarted(fmt.Errorf("report TTS runtime: %w", err))
 	}
 	ttsStartedAt := time.Now()
 	stream, err := s.tts.StartStream(ctx, tts.Request{
@@ -72,7 +92,7 @@ func (s *PipelineService) playTranslatedText(ctx context.Context, turn TurnConte
 		Text: text, TargetLanguage: targetLanguage, VoiceID: s.voiceID,
 	})
 	if err != nil {
-		return tts.Result{}, fmt.Errorf("start TTS: %w", err)
+		return tts.Result{}, MarkFallbackPlaybackNotStarted(fmt.Errorf("start TTS: %w", err))
 	}
 	s.logLatencyCheckpoint("tts_stream_started", turn, ttsStartedAt,
 		"playback_id", playbackID,

@@ -36,6 +36,7 @@ type TurnProcessor interface {
 type Boundary interface {
 	BeforeFrame(context.Context, time.Time) error
 	Generation() uint64
+	HandleFinal(context.Context, pipeline.TurnProcessRequest) (bool, error)
 }
 
 // Request carries immutable session metadata used for every utterance read from a source.
@@ -110,6 +111,15 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		}
 	}()
 	enqueueFinalized := func(event vad.Event) error {
+		if boundary != nil && event.Type == vad.EventFinal {
+			handled, err := boundary.HandleFinal(runCtx, turnProcessRequest(request, event))
+			if err != nil {
+				return err
+			}
+			if handled {
+				return nil
+			}
+		}
 		select {
 		case finalizedEvents <- event:
 			return nil
@@ -214,21 +224,25 @@ func (s *Service) handleEvents(ctx context.Context, request Request, events []va
 		if event.Type != vad.EventFinal {
 			continue
 		}
-		_, err := s.processor.ProcessAudio(ctx, pipeline.TurnProcessRequest{
-			SessionID:      request.SessionID,
-			AccountID:      request.AccountID,
-			TraceID:        request.TraceID,
-			SourceLanguage: request.SourceLanguage,
-			StartedAt:      event.StartedAt,
-			EndedAt:        event.EndedAt,
-			AudioChunks:    audioChunks(event.Frames),
-			Generation:     event.Generation,
-		})
+		_, err := s.processor.ProcessAudio(ctx, turnProcessRequest(request, event))
 		if err != nil {
 			return fmt.Errorf("process audio Turn: %w", err)
 		}
 	}
 	return nil
+}
+
+func turnProcessRequest(request Request, event vad.Event) pipeline.TurnProcessRequest {
+	return pipeline.TurnProcessRequest{
+		SessionID:      request.SessionID,
+		AccountID:      request.AccountID,
+		TraceID:        request.TraceID,
+		SourceLanguage: request.SourceLanguage,
+		StartedAt:      event.StartedAt,
+		EndedAt:        event.EndedAt,
+		AudioChunks:    audioChunks(event.Frames),
+		Generation:     event.Generation,
+	}
 }
 
 func (s *Service) logVADCheckpoint(request Request, event vad.Event) {

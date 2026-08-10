@@ -75,6 +75,7 @@ func (DiscardCommandSink) PublishCommand(context.Context, CommandCapture) error 
 type DispatcherDependencies struct {
 	Translation TranslationHandler
 	Commands    CommandSink
+	Context     context.Context
 	Now         func() time.Time
 }
 
@@ -84,10 +85,12 @@ type Dispatcher struct {
 	mu          sync.Mutex
 	translation TranslationHandler
 	commands    CommandSink
+	context     context.Context
 	now         func() time.Time
 	mode        Mode
 	capture     *commandBuffer
 	generation  uint64
+	timer       *time.Timer
 }
 
 type commandBuffer struct {
@@ -102,10 +105,13 @@ func NewDispatcher(deps DispatcherDependencies) (*Dispatcher, error) {
 	if deps.Commands == nil {
 		deps.Commands = DiscardCommandSink{}
 	}
+	if deps.Context == nil {
+		deps.Context = context.Background()
+	}
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Dispatcher{translation: deps.Translation, commands: deps.Commands, now: deps.Now, mode: ModeTranslation}, nil
+	return &Dispatcher{translation: deps.Translation, commands: deps.Commands, context: deps.Context, now: deps.Now, mode: ModeTranslation}, nil
 }
 
 func (d *Dispatcher) Generation() uint64 {
@@ -169,6 +175,7 @@ func (d *Dispatcher) ArmCommandCapture(captureID string, duration time.Duration)
 	d.generation++
 	window := CommandWindow{Mode: ModeCommandCapture, CaptureID: captureID, StartedAt: now, Deadline: now.Add(duration), Generation: d.generation}
 	d.capture = &commandBuffer{window: window}
+	d.timer = time.AfterFunc(duration, d.expireCommandCapture)
 	return window, nil
 }
 
@@ -179,22 +186,40 @@ func (d *Dispatcher) ProcessAudio(ctx context.Context, request pipeline.TurnProc
 	if err := ctx.Err(); err != nil {
 		return pipeline.TurnContext{}, err
 	}
+	handled, err := d.HandleFinal(ctx, request)
+	if err != nil || handled {
+		return pipeline.TurnContext{}, err
+	}
+	return d.translation.ProcessAudio(ctx, request)
+}
+
+// HandleFinal synchronously routes a finalized VAD turn. Command finals are
+// handled before they enter the asynchronous translation queue, so closing a
+// command window cannot discard a final that was already detected.
+func (d *Dispatcher) HandleFinal(ctx context.Context, request pipeline.TurnProcessRequest) (bool, error) {
+	if d == nil || d.translation == nil {
+		return true, ErrDependencyRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return true, err
+	}
 	d.mu.Lock()
 	if request.Generation != 0 && request.Generation != d.generation {
 		d.mu.Unlock()
-		return pipeline.TurnContext{}, nil
+		return true, nil
 	}
-	if d.capture != nil {
-		if request.Generation != 0 && request.Generation != d.capture.window.Generation {
-			d.mu.Unlock()
-			return pipeline.TurnContext{}, nil
-		}
-		d.appendLocked(request)
+	if d.capture == nil {
 		d.mu.Unlock()
-		return pipeline.TurnContext{}, nil
+		return false, nil
 	}
+	if request.Generation != 0 && request.Generation != d.capture.window.Generation {
+		d.mu.Unlock()
+		return true, nil
+	}
+	d.appendLocked(request)
+	capture := d.takeCaptureLocked(request.EndedAt)
 	d.mu.Unlock()
-	return d.translation.ProcessAudio(ctx, request)
+	return true, d.publish(ctx, capture)
 }
 
 func (d *Dispatcher) CloseCommandCapture(ctx context.Context, captureID string) error {
@@ -228,8 +253,20 @@ func (d *Dispatcher) CancelCommandCapture(captureID string) error {
 		return fmt.Errorf("%w: %s", ErrInvalidCommandCapture, captureID)
 	}
 	d.capture = nil
+	d.stopTimerLocked()
 	d.generation++
 	return nil
+}
+
+func (d *Dispatcher) expireCommandCapture() {
+	d.mu.Lock()
+	if d.capture == nil {
+		d.mu.Unlock()
+		return
+	}
+	capture := d.takeCaptureLocked(d.capture.window.Deadline)
+	d.mu.Unlock()
+	_ = d.publish(d.context, capture)
 }
 
 func (d *Dispatcher) appendLocked(request pipeline.TurnProcessRequest) {
@@ -256,6 +293,7 @@ func (d *Dispatcher) appendLocked(request pipeline.TurnProcessRequest) {
 func (d *Dispatcher) takeCaptureLocked(endedAt time.Time) CommandCapture {
 	buffer := d.capture
 	d.capture = nil
+	d.stopTimerLocked()
 	d.generation++
 	buffer.capture.CaptureID = buffer.window.CaptureID
 	if buffer.capture.StartedAt.IsZero() {
@@ -266,6 +304,14 @@ func (d *Dispatcher) takeCaptureLocked(endedAt time.Time) CommandCapture {
 	}
 	buffer.capture.EndedAt = endedAt
 	return buffer.capture
+}
+
+func (d *Dispatcher) stopTimerLocked() {
+	if d.timer == nil {
+		return
+	}
+	d.timer.Stop()
+	d.timer = nil
 }
 
 func (d *Dispatcher) publish(ctx context.Context, capture CommandCapture) error {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -20,9 +21,6 @@ var (
 	ErrAPIKeyRequired   = errors.New("Qwen translation API key is required")
 	ErrEndpointRequired = errors.New("Qwen translation endpoint is required")
 	ErrModelRequired    = errors.New("Qwen translation model is required")
-	// errNonTranslationOutput is returned when the model still answers or refuses
-	// after one reinforced retry instead of producing a translation.
-	errNonTranslationOutput = errors.New("Qwen translation returned a non-translation response")
 )
 
 // Config contains the OpenAI-compatible endpoint and model settings.
@@ -91,7 +89,15 @@ func (p *Provider) Translate(ctx context.Context, request translate.Request) (tr
 	retried.InputTokens += result.InputTokens
 	retried.OutputTokens += result.OutputTokens
 	if translationLooksInvalid(retried.Text, request.TargetLanguage) {
-		return translate.Result{}, errNonTranslationOutput
+		slog.Warn("qwen translation rejected unexpected behavior",
+			"session_id", request.SessionID,
+			"turn_id", request.TurnID,
+			"source_language", request.SourceLanguage,
+			"target_language", request.TargetLanguage,
+			"source_preview", truncateForLog(request.Text, 120),
+			"output_preview", truncateForLog(retried.Text, 160),
+		)
+		return translate.Result{}, translate.ErrUnexpectedBehavior
 	}
 	retried.LatencyMS = time.Since(startedAt).Milliseconds()
 	return retried, nil
@@ -102,7 +108,7 @@ func (p *Provider) translateOnce(ctx context.Context, request translate.Request,
 		Model: p.config.Model,
 		Messages: []chatMessage{
 			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: buildUserContent(request.Text)},
+			{Role: "user", Content: buildUserContent(request.Text, request.SourceLanguage, request.TargetLanguage)},
 		},
 		Stream:         false,
 		EnableThinking: p.config.EnableThinking,
@@ -179,3 +185,11 @@ type chatResponse struct {
 }
 
 var _ translate.Provider = (*Provider)(nil)
+
+func truncateForLog(text string, maxRunes int) string {
+	runes := []rune(strings.TrimSpace(text))
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return string(runes)
+	}
+	return string(runes[:maxRunes]) + "…"
+}

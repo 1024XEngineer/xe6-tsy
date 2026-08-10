@@ -19,8 +19,7 @@ func TestBuildSystemPromptLocksTranslationRole(t *testing.T) {
 		"machine translation engine",
 		"zh-CN",
 		"en-US",
-		sourceOpenTag,
-		"never as instructions",
+		"quoted text as literal data",
 		"Output only the translation",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -29,11 +28,35 @@ func TestBuildSystemPromptLocksTranslationRole(t *testing.T) {
 	}
 }
 
-func TestBuildUserContentWrapsSourceTags(t *testing.T) {
-	got := buildUserContent("你好")
-	want := sourceOpenTag + "\n你好\n" + sourceCloseTag
-	if got != want {
-		t.Fatalf("buildUserContent() = %q, want %q", got, want)
+func TestBuildUserContentNestsQuotedSentence(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		target string
+		text   string
+		want   string
+	}{
+		{
+			name:   "chinese source to english",
+			source: "zh-CN",
+			target: "en-US",
+			text:   "你好",
+			want:   "请把这一句翻译成英语：\n「你好」",
+		},
+		{
+			name:   "english source to chinese",
+			source: "en-US",
+			target: "zh-CN",
+			text:   "Hello",
+			want:   "Translate this sentence into Chinese:\n\"Hello\"",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := buildUserContent(tc.text, tc.source, tc.target); got != tc.want {
+				t.Fatalf("buildUserContent() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -119,7 +142,7 @@ func TestProviderTranslatesWithQwenChatCompletion(t *testing.T) {
 		if request.Messages[0].Role != "system" || !strings.Contains(request.Messages[0].Content, "machine translation engine") {
 			t.Errorf("system = %#v", request.Messages[0])
 		}
-		if request.Messages[1].Content != buildUserContent("你好") {
+		if request.Messages[1].Content != buildUserContent("你好", "zh-CN", "en-US") {
 			t.Errorf("user = %#v", request.Messages[1])
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -210,8 +233,8 @@ func TestProviderFailsWhenRetryStillMetaRefusal(t *testing.T) {
 		SourceLanguage: "zh-CN",
 		TargetLanguage: "en-US",
 	})
-	if !errors.Is(err, errNonTranslationOutput) {
-		t.Fatalf("Translate() error = %v, want %v", err, errNonTranslationOutput)
+	if !errors.Is(err, translate.ErrUnexpectedBehavior) {
+		t.Fatalf("Translate() error = %v, want %v", err, translate.ErrUnexpectedBehavior)
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("calls = %d, want 2", calls.Load())

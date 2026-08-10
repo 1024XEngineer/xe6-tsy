@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
@@ -1099,7 +1100,7 @@ func (r *recordingRuntimeReporter) SetProcessingState(_ context.Context, update 
 	return nil
 }
 
-func (r *recordingRuntimeReporter) SetRuntimeFailed(ctx context.Context, _ string, _ string) error {
+func (r *recordingRuntimeReporter) SetRuntimeFailed(ctx context.Context, _ string, _ realtimev1.RuntimeErrorCode) error {
 	r.mu.Lock()
 	r.failureCalls++
 	r.mu.Unlock()

@@ -1,6 +1,10 @@
 package session
 
-import "context"
+import (
+	"context"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+)
 
 // SessionReader reads business state without allowing realtime code to mutate it.
 type SessionReader interface {
@@ -26,9 +30,9 @@ type RuntimeStateReporter interface {
 }
 
 // RuntimeFailureReporter persists a terminal media-pipeline failure.
-// Callers pass a contract RuntimeErrorCode; empty defaults to realtime_pipeline_failed.
+// Empty errorCode defaults to realtime_pipeline_failed.
 type RuntimeFailureReporter interface {
-	SetRuntimeFailed(ctx context.Context, sessionID string, errorCode string) error
+	SetRuntimeFailed(ctx context.Context, sessionID string, errorCode realtimev1.RuntimeErrorCode) error
 }
 
 // PipelineManager owns processing contexts created for a realtime session.

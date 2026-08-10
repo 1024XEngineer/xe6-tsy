@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
@@ -34,7 +35,7 @@ func (b *LifecycleRuntimeBridge) SetProcessingState(
 	return reporter.SetProcessingState(ctx, update)
 }
 
-func (b *LifecycleRuntimeBridge) SetRuntimeFailed(ctx context.Context, sessionID string, errorCode string) error {
+func (b *LifecycleRuntimeBridge) SetRuntimeFailed(ctx context.Context, sessionID string, errorCode realtimev1.RuntimeErrorCode) error {
 	b.mu.RLock()
 	reporter := b.reporter
 	b.mu.RUnlock()

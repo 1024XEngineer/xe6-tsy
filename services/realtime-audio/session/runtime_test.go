@@ -90,7 +90,7 @@ func TestLifecycleSetRuntimeFailedPersistsTerminalState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRuntimeState() error = %v", err)
 	}
-	if got.StartOperationID != "operation-1" || got.RuntimeState != RuntimeFailed || got.CurrentTurnID != nil || got.CurrentPlaybackID != nil || got.LastErrorCode == nil || *got.LastErrorCode != ErrorCodePipelineFailed {
+	if got.StartOperationID != "operation-1" || got.RuntimeState != RuntimeFailed || got.CurrentTurnID != nil || got.CurrentPlaybackID != nil || got.LastErrorCode == nil || *got.LastErrorCode != string(ErrorCodePipelineFailed) {
 		t.Fatalf("failed runtime = %#v", got)
 	}
 	if err := service.SetRuntimeFailed(context.Background(), "session-1", ErrorCodeTranslationRejected); err != nil {
@@ -114,8 +114,23 @@ func TestLifecycleSetRuntimeFailedPersistsTranslationRejectedCode(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GetRuntimeState() error = %v", err)
 	}
-	if got.LastErrorCode == nil || *got.LastErrorCode != ErrorCodeTranslationRejected {
+	if got.LastErrorCode == nil || *got.LastErrorCode != string(ErrorCodeTranslationRejected) {
 		t.Fatalf("last_error_code = %#v, want %q", got.LastErrorCode, ErrorCodeTranslationRejected)
+	}
+}
+
+func TestLifecycleSetRuntimeFailedRejectsUnknownCode(t *testing.T) {
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
+	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{
+		SessionID:        "session-1",
+		StartOperationID: "operation-1",
+		RuntimeState:     RuntimeListening,
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	err := service.SetRuntimeFailed(context.Background(), "session-1", "not_a_real_code")
+	if !errors.Is(err, ErrInvalidRuntimeErrorCode) {
+		t.Fatalf("SetRuntimeFailed() error = %v, want %v", err, ErrInvalidRuntimeErrorCode)
 	}
 }
 

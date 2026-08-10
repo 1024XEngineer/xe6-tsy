@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
@@ -358,7 +359,7 @@ func (m *Manager) PipelineActive(sessionID string) bool {
 	return item != nil && !item.finished
 }
 
-func (m *Manager) reportFailure(ctx context.Context, sessionID string, errorCode string) error {
+func (m *Manager) reportFailure(ctx context.Context, sessionID string, errorCode realtimev1.RuntimeErrorCode) error {
 	reportCtx, cancel := context.WithTimeout(ctx, failureReportTimeout)
 	defer cancel()
 
@@ -374,7 +375,7 @@ func (m *Manager) reportFailure(ctx context.Context, sessionID string, errorCode
 	}
 }
 
-func runtimeFailureCode(err error) string {
+func runtimeFailureCode(err error) realtimev1.RuntimeErrorCode {
 	if errors.Is(err, translate.ErrUnexpectedBehavior) {
 		return session.ErrorCodeTranslationRejected
 	}

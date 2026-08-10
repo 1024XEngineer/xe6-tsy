@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/ingress"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 )
@@ -75,6 +76,47 @@ func TestServiceResetsActiveVADWhenIngressGenerationChanges(t *testing.T) {
 	}
 	if len(processor.requests) != 1 || len(processor.requests[0].AudioChunks) != 2 {
 		t.Fatalf("requests after generation reset = %#v, want only post-switch utterance", processor.requests)
+	}
+}
+
+func TestServiceHandlesCommandFinalBeforeTranslationQueue(t *testing.T) {
+	base := time.Unix(60, 0)
+	source := &fakeSource{frames: []audio.Frame{
+		testFrame(t, 1, base),
+		testFrame(t, 0, base.Add(300*time.Millisecond)),
+	}}
+	translation := &fakeProcessor{}
+	commands := &commandCaptureSink{}
+	dispatcher, err := ingress.NewDispatcher(ingress.DispatcherDependencies{
+		Translation: translation,
+		Commands:    commands,
+		Now:         func() time.Time { return base },
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher() error = %v", err)
+	}
+	if _, err := dispatcher.ArmCommandCapture("capture-queue", ingress.DefaultCommandWindow); err != nil {
+		t.Fatalf("ArmCommandCapture() error = %v", err)
+	}
+	segmenter, err := vad.NewSegmenter(energyClassifier{}, vad.Options{
+		SilenceAfter: 200 * time.Millisecond,
+		MaxDuration:  time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSegmenter() error = %v", err)
+	}
+	service, err := NewService(Dependencies{Source: source, Segmenter: segmenter, Processor: dispatcher})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	if err := service.Run(context.Background(), Request{SessionID: "session-1"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(commands.captures) != 1 {
+		t.Fatalf("command captures = %d, want 1", len(commands.captures))
+	}
+	if len(translation.requests) != 0 {
+		t.Fatalf("translation requests = %d, want 0", len(translation.requests))
 	}
 }
 
@@ -272,6 +314,15 @@ type fakeProcessor struct {
 	err      error
 }
 
+type commandCaptureSink struct {
+	captures []ingress.CommandCapture
+}
+
+func (s *commandCaptureSink) PublishCommand(_ context.Context, capture ingress.CommandCapture) error {
+	s.captures = append(s.captures, capture)
+	return nil
+}
+
 type generationBoundary struct {
 	changeAt   time.Time
 	generation uint64
@@ -296,6 +347,10 @@ func (p boundaryProcessor) BeforeFrame(ctx context.Context, at time.Time) error 
 }
 
 func (p boundaryProcessor) Generation() uint64 { return p.boundary.Generation() }
+
+func (p boundaryProcessor) HandleFinal(context.Context, pipeline.TurnProcessRequest) (bool, error) {
+	return false, nil
+}
 
 func (p boundaryProcessor) ProcessAudio(ctx context.Context, request pipeline.TurnProcessRequest) (pipeline.TurnContext, error) {
 	return p.processor.ProcessAudio(ctx, request)

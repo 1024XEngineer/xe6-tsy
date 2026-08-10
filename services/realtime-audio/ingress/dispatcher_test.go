@@ -55,9 +55,6 @@ func TestDispatcherRoutesCommandAudioWithoutTranslation(t *testing.T) {
 	if len(translation.calls) != 1 {
 		t.Fatalf("translation calls = %d, want 1 normal call", len(translation.calls))
 	}
-	if err := dispatcher.CloseCommandCapture(context.Background(), "capture-1"); err != nil {
-		t.Fatalf("CloseCommandCapture() error = %v", err)
-	}
 	if len(commands.captures) != 1 {
 		t.Fatalf("command captures = %d, want 1", len(commands.captures))
 	}
@@ -67,6 +64,29 @@ func TestDispatcherRoutesCommandAudioWithoutTranslation(t *testing.T) {
 	}
 	if len(capture.AudioChunks) != 2 || capture.AudioChunks[0][0] != 2 || capture.AudioChunks[1][0] != 3 {
 		t.Fatalf("capture audio = %#v", capture.AudioChunks)
+	}
+	if dispatcher.Mode() != ModeTranslation {
+		t.Fatalf("mode after command final = %s, want translation", dispatcher.Mode())
+	}
+	if err := dispatcher.CloseCommandCapture(context.Background(), "capture-1"); !errors.Is(err, ErrCommandCaptureNotFound) {
+		t.Fatalf("CloseCommandCapture(after command final) error = %v, want ErrCommandCaptureNotFound", err)
+	}
+}
+
+func TestDispatcherExpiresCommandWindowWithoutFrames(t *testing.T) {
+	dispatcher, err := NewDispatcher(DispatcherDependencies{Translation: &recordingTranslation{}})
+	if err != nil {
+		t.Fatalf("NewDispatcher() error = %v", err)
+	}
+	if _, err := dispatcher.ArmCommandCapture("capture-timer", 20*time.Millisecond); err != nil {
+		t.Fatalf("ArmCommandCapture() error = %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for dispatcher.Mode() == ModeCommandCapture && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if dispatcher.Mode() != ModeTranslation {
+		t.Fatal("command window did not expire without a subsequent audio frame")
 	}
 }
 

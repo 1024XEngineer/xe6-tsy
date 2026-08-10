@@ -66,13 +66,19 @@ const (
 // command before the media side effect starts.
 type FallbackPlaybackClaim struct {
 	Status FallbackPlaybackClaimStatus
+	Token  string
 }
 
 // FallbackPlaybackReplayStore atomically claims fallback operations before
-// media I/O and completes the claim after successful playback.
+// media I/O and resolves the claim after playback outcome is known.
 type FallbackPlaybackReplayStore interface {
 	Claim(context.Context, string, string, string) (FallbackPlaybackClaim, error)
-	Complete(context.Context, string, string, string) error
+	Complete(context.Context, string, string, string, string) error
+	Abort(context.Context, string, string, string, string) error
+}
+
+type fallbackPlaybackNotStarted interface {
+	FallbackPlaybackNotStarted()
 }
 
 // Signaling is the existing ticket-aware WebRTC signaling service boundary.
@@ -250,6 +256,7 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 	replayKey := "fallback\x00" + sessionID + "\x00" + body.OperationID
 	h.handleReplayStatus(writer, request.Context(), sessionID, replayKey, body, http.StatusAccepted,
 		func() (any, error) {
+			claimToken := ""
 			if h.fallbackReplays != nil {
 				claim, err := h.fallbackReplays.Claim(request.Context(), sessionID, body.OperationID, payloadHash)
 				if err != nil {
@@ -257,6 +264,7 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 				}
 				switch claim.Status {
 				case FallbackPlaybackClaimed:
+					claimToken = claim.Token
 				case FallbackPlaybackProcessing:
 					return nil, ErrFallbackPlaybackInProgress
 				case FallbackPlaybackAccepted:
@@ -266,10 +274,15 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 				}
 			}
 			if err := h.fallback.PlayFallback(request.Context(), body); err != nil {
+				if h.fallbackReplays != nil && claimToken != "" && isFallbackPlaybackNotStarted(err) {
+					if abortErr := h.fallbackReplays.Abort(request.Context(), sessionID, body.OperationID, payloadHash, claimToken); abortErr != nil {
+						return nil, errors.Join(err, abortErr)
+					}
+				}
 				return nil, err
 			}
 			if h.fallbackReplays != nil {
-				if err := h.fallbackReplays.Complete(request.Context(), sessionID, body.OperationID, payloadHash); err != nil {
+				if err := h.fallbackReplays.Complete(request.Context(), sessionID, body.OperationID, payloadHash, claimToken); err != nil {
 					return nil, err
 				}
 			}
@@ -284,6 +297,11 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 			}
 			return receipt
 		})
+}
+
+func isFallbackPlaybackNotStarted(err error) bool {
+	var marker fallbackPlaybackNotStarted
+	return errors.As(err, &marker)
 }
 
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {

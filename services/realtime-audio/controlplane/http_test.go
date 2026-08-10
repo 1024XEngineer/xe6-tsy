@@ -175,6 +175,55 @@ func TestHandlerDoesNotReplayFallbackAfterAmbiguousPlaybackFailure(t *testing.T)
 	}
 }
 
+func TestHandlerReleasesFallbackClaimWhenPlaybackDidNotStart(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
+	firstFixture := newFixture(t)
+	firstFixture.controlHandler.fallback = &fallbackPlaybackFake{err: fallbackPlaybackNotStartedTestError{err: errors.New("runtime unavailable")}}
+	firstFixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+
+	first := firstFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("failed fallback status = %d, body=%s", first.Code, first.Body.String())
+	}
+	if store.aborted != 1 {
+		t.Fatalf("abort calls = %d, want 1", store.aborted)
+	}
+
+	retryFallback := &fallbackPlaybackFake{}
+	secondFixture := newFixture(t)
+	secondFixture.controlHandler.fallback = retryFallback
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("retry status = %d, body=%s", second.Code, second.Body.String())
+	}
+	if retryFallback.calls != 1 {
+		t.Fatalf("retry fallback calls = %d, want 1", retryFallback.calls)
+	}
+}
+
+func TestHandlerKeepsFallbackClaimWhenAbortFails(t *testing.T) {
+	store := &fallbackReplayStoreFake{
+		accepted: make(map[string]string),
+		abortErr: errors.New("abort unavailable"),
+	}
+	fixture := newFixture(t)
+	fixture.controlHandler.fallback = &fallbackPlaybackFake{err: fallbackPlaybackNotStartedTestError{err: errors.New("runtime unavailable")}}
+	fixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+
+	first := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("failed fallback status = %d, body=%s", first.Code, first.Body.String())
+	}
+	store.abortErr = nil
+	second := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("retry status = %d, body=%s; want conflict", second.Code, second.Body.String())
+	}
+}
+
 func TestHandlerRejectsInvalidFallbackRequests(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.controlHandler.fallback = &fallbackPlaybackFake{}
@@ -756,8 +805,11 @@ type fallbackReplayStoreFake struct {
 	mu                  sync.Mutex
 	accepted            map[string]string
 	processing          map[string]bool
+	tokens              map[string]string
 	reconcileProcessing bool
 	completeErr         error
+	abortErr            error
+	aborted             int
 }
 
 func (s *fallbackReplayStoreFake) Claim(_ context.Context, sessionID, operationID, payloadHash string) (FallbackPlaybackClaim, error) {
@@ -770,8 +822,12 @@ func (s *fallbackReplayStoreFake) Claim(_ context.Context, sessionID, operationI
 		if s.processing == nil {
 			s.processing = make(map[string]bool)
 		}
+		if s.tokens == nil {
+			s.tokens = make(map[string]string)
+		}
 		s.processing[key] = true
-		return FallbackPlaybackClaim{Status: FallbackPlaybackClaimed}, nil
+		s.tokens[key] = "token-" + key
+		return FallbackPlaybackClaim{Status: FallbackPlaybackClaimed, Token: s.tokens[key]}, nil
 	}
 	if storedHash != payloadHash {
 		return FallbackPlaybackClaim{}, webrtc.ErrIdempotencyPayloadConflict
@@ -779,6 +835,7 @@ func (s *fallbackReplayStoreFake) Claim(_ context.Context, sessionID, operationI
 	if s.processing[key] {
 		if s.reconcileProcessing {
 			s.processing[key] = false
+			delete(s.tokens, key)
 			return FallbackPlaybackClaim{Status: FallbackPlaybackAccepted}, nil
 		}
 		return FallbackPlaybackClaim{Status: FallbackPlaybackProcessing}, nil
@@ -786,7 +843,7 @@ func (s *fallbackReplayStoreFake) Claim(_ context.Context, sessionID, operationI
 	return FallbackPlaybackClaim{Status: FallbackPlaybackAccepted}, nil
 }
 
-func (s *fallbackReplayStoreFake) Complete(_ context.Context, sessionID, operationID, payloadHash string) error {
+func (s *fallbackReplayStoreFake) Complete(_ context.Context, sessionID, operationID, payloadHash, claimToken string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.completeErr != nil {
@@ -796,10 +853,41 @@ func (s *fallbackReplayStoreFake) Complete(_ context.Context, sessionID, operati
 	if storedHash, ok := s.accepted[key]; !ok || storedHash != payloadHash {
 		return webrtc.ErrIdempotencyPayloadConflict
 	}
+	if s.processing[key] && s.tokens[key] != claimToken {
+		return errors.New("claim is no longer owned")
+	}
 	if s.processing == nil {
 		s.processing = make(map[string]bool)
 	}
 	s.processing[key] = false
+	delete(s.tokens, key)
+	return nil
+}
+
+func (s *fallbackReplayStoreFake) Abort(_ context.Context, sessionID, operationID, payloadHash, claimToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.abortErr != nil {
+		return s.abortErr
+	}
+	key := sessionID + "\x00" + operationID
+	storedHash, ok := s.accepted[key]
+	if !ok {
+		return nil
+	}
+	if storedHash != payloadHash {
+		return webrtc.ErrIdempotencyPayloadConflict
+	}
+	if !s.processing[key] {
+		return nil
+	}
+	if s.tokens[key] != claimToken {
+		return errors.New("claim is no longer owned")
+	}
+	delete(s.accepted, key)
+	delete(s.processing, key)
+	delete(s.tokens, key)
+	s.aborted++
 	return nil
 }
 
@@ -807,6 +895,14 @@ func (f *fallbackPlaybackFake) PlayFallback(_ context.Context, _ realtimev1.Fall
 	f.calls++
 	return f.err
 }
+
+type fallbackPlaybackNotStartedTestError struct {
+	err error
+}
+
+func (e fallbackPlaybackNotStartedTestError) Error() string             { return e.err.Error() }
+func (e fallbackPlaybackNotStartedTestError) Unwrap() error             { return e.err }
+func (fallbackPlaybackNotStartedTestError) FallbackPlaybackNotStarted() {}
 
 type blockingFallbackPlaybackFake struct {
 	entered chan struct{}

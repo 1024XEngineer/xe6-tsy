@@ -436,9 +436,12 @@ func (u *UseCases) RecoverAutomaticTurn(ctx context.Context, accountID, turnID s
 	if !ok || u.fallback == nil {
 		return domain.ErrNotImplemented
 	}
-	run, err := repository.ClaimAutomaticTurnFallback(ctx, accountID, turnID)
+	run, claimed, err := repository.ClaimAutomaticTurnFallback(ctx, accountID, turnID)
 	if err != nil {
 		return err
+	}
+	if !claimed {
+		return nil
 	}
 	_, err = u.fallback.PlayFallback(ctx, run.SessionID, realtimev1.FallbackPlaybackRequest{
 		OperationID: run.FallbackOperationID, SessionID: run.SessionID, TurnID: run.TurnID,

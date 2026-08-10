@@ -353,6 +353,27 @@ func TestRecoverAutomaticTurnLeavesPendingWhenPlaybackFails(t *testing.T) {
 	}
 }
 
+func TestRecoverAutomaticTurnSkipsFallbackWithoutClaimOwnership(t *testing.T) {
+	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
+		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1",
+		TargetLanguage: "zh-CN", TranslatedText: "译文", LanguageConfigVersion: 3,
+		Status: AutomaticTurnRunFallbackPending, TargetCount: 1, FailedCount: 1, FallbackOperationID: "fallback_turn-1",
+	}}
+	player := &fallbackPlayerFake{}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	service.ConfigureAutomaticFallback(player)
+
+	if err := service.RecoverAutomaticTurn(t.Context(), "account-1", "turn-1"); err != nil {
+		t.Fatalf("RecoverAutomaticTurn() error = %v", err)
+	}
+	if player.calls != 0 {
+		t.Fatalf("fallback calls = %d, want 0", player.calls)
+	}
+	if repository.fallbackPlayed {
+		t.Fatal("unowned fallback run was marked played")
+	}
+}
+
 func TestRestoreAutomaticTurnMarksRunAfterBidirectionalConfig(t *testing.T) {
 	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
 		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1",
@@ -416,9 +437,12 @@ func (r *atomicScheduleRepository) ListAutomaticTurnRecoveryCandidates(context.C
 	return []AutomaticTurnRun{r.existing}, nil
 }
 
-func (r *atomicScheduleRepository) ClaimAutomaticTurnFallback(context.Context, string, string) (AutomaticTurnRun, error) {
+func (r *atomicScheduleRepository) ClaimAutomaticTurnFallback(context.Context, string, string) (AutomaticTurnRun, bool, error) {
+	if r.existing.Status == AutomaticTurnRunFallbackPending {
+		return r.existing, false, nil
+	}
 	r.existing.Status = AutomaticTurnRunFallbackPending
-	return r.existing, nil
+	return r.existing, true, nil
 }
 
 func (r *atomicScheduleRepository) MarkAutomaticTurnFallbackPlayed(context.Context, string, string) error {
@@ -438,6 +462,7 @@ func (r *atomicScheduleRepository) MarkAutomaticTurnRestored(context.Context, st
 type fallbackPlayerFake struct {
 	request realtimev1.FallbackPlaybackRequest
 	err     error
+	calls   int
 }
 
 type outputRestorerFake struct {
@@ -454,6 +479,7 @@ func (f *outputRestorerFake) RestoreBidirectionalOutput(_ context.Context, _, se
 }
 
 func (f *fallbackPlayerFake) PlayFallback(_ context.Context, _ string, request realtimev1.FallbackPlaybackRequest) (realtimev1.FallbackPlaybackReceipt, error) {
+	f.calls++
 	f.request = request
 	if f.err != nil {
 		return realtimev1.FallbackPlaybackReceipt{}, f.err

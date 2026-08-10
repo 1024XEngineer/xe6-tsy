@@ -178,6 +178,19 @@ export type OutboundMessage = {
   updated_at: string;
 };
 
+export type AutomaticOutputStatus = {
+  turn_id: string;
+  status:
+    | "pending"
+    | "succeeded"
+    | "partially_succeeded"
+    | "failed"
+    | "fallback_pending"
+    | "fallback_played"
+    | "restored";
+  updated_at: string;
+};
+
 function authHeaders(accessToken: string, idempotencyKey?: string): HeadersInit {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
@@ -474,6 +487,20 @@ export async function listOutboundMessages(
     cache: "no-store",
   });
   return parseJson<{ items: OutboundMessage[] }>(response);
+}
+
+export async function listAutomaticOutputStatus(
+  accessToken: string,
+  sessionId: string,
+): Promise<{ items: AutomaticOutputStatus[] }> {
+  const response = await fetch(
+    `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/automatic-output-status`,
+    {
+      headers: authHeaders(accessToken),
+      cache: "no-store",
+    },
+  );
+  return parseJson<{ items: AutomaticOutputStatus[] }>(response);
 }
 
 export async function refreshAccountTokens(

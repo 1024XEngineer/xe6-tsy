@@ -17,6 +17,9 @@ func TestAutomaticPostgresRepositoriesRejectInvalidInputs(t *testing.T) {
 	if _, err := repository.ListAutomaticTurnRetryCandidates(t.Context(), 0); err != domain.ErrInvalidArgument {
 		t.Fatalf("ListAutomaticTurnRetryCandidates() error = %v, want invalid argument", err)
 	}
+	if _, err := repository.ListAutomaticOutputStatus(t.Context(), "account-1", "", 1); err != domain.ErrInvalidArgument {
+		t.Fatalf("ListAutomaticOutputStatus() error = %v, want invalid argument", err)
+	}
 	if _, err := repository.ListAutomaticTurnSettlements(t.Context(), "", "turn-1"); err != domain.ErrInvalidArgument {
 		t.Fatalf("ListAutomaticTurnSettlements() error = %v, want invalid argument", err)
 	}

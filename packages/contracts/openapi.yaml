@@ -231,6 +231,18 @@ paths:
         '200': { description: Session usage, content: { application/json: { schema: { $ref: '#/components/schemas/UsageSummary' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/automatic-output-status:
+    get:
+      operationId: listAutomaticOutputStatus
+      description: Recent durable automatic-output states for one owned voice session. `fallback_pending` means fallback playback is claimed, `fallback_played` means the fallback was accepted, and `restored` means bidirectional output was restored with the configuration compare-and-swap guard.
+      security: [{ accountContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200': { description: Recent automatic-output recovery states, content: { application/json: { schema: { $ref: '#/components/schemas/AutomaticOutputStatusListResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /usage/summary:
     get:
       operationId: getAccountUsage
@@ -905,6 +917,22 @@ components:
       required: [enabled]
       properties:
         enabled: { type: boolean }
+    AutomaticOutputStatus:
+      type: object
+      additionalProperties: false
+      required: [turn_id, status, updated_at]
+      properties:
+        turn_id: { type: string }
+        status:
+          type: string
+          enum: [pending, succeeded, partially_succeeded, failed, fallback_pending, fallback_played, restored]
+        updated_at: { type: string, format: date-time }
+    AutomaticOutputStatusListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AutomaticOutputStatus' } }
     AutomaticDeliveryReadiness:
       type: object
       additionalProperties: false

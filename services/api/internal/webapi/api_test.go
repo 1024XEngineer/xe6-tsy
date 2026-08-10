@@ -19,32 +19,37 @@ import (
 )
 
 type deliveryFake struct {
-	created              delivery.CreateInput
-	retryAccountID       string
-	retryMessageID       string
-	retryIdempotency     string
-	targets              []delivery.MessageTarget
-	messages             []delivery.Message
-	messageListAccountID string
-	messageListLimit     int
-	listAccountID        string
-	listChannel          *delivery.Channel
-	preferences          []delivery.Preference
-	preferencesErr       error
-	putPreferenceAccount string
-	putPreferenceChannel delivery.Channel
-	putPreferenceRef     string
-	putPreferenceEnabled bool
-	putPreferenceErr     error
-	bindAccountID        string
-	bindToken            string
-	revokeAccountID      string
-	revokeChannel        delivery.Channel
-	revokeRef            string
-	bindEmailErr         error
-	emailVerificationErr error
-	listTargetsErr       error
-	revokeErr            error
+	created                delivery.CreateInput
+	retryAccountID         string
+	retryMessageID         string
+	retryIdempotency       string
+	targets                []delivery.MessageTarget
+	messages               []delivery.Message
+	automaticStatuses      []delivery.AutomaticOutputStatus
+	messageListAccountID   string
+	messageListLimit       int
+	automaticStatusAccount string
+	automaticStatusSession string
+	automaticStatusLimit   int
+	automaticStatusErr     error
+	listAccountID          string
+	listChannel            *delivery.Channel
+	preferences            []delivery.Preference
+	preferencesErr         error
+	putPreferenceAccount   string
+	putPreferenceChannel   delivery.Channel
+	putPreferenceRef       string
+	putPreferenceEnabled   bool
+	putPreferenceErr       error
+	bindAccountID          string
+	bindToken              string
+	revokeAccountID        string
+	revokeChannel          delivery.Channel
+	revokeRef              string
+	bindEmailErr           error
+	emailVerificationErr   error
+	listTargetsErr         error
+	revokeErr              error
 }
 
 type tokenVerifierFake struct{}
@@ -99,6 +104,15 @@ func (f *deliveryFake) ListMessages(_ context.Context, accountID string, limit i
 	f.messageListAccountID = accountID
 	f.messageListLimit = limit
 	return f.messages, nil
+}
+func (f *deliveryFake) ListAutomaticOutputStatus(_ context.Context, accountID, sessionID string, limit int) ([]delivery.AutomaticOutputStatus, error) {
+	f.automaticStatusAccount = accountID
+	f.automaticStatusSession = sessionID
+	f.automaticStatusLimit = limit
+	if f.automaticStatusErr != nil {
+		return nil, f.automaticStatusErr
+	}
+	return f.automaticStatuses, nil
 }
 func (*deliveryFake) Get(context.Context, string, string) (delivery.Message, error) {
 	return delivery.Message{}, domain.ErrNotImplemented
@@ -200,6 +214,46 @@ func TestListMessagesUsesAuthenticatedAccount(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), `"id":"message-1"`) {
 		t.Fatalf("body = %s", response.Body.String())
+	}
+}
+
+func TestAutomaticOutputStatusUsesAuthenticatedAccountAndSession(t *testing.T) {
+	fake := &deliveryFake{automaticStatuses: []delivery.AutomaticOutputStatus{{
+		TurnID: "turn-1", Status: delivery.AutomaticTurnRunRestored, UpdatedAt: time.Now().UTC(),
+	}}}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := authenticate(httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/session-1/automatic-output-status", nil))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.automaticStatusAccount != "account-1" || fake.automaticStatusSession != "session-1" || fake.automaticStatusLimit != 20 {
+		t.Fatalf("status input = (%q, %q, %d)", fake.automaticStatusAccount, fake.automaticStatusSession, fake.automaticStatusLimit)
+	}
+	var payload struct {
+		Items []delivery.AutomaticOutputStatus `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].TurnID != "turn-1" || payload.Items[0].Status != delivery.AutomaticTurnRunRestored {
+		t.Fatalf("status payload = %#v", payload.Items)
+	}
+}
+
+func TestAutomaticOutputStatusReturnsServiceError(t *testing.T) {
+	fake := &deliveryFake{automaticStatusErr: domain.ErrNotFound}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := authenticate(httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/session-1/automatic-output-status", nil))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNotFound, response.Body.String())
 	}
 }
 
@@ -448,6 +502,7 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 		{"log out", http.MethodPost, "/api/v1/auth/logout", `{"refresh_token":"opaque"}`, false, false},
 		{"get account", http.MethodGet, "/api/v1/account/me", "", true, false},
 		{"get session usage", http.MethodGet, "/api/v1/voice-sessions/session-1/usage", "", true, false},
+		{"get automatic output status", http.MethodGet, "/api/v1/voice-sessions/session-1/automatic-output-status", "", true, false},
 		{"get account usage", http.MethodGet, "/api/v1/usage/summary?period_start=2026-07-01T00:00:00Z&period_end=2026-08-01T00:00:00Z", "", true, false},
 		{"create outbound message", http.MethodPost, "/api/v1/outbound-messages", `{"channel":"email","destination_ref":"verified-email","turn_ids":["turn-1"]}`, true, true},
 		{"get outbound message", http.MethodGet, "/api/v1/outbound-messages/message-1", "", true, false},

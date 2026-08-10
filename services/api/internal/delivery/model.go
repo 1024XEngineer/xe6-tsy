@@ -236,6 +236,15 @@ type AutomaticTurnRun struct {
 	UpdatedAt             time.Time              `json:"updated_at"`
 }
 
+// AutomaticOutputStatus is the public recovery state for one automatically
+// delivered Final Turn. It deliberately excludes the content snapshot and
+// internal operation identifiers.
+type AutomaticOutputStatus struct {
+	TurnID    string                 `json:"turn_id"`
+	Status    AutomaticTurnRunStatus `json:"status"`
+	UpdatedAt time.Time              `json:"updated_at"`
+}
+
 // AutomaticTargetRecord contains all rows created atomically for one target.
 type AutomaticTargetRecord struct {
 	Message        Message

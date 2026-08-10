@@ -9,6 +9,7 @@ import {
   listSessionTurns,
   listMessagePreferences,
   listMessageTargets,
+  listAutomaticOutputStatus,
   listOutboundMessages,
   listSupportedLanguages,
   listVoiceSessions,
@@ -298,6 +299,23 @@ describe("delivery settings API", () => {
     expect(JSON.parse(String(preferenceCall?.[1]?.body))).toEqual({ enabled: true });
     expect(new Headers(preferenceCall?.[1]?.headers).get("Idempotency-Key")).toMatch(
       /^preference-/,
+    );
+  });
+
+  it("lists automatic output recovery status for a session", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        items: [{ turn_id: "turn-1", status: "restored", updated_at: "2026-08-07T00:00:00Z" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listAutomaticOutputStatus("access-1", "session/1")).resolves.toEqual({
+      items: [{ turn_id: "turn-1", status: "restored", updated_at: "2026-08-07T00:00:00Z" }],
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/voice-sessions/session%2F1/automatic-output-status",
+      expect.objectContaining({ cache: "no-store" }),
     );
   });
 });

@@ -63,6 +63,23 @@ func TestAutomaticPostgresRetryCandidatesExcludeTotalFailures(t *testing.T) {
 	}
 }
 
+func TestAutomaticPostgresListsOutputStatusForAccountSession(t *testing.T) {
+	updatedAt := time.Unix(1_700_000_000, 0).UTC()
+	pool := &automaticPostgresPoolFake{rows: []*automaticRowsFake{{rows: [][]any{{
+		"turn-1", AutomaticTurnRunFallbackPlayed, updatedAt,
+	}}}}}
+	statuses, err := (&PostgresRepository{pool: pool}).ListAutomaticOutputStatus(t.Context(), "account-1", "session-1", 20)
+	if err != nil {
+		t.Fatalf("ListAutomaticOutputStatus() error = %v", err)
+	}
+	if len(statuses) != 1 || statuses[0].TurnID != "turn-1" || statuses[0].Status != AutomaticTurnRunFallbackPlayed || !statuses[0].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("statuses = %#v", statuses)
+	}
+	if len(pool.queries) != 1 || !strings.Contains(pool.queries[0], "lingow_account_lineage($1)") || !strings.Contains(pool.queries[0], "session_id=$2") {
+		t.Fatalf("status query = %#v", pool.queries)
+	}
+}
+
 func TestAutomaticPostgresSchedulesTargetsAndClaimsFallback(t *testing.T) {
 	run := testAutomaticRun()
 	now := run.CreatedAt

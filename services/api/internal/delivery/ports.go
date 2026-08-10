@@ -154,6 +154,12 @@ type MessageListingService interface {
 	ListMessages(context.Context, string, int) ([]Message, error)
 }
 
+// AutomaticOutputStatusService exposes durable automatic-output recovery
+// state without expanding lightweight Service implementations.
+type AutomaticOutputStatusService interface {
+	ListAutomaticOutputStatus(context.Context, string, string, int) ([]AutomaticOutputStatus, error)
+}
+
 // FinalTurnScheduler creates one immutable asynchronous message for an
 // eligible Final Turn after it has been durably stored.
 type FinalTurnScheduler interface {

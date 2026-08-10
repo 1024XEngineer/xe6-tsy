@@ -39,6 +39,7 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
 	mux.Handle("GET /api/v1/account/me", a.authenticate(http.HandlerFunc(a.me)))
 	mux.Handle("GET /api/v1/voice-sessions/{id}/usage", a.authenticate(http.HandlerFunc(a.sessionUsage)))
+	mux.Handle("GET /api/v1/voice-sessions/{id}/automatic-output-status", a.authenticate(http.HandlerFunc(a.automaticOutputStatus)))
 	mux.Handle("GET /api/v1/usage/summary", a.authenticate(http.HandlerFunc(a.accountUsage)))
 	mux.Handle("POST /api/v1/outbound-messages", a.authenticate(http.HandlerFunc(a.createMessage)))
 	mux.Handle("GET /api/v1/outbound-messages", a.authenticate(http.HandlerFunc(a.listMessages)))
@@ -118,6 +119,10 @@ type preferenceListResponse struct {
 
 type messageTargetListResponse struct {
 	Items []delivery.MessageTarget `json:"items"`
+}
+
+type automaticOutputStatusListResponse struct {
+	Items []delivery.AutomaticOutputStatus `json:"items"`
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -361,6 +366,30 @@ func (a *API) listMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, outboundMessageListResponse{Items: items})
+}
+
+func (a *API) automaticOutputStatus(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	sessionID := strings.TrimSpace(r.PathValue("id"))
+	if sessionID == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	service, ok := a.delivery.(delivery.AutomaticOutputStatusService)
+	if !ok {
+		writeError(w, r, domain.ErrNotImplemented)
+		return
+	}
+	items, err := service.ListAutomaticOutputStatus(r.Context(), id, sessionID, 20)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, automaticOutputStatusListResponse{Items: items})
 }
 
 func (a *API) getMessage(w http.ResponseWriter, r *http.Request) {

@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 22 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 22", len(migrations))
+	if len(migrations) != 23 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 23", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -282,6 +282,21 @@ func TestEmbeddedMigrations(t *testing.T) {
 	} {
 		if !strings.Contains(fallbackPlaybackOperations.SQL, expected) {
 			t.Fatalf("fallback-playback migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackClaims := migrations[22]
+	if fallbackPlaybackClaims.Version != 23 || fallbackPlaybackClaims.Name != "realtime_fallback_playback_claims" {
+		t.Fatalf("migration = %#v, want version 23 named realtime_fallback_playback_claims", fallbackPlaybackClaims)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'",
+		"ADD COLUMN processing_started_at TIMESTAMPTZ",
+		"status IN ('processing', 'accepted')",
+		"realtime_fallback_playback_processing_idx",
+	} {
+		if !strings.Contains(fallbackPlaybackClaims.SQL, expected) {
+			t.Fatalf("fallback-playback-claims migration does not contain %q", expected)
 		}
 	}
 }

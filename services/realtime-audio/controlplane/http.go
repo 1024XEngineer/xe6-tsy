@@ -30,12 +30,13 @@ const (
 )
 
 var (
-	ErrInvalidDependency     = errors.New("invalid control-plane dependency")
-	ErrInvalidRequest        = errors.New("invalid control-plane request")
-	ErrTicketRequired        = errors.New("realtime ticket is required")
-	ErrConfigSession         = errors.New("WebRTC config session mismatch")
-	ErrReplayCapacity        = errors.New("control-plane replay capacity exhausted")
-	ErrIdempotencyKeyTooLong = errors.New("idempotency key exceeds maximum length")
+	ErrInvalidDependency          = errors.New("invalid control-plane dependency")
+	ErrInvalidRequest             = errors.New("invalid control-plane request")
+	ErrTicketRequired             = errors.New("realtime ticket is required")
+	ErrConfigSession              = errors.New("WebRTC config session mismatch")
+	ErrReplayCapacity             = errors.New("control-plane replay capacity exhausted")
+	ErrIdempotencyKeyTooLong      = errors.New("idempotency key exceeds maximum length")
+	ErrFallbackPlaybackInProgress = errors.New("fallback playback is already in progress")
 )
 
 // Lifecycle is the realtime media lifecycle owned by session.LifecycleService.
@@ -51,11 +52,27 @@ type FallbackPlayback interface {
 	PlayFallback(context.Context, realtimev1.FallbackPlaybackRequest) error
 }
 
-// FallbackPlaybackReplayStore preserves accepted fallback commands across
-// realtime process restarts and rejects operation IDs reused with new payloads.
+// FallbackPlaybackClaimStatus reports whether a caller owns, is waiting on,
+// or is replaying one durable fallback operation.
+type FallbackPlaybackClaimStatus string
+
+const (
+	FallbackPlaybackClaimed    FallbackPlaybackClaimStatus = "claimed"
+	FallbackPlaybackProcessing FallbackPlaybackClaimStatus = "processing"
+	FallbackPlaybackAccepted   FallbackPlaybackClaimStatus = "accepted"
+)
+
+// FallbackPlaybackClaim describes durable ownership of one immutable fallback
+// command before the media side effect starts.
+type FallbackPlaybackClaim struct {
+	Status FallbackPlaybackClaimStatus
+}
+
+// FallbackPlaybackReplayStore atomically claims fallback operations before
+// media I/O and completes the claim after successful playback.
 type FallbackPlaybackReplayStore interface {
-	Accepted(context.Context, string, string, string) (bool, error)
-	RecordAccepted(context.Context, string, string, string) error
+	Claim(context.Context, string, string, string) (FallbackPlaybackClaim, error)
+	Complete(context.Context, string, string, string) error
 }
 
 // Signaling is the existing ticket-aware WebRTC signaling service boundary.
@@ -234,19 +251,25 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 	h.handleReplayStatus(writer, request.Context(), sessionID, replayKey, body, http.StatusAccepted,
 		func() (any, error) {
 			if h.fallbackReplays != nil {
-				accepted, err := h.fallbackReplays.Accepted(request.Context(), sessionID, body.OperationID, payloadHash)
+				claim, err := h.fallbackReplays.Claim(request.Context(), sessionID, body.OperationID, payloadHash)
 				if err != nil {
 					return nil, err
 				}
-				if accepted {
+				switch claim.Status {
+				case FallbackPlaybackClaimed:
+				case FallbackPlaybackProcessing:
+					return nil, ErrFallbackPlaybackInProgress
+				case FallbackPlaybackAccepted:
 					return realtimev1.FallbackPlaybackReceipt{OperationID: body.OperationID, Status: realtimev1.FallbackPlaybackAlreadyAccepted}, nil
+				default:
+					return nil, ErrInvalidDependency
 				}
 			}
 			if err := h.fallback.PlayFallback(request.Context(), body); err != nil {
 				return nil, err
 			}
 			if h.fallbackReplays != nil {
-				if err := h.fallbackReplays.RecordAccepted(request.Context(), sessionID, body.OperationID, payloadHash); err != nil {
+				if err := h.fallbackReplays.Complete(request.Context(), sessionID, body.OperationID, payloadHash); err != nil {
 					return nil, err
 				}
 			}
@@ -650,6 +673,8 @@ func mapError(err error) (int, string) {
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, ErrReplayCapacity):
 		return http.StatusServiceUnavailable, "replay_capacity_exhausted"
+	case errors.Is(err, ErrFallbackPlaybackInProgress):
+		return http.StatusConflict, "fallback_playback_in_progress"
 	case errors.Is(err, ErrInvalidDependency):
 		return http.StatusNotImplemented, "not_implemented"
 	case errors.Is(err, context.DeadlineExceeded):

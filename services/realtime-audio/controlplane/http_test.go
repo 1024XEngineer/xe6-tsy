@@ -116,6 +116,65 @@ func TestHandlerKeepsFallbackPlaybackIdempotentAcrossInstances(t *testing.T) {
 	}
 }
 
+func TestHandlerClaimsFallbackBeforeConcurrentCrossInstancePlayback(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
+	firstFixture := newFixture(t)
+	firstFallback := &blockingFallbackPlaybackFake{entered: make(chan struct{}), release: make(chan struct{})}
+	firstFixture.controlHandler.fallback = firstFallback
+	firstFixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firstDone <- firstFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	}()
+	<-firstFallback.entered
+
+	secondFixture := newFixture(t)
+	secondFallback := &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallback = secondFallback
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("concurrent replay status = %d, body=%s", second.Code, second.Body.String())
+	}
+	if secondFallback.calls != 0 {
+		t.Fatalf("second fallback calls = %d, want 0", secondFallback.calls)
+	}
+
+	close(firstFallback.release)
+	if first := <-firstDone; first.Code != http.StatusAccepted {
+		t.Fatalf("first fallback status = %d, body=%s", first.Code, first.Body.String())
+	}
+	if firstFallback.calls.Load() != 1 {
+		t.Fatalf("first fallback calls = %d, want 1", firstFallback.calls.Load())
+	}
+}
+
+func TestHandlerDoesNotReplayFallbackAfterAmbiguousPlaybackFailure(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
+	firstFixture := newFixture(t)
+	firstFixture.controlHandler.fallback = &fallbackPlaybackFake{err: errors.New("playback outcome unknown")}
+	firstFixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	first := firstFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("failed fallback status = %d, body=%s", first.Code, first.Body.String())
+	}
+
+	secondFixture := newFixture(t)
+	secondFallback := &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallback = secondFallback
+	secondFixture.controlHandler.fallbackReplays = store
+	store.reconcileProcessing = true
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("ambiguous replay status = %d, body=%s", second.Code, second.Body.String())
+	}
+	if secondFallback.calls != 0 {
+		t.Fatalf("fallback replay calls = %d, want 0", secondFallback.calls)
+	}
+}
+
 func TestHandlerDelegatesOfferCandidatesRuntimeAndConfig(t *testing.T) {
 	fixture := newFixture(t)
 
@@ -647,37 +706,77 @@ type fallbackPlaybackFake struct {
 }
 
 type fallbackReplayStoreFake struct {
-	mu       sync.Mutex
-	accepted map[string]string
+	mu                  sync.Mutex
+	accepted            map[string]string
+	processing          map[string]bool
+	reconcileProcessing bool
+	completeErr         error
 }
 
-func (s *fallbackReplayStoreFake) Accepted(_ context.Context, sessionID, operationID, payloadHash string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	storedHash, ok := s.accepted[sessionID+"\x00"+operationID]
-	if !ok {
-		return false, nil
-	}
-	if storedHash != payloadHash {
-		return false, webrtc.ErrIdempotencyPayloadConflict
-	}
-	return true, nil
-}
-
-func (s *fallbackReplayStoreFake) RecordAccepted(_ context.Context, sessionID, operationID, payloadHash string) error {
+func (s *fallbackReplayStoreFake) Claim(_ context.Context, sessionID, operationID, payloadHash string) (FallbackPlaybackClaim, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := sessionID + "\x00" + operationID
-	if storedHash, ok := s.accepted[key]; ok && storedHash != payloadHash {
+	storedHash, ok := s.accepted[key]
+	if !ok {
+		s.accepted[key] = payloadHash
+		if s.processing == nil {
+			s.processing = make(map[string]bool)
+		}
+		s.processing[key] = true
+		return FallbackPlaybackClaim{Status: FallbackPlaybackClaimed}, nil
+	}
+	if storedHash != payloadHash {
+		return FallbackPlaybackClaim{}, webrtc.ErrIdempotencyPayloadConflict
+	}
+	if s.processing[key] {
+		if s.reconcileProcessing {
+			s.processing[key] = false
+			return FallbackPlaybackClaim{Status: FallbackPlaybackAccepted}, nil
+		}
+		return FallbackPlaybackClaim{Status: FallbackPlaybackProcessing}, nil
+	}
+	return FallbackPlaybackClaim{Status: FallbackPlaybackAccepted}, nil
+}
+
+func (s *fallbackReplayStoreFake) Complete(_ context.Context, sessionID, operationID, payloadHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.completeErr != nil {
+		return s.completeErr
+	}
+	key := sessionID + "\x00" + operationID
+	if storedHash, ok := s.accepted[key]; !ok || storedHash != payloadHash {
 		return webrtc.ErrIdempotencyPayloadConflict
 	}
-	s.accepted[key] = payloadHash
+	if s.processing == nil {
+		s.processing = make(map[string]bool)
+	}
+	s.processing[key] = false
 	return nil
 }
 
 func (f *fallbackPlaybackFake) PlayFallback(_ context.Context, _ realtimev1.FallbackPlaybackRequest) error {
 	f.calls++
 	return f.err
+}
+
+type blockingFallbackPlaybackFake struct {
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (f *blockingFallbackPlaybackFake) PlayFallback(ctx context.Context, _ realtimev1.FallbackPlaybackRequest) error {
+	if f.calls.Add(1) == 1 {
+		close(f.entered)
+	}
+	select {
+	case <-f.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 type connectionFake struct {

@@ -3,7 +3,6 @@ package delivery
 import (
 	"context"
 	"fmt"
-	"strings"
 )
 
 // SMTPProvider sends outbound email snapshots through SMTP.
@@ -36,22 +35,7 @@ func (p *SMTPProvider) SupportsProviderIdempotency() bool {
 }
 
 func formatEmailDeliveryBody(request SendRequest) string {
-	var builder strings.Builder
-	builder.WriteString("Your Lingow transcript delivery is attached below.\n\n")
-	for index, turn := range request.Message.Turns {
-		if index > 0 {
-			builder.WriteString("\n---\n\n")
-		}
-		fmt.Fprintf(&builder, "Turn: %s\n", turn.TurnID)
-		if turn.SourceText != "" {
-			fmt.Fprintf(&builder, "Source: %s\n", turn.SourceText)
-		}
-		if turn.TranslatedText != "" {
-			fmt.Fprintf(&builder, "Translation: %s\n", turn.TranslatedText)
-		}
-	}
-	builder.WriteString("\n")
-	return builder.String()
+	return "Your Lingow transcript delivery is attached below.\n\n" + formatDeliveryTurns(request.Message.Turns) + "\n"
 }
 
 var _ Provider = (*SMTPProvider)(nil)

@@ -20,6 +20,7 @@ export function VoiceExperience() {
     voiceConfig,
     updateConfig,
     debug,
+    configSyncStatus,
     toggle,
   } = useVoiceSession();
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -119,6 +120,7 @@ export function VoiceExperience() {
           {settingsOpen ? (
             <SettingsPanel
               debug={debug}
+              configSyncStatus={configSyncStatus}
               onClose={() => setSettingsOpen(false)}
               onConfigChange={updateConfig}
               voiceConfig={voiceConfig}

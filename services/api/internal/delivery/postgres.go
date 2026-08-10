@@ -13,7 +13,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type PostgresRepository struct{ pool *pgxpool.Pool }
+type postgresPool interface {
+	Begin(context.Context) (pgx.Tx, error)
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type PostgresRepository struct{ pool postgresPool }
 
 const deliveryAttemptTopic = "delivery.attempt.queued"
 
@@ -208,6 +215,9 @@ func (r *PostgresRepository) CompleteAttempt(ctx context.Context, attemptID, mes
 		if result.RowsAffected() != 1 {
 			return domain.ErrConflict
 		}
+		if err := settleAutomaticTurnTarget(ctx, tx, messageID, attemptStatus, code, now); err != nil {
+			return err
+		}
 		return nil
 	})
 	return mapDeliveryError(err)
@@ -251,6 +261,21 @@ func (r *PostgresRepository) ListPreferences(ctx context.Context, accountID stri
 		result = append(result, preference)
 	}
 	return result, rows.Err()
+}
+
+// HasReadyAutomaticTarget implements the language-configuration readiness
+// port without exposing delivery models across the module boundary.
+func (r *PostgresRepository) HasReadyAutomaticTarget(ctx context.Context, accountID string) (bool, error) {
+	preferences, err := r.ListPreferences(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	for _, preference := range preferences {
+		if preference.Enabled && preference.Verified && preference.DestinationRef != "" && IsSupportedChannel(preference.Channel) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *PostgresRepository) PutPreference(ctx context.Context, preference Preference) (Preference, error) {

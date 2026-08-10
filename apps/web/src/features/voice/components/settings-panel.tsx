@@ -4,15 +4,19 @@ import { CaretDown, Check, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 
-import type { SessionDebugInfo } from "../hooks/use-voice-session";
+import type {
+  ConfigSyncStatus,
+  SessionDebugInfo,
+} from "../hooks/use-voice-session";
 import { getOrCreateAuthSession } from "../lib/auth-session";
 import {
   SUPPORTED_LANGUAGES,
   languageLabel,
   type LanguageCode,
+  type InterpretationOutputMode,
   type VoiceSessionConfig,
 } from "../lib/languages";
-import { listSupportedLanguages } from "../lib/lingow-api";
+import { hasReadyAutomaticTarget, listSupportedLanguages } from "../lib/lingow-api";
 import styles from "../voice.module.css";
 import { HistoryPreview, HistorySettings } from "./history-settings";
 import { OptionWheel } from "./option-wheel";
@@ -53,6 +57,23 @@ const SETTINGS_ITEMS = [
 
 type SettingId = (typeof SETTINGS_ITEMS)[number]["id"];
 const HISTORY_INDEX = SETTINGS_ITEMS.findIndex((item) => item.id === "history");
+
+function outputModeLabel(mode: InterpretationOutputMode): string {
+  return mode === "single" ? "单向输出" : "双向播报";
+}
+
+function outputModeStatusLabel(status: ConfigSyncStatus): string | null {
+  switch (status) {
+    case "saving":
+      return "正在应用到当前会话，下一句开始生效。";
+    case "applied":
+      return "已应用到当前会话，下一句开始生效。";
+    case "failed":
+      return "当前会话应用失败；本地偏好仍已保存。";
+    default:
+      return null;
+  }
+}
 
 const LANGUAGE_TRANSLATIONS: Record<string, string> = {
   "zh-CN": "中文（简体）",
@@ -172,7 +193,9 @@ function SettingsDetail({
   languageOptions,
   languageLoading,
   languageLabels,
+  configSyncStatus,
   onOpenHistory,
+  singleOutputReady,
 }: {
   selectedId: SettingId;
   voiceConfig: VoiceSessionConfig;
@@ -181,7 +204,9 @@ function SettingsDetail({
   languageOptions: readonly LanguageCode[];
   languageLoading: boolean;
   languageLabels: Readonly<Record<string, string>>;
+  configSyncStatus: ConfigSyncStatus;
   onOpenHistory: (session: import("../lib/lingow-api").VoiceSession) => void;
+  singleOutputReady: boolean | null;
 }) {
   const [openLanguage, setOpenLanguage] = useState<"source" | "target" | null>(null);
 
@@ -211,10 +236,48 @@ function SettingsDetail({
             open={openLanguage === "target"}
             value={voiceConfig.targetLanguage}
           />
+          <div className={styles.settingControlGroup}>
+            <span className={styles.settingControlLabel}>译音输出</span>
+            <div
+              aria-label="译音输出模式"
+              className={styles.segmentControl}
+              role="group"
+            >
+              {(["bidirectional", "single"] as const).map((mode) => (
+                <button
+                  aria-pressed={voiceConfig.outputMode === mode}
+                  className={
+                    voiceConfig.outputMode === mode ? styles.segmentActive : ""
+                  }
+                  disabled={mode === "single" && singleOutputReady !== true}
+                  key={mode}
+                  onClick={() => onConfigChange({ ...voiceConfig, outputMode: mode })}
+                  type="button"
+                >
+                  {outputModeLabel(mode)}
+                </button>
+              ))}
+            </div>
+            <p className={styles.settingsState}>
+              {voiceConfig.outputMode === "single"
+                ? "当前源语言译文播报；反向译文自动投递，并保留 Final Turn。"
+                : "两种语言的译文都播报；翻译、投递记录和 Final Turn 始终保留。"}
+            </p>
+            {singleOutputReady !== true ? (
+              <p className={styles.settingsState}>
+                单向输出需要已启用且已验证的自动投递目标。
+              </p>
+            ) : null}
+            {outputModeStatusLabel(configSyncStatus) ? (
+              <p className={styles.settingsState}>
+                {outputModeStatusLabel(configSyncStatus)}
+              </p>
+            ) : null}
+          </div>
           <p>
             {languageLoading
               ? "正在同步 ASR / TTS 支持的语言..."
-              : "保存后，下一次会话会按此语言对开启双向翻译。"}
+              : "语言与输出设置会自动保存。活动会话会从下一句开始使用新配置。"}
           </p>
         </div>
       );
@@ -269,17 +332,20 @@ export function SettingsPanel({
   voiceConfig,
   onConfigChange,
   debug,
+  configSyncStatus,
 }: {
   onClose: () => void;
   voiceConfig: VoiceSessionConfig;
   onConfigChange: (next: VoiceSessionConfig) => void;
   debug: SessionDebugInfo;
+  configSyncStatus: ConfigSyncStatus;
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [historySessionId, setHistorySessionId] = useState<string | null>(null);
   const [languageOptions, setLanguageOptions] = useState<LanguageCode[]>(SUPPORTED_LANGUAGES);
   const [languageLoading, setLanguageLoading] = useState(true);
   const [languageLabels, setLanguageLabels] = useState<Record<string, string>>({});
+  const [singleOutputReady, setSingleOutputReady] = useState<boolean | null>(null);
   const panelRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const selected = SETTINGS_ITEMS[selectedIndex];
@@ -290,24 +356,35 @@ export function SettingsPanel({
     void (async () => {
       try {
         const auth = await getOrCreateAuthSession();
-        const result = await listSupportedLanguages(auth.tokens.access_token);
-        const options = result.languages
-          .filter((language) => language.supports_as_source && language.supports_as_target)
-          .map((language) => language.language_code)
-          .filter((code, index, all) => all.indexOf(code) === index);
-        if (!cancelled && options.length > 0) {
-          setLanguageOptions(options);
-          setLanguageLabels(
-            Object.fromEntries(
-              result.languages.map((language) => [
-                language.language_code,
-                language.display_name || language.display_name_en,
-              ]),
-            ),
+        const [languagesResult, readinessResult] = await Promise.allSettled([
+          listSupportedLanguages(auth.tokens.access_token),
+          hasReadyAutomaticTarget(auth.tokens.access_token),
+        ]);
+        if (languagesResult.status === "fulfilled") {
+          const options = languagesResult.value.languages
+            .filter((language) => language.supports_as_source && language.supports_as_target)
+            .map((language) => language.language_code)
+            .filter((code, index, all) => all.indexOf(code) === index);
+          if (!cancelled && options.length > 0) {
+            setLanguageOptions(options);
+            setLanguageLabels(
+              Object.fromEntries(
+                languagesResult.value.languages.map((language) => [
+                  language.language_code,
+                  language.display_name || language.display_name_en,
+                ]),
+              ),
+            );
+          }
+        }
+        if (!cancelled) {
+          setSingleOutputReady(
+            readinessResult.status === "fulfilled" ? readinessResult.value : false,
           );
         }
       } catch {
         // Keep the local catalog available while the API is unavailable.
+        if (!cancelled) setSingleOutputReady(false);
       } finally {
         if (!cancelled) setLanguageLoading(false);
       }
@@ -319,7 +396,7 @@ export function SettingsPanel({
 
   const selectedValue =
     selected.id === "language"
-      ? `${languageLabel(voiceConfig.sourceLanguage)} / ${languageLabel(voiceConfig.targetLanguage)}`
+      ? `${languageLabel(voiceConfig.sourceLanguage)} / ${languageLabel(voiceConfig.targetLanguage)} · ${outputModeLabel(voiceConfig.outputMode)}`
       : selected.id === "session"
         ? debug.sessionId
           ? debug.sessionId.slice(0, 18)
@@ -446,11 +523,13 @@ export function SettingsPanel({
                 <div className={styles.settingsDetailControls}>
                   <SettingsDetail
                     debug={debug}
+                    configSyncStatus={configSyncStatus}
                     languageLoading={languageLoading}
                     languageOptions={languageOptions}
                     languageLabels={languageLabels}
                     onConfigChange={onConfigChange}
                     onOpenHistory={(session) => setHistorySessionId(session.id)}
+                    singleOutputReady={singleOutputReady}
                     selectedId={selected.id}
                     voiceConfig={voiceConfig}
                   />

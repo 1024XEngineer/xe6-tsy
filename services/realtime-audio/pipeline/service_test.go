@@ -480,6 +480,103 @@ func TestPipelineCompletesPlaybackAfterTTSFinishes(t *testing.T) {
 	}
 }
 
+func TestPipelinePlaysFallbackWithoutPublishingAnotherFinalTurn(t *testing.T) {
+	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{}
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{
+		Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
+		Result: tts.Result{Provider: "mock-tts", Model: "v1"},
+	})
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: ttsProvider,
+		FinalTurns: finalSink, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+
+	err := service.PlayFallback(t.Context(), FallbackPlayback{
+		SessionID: "session-1", TurnID: "turn-1", AccountID: "account-1", TraceID: "trace-1",
+		TargetLanguage: "zh-CN", TranslatedText: "补播译文", LanguageConfigVersion: 3, PlaybackID: "fallback-operation-1",
+	})
+	if err != nil {
+		t.Fatalf("PlayFallback() error = %v", err)
+	}
+	if len(finalSink.events) != 0 {
+		t.Fatalf("fallback published FinalTurns = %d, want 0", len(finalSink.events))
+	}
+	requests := ttsProvider.Requests()
+	if len(requests) != 1 || requests[0].Text != "补播译文" || requests[0].PlaybackID != "fallback-operation-1" {
+		t.Fatalf("TTS requests = %#v", requests)
+	}
+	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "tts" {
+		t.Fatalf("UsageFacts = %#v, want one TTS fact", usageSink.facts)
+	}
+}
+
+func TestPipelineMarksPrePlaybackFallbackFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		svc  *PipelineService
+	}{
+		{
+			name: "missing dependency",
+			svc:  &PipelineService{},
+		},
+		{
+			name: "runtime report failure",
+			svc: NewPipelineService(PipelineDependencies{
+				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello"}},
+				TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
+					Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
+				}),
+				FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
+				Runtime: stateFailingRuntimeReporter{failState: session.RuntimeTTSProcessing, err: errors.New("runtime unavailable")},
+			}),
+		},
+		{
+			name: "tts start failure",
+			svc: NewPipelineService(PipelineDependencies{
+				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello"}},
+				TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{StartErr: errors.New("tts start unavailable")}),
+				FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+			}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.svc.PlayFallback(t.Context(), FallbackPlayback{
+				SessionID: "session-1", TurnID: "turn-1", AccountID: "account-1", TraceID: "trace-1",
+				TargetLanguage: "zh-CN", TranslatedText: "补播译文", LanguageConfigVersion: 3, PlaybackID: "fallback-operation-1",
+			})
+			if err == nil {
+				t.Fatal("PlayFallback() error = nil")
+			}
+			if !hasFallbackPlaybackNotStarted(err) {
+				t.Fatalf("PlayFallback() error = %v, want not-started marker", err)
+			}
+		})
+	}
+}
+
+func TestPipelineDoesNotMarkPostStartFallbackFailures(t *testing.T) {
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello"}},
+		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
+			Chunks:    []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
+			FinishErr: errors.New("finish unavailable"),
+		}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	err := service.PlayFallback(t.Context(), FallbackPlayback{
+		SessionID: "session-1", TurnID: "turn-1", AccountID: "account-1", TraceID: "trace-1",
+		TargetLanguage: "zh-CN", TranslatedText: "补播译文", LanguageConfigVersion: 3, PlaybackID: "fallback-operation-1",
+	})
+	if err == nil {
+		t.Fatal("PlayFallback() error = nil")
+	}
+	if hasFallbackPlaybackNotStarted(err) {
+		t.Fatalf("PlayFallback() error = %v, unexpectedly marked not-started", err)
+	}
+}
+
 func TestPipelineCancelsPlaybackAfterTTSError(t *testing.T) {
 	wantErr := errors.New("TTS finish failed")
 	audioSink := &recordingPlaybackSink{}
@@ -622,6 +719,14 @@ func (*blockingTTSStream) Finish(context.Context) (tts.Result, error) {
 func (s *blockingTTSStream) Close() error {
 	close(s.closed)
 	return nil
+}
+
+func hasFallbackPlaybackNotStarted(err error) bool {
+	type fallbackPlaybackNotStarted interface {
+		FallbackPlaybackNotStarted()
+	}
+	var marker fallbackPlaybackNotStarted
+	return errors.As(err, &marker)
 }
 
 var _ recordsv1.FinalTurnSink = (*recordingFinalSink)(nil)

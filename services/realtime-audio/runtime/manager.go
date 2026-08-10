@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/ingress"
@@ -86,6 +87,7 @@ type Manager struct {
 	mu        sync.Mutex
 	locks     keyedLocker
 	processor *pipeline.TurnProcessor
+	playback  *pipeline.PipelineService
 	failure   session.RuntimeFailureReporter
 	logger    *slog.Logger
 	deps      Dependencies
@@ -156,9 +158,51 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		processor: pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
 			ASR: providers.ASR, Opener: opener, Pipeline: service,
 		}),
-		failure: deps.Runtime, logger: deps.Logger,
+		playback: service,
+		failure:  deps.Runtime, logger: deps.Logger,
 		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
 	}, nil
+}
+
+// PlayFallback sends an immutable translated-text snapshot through the active
+// session's playback graph. The session run context cancels playback when Stop
+// begins, while the request context still bounds the caller's wait.
+func (m *Manager) PlayFallback(ctx context.Context, request realtimev1.FallbackPlaybackRequest) error {
+	if err := ctx.Err(); err != nil {
+		return pipeline.MarkFallbackPlaybackNotStarted(err)
+	}
+	if m == nil || m.playback == nil {
+		return pipeline.MarkFallbackPlaybackNotStarted(ErrDependencyRequired)
+	}
+	if request.SessionID == "" {
+		return pipeline.MarkFallbackPlaybackNotStarted(ErrSessionIDRequired)
+	}
+
+	unlock := m.locks.lock(request.SessionID)
+	m.mu.Lock()
+	item := m.entries[request.SessionID]
+	if item == nil || !item.active || item.stopping || item.terminal || item.finished {
+		m.mu.Unlock()
+		unlock()
+		return pipeline.MarkFallbackPlaybackNotStarted(session.ErrRuntimeNotFound)
+	}
+	runCtx := item.ctx
+	accountID := item.request.AccountID
+	m.mu.Unlock()
+	unlock()
+
+	playbackCtx, cancel := context.WithCancel(ctx)
+	stopCancellation := context.AfterFunc(runCtx, cancel)
+	defer func() {
+		stopCancellation()
+		cancel()
+	}()
+	return m.playback.PlayFallback(playbackCtx, pipeline.FallbackPlayback{
+		SessionID: request.SessionID, TurnID: request.TurnID, AccountID: accountID,
+		TraceID: request.TraceID, TargetLanguage: request.TargetLanguage,
+		TranslatedText: request.TranslatedText, LanguageConfigVersion: int64(request.LanguageConfigVersion),
+		PlaybackID: "fallback_" + request.OperationID,
+	})
 }
 
 // Start opens resources and registers the session without consuming media yet.

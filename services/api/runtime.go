@@ -42,6 +42,7 @@ type configuredRuntime struct {
 	sessionRuntimeEnabled bool
 	sessionHandler        *sessions.Handler
 	sessionRecovery       backgroundWorker
+	fallbackWorker        *delivery.AutomaticTurnFallbackWorker
 	recordsHandler        *recordswebapi.Server
 	finalTurnWorker       finalTurnWorker
 	attributionWorker     backgroundWorker
@@ -88,10 +89,27 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		return nil, nil, err
 	}
 	sessionRepository := sessions.NewPostgresRepository(pool)
+	smtpMailer, err := newConfiguredSMTPMailer(processConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	wecomClient, err := newConfiguredWeComClient(processConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	provider, err := configuredProvider(processConfig, smtpMailer, wecomClient)
+	if err != nil {
+		return nil, nil, err
+	}
+	providerRouter, ok := provider.(*delivery.ChannelRouter)
+	if !ok || providerRouter == nil {
+		return nil, nil, errors.New("configured provider does not expose channel capabilities")
+	}
 	languageDependencies, err := newLanguageDependenciesWithPool(
 		startupCtx,
 		pool,
 		sessionOwnerReader{reader: sessionRepository},
+		delivery.NewRuntimeReadiness(delivery.NewPostgresRepository(pool), providerRouter),
 	)
 	if err != nil {
 		return nil, nil, err
@@ -112,6 +130,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 
 	sessionHandler := newSessionHandler(nil)
 	var sessionRecovery backgroundWorker
+	var fallbackPlayer delivery.AutomaticTurnFallbackPlayer
 	if processConfig.SessionRuntimeEnabled {
 		sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
 			Repository:     sessionRepository,
@@ -130,6 +149,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		}
 		sessionHandler = sessionDependencies.handler
 		sessionRecovery = sessionDependencies.endRecovery
+		fallbackPlayer = sessionDependencies.realtime
 	} else {
 		slog.Warn(
 			"voice session runtime disabled",
@@ -178,18 +198,14 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		records.turns.SetFinalTurnScheduler(deliveryService)
 	}
 	deliveryService.ConfigureTargetBinding(destinationKey, processConfig.AppEnv)
-	smtpMailer, err := newConfiguredSMTPMailer(processConfig)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, err
-	}
 	deliveryService.ConfigureEmailVerification(deliveryRepository, newEmailBindSender(processConfig, smtpMailer))
-	wecomClient, err := newConfiguredWeComClient(processConfig)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, err
-	}
 	deliveryService.ConfigureWeChatBinding(wecomClient)
+	var fallbackWorker *delivery.AutomaticTurnFallbackWorker
+	if fallbackPlayer != nil {
+		deliveryService.ConfigureAutomaticFallback(fallbackPlayer)
+		deliveryService.ConfigureAutomaticOutputRestorer(languageOutputRestorer{service: languageDependencies.service})
+		fallbackWorker = delivery.NewAutomaticTurnFallbackWorker(deliveryService, time.Second)
+	}
 
 	usageConsumerName := processConfig.UsageConsumer
 	if usageConsumerName == "" {
@@ -202,11 +218,6 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	}
 	usageConsumer := usage.NewConsumer(usageStream, usageService)
 
-	provider, err := configuredProvider(processConfig, smtpMailer, wecomClient)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, err
-	}
 	runtime := &configuredRuntime{
 		pool:       pool,
 		redis:      redisClient,
@@ -224,6 +235,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		sessionRuntimeEnabled: processConfig.SessionRuntimeEnabled,
 		sessionHandler:        sessionHandler,
 		sessionRecovery:       sessionRecovery,
+		fallbackWorker:        fallbackWorker,
 		recordsHandler:        records.handler,
 		finalTurnWorker:       records.worker,
 		attributionWorker:     records.attributionWorker,
@@ -347,6 +359,10 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	if r.sessionRecovery != nil {
 		components.Add(1)
 		go runFailFastBackgroundWorker(componentCtx, "session end recovery worker", r.sessionRecovery.Run, errs, &components)
+	}
+	if r.fallbackWorker != nil {
+		components.Add(1)
+		go runDeliveryComponent(componentCtx, "automatic fallback worker", r.fallbackWorker.Run, errs, &components)
 	}
 	go func() {
 		slog.Info("Lingow API listening", "address", address, "delivery_runtime", "enabled")

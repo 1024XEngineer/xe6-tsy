@@ -78,3 +78,23 @@ func TestLegacyHMACIssuerStillChecksSessionActivity(t *testing.T) {
 		t.Fatalf("VerifyAccessToken() error = %v", err)
 	}
 }
+
+func TestHashRefreshTokenIsStableAndURLSafe(t *testing.T) {
+	var issuer HMACIssuer
+	first := issuer.HashRefreshToken("refresh-token")
+	second := issuer.HashRefreshToken("refresh-token")
+	other := issuer.HashRefreshToken("different-token")
+
+	if first != second {
+		t.Fatalf("HashRefreshToken() = %q and %q, want stable output", first, second)
+	}
+	if first == other {
+		t.Fatalf("HashRefreshToken() = %q, want different token to change the hash", first)
+	}
+	if len(first) != 43 {
+		t.Fatalf("HashRefreshToken() length = %d, want 43", len(first))
+	}
+	if strings.ContainsAny(first, "+/=") {
+		t.Fatalf("HashRefreshToken() = %q, want raw URL-safe base64", first)
+	}
+}

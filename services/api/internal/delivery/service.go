@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/oklog/ulid/v2"
@@ -25,6 +26,8 @@ type UseCases struct {
 	emailBindChallenges EmailBindChallengeRepository
 	emailBindSender     EmailBindSender
 	wecomIdentity       WeComIdentityClient
+	fallback            AutomaticTurnFallbackPlayer
+	restorer            AutomaticTurnOutputRestorer
 }
 
 func NewUseCases() *UseCases { return &UseCases{} }
@@ -51,6 +54,14 @@ func (u *UseCases) ConfigureEmailVerification(challenges EmailBindChallengeRepos
 // ConfigureWeChatBinding wires the WeCom OAuth client used to resolve bind codes.
 func (u *UseCases) ConfigureWeChatBinding(client WeComIdentityClient) {
 	u.wecomIdentity = client
+}
+
+func (u *UseCases) ConfigureAutomaticFallback(player AutomaticTurnFallbackPlayer) {
+	u.fallback = player
+}
+
+func (u *UseCases) ConfigureAutomaticOutputRestorer(restorer AutomaticTurnOutputRestorer) {
+	u.restorer = restorer
 }
 
 // Create accepts selected final Turns and creates an asynchronous delivery task.
@@ -271,6 +282,9 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 	if accountID == "" || event.TurnID == "" || !event.DeliveryEnabled {
 		return nil
 	}
+	if scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository); ok {
+		return u.scheduleAutomaticTurnAtomically(ctx, scheduler, accountID, event)
+	}
 	preferences, err := u.Preferences(ctx, accountID)
 	if err != nil {
 		return err
@@ -285,6 +299,221 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 			DestinationRef: preference.DestinationRef, TurnIDs: []string{event.TurnID},
 		}); err != nil {
 			return fmt.Errorf("schedule final turn %s for %s: %w", event.TurnID, preference.Channel, err)
+		}
+	}
+	return nil
+}
+
+func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, scheduler AutomaticTurnSchedulerRepository, accountID string, event recordsv1.FinalTurnEvent) error {
+	if event.SessionID == "" || event.TraceID == "" || event.TargetLanguage == "" || event.TranslatedText == "" || event.LanguageConfigVersion < 1 {
+		return domain.ErrInvalidArgument
+	}
+	if u.turns == nil || u.destinations == nil {
+		return domain.ErrInvalidArgument
+	}
+	existing, err := scheduler.GetAutomaticTurnRun(ctx, accountID, event.TurnID)
+	if err == nil {
+		if existing.SessionID != event.SessionID || existing.TraceID != event.TraceID || existing.TargetLanguage != event.TargetLanguage ||
+			existing.TranslatedText != event.TranslatedText || existing.LanguageConfigVersion != event.LanguageConfigVersion {
+			return domain.ErrConflict
+		}
+		return nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return err
+	}
+	preferences, err := u.Preferences(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	turns, err := u.turns.ReadFinalTurns(ctx, accountID, []string{event.TurnID})
+	if err != nil {
+		return err
+	}
+	if len(turns) != 1 {
+		return domain.ErrNotFound
+	}
+	now := time.Now().UTC()
+	targets := make([]AutomaticTargetRecord, 0, len(preferences))
+	for _, preference := range preferences {
+		if !preference.Enabled || !preference.Verified || preference.DestinationRef == "" || !IsSupportedChannel(preference.Channel) {
+			continue
+		}
+		if _, err := u.destinations.ResolveVerifiedDestination(ctx, accountID, preference.Channel, preference.DestinationRef); err != nil {
+			return err
+		}
+		message := Message{
+			ID: "msg_" + ulid.Make().String(), AccountID: accountID, Channel: preference.Channel,
+			DestinationRef: preference.DestinationRef, SnapshotVersion: 1, Turns: cloneTurns(turns),
+			Status: MessageStatusQueued, Attempts: 1, CreatedAt: now, UpdatedAt: now,
+		}
+		attempt := DeliveryAttempt{ID: "attempt_" + ulid.Make().String(), MessageID: message.ID, AttemptNumber: 1, Status: AttemptStatusQueued, CreatedAt: now}
+		key := fmt.Sprintf("auto:final_turn:%s:%s:%s", event.TurnID, preference.Channel, preference.DestinationRef)
+		targets = append(targets, AutomaticTargetRecord{
+			Message: message, InitialAttempt: attempt, IdempotencyKey: key,
+			Settlement: AutomaticTurnSettlement{
+				AccountID: accountID, TurnID: event.TurnID, SessionID: event.SessionID,
+				TargetLanguage: event.TargetLanguage, Channel: preference.Channel,
+				DestinationRef: preference.DestinationRef, Status: AutomaticTurnSettlementQueued,
+				MessageID: message.ID, CreatedAt: now, UpdatedAt: now,
+			},
+		})
+	}
+	run := AutomaticTurnRun{
+		AccountID: accountID, TurnID: event.TurnID, SessionID: event.SessionID, TraceID: event.TraceID,
+		TargetLanguage: event.TargetLanguage, TranslatedText: event.TranslatedText,
+		LanguageConfigVersion: event.LanguageConfigVersion, Status: AutomaticTurnRunPending,
+		TargetCount: len(targets), FallbackOperationID: "fallback_" + event.TurnID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := scheduler.ScheduleAutomaticTurn(ctx, AutomaticTurnScheduleRecord{Run: run, Targets: targets}); err != nil {
+		return fmt.Errorf("schedule automatic turn atomically: %w", err)
+	}
+	return nil
+}
+
+func (u *UseCases) RetryAutomaticTurnFailures(ctx context.Context, accountID, turnID string) error {
+	retryRepository, ok := u.repository.(AutomaticTurnRetryRepository)
+	if !ok {
+		return domain.ErrNotImplemented
+	}
+	scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository)
+	if !ok {
+		return domain.ErrNotImplemented
+	}
+	run, err := scheduler.GetAutomaticTurnRun(ctx, accountID, turnID)
+	if err != nil {
+		return err
+	}
+	if run.FailedCount == 0 {
+		return nil
+	}
+	settlements, err := retryRepository.ListAutomaticTurnSettlements(ctx, accountID, turnID)
+	if err != nil {
+		return err
+	}
+	for _, settlement := range settlements {
+		if settlement.Status != AutomaticTurnSettlementFailed || settlement.MessageID == "" {
+			continue
+		}
+		message, err := u.Get(ctx, accountID, settlement.MessageID)
+		if err != nil {
+			return err
+		}
+		if message.Attempts >= maxAutomaticTargetAttempts {
+			continue
+		}
+		key := fmt.Sprintf("auto:final_turn_retry:%s:%s:%s:%d", turnID, settlement.Channel, settlement.DestinationRef, message.Attempts+1)
+		if _, err := retryRepository.RetryAutomaticTurnTarget(ctx, accountID, turnID, message.ID, key); err != nil {
+			return fmt.Errorf("retry automatic target %s: %w", settlement.DestinationRef, err)
+		}
+	}
+	return nil
+}
+
+func (u *UseCases) RetryAutomaticTurns(ctx context.Context, limit int) error {
+	repository, ok := u.repository.(AutomaticTurnRetryRepository)
+	if !ok {
+		return domain.ErrNotImplemented
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	candidates, err := repository.ListAutomaticTurnRetryCandidates(ctx, limit)
+	if err != nil {
+		return err
+	}
+	for _, run := range candidates {
+		if err := u.RetryAutomaticTurnFailures(ctx, run.AccountID, run.TurnID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (u *UseCases) RecoverAutomaticTurn(ctx context.Context, accountID, turnID string) error {
+	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
+	if !ok || u.fallback == nil {
+		return domain.ErrNotImplemented
+	}
+	run, claimed, err := repository.ClaimAutomaticTurnFallback(ctx, accountID, turnID)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return nil
+	}
+	_, err = u.fallback.PlayFallback(ctx, run.SessionID, realtimev1.FallbackPlaybackRequest{
+		OperationID: run.FallbackOperationID, SessionID: run.SessionID, TurnID: run.TurnID,
+		TargetLanguage: run.TargetLanguage, TranslatedText: run.TranslatedText,
+		LanguageConfigVersion: int(run.LanguageConfigVersion), TraceID: run.TraceID,
+	})
+	if err != nil {
+		return fmt.Errorf("play automatic fallback: %w", err)
+	}
+	if err := repository.MarkAutomaticTurnFallbackPlayed(ctx, accountID, turnID); err != nil {
+		return fmt.Errorf("mark automatic fallback played: %w", err)
+	}
+	return nil
+}
+
+func (u *UseCases) RecoverAutomaticTurns(ctx context.Context, limit int) error {
+	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
+	if !ok || u.fallback == nil {
+		return domain.ErrNotImplemented
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	candidates, err := repository.ListAutomaticTurnRecoveryCandidates(ctx, limit)
+	if err != nil {
+		return err
+	}
+	for _, run := range candidates {
+		if err := u.RecoverAutomaticTurn(ctx, run.AccountID, run.TurnID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID string) error {
+	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
+	if !ok || u.restorer == nil {
+		return domain.ErrNotImplemented
+	}
+	scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository)
+	if !ok {
+		return domain.ErrNotImplemented
+	}
+	run, err := scheduler.GetAutomaticTurnRun(ctx, accountID, turnID)
+	if err != nil {
+		return err
+	}
+	if run.Status != AutomaticTurnRunFallbackPlayed {
+		return domain.ErrConflict
+	}
+	if err := u.restorer.RestoreBidirectionalOutput(ctx, run.AccountID, run.SessionID, int(run.LanguageConfigVersion), "restore_"+run.FallbackOperationID); err != nil {
+		return fmt.Errorf("restore bidirectional output: %w", err)
+	}
+	return repository.MarkAutomaticTurnRestored(ctx, accountID, turnID)
+}
+
+func (u *UseCases) RestoreAutomaticTurns(ctx context.Context, limit int) error {
+	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
+	if !ok || u.restorer == nil {
+		return domain.ErrNotImplemented
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	candidates, err := repository.ListAutomaticTurnRestoreCandidates(ctx, limit)
+	if err != nil {
+		return err
+	}
+	for _, run := range candidates {
+		if err := u.RestoreAutomaticTurn(ctx, run.AccountID, run.TurnID); err != nil {
+			return err
 		}
 	}
 	return nil

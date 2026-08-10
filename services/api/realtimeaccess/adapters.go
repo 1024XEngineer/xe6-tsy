@@ -317,7 +317,7 @@ func preserveBoundaryError(err error, boundary error) error {
 	case errors.Is(err, boundary):
 		return err
 	default:
-		return fmt.Errorf("%w: %v", boundary, err)
+		return fmt.Errorf("%w: %w", boundary, err)
 	}
 }
 

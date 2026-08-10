@@ -94,6 +94,77 @@ func TestHTTPIdempotencyKeyTooLong(t *testing.T) {
 	}
 }
 
+func TestHTTPSingleOutputRequiresReadyDeliveryTarget(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	svc := NewService(store, MapSessionOwner{"vs_http": "acct_http"}, &deliveryReadinessStub{})
+	mux := http.NewServeMux()
+	NewHandler(svc, func(r *http.Request) (string, bool) {
+		return webapi.AccountIDFromContext(r.Context())
+	}).Register(mux, withoutAuthentication)
+
+	body, _ := json.Marshal(CreateLanguageConfigRequest{
+		Languages: bilingualPairs(),
+		OutputRoutes: []OutputRoute{
+			{TargetLanguage: "en-US", TTSEnabled: true},
+			{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_http/language-configs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s, want 422", rec.Code, rec.Body.String())
+	}
+	var errBody ErrorBody
+	if err := json.NewDecoder(rec.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if errBody.Error.Code != CodeDeliveryTargetRequired {
+		t.Fatalf("code=%q, want %q", errBody.Error.Code, CodeDeliveryTargetRequired)
+	}
+	if errBody.Error.Retryable || errBody.Error.Details == nil {
+		t.Fatalf("error metadata = %#v, want non-retryable error with details", errBody.Error)
+	}
+}
+
+func TestHTTPAutomaticDeliveryReadiness(t *testing.T) {
+	tests := []struct {
+		name      string
+		readiness DeliveryReadinessReader
+		want      bool
+	}{
+		{name: "runtime unavailable", want: false},
+		{name: "runtime ready", readiness: &deliveryReadinessStub{ready: true}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{}, tt.readiness)
+			mux := http.NewServeMux()
+			NewHandler(svc, func(*http.Request) (string, bool) {
+				return "acct_http", true
+			}).Register(mux, withoutAuthentication)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/account/automatic-delivery-readiness", nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var response AutomaticDeliveryReadinessResponse
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.Ready != tt.want {
+				t.Fatalf("ready=%v, want %v", response.Ready, tt.want)
+			}
+		})
+	}
+}
+
 func TestHTTPListLanguages(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	svc := NewService(store, MapSessionOwner{})
@@ -108,6 +179,117 @@ func TestHTTPListLanguages(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestHTTPListConfigHistory(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	svc := NewService(store, MapSessionOwner{"vs_http": "acct_http"})
+	if _, err := svc.CreateConfig(t.Context(), "acct_http", "vs_http", "seed-1", CreateLanguageConfigRequest{
+		Languages: bilingualPairs(),
+	}); err != nil {
+		t.Fatalf("seed v1: %v", err)
+	}
+	if _, err := svc.CreateConfig(t.Context(), "acct_http", "vs_http", "seed-2", CreateLanguageConfigRequest{
+		Languages: bilingualPairs(),
+	}); err != nil {
+		t.Fatalf("seed v2: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(svc, func(r *http.Request) (string, bool) {
+		return webapi.AccountIDFromContext(r.Context())
+	}).Register(mux, withoutAuthentication)
+
+	t.Run("default_limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs", nil)
+		req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+
+		var resp ListLanguageConfigsResponse
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(resp.Items) != 2 || resp.NextCursor != nil {
+			t.Fatalf("response=%#v", resp)
+		}
+		if resp.Items[0].Version != 2 || resp.Items[1].Version != 1 {
+			t.Fatalf("history order = %#v", resp.Items)
+		}
+	})
+
+	t.Run("paged", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs?limit=1", nil)
+		req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+
+		var first ListLanguageConfigsResponse
+		if err := json.NewDecoder(rec.Body).Decode(&first); err != nil {
+			t.Fatalf("decode first page: %v", err)
+		}
+		if len(first.Items) != 1 || first.NextCursor == nil || first.Items[0].Version != 2 {
+			t.Fatalf("first page=%#v", first)
+		}
+
+		req = httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs?limit=1&cursor="+*first.NextCursor, nil)
+		req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+		rec = httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+
+		var second ListLanguageConfigsResponse
+		if err := json.NewDecoder(rec.Body).Decode(&second); err != nil {
+			t.Fatalf("decode second page: %v", err)
+		}
+		if len(second.Items) != 1 || second.NextCursor != nil || second.Items[0].Version != 1 {
+			t.Fatalf("second page=%#v", second)
+		}
+	})
+
+	t.Run("invalid_limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs?limit=0", nil)
+		req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var errBody ErrorBody
+		if err := json.NewDecoder(rec.Body).Decode(&errBody); err != nil {
+			t.Fatalf("decode error body: %v", err)
+		}
+		if errBody.Error.Code != CodeInvalidRequest {
+			t.Fatalf("error code=%q", errBody.Error.Code)
+		}
+	})
+
+	t.Run("unauthenticated", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("forbidden", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_http/language-configs", nil)
+		req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_other"))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	})
 }
 
 func withoutAuthentication(next http.Handler) http.Handler {

@@ -128,6 +128,54 @@ func (c *Client) Stop(
 	)
 }
 
+// PlayFallback submits one immutable translated-text snapshot and accepts a
+// repeated operation as an already-accepted receipt.
+func (c *Client) PlayFallback(ctx context.Context, sessionID string, request realtimev1.FallbackPlaybackRequest) (realtimev1.FallbackPlaybackReceipt, error) {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(request.OperationID) == "" ||
+		request.SessionID != sessionID || strings.TrimSpace(request.TurnID) == "" ||
+		strings.TrimSpace(request.TargetLanguage) == "" || strings.TrimSpace(request.TranslatedText) == "" ||
+		request.LanguageConfigVersion < 1 || strings.TrimSpace(request.TraceID) == "" {
+		return realtimev1.FallbackPlaybackReceipt{}, ErrClientRequest
+	}
+	token, err := c.ticket(ctx, sessionID)
+	if err != nil {
+		return realtimev1.FallbackPlaybackReceipt{}, err
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return realtimev1.FallbackPlaybackReceipt{}, fmt.Errorf("%w: encode fallback playback request: %v", ErrClientRequest, err)
+	}
+	endpoint, err := url.JoinPath(c.baseURL, "realtime/v1/sessions", sessionID, "fallback-playback")
+	if err != nil {
+		return realtimev1.FallbackPlaybackReceipt{}, fmt.Errorf("%w: build fallback playback endpoint: %v", ErrClientDependency, err)
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encoded))
+	if err != nil {
+		return realtimev1.FallbackPlaybackReceipt{}, fmt.Errorf("%w: build fallback playback request: %v", ErrClientRequest, err)
+	}
+	httpRequest.Header.Set("Authorization", "Bearer "+token)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Idempotency-Key", "fallback:"+request.OperationID)
+	response, err := c.http.Do(httpRequest)
+	if err != nil {
+		return realtimev1.FallbackPlaybackReceipt{}, preserveContextError(ctx, fmt.Errorf("%w: %v", ErrDependencyUnavailable, err))
+	}
+	defer response.Body.Close()
+	reader := io.LimitReader(response.Body, maxClientResponseBytes+1)
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return realtimev1.FallbackPlaybackReceipt{}, decodeClientError(response.StatusCode, reader)
+	}
+	var receipt realtimev1.FallbackPlaybackReceipt
+	if err := json.NewDecoder(reader).Decode(&receipt); err != nil {
+		return realtimev1.FallbackPlaybackReceipt{}, fmt.Errorf("%w: decode fallback playback response: %v", ErrInvalidResponse, err)
+	}
+	if receipt.OperationID != request.OperationID ||
+		(receipt.Status != realtimev1.FallbackPlaybackAccepted && receipt.Status != realtimev1.FallbackPlaybackAlreadyAccepted) {
+		return realtimev1.FallbackPlaybackReceipt{}, ErrInvalidResponse
+	}
+	return receipt, nil
+}
+
 // GetRuntimeState reads the authoritative media-plane runtime snapshot.
 func (c *Client) GetRuntimeState(
 	ctx context.Context,

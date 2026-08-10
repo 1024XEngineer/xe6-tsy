@@ -17,6 +17,10 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 		"/voice-sessions/{id}/end",
 		"/voice-sessions/{id}/state",
 		"/voice-sessions/{id}/realtime-ticket",
+		"/languages",
+		"/account/automatic-delivery-readiness",
+		"/voice-sessions/{id}/language-config",
+		"/voice-sessions/{id}/language-configs",
 	} {
 		if _, ok := paths[path]; !ok {
 			t.Fatalf("missing voice-session path %s", path)
@@ -67,6 +71,29 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 		if !containsString(stateRequired, required) {
 			t.Fatalf("VoiceSessionStateSnapshot required = %v, missing %s", stateRequired, required)
 		}
+	}
+
+	outputMode := schemas["InterpretationOutputMode"].(map[string]any)
+	if got := outputMode["enum"].([]any); !sameStringSlice(got, []any{"bidirectional", "single"}) {
+		t.Fatalf("InterpretationOutputMode enum = %v", got)
+	}
+	request := schemas["CreateLanguageConfigRequest"].(map[string]any)
+	if !containsString(request["required"].([]any), "languages") {
+		t.Fatalf("CreateLanguageConfigRequest must require languages")
+	}
+	readiness := schemas["AutomaticDeliveryReadiness"].(map[string]any)
+	if !containsString(readiness["required"].([]any), "ready") {
+		t.Fatalf("AutomaticDeliveryReadiness must require ready")
+	}
+	createPath := paths["/voice-sessions/{id}/language-configs"].(map[string]any)
+	post := createPath["post"].(map[string]any)
+	responses := post["responses"].(map[string]any)
+	unprocessable := responses["422"].(map[string]any)
+	content := unprocessable["content"].(map[string]any)
+	media := content["application/json"].(map[string]any)
+	examples := media["examples"].(map[string]any)
+	if _, ok := examples["deliveryTargetRequired"]; !ok {
+		t.Fatalf("language config 422 response missing delivery target example")
 	}
 }
 

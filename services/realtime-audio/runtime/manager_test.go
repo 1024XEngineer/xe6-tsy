@@ -1099,7 +1099,7 @@ func (r *recordingRuntimeReporter) SetProcessingState(_ context.Context, update 
 	return nil
 }
 
-func (r *recordingRuntimeReporter) SetRuntimeFailed(ctx context.Context, _ string) error {
+func (r *recordingRuntimeReporter) SetRuntimeFailed(ctx context.Context, _ string, _ string) error {
 	r.mu.Lock()
 	r.failureCalls++
 	r.mu.Unlock()

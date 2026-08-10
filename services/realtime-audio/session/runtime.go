@@ -48,12 +48,16 @@ func (s *LifecycleService) SetProcessingState(ctx context.Context, update Proces
 
 // SetRuntimeFailed records a terminal media-pipeline failure without changing
 // business session state. Stop transitions win if shutdown is already active.
-func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID string) error {
+// Empty errorCode defaults to realtime_pipeline_failed.
+func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID string, errorCode string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if sessionID == "" {
 		return ErrSessionIDRequired
+	}
+	if errorCode == "" {
+		errorCode = ErrorCodePipelineFailed
 	}
 
 	unlock := s.locks.lock(sessionID)
@@ -72,7 +76,6 @@ func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID strin
 	current.RuntimeState = RuntimeFailed
 	current.CurrentTurnID = nil
 	current.CurrentPlaybackID = nil
-	errorCode := ErrorCodePipelineFailed
 	current.LastErrorCode = &errorCode
 	current.UpdatedAt = s.deps.Now()
 	if err := s.deps.Runtimes.Save(ctx, current); err != nil {

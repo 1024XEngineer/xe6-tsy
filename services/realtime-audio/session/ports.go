@@ -25,10 +25,10 @@ type RuntimeStateReporter interface {
 	SetProcessingState(ctx context.Context, update ProcessingStateUpdate) error
 }
 
-// RuntimeFailureReporter persists a terminal media-pipeline failure with the
-// shared realtime_pipeline_failed error code.
+// RuntimeFailureReporter persists a terminal media-pipeline failure.
+// Callers pass a contract RuntimeErrorCode; empty defaults to realtime_pipeline_failed.
 type RuntimeFailureReporter interface {
-	SetRuntimeFailed(ctx context.Context, sessionID string) error
+	SetRuntimeFailed(ctx context.Context, sessionID string, errorCode string) error
 }
 
 // PipelineManager owns processing contexts created for a realtime session.

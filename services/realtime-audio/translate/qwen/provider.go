@@ -84,7 +84,8 @@ func (p *Provider) Translate(ctx context.Context, request translate.Request) (tr
 	// prompt-injection refusals that abandon the translation task.
 	retried, err := p.translateOnce(ctx, request, buildReinforcedSystemPrompt(request.SourceLanguage, request.TargetLanguage))
 	if err != nil {
-		return translate.Result{}, err
+		// Preserve first-attempt usage so pipeline can still publish consumption.
+		return usageBearingResult(result, startedAt), err
 	}
 	retried.InputTokens += result.InputTokens
 	retried.OutputTokens += result.OutputTokens
@@ -94,13 +95,19 @@ func (p *Provider) Translate(ctx context.Context, request translate.Request) (tr
 			"turn_id", request.TurnID,
 			"source_language", request.SourceLanguage,
 			"target_language", request.TargetLanguage,
-			"source_preview", truncateForLog(request.Text, 120),
-			"output_preview", truncateForLog(retried.Text, 160),
+			"input_tokens", retried.InputTokens,
+			"output_tokens", retried.OutputTokens,
 		)
-		return translate.Result{}, translate.ErrUnexpectedBehavior
+		return usageBearingResult(retried, startedAt), translate.ErrUnexpectedBehavior
 	}
 	retried.LatencyMS = time.Since(startedAt).Milliseconds()
 	return retried, nil
+}
+
+func usageBearingResult(partial translate.Result, startedAt time.Time) translate.Result {
+	partial.Text = ""
+	partial.LatencyMS = time.Since(startedAt).Milliseconds()
+	return partial
 }
 
 func (p *Provider) translateOnce(ctx context.Context, request translate.Request, systemPrompt string) (translate.Result, error) {
@@ -185,11 +192,3 @@ type chatResponse struct {
 }
 
 var _ translate.Provider = (*Provider)(nil)
-
-func truncateForLog(text string, maxRunes int) string {
-	runes := []rune(strings.TrimSpace(text))
-	if maxRunes <= 0 || len(runes) <= maxRunes {
-		return string(runes)
-	}
-	return string(runes[:maxRunes]) + "…"
-}

@@ -132,6 +132,76 @@ func TestManagerExposesSessionScopedCommandCapture(t *testing.T) {
 	}
 }
 
+func TestManagerClosesSessionScopedCommandCapture(t *testing.T) {
+	manager, _ := newOwnershipTestManager(t)
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1", Status: "created"}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := manager.ArmCommandCapture(context.Background(), snapshot.SessionID, "capture-1", ingress.DefaultCommandWindow); err != nil {
+		t.Fatalf("ArmCommandCapture() error = %v", err)
+	}
+	if err := manager.CloseCommandCapture(context.Background(), snapshot.SessionID, "capture-1"); err != nil {
+		t.Fatalf("CloseCommandCapture() error = %v", err)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+func TestManagerRejectsInvalidCommandCaptureClose(t *testing.T) {
+	manager, _ := newOwnershipTestManager(t)
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1", Status: "created"}
+	if err := manager.Start(context.Background(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if _, err := manager.ArmCommandCapture(context.Background(), snapshot.SessionID, "capture-1", ingress.DefaultCommandWindow); err != nil {
+		t.Fatalf("ArmCommandCapture() error = %v", err)
+	}
+	if err := manager.CloseCommandCapture(context.Background(), snapshot.SessionID, "capture-2"); !errors.Is(err, ingress.ErrInvalidCommandCapture) {
+		t.Fatalf("CloseCommandCapture(wrong capture) error = %v, want ErrInvalidCommandCapture", err)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+func TestManagerRejectsUnavailableOrCanceledCommandCaptureClose(t *testing.T) {
+	manager, _ := newOwnershipTestManager(t)
+	if err := manager.CloseCommandCapture(context.Background(), "", "capture-1"); !errors.Is(err, ErrSessionIDRequired) {
+		t.Fatalf("CloseCommandCapture(empty session) error = %v, want ErrSessionIDRequired", err)
+	}
+	if err := manager.CloseCommandCapture(context.Background(), "missing-session", "capture-1"); !errors.Is(err, ErrPipelineNotFound) {
+		t.Fatalf("CloseCommandCapture(missing session) error = %v, want ErrPipelineNotFound", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := manager.CloseCommandCapture(ctx, "session-1", "capture-1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CloseCommandCapture(canceled) error = %v, want context.Canceled", err)
+	}
+}
+
+func TestManagerRejectsInvalidCommandCaptureArmingAndCancel(t *testing.T) {
+	manager, _ := newOwnershipTestManager(t)
+	if _, err := manager.ArmCommandCapture(context.Background(), "", "capture-1", ingress.DefaultCommandWindow); !errors.Is(err, ErrSessionIDRequired) {
+		t.Fatalf("ArmCommandCapture(empty session) error = %v, want ErrSessionIDRequired", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.ArmCommandCapture(ctx, "session-1", "capture-1", ingress.DefaultCommandWindow); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ArmCommandCapture(canceled) error = %v, want context.Canceled", err)
+	}
+	if _, err := manager.ArmCommandCapture(context.Background(), "missing-session", "capture-1", ingress.DefaultCommandWindow); !errors.Is(err, ErrPipelineNotFound) {
+		t.Fatalf("ArmCommandCapture(missing session) error = %v, want ErrPipelineNotFound", err)
+	}
+	if err := manager.CancelCommandCapture("", "capture-1"); !errors.Is(err, ErrSessionIDRequired) {
+		t.Fatalf("CancelCommandCapture(empty session) error = %v, want ErrSessionIDRequired", err)
+	}
+	if err := manager.CancelCommandCapture("missing-session", "capture-1"); !errors.Is(err, ErrPipelineNotFound) {
+		t.Fatalf("CancelCommandCapture(missing session) error = %v, want ErrPipelineNotFound", err)
+	}
+}
+
 func TestManagerStartRequiresOperationID(t *testing.T) {
 	manager, _ := newOwnershipTestManager(t)
 	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}

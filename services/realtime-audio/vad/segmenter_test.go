@@ -196,6 +196,40 @@ func TestSegmenterCancellationDiscardsActiveUtterance(t *testing.T) {
 	}
 }
 
+func TestSegmenterResetDiscardsActiveUtteranceAndPrefix(t *testing.T) {
+	segmenter, err := NewSegmenter(fakeClassifier{speech: false}, Options{
+		SilenceAfter:  500 * time.Millisecond,
+		MaxDuration:   time.Second,
+		PrefixPadding: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewSegmenter() error = %v", err)
+	}
+	base := time.Unix(45, 0)
+	if _, err := segmenter.Push(context.Background(), testFrame(t, 1, base)); err != nil {
+		t.Fatalf("Push(prefix) error = %v", err)
+	}
+	segmenter.classifier = fakeClassifier{speech: true}
+	if _, err := segmenter.Push(context.Background(), testFrame(t, 2, base.Add(100*time.Millisecond))); err != nil {
+		t.Fatalf("Push(active) error = %v", err)
+	}
+
+	segmenter.Reset()
+	if events, err := segmenter.Flush(context.Background(), base.Add(200*time.Millisecond)); err != nil || len(events) != 0 {
+		t.Fatalf("Flush(after reset) = %#v, %v; want no event", events, err)
+	}
+	if events, err := segmenter.Push(context.Background(), testFrame(t, 3, base.Add(300*time.Millisecond))); err != nil {
+		t.Fatalf("Push(after reset) error = %v", err)
+	} else if len(events) != 2 || !events[0].StartedAt.Equal(base.Add(300*time.Millisecond)) {
+		t.Fatalf("Push(after reset) events = %#v, want a fresh utterance without prefix", events)
+	}
+}
+
+func TestNilSegmenterResetIsSafe(t *testing.T) {
+	var segmenter *Segmenter
+	segmenter.Reset()
+}
+
 func TestNilSegmenterReturnsDependencyError(t *testing.T) {
 	var segmenter *Segmenter
 	frame := testFrame(t, 1, time.Unix(50, 0))

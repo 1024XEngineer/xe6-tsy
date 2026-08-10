@@ -282,10 +282,10 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 			)
 			playbackErr := h.fallback.PlayFallback(playbackContext, body)
 			heartbeatErr := stopHeartbeat()
-			if heartbeatErr != nil {
-				return nil, heartbeatErr
-			}
 			if playbackErr != nil {
+				if heartbeatErr != nil {
+					return nil, heartbeatErr
+				}
 				if h.fallbackReplays != nil && claimToken != "" && isFallbackPlaybackNotStarted(playbackErr) {
 					if abortErr := h.fallbackReplays.Abort(request.Context(), sessionID, body.OperationID, payloadHash, claimToken); abortErr != nil {
 						return nil, errors.Join(playbackErr, abortErr)
@@ -293,6 +293,7 @@ func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Req
 				}
 				return nil, playbackErr
 			}
+			// Successful playback must be completed even when stopping the heartbeat cancels an in-flight renewal.
 			if h.fallbackReplays != nil {
 				if err := h.fallbackReplays.Complete(request.Context(), sessionID, body.OperationID, payloadHash, claimToken); err != nil {
 					return nil, err

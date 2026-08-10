@@ -220,6 +220,61 @@ func TestHandlerStopsFallbackWhenClaimRenewalFails(t *testing.T) {
 	}
 }
 
+func TestHandlerCompletesFallbackWhenStoppingInFlightRenewal(t *testing.T) {
+	baseStore := &fallbackReplayStoreFake{accepted: make(map[string]string)}
+	store := &blockingRenewFallbackStore{
+		fallbackReplayStoreFake: baseStore,
+		renewEntered:            make(chan struct{}),
+	}
+	fixture := newFixture(t)
+	fixture.controlHandler.fallbackClaimRenewInterval = 10 * time.Millisecond
+	fixture.controlHandler.fallbackReplays = store
+	fixture.controlHandler.fallback = &blockingFallbackPlaybackFake{
+		entered: make(chan struct{}),
+		release: store.renewEntered,
+	}
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firstDone <- fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	}()
+
+	select {
+	case <-store.renewEntered:
+	case <-time.After(time.Second):
+		t.Fatal("fallback claim renewal did not start")
+	}
+	var first *httptest.ResponseRecorder
+	select {
+	case first = <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("fallback request did not finish after heartbeat stopped")
+	}
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("fallback status = %d, body=%s; want accepted", first.Code, first.Body.String())
+	}
+
+	secondFixture := newFixture(t)
+	secondFallback := &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallback = secondFallback
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("replayed fallback status = %d, body=%s; want accepted", second.Code, second.Body.String())
+	}
+	var receipt realtimev1.FallbackPlaybackReceipt
+	if err := json.NewDecoder(second.Body).Decode(&receipt); err != nil {
+		t.Fatalf("decode replay receipt: %v", err)
+	}
+	if receipt.Status != realtimev1.FallbackPlaybackAlreadyAccepted {
+		t.Fatalf("replay receipt = %#v, want already accepted", receipt)
+	}
+	if secondFallback.calls != 0 {
+		t.Fatalf("replayed fallback calls = %d, want 0", secondFallback.calls)
+	}
+}
+
 func TestHandlerRetriesFallbackAfterExpiredProcessingClaim(t *testing.T) {
 	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
 	firstFixture := newFixture(t)
@@ -883,6 +938,17 @@ type fallbackReplayStoreFake struct {
 	completeErr         error
 	abortErr            error
 	aborted             int
+}
+
+type blockingRenewFallbackStore struct {
+	*fallbackReplayStoreFake
+	renewEntered chan struct{}
+}
+
+func (s *blockingRenewFallbackStore) Renew(ctx context.Context, _ string, _ string, _ string, _ string) error {
+	close(s.renewEntered)
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func (s *fallbackReplayStoreFake) Claim(_ context.Context, sessionID, operationID, payloadHash string) (FallbackPlaybackClaim, error) {

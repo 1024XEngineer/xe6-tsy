@@ -175,6 +175,53 @@ func TestHandlerDoesNotReplayFallbackAfterAmbiguousPlaybackFailure(t *testing.T)
 	}
 }
 
+func TestHandlerRejectsInvalidFallbackRequests(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.controlHandler.fallback = &fallbackPlaybackFake{}
+	validBody := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	tests := []struct {
+		name           string
+		body           string
+		idempotencyKey string
+	}{
+		{name: "missing idempotency key", body: validBody},
+		{name: "missing trace", body: `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3}`, idempotencyKey: "fallback:fallback-1"},
+		{name: "session mismatch", body: `{"operation_id":"fallback-1","session_id":"other-session","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`, idempotencyKey: "fallback:fallback-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", tt.body, tt.idempotencyKey)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("fallback status = %d, body=%s; want bad request", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerReturnsCompletionFailureAndPayloadConflict(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string), completeErr: errors.New("replay store unavailable")}
+	fixture := newFixture(t)
+	fixture.controlHandler.fallback = &fallbackPlaybackFake{}
+	fixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	failed := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("completion failure status = %d, body=%s; want internal error", failed.Code, failed.Body.String())
+	}
+
+	store.completeErr = nil
+	store.reconcileProcessing = true
+	accepted := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("retry status = %d, body=%s; want accepted", accepted.Code, accepted.Body.String())
+	}
+	conflictBody := strings.Replace(body, "translated", "changed", 1)
+	conflict := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", conflictBody, "fallback:fallback-1")
+	if conflict.Code != http.StatusBadRequest {
+		t.Fatalf("payload conflict status = %d, body=%s; want bad request", conflict.Code, conflict.Body.String())
+	}
+}
+
 func TestHandlerDelegatesOfferCandidatesRuntimeAndConfig(t *testing.T) {
 	fixture := newFixture(t)
 

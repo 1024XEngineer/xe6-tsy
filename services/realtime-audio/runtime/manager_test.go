@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
@@ -107,6 +108,65 @@ func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 	}
 	if source.CloseCalls() != 1 {
 		t.Fatalf("source close calls = %d, want 1", source.CloseCalls())
+	}
+}
+
+func TestManagerPlaysFallbackThroughActiveSession(t *testing.T) {
+	source := &fakeFrameSource{waitForClose: true}
+	audioSink := &recordingAudioSink{}
+	usageSink := &recordingUsageSink{}
+	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.Audio = audioSink
+	deps.Usage = usageSink
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Translation: &translate.FakeProvider{},
+		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
+			Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
+			Result: tts.Result{Provider: "mock-tts", Model: "v1"},
+		}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1"}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := manager.Activate(t.Context(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background(), snapshot.SessionID) })
+
+	err = manager.PlayFallback(t.Context(), realtimev1.FallbackPlaybackRequest{
+		OperationID: "fallback-1", SessionID: "session-1", TurnID: "turn-1", TargetLanguage: "zh-CN",
+		TranslatedText: "fallback text", LanguageConfigVersion: 3, TraceID: "trace-fallback",
+	})
+	if err != nil {
+		t.Fatalf("PlayFallback() error = %v", err)
+	}
+	if len(audioSink.Chunks()) != 1 || len(usageSink.Facts()) != 1 || usageSink.Facts()[0].ServiceType != "tts" {
+		t.Fatalf("fallback sinks = audio %d, usage %#v", len(audioSink.Chunks()), usageSink.Facts())
+	}
+}
+
+func TestManagerPlayFallbackRejectsCanceledOrUnknownSession(t *testing.T) {
+	request := realtimev1.FallbackPlaybackRequest{
+		OperationID: "fallback-1", SessionID: "session-1", TurnID: "turn-1", TargetLanguage: "zh-CN",
+		TranslatedText: "fallback text", LanguageConfigVersion: 3, TraceID: "trace-fallback",
+	}
+	var nilManager *Manager
+	if err := nilManager.PlayFallback(t.Context(), request); !errors.Is(err, ErrDependencyRequired) {
+		t.Fatalf("nil manager PlayFallback() error = %v, want dependency error", err)
+	}
+	manager, _ := newOwnershipTestManager(t)
+	if err := manager.PlayFallback(t.Context(), request); !errors.Is(err, session.ErrRuntimeNotFound) {
+		t.Fatalf("unknown session PlayFallback() error = %v, want runtime not found", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := manager.PlayFallback(ctx, request); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled PlayFallback() error = %v, want context canceled", err)
 	}
 }
 

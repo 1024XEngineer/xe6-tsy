@@ -20,7 +20,7 @@ func (r *PostgresRepository) ListAutomaticTurnRetryCandidates(ctx context.Contex
 		language_config_version,status,target_count,settled_count,succeeded_count,
 		failed_count,fallback_operation_id,created_at,updated_at
 		FROM automatic_turn_runs
-		WHERE status IN ('partially_succeeded','failed') AND failed_count>0
+		WHERE status='partially_succeeded' AND failed_count>0
 		  AND EXISTS (
 			SELECT 1 FROM automatic_turn_settlements s
 			JOIN outbound_messages m ON m.id=s.message_id
@@ -75,6 +75,14 @@ func (r *PostgresRepository) RetryAutomaticTurnTarget(ctx context.Context, accou
 	now := time.Now().UTC()
 	var message Message
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var runStatus AutomaticTurnRunStatus
+		var succeededCount int
+		if err := tx.QueryRow(ctx, `SELECT status,succeeded_count FROM automatic_turn_runs WHERE account_id=$1 AND turn_id=$2 FOR UPDATE`, accountID, turnID).Scan(&runStatus, &succeededCount); err != nil {
+			return mapDeliveryError(err)
+		}
+		if runStatus != AutomaticTurnRunPartiallySucceeded || succeededCount == 0 {
+			return domain.ErrConflict
+		}
 		var settlementStatus AutomaticTurnSettlementStatus
 		if err := tx.QueryRow(ctx, `SELECT status FROM automatic_turn_settlements WHERE account_id=$1 AND turn_id=$2 AND message_id=$3 FOR UPDATE`, accountID, turnID, messageID).Scan(&settlementStatus); err != nil {
 			return mapDeliveryError(err)

@@ -416,7 +416,7 @@ func TestRetryAutomaticTurnFailuresOnlyRetriesFailedTargetsAfterPartialSuccess(t
 	message := Message{ID: "message-1", AccountID: "account-1", Attempts: 1, Status: MessageStatusFailed}
 	repository := &atomicScheduleRepository{
 		retryRepositoryStub: retryRepositoryStub{current: map[string]Message{"account-1": message}},
-		existing:            AutomaticTurnRun{AccountID: "account-1", TurnID: "turn-1", SucceededCount: 1, FailedCount: 1},
+		existing:            AutomaticTurnRun{AccountID: "account-1", TurnID: "turn-1", Status: AutomaticTurnRunPartiallySucceeded, SucceededCount: 1, FailedCount: 1},
 		settlements:         []AutomaticTurnSettlement{{TurnID: "turn-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Status: AutomaticTurnSettlementFailed, MessageID: message.ID}},
 	}
 	service := NewPersistentUseCases(repository, nil, nil, nil)
@@ -428,7 +428,7 @@ func TestRetryAutomaticTurnFailuresOnlyRetriesFailedTargetsAfterPartialSuccess(t
 	}
 }
 
-func TestRetryAutomaticTurnFailuresRetriesAllTargetsAfterInitialFailure(t *testing.T) {
+func TestRetryAutomaticTurnFailuresSkipsAllInitialFailures(t *testing.T) {
 	message := Message{ID: "message-1", AccountID: "account-1", Attempts: 1, Status: MessageStatusFailed}
 	repository := &atomicScheduleRepository{
 		retryRepositoryStub: retryRepositoryStub{current: map[string]Message{"account-1": message}},
@@ -439,8 +439,8 @@ func TestRetryAutomaticTurnFailuresRetriesAllTargetsAfterInitialFailure(t *testi
 	if err := service.RetryAutomaticTurnFailures(t.Context(), "account-1", "turn-1"); err != nil {
 		t.Fatalf("RetryAutomaticTurnFailures() error = %v", err)
 	}
-	if len(repository.retried) != 1 {
-		t.Fatalf("retried targets = %#v, want one retry", repository.retried)
+	if len(repository.retried) != 0 {
+		t.Fatalf("retried targets = %#v, want no retry after total initial failure", repository.retried)
 	}
 }
 
@@ -657,6 +657,7 @@ func (r *atomicScheduleRepository) MarkAutomaticTurnFallbackPlayed(context.Conte
 		return r.fallbackPlayedErr
 	}
 	r.fallbackPlayed = true
+	r.existing.Status = AutomaticTurnRunFallbackPlayed
 	return nil
 }
 
@@ -669,6 +670,7 @@ func (r *atomicScheduleRepository) MarkAutomaticTurnRestored(context.Context, st
 		return r.restoredErr
 	}
 	r.restored = true
+	r.existing.Status = AutomaticTurnRunRestored
 	return nil
 }
 

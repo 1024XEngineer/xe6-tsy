@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +44,22 @@ func TestAutomaticPostgresReadQueries(t *testing.T) {
 	}
 	if got, err := repository.ListAutomaticTurnSettlements(t.Context(), settlement.AccountID, settlement.TurnID); err != nil || !reflect.DeepEqual(got, []AutomaticTurnSettlement{settlement}) {
 		t.Fatalf("ListAutomaticTurnSettlements() = %#v, %v", got, err)
+	}
+}
+
+func TestAutomaticPostgresRetryCandidatesExcludeTotalFailures(t *testing.T) {
+	pool := &automaticPostgresPoolFake{rows: []*automaticRowsFake{{}}}
+	if _, err := (&PostgresRepository{pool: pool}).ListAutomaticTurnRetryCandidates(t.Context(), 5); err != nil {
+		t.Fatalf("ListAutomaticTurnRetryCandidates() error = %v", err)
+	}
+	if len(pool.queries) != 1 {
+		t.Fatalf("queries = %#v, want one query", pool.queries)
+	}
+	if !strings.Contains(pool.queries[0], "WHERE status='partially_succeeded'") {
+		t.Fatalf("retry candidate query = %q, want partial-success filter", pool.queries[0])
+	}
+	if strings.Contains(pool.queries[0], "status IN ('partially_succeeded','failed')") {
+		t.Fatalf("retry candidate query = %q, must exclude total failures", pool.queries[0])
 	}
 }
 
@@ -158,7 +175,10 @@ func TestAutomaticPostgresSchedulePropagatesTransactionErrors(t *testing.T) {
 func TestAutomaticPostgresRetrySkipsQueuedTarget(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	pool := &automaticPostgresPoolFake{
-		tx:  &automaticTxFake{row: []*automaticRowFake{{values: []any{AutomaticTurnSettlementQueued}}}},
+		tx: &automaticTxFake{row: []*automaticRowFake{
+			{values: []any{AutomaticTurnRunPartiallySucceeded, 1}},
+			{values: []any{AutomaticTurnSettlementQueued}},
+		}},
 		row: []*automaticRowFake{{values: []any{"message-1", "account-1", ChannelWeChat, "primary-wechat", 1, []byte(`[]`), MessageStatusRetrying, 1, (*string)(nil), now, now}}},
 	}
 	message, err := (&PostgresRepository{pool: pool}).RetryAutomaticTurnTarget(t.Context(), "account-1", "turn-1", "message-1", "retry-key")
@@ -180,6 +200,7 @@ func TestAutomaticPostgresRejectsUnsupportedRetryAndRestoreStates(t *testing.T) 
 		t.Fatalf("conflicting restore mark error = %v, want conflict", err)
 	}
 	retryPool := &automaticPostgresPoolFake{tx: &automaticTxFake{row: []*automaticRowFake{
+		{values: []any{AutomaticTurnRunPartiallySucceeded, 1}},
 		{values: []any{AutomaticTurnSettlementFailed}},
 		{values: []any{"account-1", ChannelWeChat, "primary-wechat", MessageStatusFailed, maxAutomaticTargetAttempts, (*string)(nil)}},
 	}}}
@@ -230,6 +251,7 @@ func TestAutomaticPostgresRetryTargetQueuesAttemptAndRefreshesRun(t *testing.T) 
 	now := time.Unix(1_700_000_000, 0).UTC()
 	messageID := "message-1"
 	tx := &automaticTxFake{row: []*automaticRowFake{
+		{values: []any{AutomaticTurnRunPartiallySucceeded, 1}},
 		{values: []any{AutomaticTurnSettlementFailed}},
 		{values: []any{"account-1", ChannelWeChat, "primary-wechat", MessageStatusFailed, 1, (*string)(nil)}},
 		{err: pgx.ErrNoRows},
@@ -247,9 +269,19 @@ func TestAutomaticPostgresRetryTargetQueuesAttemptAndRefreshesRun(t *testing.T) 
 		t.Fatalf("retried message = %#v", message)
 	}
 
-	conflictPool := &automaticPostgresPoolFake{tx: &automaticTxFake{row: []*automaticRowFake{{values: []any{AutomaticTurnSettlementSucceeded}}}}}
+	conflictPool := &automaticPostgresPoolFake{tx: &automaticTxFake{row: []*automaticRowFake{
+		{values: []any{AutomaticTurnRunPartiallySucceeded, 1}},
+		{values: []any{AutomaticTurnSettlementSucceeded}},
+	}}}
 	if _, err := (&PostgresRepository{pool: conflictPool}).RetryAutomaticTurnTarget(t.Context(), "account-1", "turn-1", messageID, "retry-key"); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("succeeded target retry error = %v, want conflict", err)
+	}
+}
+
+func TestAutomaticPostgresRetryRejectsTotalFailureRun(t *testing.T) {
+	pool := &automaticPostgresPoolFake{tx: &automaticTxFake{row: []*automaticRowFake{{values: []any{AutomaticTurnRunFailed, 0}}}}}
+	if _, err := (&PostgresRepository{pool: pool}).RetryAutomaticTurnTarget(t.Context(), "account-1", "turn-1", "message-1", "retry-key"); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("RetryAutomaticTurnTarget() error = %v, want conflict", err)
 	}
 }
 
@@ -277,6 +309,7 @@ type automaticPostgresPoolFake struct {
 	execTag  pgconn.CommandTag
 	row      []*automaticRowFake
 	rows     []*automaticRowsFake
+	queries  []string
 	tx       *automaticTxFake
 }
 
@@ -300,7 +333,8 @@ func (p *automaticPostgresPoolFake) Exec(context.Context, string, ...any) (pgcon
 	return p.execTag, nil
 }
 
-func (p *automaticPostgresPoolFake) Query(context.Context, string, ...any) (pgx.Rows, error) {
+func (p *automaticPostgresPoolFake) Query(_ context.Context, query string, _ ...any) (pgx.Rows, error) {
+	p.queries = append(p.queries, query)
 	if len(p.rows) == 0 {
 		return &automaticRowsFake{}, nil
 	}

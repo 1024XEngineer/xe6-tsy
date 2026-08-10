@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// AutomaticTurnFallbackWorker retries automatic targets and coordinates fallback playback.
+// AutomaticTurnFallbackWorker retries partial delivery failures and coordinates fallback playback.
 type AutomaticTurnFallbackWorker struct {
 	service  *UseCases
 	interval time.Duration

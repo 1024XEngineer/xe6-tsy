@@ -117,6 +117,19 @@ func (d *Dispatcher) Generation() uint64 {
 	return d.generation
 }
 
+// Mode reports the current routing mode for the session.
+func (d *Dispatcher) Mode() Mode {
+	if d == nil {
+		return ModeTranslation
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.capture != nil {
+		return ModeCommandCapture
+	}
+	return ModeTranslation
+}
+
 func (d *Dispatcher) BeforeFrame(ctx context.Context, capturedAt time.Time) error {
 	if d == nil {
 		return ErrDependencyRequired
@@ -233,7 +246,9 @@ func (d *Dispatcher) appendLocked(request pipeline.TurnProcessRequest) {
 	for _, chunk := range request.AudioChunks {
 		d.capture.capture.AudioChunks = append(d.capture.capture.AudioChunks, append([]byte(nil), chunk...))
 	}
-	if !request.StartedAt.IsZero() {
+	if !request.EndedAt.IsZero() {
+		d.capture.capture.EndedAt = request.EndedAt
+	} else if !request.StartedAt.IsZero() {
 		d.capture.capture.EndedAt = request.StartedAt
 	}
 }

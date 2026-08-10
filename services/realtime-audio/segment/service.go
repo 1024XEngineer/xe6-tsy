@@ -220,6 +220,7 @@ func (s *Service) handleEvents(ctx context.Context, request Request, events []va
 			TraceID:        request.TraceID,
 			SourceLanguage: request.SourceLanguage,
 			StartedAt:      event.StartedAt,
+			EndedAt:        event.EndedAt,
 			AudioChunks:    audioChunks(event.Frames),
 			Generation:     event.Generation,
 		})

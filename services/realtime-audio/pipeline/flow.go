@@ -29,6 +29,7 @@ type TurnProcessRequest struct {
 	TraceID        string
 	SourceLanguage string
 	StartedAt      time.Time
+	EndedAt        time.Time
 	AudioChunks    [][]byte
 	// Generation identifies the ingress mode snapshot that produced this
 	// request. A stale queued VAD final must not cross a mode boundary.

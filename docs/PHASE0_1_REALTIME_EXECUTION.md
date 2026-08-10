@@ -16,7 +16,7 @@
 | 场景 | 输入 | 处理 | 输出 |
 | --- | --- | --- | --- |
 | 翻译模式 | WebRTC 音频 | VAD -> ASR -> 翻译 | FinalTurn，按路由决定 TTS/投递 |
-| 命令模式 | 唤醒后的同一条 WebRTC 音频 | VAD -> ASR 文本累积 -> 后续 IntentClassifier | 结构化意图；不进入翻译/TTS |
+| 命令模式 | 唤醒后的同一条 WebRTC 音频 | VAD -> 命令音频快照 -> 后续 ASR/IntentClassifier | 结构化意图；不进入翻译/TTS |
 | 未命中唤醒词 | 普通 WebRTC 音频 | 保持翻译模式 | 不调用意图模型 |
 
 ### 命令模式规则
@@ -25,7 +25,7 @@
 2. 后端记录 `session_id`、`capture_id`、开始时间和截止时间，10 秒到期自动关闭。
 3. 命令窗口复用现有 WebRTC 音频轨，不新增第二路音频上传。
 4. 命令窗口内的 VAD final 只进入命令缓冲区；不得生成翻译 Turn、FinalTurn 或 TTS。
-5. 窗口结束后一次性提交 ASR 文本给意图识别层；空文本、超时和取消均丢弃缓冲区。
+5. 窗口结束后一次性提交命令音频快照；后续 ASR 将其转换为文本，再交给意图识别层。空音频、超时和取消均丢弃缓冲区。
 6. 意图识别模型只返回 allow-list 内的结构化意图，不能直接执行任意工具。
 7. 当前只定义翻译控制意图；服务启动类意图留待后续能力路由阶段实现。
 
@@ -52,7 +52,7 @@ WebRTC FrameSource -> segment.Service(VAD) -> TurnProcessor -> PipelineService
 
 ```text
 WebRTC FrameSource
-        -> AudioIngress(VAD + 模式/窗口 + 缓冲隔离)
+        -> AudioIngress（由 `ingress.Dispatcher` + `segment.Boundary` 实现）
         -> TurnDispatcher
              ├─ TranslationHandler -> 现有 TurnProcessor/PipelineService
              └─ CommandHandler     -> 命令文本端口（本阶段只留接口）
@@ -62,10 +62,11 @@ WebRTC FrameSource
 
 | 文件/模块 | 类型 | 之前 | 现在 |
 | --- | --- | --- | --- |
-| `services/realtime-audio/ingress` | 新增 | 无统一音频接收边界 | 管理模式、命令窗口、VAD final 分流和缓冲区清理 |
-| `services/realtime-audio/pipeline` | 调整 | `segment.Service` 直接依赖固定翻译处理器 | 通过 `TurnDispatcher` 选择翻译或命令处理器 |
-| `services/realtime-audio/runtime/manager.go` | 调整 | 直接组装 `segment.Service` | 组装 `AudioIngress` 和现有翻译适配器，保持生命周期不变 |
-| `services/realtime-audio/session` | 调整 | 仅有运行时状态 | 增加内部模式/命令窗口所需的最小类型，不改变 API 生命周期契约 |
+| `services/realtime-audio/ingress/dispatcher.go` | 新增 | 无统一音频接收边界 | 管理模式、命令窗口、命令音频缓冲和翻译/命令分流 |
+| `services/realtime-audio/pipeline/flow.go` | 调整 | Turn 请求没有模式代际信息 | 增加代际和结束时间，过滤跨模式的排队 VAD final |
+| `services/realtime-audio/segment/service.go` | 调整 | VAD 状态不能响应模式切换 | 在边界代际变化时重置 VAD，并给 final 打代际标记 |
+| `services/realtime-audio/vad/segmenter.go` | 调整 | 没有安全清空活动语句的入口 | 增加 `Reset`，清除当前语句和前缀缓存 |
+| `services/realtime-audio/runtime/manager.go` | 调整 | 直接把 `segment.Service` 接到固定处理器 | 为每个 session 组装独立 Dispatcher，并提供内部 arm/close/cancel 方法 |
 | 对应 `*_test.go` | 新增/调整 | 只验证翻译路径 | 增加模式切换、10 秒超时、缓冲区隔离和取消测试 |
 
 ### 验收标准

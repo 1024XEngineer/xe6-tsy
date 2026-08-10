@@ -27,6 +27,7 @@ type UseCases struct {
 	emailBindChallenges EmailBindChallengeRepository
 	emailBindSender     EmailBindSender
 	wecomIdentity       WeComIdentityClient
+	outputSessions      AutomaticOutputSessionReader
 	fallback            AutomaticTurnFallbackPlayer
 	restorer            AutomaticTurnOutputRestorer
 }

@@ -10,6 +10,7 @@ import (
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/config"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
@@ -133,6 +134,33 @@ func TestSessionOwnerReaderMapsMissingSession(t *testing.T) {
 	}
 }
 
+func TestAutomaticOutputSessionReaderRequiresOwnedSession(t *testing.T) {
+	dependencyFailure := errors.New("session repository unavailable")
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "owned session"},
+		{name: "missing or unowned session", err: sessions.ErrVoiceSessionNotFound, want: domain.ErrNotFound},
+		{name: "repository failure", err: dependencyFailure, want: dependencyFailure},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stub := &automaticOutputOwnedSessionReaderStub{err: test.err}
+			err := (automaticOutputSessionReader{reader: stub}).RequireOwnedSession(
+				t.Context(), "account-1", "session-1",
+			)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("RequireOwnedSession() error = %v, want %v", err, test.want)
+			}
+			if stub.accountID != "account-1" || stub.sessionID != "session-1" {
+				t.Fatalf("GetOwned() input = (%q, %q)", stub.accountID, stub.sessionID)
+			}
+		})
+	}
+}
+
 func TestSessionIDGeneratorProducesStablePrefixes(t *testing.T) {
 	generator := newSessionIDGenerator()
 	generator.now = func() time.Time { return time.Unix(1700000000, 0).UTC() }
@@ -198,6 +226,18 @@ type sessionReaderStub struct {
 
 func (s sessionReaderStub) GetSession(context.Context, string) (sessions.SessionSnapshot, error) {
 	return s.snapshot, s.err
+}
+
+type automaticOutputOwnedSessionReaderStub struct {
+	accountID string
+	sessionID string
+	err       error
+}
+
+func (s *automaticOutputOwnedSessionReaderStub) GetOwned(_ context.Context, accountID, sessionID string) (sessions.VoiceSession, error) {
+	s.accountID = accountID
+	s.sessionID = sessionID
+	return sessions.VoiceSession{}, s.err
 }
 
 type httpDoerStub struct{}

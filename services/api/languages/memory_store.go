@@ -170,6 +170,7 @@ func cloneConfig(cfg LanguageConfig) LanguageConfig {
 	out := cfg
 	out.LanguagePairs = append([]LanguagePair(nil), cfg.LanguagePairs...)
 	out.OutputRoutes = append([]OutputRoute(nil), cfg.OutputRoutes...)
+	out.OutputMode = outputModeForRoutes(out.OutputRoutes)
 	if cfg.EffectiveUntil != nil {
 		t := *cfg.EffectiveUntil
 		out.EffectiveUntil = &t

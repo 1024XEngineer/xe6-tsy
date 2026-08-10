@@ -50,6 +50,9 @@ describe("VoiceExperience", () => {
   let startRequests = 0;
   let createdSessions = 0;
   let anonymousRequests = 0;
+  let languageConfigVersion = 0;
+  let conflictNextLanguageConfig = false;
+  let languageConfigExpectedVersions: Array<number | undefined> = [];
 
   beforeEach(() => {
     closeWebRTC.mockClear();
@@ -57,6 +60,9 @@ describe("VoiceExperience", () => {
     startRequests = 0;
     createdSessions = 0;
     anonymousRequests = 0;
+    languageConfigVersion = 0;
+    conflictNextLanguageConfig = false;
+    languageConfigExpectedVersions = [];
     localStorage.clear();
     vi.stubGlobal(
       "fetch",
@@ -97,11 +103,24 @@ describe("VoiceExperience", () => {
         }
 
         if (url.includes("/language-configs") && method === "POST") {
+          const body = JSON.parse(String(init?.body ?? "{}")) as {
+            expected_version?: number;
+          };
+          languageConfigExpectedVersions.push(body.expected_version);
+          if (conflictNextLanguageConfig) {
+            conflictNextLanguageConfig = false;
+            languageConfigVersion = 2;
+            return jsonResponse(
+              { error: { code: "version_conflict", message: "stale version" } },
+              409,
+            );
+          }
+          languageConfigVersion = Math.max(languageConfigVersion + 1, 1);
           return jsonResponse(
             {
               id: "lc-1",
               session_id: "vs-1",
-              version: 1,
+              version: languageConfigVersion,
               language_pairs: [
                 { source: "zh-CN", target: "en-US" },
                 { source: "en-US", target: "zh-CN" },
@@ -113,6 +132,25 @@ describe("VoiceExperience", () => {
             },
             201,
           );
+        }
+
+        if (url.endsWith("/language-config") && method === "GET") {
+          return jsonResponse({
+            id: "lc-1",
+            session_id: "vs-1",
+            version: languageConfigVersion,
+            language_pairs: [
+              { source: "zh-CN", target: "en-US" },
+              { source: "en-US", target: "zh-CN" },
+            ],
+            output_routes: [],
+            output_mode: "bidirectional",
+            status: "active",
+            effective_from: "2026-07-31T00:00:00Z",
+            effective_until: null,
+            created_by: "acc-1",
+            created_at: "2026-07-31T00:00:00Z",
+          });
         }
 
         if (url.includes("/realtime-ticket") && method === "POST") {
@@ -154,6 +192,10 @@ describe("VoiceExperience", () => {
             ],
             next_cursor: null,
           });
+        }
+
+        if (url.endsWith("/api/v1/account/automatic-delivery-readiness") && method === "GET") {
+          return jsonResponse({ ready: true });
         }
 
         if (url.includes("/state")) {
@@ -266,6 +308,23 @@ describe("VoiceExperience", () => {
     expect(sourcePicker).toHaveAccessibleName(/源语言，当前Русский/);
   });
 
+  it("selects single output mode and persists the preference", async () => {
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const singleMode = screen.getByRole("button", { name: "单向输出" });
+    await waitFor(() => expect(singleMode).not.toBeDisabled());
+    fireEvent.click(singleMode);
+
+    expect(singleMode).toHaveAttribute("aria-pressed", "true");
+    expect(JSON.parse(localStorage.getItem("lingow-voice-config-v2") ?? "{}")).toMatchObject({
+      outputMode: "single",
+    });
+    expect(
+      screen.getByText(/反向译文自动投递，并保留 Final Turn/),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the settings wheel open while showing the history preview", async () => {
     render(<VoiceExperience />);
 
@@ -309,6 +368,25 @@ describe("VoiceExperience", () => {
         screen.getByText("Hello, how can I get to the main venue?"),
       ).toBeInTheDocument();
     });
+  });
+
+  it("refreshes the language config version after a concurrent update", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const singleMode = screen.getByRole("button", { name: "单向输出" });
+    await waitFor(() => expect(singleMode).not.toBeDisabled());
+
+    conflictNextLanguageConfig = true;
+    fireEvent.click(singleMode);
+    await waitFor(() => expect(screen.getByText(/当前会话应用失败/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "双向播报" }));
+    await waitFor(() => expect(screen.getByText(/已应用到当前会话/)).toBeInTheDocument());
+
+    expect(languageConfigExpectedVersions).toEqual([undefined, 1, 2]);
   });
 
   it("opens the complete history from the newest subtitle", async () => {

@@ -14,6 +14,17 @@ func bilingualPairs() []LanguagePair {
 	}
 }
 
+type deliveryReadinessStub struct {
+	ready bool
+	err   error
+	calls int
+}
+
+func (s *deliveryReadinessStub) HasReadyAutomaticTarget(context.Context, string) (bool, error) {
+	s.calls++
+	return s.ready, s.err
+}
+
 func TestServiceCreateAndReadLifecycle(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})
@@ -27,6 +38,9 @@ func TestServiceCreateAndReadLifecycle(t *testing.T) {
 	}
 	if created.Version != 1 || created.Status != StatusActive {
 		t.Fatalf("unexpected create result: %#v", created)
+	}
+	if created.OutputMode != InterpretationOutputModeBidirectional {
+		t.Fatalf("created output mode = %q, want %q", created.OutputMode, InterpretationOutputModeBidirectional)
 	}
 
 	snap, err := svc.GetCurrentConfig(ctx, "vs_1")
@@ -62,7 +76,7 @@ func TestServiceCreateAndReadLifecycle(t *testing.T) {
 
 func TestServicePersistsPerTargetOutputRoutes(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
-	svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"})
+	svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"}, &deliveryReadinessStub{ready: true})
 	created, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "routes-1", CreateLanguageConfigRequest{
 		Languages: bilingualPairs(),
 		OutputRoutes: []OutputRoute{
@@ -76,6 +90,9 @@ func TestServicePersistsPerTargetOutputRoutes(t *testing.T) {
 	if len(created.OutputRoutes) != 2 || created.OutputRoutes[0].DeliveryEnabled || !created.OutputRoutes[1].DeliveryEnabled {
 		t.Fatalf("created output routes = %#v", created.OutputRoutes)
 	}
+	if created.OutputMode != InterpretationOutputModeSingle {
+		t.Fatalf("created output mode = %q, want %q", created.OutputMode, InterpretationOutputModeSingle)
+	}
 	snapshot, err := svc.GetCurrentConfig(t.Context(), "vs_1")
 	if err != nil {
 		t.Fatalf("GetCurrentConfig() error = %v", err)
@@ -83,6 +100,139 @@ func TestServicePersistsPerTargetOutputRoutes(t *testing.T) {
 	if len(snapshot.OutputRoutes) != 2 || snapshot.OutputRoutes[1].TTSEnabled {
 		t.Fatalf("snapshot output routes = %#v", snapshot.OutputRoutes)
 	}
+}
+
+func TestServiceValidatesInterpretationOutputPresets(t *testing.T) {
+	tests := []struct {
+		name    string
+		routes  []OutputRoute
+		wantErr bool
+	}{
+		{
+			name: "bidirectional_tts",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US", TTSEnabled: true},
+				{TargetLanguage: "zh-CN", TTSEnabled: true},
+			},
+		},
+		{
+			name: "single_zh_to_en",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US", TTSEnabled: true},
+				{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+			},
+		},
+		{
+			name: "single_en_to_zh",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US", DeliveryEnabled: true},
+				{TargetLanguage: "zh-CN", TTSEnabled: true},
+			},
+		},
+		{
+			name: "tts_and_delivery_enabled",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US", TTSEnabled: true, DeliveryEnabled: true},
+				{TargetLanguage: "zh-CN", TTSEnabled: true},
+			},
+			wantErr: true,
+		},
+		{
+			name: "both_outputs_disabled",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US"},
+				{TargetLanguage: "zh-CN", TTSEnabled: true},
+			},
+			wantErr: true,
+		},
+		{
+			name: "delivery_enabled_for_both_targets",
+			routes: []OutputRoute{
+				{TargetLanguage: "en-US", DeliveryEnabled: true},
+				{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewMemoryStore(nil, nil)
+			svc := NewService(store, MapSessionOwner{"vs_1": "acct_1"}, &deliveryReadinessStub{ready: true})
+			_, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "", CreateLanguageConfigRequest{
+				Languages:    bilingualPairs(),
+				OutputRoutes: tt.routes,
+			})
+			if tt.wantErr && !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("CreateConfig() error = %v, want invalid_request", err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("CreateConfig() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestServiceRequiresReadyDeliveryTargetForSingleOutput(t *testing.T) {
+	singleRoutes := []OutputRoute{
+		{TargetLanguage: "en-US", TTSEnabled: true},
+		{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+	}
+
+	t.Run("ready target", func(t *testing.T) {
+		readiness := &deliveryReadinessStub{ready: true}
+		svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{"vs_1": "acct_1"}, readiness)
+		_, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "", CreateLanguageConfigRequest{
+			Languages: bilingualPairs(), OutputRoutes: singleRoutes,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig() error = %v", err)
+		}
+		if readiness.calls != 1 {
+			t.Fatalf("readiness calls = %d, want 1", readiness.calls)
+		}
+	})
+
+	t.Run("target unavailable", func(t *testing.T) {
+		readiness := &deliveryReadinessStub{}
+		svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{"vs_1": "acct_1"}, readiness)
+		_, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "", CreateLanguageConfigRequest{
+			Languages: bilingualPairs(), OutputRoutes: singleRoutes,
+		})
+		if !errors.Is(err, ErrDeliveryTargetRequired) {
+			t.Fatalf("CreateConfig() error = %v, want delivery_target_required", err)
+		}
+	})
+
+	t.Run("bidirectional skips readiness", func(t *testing.T) {
+		readiness := &deliveryReadinessStub{err: errors.New("must not be called")}
+		svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{"vs_1": "acct_1"}, readiness)
+		_, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "", CreateLanguageConfigRequest{
+			Languages: bilingualPairs(),
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig() error = %v", err)
+		}
+		if readiness.calls != 0 {
+			t.Fatalf("readiness calls = %d, want 0", readiness.calls)
+		}
+	})
+
+	t.Run("idempotent replay skips readiness", func(t *testing.T) {
+		readiness := &deliveryReadinessStub{ready: true}
+		svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{"vs_1": "acct_1"}, readiness)
+		req := CreateLanguageConfigRequest{Languages: bilingualPairs(), OutputRoutes: singleRoutes}
+		if _, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "single-replay", req); err != nil {
+			t.Fatalf("first CreateConfig() error = %v", err)
+		}
+		readiness.ready = false
+		if _, err := svc.CreateConfig(t.Context(), "acct_1", "vs_1", "single-replay", req); err != nil {
+			t.Fatalf("replay CreateConfig() error = %v", err)
+		}
+		if readiness.calls != 1 {
+			t.Fatalf("readiness calls = %d, want 1", readiness.calls)
+		}
+	})
 }
 
 func TestServiceValidationAndAuthErrors(t *testing.T) {

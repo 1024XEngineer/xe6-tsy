@@ -88,10 +88,27 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		return nil, nil, err
 	}
 	sessionRepository := sessions.NewPostgresRepository(pool)
+	smtpMailer, err := newConfiguredSMTPMailer(processConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	wecomClient, err := newConfiguredWeComClient(processConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	provider, err := configuredProvider(processConfig, smtpMailer, wecomClient)
+	if err != nil {
+		return nil, nil, err
+	}
+	providerRouter, ok := provider.(*delivery.ChannelRouter)
+	if !ok || providerRouter == nil {
+		return nil, nil, errors.New("configured provider does not expose channel capabilities")
+	}
 	languageDependencies, err := newLanguageDependenciesWithPool(
 		startupCtx,
 		pool,
 		sessionOwnerReader{reader: sessionRepository},
+		delivery.NewRuntimeReadiness(delivery.NewPostgresRepository(pool), providerRouter),
 	)
 	if err != nil {
 		return nil, nil, err
@@ -178,17 +195,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		records.turns.SetFinalTurnScheduler(deliveryService)
 	}
 	deliveryService.ConfigureTargetBinding(destinationKey, processConfig.AppEnv)
-	smtpMailer, err := newConfiguredSMTPMailer(processConfig)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, err
-	}
 	deliveryService.ConfigureEmailVerification(deliveryRepository, newEmailBindSender(processConfig, smtpMailer))
-	wecomClient, err := newConfiguredWeComClient(processConfig)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, err
-	}
 	deliveryService.ConfigureWeChatBinding(wecomClient)
 
 	usageConsumerName := processConfig.UsageConsumer
@@ -202,11 +209,6 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	}
 	usageConsumer := usage.NewConsumer(usageStream, usageService)
 
-	provider, err := configuredProvider(processConfig, smtpMailer, wecomClient)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, err
-	}
 	runtime := &configuredRuntime{
 		pool:       pool,
 		redis:      redisClient,

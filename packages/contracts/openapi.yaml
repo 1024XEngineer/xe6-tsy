@@ -96,6 +96,69 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /languages:
+    get:
+      operationId: listSupportedLanguages
+      security: [{ accountContext: [] }]
+      parameters:
+        - { name: active, in: query, required: false, schema: { type: boolean, default: true } }
+      responses:
+        '200': { description: Supported languages, content: { application/json: { schema: { $ref: '#/components/schemas/ListLanguagesResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/language-config:
+    get:
+      operationId: getCurrentLanguageConfig
+      security: [{ accountContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200': { description: Active language configuration, content: { application/json: { schema: { $ref: '#/components/schemas/LanguageConfig' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/language-configs:
+    get:
+      operationId: listLanguageConfigs
+      security: [{ accountContext: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/SessionID' }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: Language configuration history, content: { application/json: { schema: { $ref: '#/components/schemas/ListLanguageConfigsResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    post:
+      operationId: createLanguageConfig
+      security: [{ accountContext: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/SessionID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateLanguageConfigRequest' } } } }
+      responses:
+        '201': { description: Created active language configuration, content: { application/json: { schema: { $ref: '#/components/schemas/LanguageConfig' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: Output configuration cannot be applied
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                deliveryTargetRequired:
+                  summary: Single output has no ready target
+                  value:
+                    error:
+                      code: delivery_target_required
+                      message: single output requires an enabled and verified delivery target
+                      request_id: req_language_config
+                      retryable: false
+                      details: {}
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /voice-sessions/{id}/start:
     post:
       operationId: startVoiceSession
@@ -217,6 +280,14 @@ paths:
       security: [{ accountContext: [] }]
       responses:
         '200': { description: Preferences, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Preference' } } } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/automatic-delivery-readiness:
+    get:
+      operationId: getAutomaticDeliveryReadiness
+      security: [{ accountContext: [] }]
+      responses:
+        '200': { description: Automatic delivery readiness for single output, content: { application/json: { schema: { $ref: '#/components/schemas/AutomaticDeliveryReadiness' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /account/message-preferences/{channel}:
@@ -570,6 +641,71 @@ components:
         last_error_code: { type: [string, 'null'] }
         retryable: { type: boolean }
         runtime_updated_at: { type: string, format: date-time }
+    InterpretationOutputMode:
+      type: string
+      enum: [bidirectional, single]
+    LanguagePair:
+      type: object
+      additionalProperties: false
+      required: [source, target]
+      properties:
+        source: { type: string }
+        target: { type: string }
+    OutputRoute:
+      type: object
+      additionalProperties: false
+      required: [target_language, tts_enabled, delivery_enabled]
+      properties:
+        target_language: { type: string }
+        tts_enabled: { type: boolean }
+        delivery_enabled: { type: boolean }
+    SupportedLanguage:
+      type: object
+      additionalProperties: false
+      required: [language_code, display_name, display_name_en, supports_as_source, supports_as_target]
+      properties:
+        language_code: { type: string }
+        display_name: { type: string }
+        display_name_en: { type: string }
+        supports_as_source: { type: boolean }
+        supports_as_target: { type: boolean }
+    ListLanguagesResponse:
+      type: object
+      additionalProperties: false
+      required: [languages]
+      properties:
+        languages: { type: array, items: { $ref: '#/components/schemas/SupportedLanguage' } }
+    CreateLanguageConfigRequest:
+      type: object
+      additionalProperties: false
+      required: [languages]
+      properties:
+        languages: { type: array, minItems: 1, items: { $ref: '#/components/schemas/LanguagePair' } }
+        output_routes: { type: array, minItems: 1, maxItems: 2, items: { $ref: '#/components/schemas/OutputRoute' } }
+        expected_version: { type: integer, minimum: 1 }
+    LanguageConfig:
+      type: object
+      additionalProperties: false
+      required: [id, session_id, version, language_pairs, output_routes, output_mode, status, effective_from, effective_until, created_by, created_at]
+      properties:
+        id: { type: string }
+        session_id: { type: string }
+        version: { type: integer, minimum: 1 }
+        language_pairs: { type: array, items: { $ref: '#/components/schemas/LanguagePair' } }
+        output_routes: { type: array, items: { $ref: '#/components/schemas/OutputRoute' } }
+        output_mode: { $ref: '#/components/schemas/InterpretationOutputMode' }
+        status: { type: string, enum: [active, superseded, expired] }
+        effective_from: { type: string, format: date-time }
+        effective_until: { type: [string, 'null'], format: date-time }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+    ListLanguageConfigsResponse:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/LanguageConfig' } }
+        next_cursor: { type: [string, 'null'] }
     RealtimeTicket:
       type: object
       additionalProperties: false
@@ -694,6 +830,12 @@ components:
       type: object
       required: [account_id, channel, destination_ref, enabled, verified, updated_at]
       properties: { account_id: { type: string }, channel: { $ref: '#/components/schemas/Channel' }, destination_ref: { type: string }, enabled: { type: boolean }, verified: { type: boolean }, updated_at: { type: string, format: date-time } }
+    AutomaticDeliveryReadiness:
+      type: object
+      additionalProperties: false
+      required: [ready]
+      properties:
+        ready: { type: boolean }
     MessageTarget:
       type: object
       required: [destination_ref, channel, verified, updated_at]

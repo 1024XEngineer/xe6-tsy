@@ -253,6 +253,21 @@ func (r *PostgresRepository) ListPreferences(ctx context.Context, accountID stri
 	return result, rows.Err()
 }
 
+// HasReadyAutomaticTarget implements the language-configuration readiness
+// port without exposing delivery models across the module boundary.
+func (r *PostgresRepository) HasReadyAutomaticTarget(ctx context.Context, accountID string) (bool, error) {
+	preferences, err := r.ListPreferences(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	for _, preference := range preferences {
+		if preference.Enabled && preference.Verified && preference.DestinationRef != "" && IsSupportedChannel(preference.Channel) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (r *PostgresRepository) PutPreference(ctx context.Context, preference Preference) (Preference, error) {
 	var stored Preference
 	err := r.pool.QueryRow(ctx, `

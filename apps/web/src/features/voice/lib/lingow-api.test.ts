@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createLanguageConfig,
   getAccountUsageSummary,
+  hasReadyAutomaticTarget,
   listSessionTurns,
   listSupportedLanguages,
   listVoiceSessions,
@@ -65,6 +67,46 @@ describe("startVoiceSession", () => {
 
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("createLanguageConfig", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends output routes and the expected version for an active switch", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        id: "cfg-2",
+        session_id: "vs-1",
+        version: 2,
+        language_pairs: [],
+        output_routes: [],
+        output_mode: "single",
+        status: "active",
+        effective_from: "2026-08-07T00:00:00Z",
+        effective_until: null,
+        created_by: "acc-1",
+        created_at: "2026-08-07T00:00:00Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createLanguageConfig("access-1", "vs-1", {
+      sourceLanguage: "zh-CN",
+      targetLanguage: "en-US",
+      outputMode: "single",
+    }, 1);
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [RequestInfo, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      expected_version: 1,
+      output_routes: [
+        { target_language: "en-US", tts_enabled: true, delivery_enabled: false },
+        { target_language: "zh-CN", tts_enabled: false, delivery_enabled: true },
+      ],
+    });
   });
 });
 
@@ -152,6 +194,32 @@ describe("getAccountUsageSummary", () => {
     expect(new Headers(calls[0]?.[1].headers).get("Authorization")).toBe(
       "Bearer access-1",
     );
+  });
+});
+
+describe("hasReadyAutomaticTarget", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses server-computed automatic delivery readiness", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ready: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(hasReadyAutomaticTarget("access-1")).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/account/automatic-delivery-readiness",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it("returns false when the server reports delivery is unavailable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ ready: false })),
+    );
+
+    await expect(hasReadyAutomaticTarget("access-1")).resolves.toBe(false);
   });
 });
 

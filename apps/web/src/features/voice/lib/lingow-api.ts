@@ -1,4 +1,9 @@
-import { bilingualPairs, type VoiceSessionConfig } from "./languages";
+import {
+  bilingualPairs,
+  outputRoutes,
+  type InterpretationOutputMode,
+  type VoiceSessionConfig,
+} from "./languages";
 import { ApiError, newIdempotencyKey, parseJson } from "./http";
 
 export type AuthTokens = {
@@ -71,6 +76,24 @@ export type VoiceTurn = {
 export type VoiceTurnListResponse = {
   items: VoiceTurn[];
   next_cursor: string | null;
+};
+
+export type LanguageConfigResponse = {
+  id: string;
+  session_id: string;
+  version: number;
+  language_pairs: Array<{ source: string; target: string }>;
+  output_routes: Array<{
+    target_language: string;
+    tts_enabled: boolean;
+    delivery_enabled: boolean;
+  }>;
+  output_mode: InterpretationOutputMode;
+  status: "active" | "superseded" | "expired";
+  effective_from: string;
+  effective_until: string | null;
+  created_by: string;
+  created_at: string;
 };
 
 export type SupportedLanguage = {
@@ -152,7 +175,8 @@ export async function createLanguageConfig(
   accessToken: string,
   sessionId: string,
   config: VoiceSessionConfig,
-) {
+  expectedVersion?: number,
+): Promise<LanguageConfigResponse> {
   const response = await fetch(
     `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/language-configs`,
     {
@@ -163,10 +187,28 @@ export async function createLanguageConfig(
       },
       body: JSON.stringify({
         languages: bilingualPairs(config),
+        output_routes: outputRoutes(config),
+        ...(expectedVersion === undefined
+          ? {}
+          : { expected_version: expectedVersion }),
       }),
     },
   );
-  return parseJson(response);
+  return parseJson<LanguageConfigResponse>(response);
+}
+
+export async function getCurrentLanguageConfig(
+  accessToken: string,
+  sessionId: string,
+): Promise<LanguageConfigResponse> {
+  const response = await fetch(
+    `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/language-config`,
+    {
+      headers: authHeaders(accessToken),
+      cache: "no-store",
+    },
+  );
+  return parseJson<LanguageConfigResponse>(response);
 }
 
 export type RealtimeTicket = {
@@ -244,6 +286,17 @@ export async function listSupportedLanguages(
     cache: "no-store",
   });
   return parseJson<SupportedLanguageListResponse>(response);
+}
+
+export async function hasReadyAutomaticTarget(
+  accessToken: string,
+): Promise<boolean> {
+  const response = await fetch("/api/v1/account/automatic-delivery-readiness", {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  const result = await parseJson<{ ready: boolean }>(response);
+  return result.ready;
 }
 
 export async function getAccountUsageSummary(

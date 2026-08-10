@@ -14,9 +14,11 @@ type ErrorBody struct {
 
 // ErrorDetail carries a stable machine code plus human message.
 type ErrorDetail struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	RequestID string `json:"request_id"`
+	Code      string         `json:"code"`
+	Message   string         `json:"message"`
+	RequestID string         `json:"request_id"`
+	Retryable bool           `json:"retryable"`
+	Details   map[string]any `json:"details"`
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, message, requestID string) {
@@ -27,6 +29,7 @@ func writeJSONError(w http.ResponseWriter, status int, code, message, requestID 
 			Code:      code,
 			Message:   message,
 			RequestID: requestID,
+			Details:   map[string]any{},
 		},
 	})
 }
@@ -59,6 +62,8 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, message = http.StatusUnprocessableEntity, CodeUnsupportedLanguage, err.Error()
 	case errors.Is(err, ErrInvalidLanguagePair):
 		status, code, message = http.StatusUnprocessableEntity, CodeInvalidLanguagePair, err.Error()
+	case errors.Is(err, ErrDeliveryTargetRequired):
+		status, code, message = http.StatusUnprocessableEntity, CodeDeliveryTargetRequired, "single output requires an enabled and verified delivery target"
 	case errors.Is(err, ErrUnsupportedSourceLanguage):
 		status, code, message = http.StatusUnprocessableEntity, CodeUnsupportedSourceLang, err.Error()
 	case errors.Is(err, ErrNotImplemented):

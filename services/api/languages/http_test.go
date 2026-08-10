@@ -94,6 +94,77 @@ func TestHTTPIdempotencyKeyTooLong(t *testing.T) {
 	}
 }
 
+func TestHTTPSingleOutputRequiresReadyDeliveryTarget(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	svc := NewService(store, MapSessionOwner{"vs_http": "acct_http"}, &deliveryReadinessStub{})
+	mux := http.NewServeMux()
+	NewHandler(svc, func(r *http.Request) (string, bool) {
+		return webapi.AccountIDFromContext(r.Context())
+	}).Register(mux, withoutAuthentication)
+
+	body, _ := json.Marshal(CreateLanguageConfigRequest{
+		Languages: bilingualPairs(),
+		OutputRoutes: []OutputRoute{
+			{TargetLanguage: "en-US", TTSEnabled: true},
+			{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_http/language-configs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%s, want 422", rec.Code, rec.Body.String())
+	}
+	var errBody ErrorBody
+	if err := json.NewDecoder(rec.Body).Decode(&errBody); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if errBody.Error.Code != CodeDeliveryTargetRequired {
+		t.Fatalf("code=%q, want %q", errBody.Error.Code, CodeDeliveryTargetRequired)
+	}
+	if errBody.Error.Retryable || errBody.Error.Details == nil {
+		t.Fatalf("error metadata = %#v, want non-retryable error with details", errBody.Error)
+	}
+}
+
+func TestHTTPAutomaticDeliveryReadiness(t *testing.T) {
+	tests := []struct {
+		name      string
+		readiness DeliveryReadinessReader
+		want      bool
+	}{
+		{name: "runtime unavailable", want: false},
+		{name: "runtime ready", readiness: &deliveryReadinessStub{ready: true}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewService(NewMemoryStore(nil, nil), MapSessionOwner{}, tt.readiness)
+			mux := http.NewServeMux()
+			NewHandler(svc, func(*http.Request) (string, bool) {
+				return "acct_http", true
+			}).Register(mux, withoutAuthentication)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/account/automatic-delivery-readiness", nil)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			var response AutomaticDeliveryReadinessResponse
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.Ready != tt.want {
+				t.Fatalf("ready=%v, want %v", response.Ready, tt.want)
+			}
+		})
+	}
+}
+
 func TestHTTPListLanguages(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	svc := NewService(store, MapSessionOwner{})

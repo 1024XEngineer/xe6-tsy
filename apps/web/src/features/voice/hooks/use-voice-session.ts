@@ -6,7 +6,9 @@ import {
   createLanguageConfig,
   createVoiceSession,
   endVoiceSession,
+  getCurrentLanguageConfig,
   getVoiceSessionState,
+  hasReadyAutomaticTarget,
   listSessionTurns,
   mintRealtimeTicket,
   startVoiceSession,
@@ -20,6 +22,7 @@ import {
   languageLabel,
   type VoiceSessionConfig,
 } from "../lib/languages";
+import { ApiError } from "../lib/http";
 import { parseTranslationFinal } from "../lib/translation-events";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
 import {
@@ -51,6 +54,8 @@ export type SessionDebugInfo = {
   lastError: string | null;
   wakeStatus: WakeListenerStatus;
 };
+
+export type ConfigSyncStatus = "idle" | "saving" | "applied" | "failed";
 
 function mapRuntimeToStatus(runtime: RuntimeState | null): string {
   switch (runtime) {
@@ -144,6 +149,7 @@ export function useVoiceSession() {
   const [state, dispatch] = useReducer(sessionReducer, initialSession);
   const [statusMessage, setStatusMessage] = useState("正在准备麦克风");
   const [hintMessage, setHintMessage] = useState<string | null>(null);
+  const [configSyncStatus, setConfigSyncStatus] = useState<ConfigSyncStatus>("idle");
   const [voiceConfig, setVoiceConfig] = useState<VoiceSessionConfig>(() =>
     loadVoiceConfig(DEFAULT_VOICE_CONFIG),
   );
@@ -164,6 +170,8 @@ export function useVoiceSession() {
   const webrtcRef = useRef<WebRTCSessionHandles | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
+  const activeLanguageConfigVersionRef = useRef<number | null>(null);
+  const activeConfigUpdateChainRef = useRef<Promise<void>>(Promise.resolve());
   const wakeRef = useRef<WakeWordListener | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
@@ -173,6 +181,42 @@ export function useVoiceSession() {
     configRef.current = normalized;
     setVoiceConfig(normalized);
     saveVoiceConfig(normalized);
+
+    const token = accessTokenRef.current;
+    const sessionId = sessionIdRef.current;
+    if (!runningRef.current || !token || !sessionId) {
+      setConfigSyncStatus("idle");
+      return;
+    }
+    setConfigSyncStatus("saving");
+
+    activeConfigUpdateChainRef.current = activeConfigUpdateChainRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (!runningRef.current || sessionIdRef.current !== sessionId) return;
+        let expectedVersion = activeLanguageConfigVersionRef.current;
+        if (expectedVersion === null) {
+          const current = await getCurrentLanguageConfig(token, sessionId);
+          expectedVersion = current.version;
+        }
+        const updated = await createLanguageConfig(
+          token,
+          sessionId,
+          normalized,
+          expectedVersion,
+        );
+        activeLanguageConfigVersionRef.current = updated.version;
+        if (sessionIdRef.current === sessionId) setConfigSyncStatus("applied");
+      })
+      .catch((error) => {
+        if (sessionIdRef.current === sessionId) {
+          if (error instanceof ApiError && error.code === "version_conflict") {
+            activeLanguageConfigVersionRef.current = null;
+          }
+          setConfigSyncStatus("failed");
+          setHintMessage(errorMessage(error, "切换输出模式失败"));
+        }
+      });
   }, []);
 
   const stopPolling = useCallback(() => {
@@ -256,6 +300,8 @@ export function useVoiceSession() {
     }
 
     sessionIdRef.current = null;
+    activeLanguageConfigVersionRef.current = null;
+    setConfigSyncStatus("idle");
     dispatch({ type: "END" });
     setStatusMessage(
       wakeRef.current?.getStatus() === "listening"
@@ -294,6 +340,19 @@ export function useVoiceSession() {
       accessTokenRef.current = auth.tokens.access_token;
       accountIdRef.current = auth.account.id;
       setDebug((prev) => ({ ...prev, accountId: auth.account.id }));
+      if (configRef.current.outputMode === "single") {
+        const ready = await hasReadyAutomaticTarget(auth.tokens.access_token);
+        if (!ready) {
+          const fallbackConfig = {
+            ...configRef.current,
+            outputMode: "bidirectional" as const,
+          };
+          configRef.current = fallbackConfig;
+          setVoiceConfig(fallbackConfig);
+          saveVoiceConfig(fallbackConfig);
+          throw new Error("单向输出需要已启用且已验证的自动投递目标，已恢复双向播报");
+        }
+      }
       setStatusMessage("正在创建会话");
 
       const session = await createVoiceSession(auth.tokens.access_token);
@@ -302,11 +361,12 @@ export function useVoiceSession() {
       setHintMessage(`session: ${session.id}`);
 
       setStatusMessage("正在配置语言");
-      await createLanguageConfig(
+      const languageConfig = await createLanguageConfig(
         auth.tokens.access_token,
         session.id,
         configRef.current,
       );
+      activeLanguageConfigVersionRef.current = languageConfig.version;
       setHintMessage(
         `${formatActivePair(configRef.current)} · ${session.id}`,
       );
@@ -427,6 +487,8 @@ export function useVoiceSession() {
       cleanupMedia();
       stopPolling();
       sessionIdRef.current = null;
+      activeLanguageConfigVersionRef.current = null;
+      setConfigSyncStatus("idle");
       runningRef.current = false;
       dispatch({ type: "END" });
       setStatusMessage("联调失败");
@@ -529,6 +591,7 @@ export function useVoiceSession() {
       statusMessage,
       hintMessage: hintMessage ?? state.notice,
       voiceConfig,
+      configSyncStatus,
       updateConfig,
       debug,
       wakeStatus,
@@ -536,6 +599,7 @@ export function useVoiceSession() {
     }),
     [
       debug,
+      configSyncStatus,
       hintMessage,
       state,
       statusMessage,

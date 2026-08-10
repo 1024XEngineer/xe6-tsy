@@ -32,9 +32,28 @@ func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) h
 		panic("language authentication middleware is required")
 	}
 	mux.Handle("GET /api/v1/languages", authenticate(http.HandlerFunc(h.listLanguages)))
+	mux.Handle("GET /api/v1/account/automatic-delivery-readiness", authenticate(http.HandlerFunc(h.automaticDeliveryReadiness)))
 	mux.Handle("GET /api/v1/voice-sessions/{id}/language-config", authenticate(http.HandlerFunc(h.getCurrentConfig)))
 	mux.Handle("POST /api/v1/voice-sessions/{id}/language-configs", authenticate(http.HandlerFunc(h.createConfig)))
 	mux.Handle("GET /api/v1/voice-sessions/{id}/language-configs", authenticate(http.HandlerFunc(h.listConfigHistory)))
+}
+
+func (h *Handler) automaticDeliveryReadiness(w http.ResponseWriter, r *http.Request) {
+	accountID, err := h.requireAccount(r)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	if h.svc == nil {
+		writeServiceError(w, r, ErrNotImplemented)
+		return
+	}
+	ready, err := h.svc.AutomaticDeliveryReady(r.Context(), accountID)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, AutomaticDeliveryReadinessResponse{Ready: ready})
 }
 
 func (h *Handler) listLanguages(w http.ResponseWriter, r *http.Request) {

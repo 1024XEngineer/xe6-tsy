@@ -592,7 +592,7 @@ components:
       enum: [realtime_start_failed, realtime_stop_failed, realtime_pipeline_failed, realtime_translation_rejected]
     ControlPlaneErrorCode:
       type: string
-      enum: [runtime_not_found, runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict]
+      enum: [runtime_not_found, runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict, control_invalid_message, control_unsupported_version, control_unsupported_type, control_unauthorized_session, control_connection_closed, control_unavailable]
     RuntimeNotFoundError:
       type: object
       additionalProperties: false
@@ -713,6 +713,49 @@ components:
         operation_id: { type: string, minLength: 1 }
         status: { $ref: '#/components/schemas/ModeSwitchStatus' }
         state: { $ref: '#/components/schemas/ModeStateSnapshot' }
+    ControlModeSwitchCommand:
+      type: object
+      additionalProperties: false
+      description: Session identity is bound by the authenticated PeerConnection and is never accepted from this payload.
+      required: [runtime_instance_id, operation_id, expected_generation, target_mode]
+      properties:
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128 }
+        operation_id: { type: string, minLength: 1, maxLength: 256 }
+        expected_generation: { type: integer, format: int64, minimum: 1 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+    ControlModeSwitchRequest:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, type, request_id, command]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        type: { type: string, const: mode.switch }
+        request_id: { type: string, minLength: 1, maxLength: 128 }
+        command: { $ref: '#/components/schemas/ControlModeSwitchCommand' }
+    ControlError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        message: { type: string, minLength: 1, maxLength: 512 }
+    ControlResponse:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, type]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        type: { type: string, enum: [mode.switch.result, control.error] }
+        request_id: { type: string, minLength: 1, maxLength: 128 }
+        result: { $ref: '#/components/schemas/SwitchModeResult' }
+        error: { $ref: '#/components/schemas/ControlError' }
+      oneOf:
+        - properties: { type: { type: string, const: mode.switch.result } }
+          required: [request_id, result]
+          not: { required: [error] }
+        - properties: { type: { type: string, const: control.error } }
+          required: [error]
+          not: { required: [result] }
     ModeChangedEvent:
       type: object
       additionalProperties: false

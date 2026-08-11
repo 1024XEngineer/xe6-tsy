@@ -27,12 +27,13 @@ type StreamConsumer interface {
 
 // ValkeyStream consumes realtime.mode.changed events from one Redis/Valkey consumer group.
 type ValkeyStream struct {
-	client    *redis.Client
-	stream    string
-	group     string
-	consumer  string
-	block     time.Duration
-	claimIdle time.Duration
+	client     *redis.Client
+	stream     string
+	group      string
+	consumer   string
+	block      time.Duration
+	claimIdle  time.Duration
+	claimStart string
 }
 
 func NewValkeyStream(ctx context.Context, client *redis.Client, stream, group, consumer string) (*ValkeyStream, error) {
@@ -49,12 +50,13 @@ func NewValkeyStream(ctx context.Context, client *redis.Client, stream, group, c
 		consumer = "mode-projection-worker"
 	}
 	queue := &ValkeyStream{
-		client:    client,
-		stream:    stream,
-		group:     group,
-		consumer:  consumer,
-		block:     defaultStreamBlock,
-		claimIdle: 30 * time.Second,
+		client:     client,
+		stream:     stream,
+		group:      group,
+		consumer:   consumer,
+		block:      defaultStreamBlock,
+		claimIdle:  30 * time.Second,
+		claimStart: "0-0",
 	}
 	if err := client.XGroupCreateMkStream(ctx, stream, group, "0").Err(); err != nil && !isBusyGroup(err) {
 		return nil, err
@@ -116,17 +118,28 @@ func (q *ValkeyStream) Nack(_ context.Context, _ string) error {
 }
 
 func (q *ValkeyStream) autoclaim(ctx context.Context) (StreamMessage, bool, error) {
-	result, _, err := q.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+	start := q.claimStart
+	if start == "" {
+		start = "0-0"
+	}
+	result, nextStart, err := q.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream:   q.stream,
 		Group:    q.group,
 		Consumer: q.consumer,
 		MinIdle:  q.claimIdle,
-		Start:    "0-0",
+		Start:    start,
 		Count:    1,
 	}).Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return StreamMessage{}, false, err
 	}
+	if nextStart == "" {
+		nextStart = "0-0"
+	}
+	// XAUTOCLAIM returns a continuation cursor even when the current scan window has
+	// no eligible entry. Keep it so a recently claimed entry at the front of the PEL
+	// cannot permanently hide older idle entries in later scan windows.
+	q.claimStart = nextStart
 	if len(result) == 0 {
 		return StreamMessage{}, false, nil
 	}

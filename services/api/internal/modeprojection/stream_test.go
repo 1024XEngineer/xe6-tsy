@@ -75,6 +75,41 @@ func TestValkeyStreamReclaimsIdleNackWithoutNewTraffic(t *testing.T) {
 	}
 }
 
+func TestValkeyStreamAdvancesAutoClaimCursorAcrossPendingWindows(t *testing.T) {
+	_, client := newTestValkey(t)
+	queue := newTestStream(t, client, "retry-worker")
+	queue.claimIdle = time.Hour
+
+	for _, payload := range []string{"first", "second", "third"} {
+		if err := queue.Publish(t.Context(), []byte(payload)); err != nil {
+			t.Fatalf("Publish(%q) error = %v", payload, err)
+		}
+	}
+	for range 3 {
+		message, err := queue.Receive(t.Context())
+		if err != nil {
+			t.Fatalf("Receive() while seeding pending entries: %v", err)
+		}
+		if err := queue.Nack(t.Context(), message.Receipt); err != nil {
+			t.Fatalf("Nack() while seeding pending entries: %v", err)
+		}
+	}
+	queue.claimIdle = 0
+	queue.claimStart = "0-0"
+
+	first, ok, err := queue.autoclaim(t.Context())
+	if err != nil || !ok {
+		t.Fatalf("first autoclaim = (%#v, %v, %v), want an entry", first, ok, err)
+	}
+	second, ok, err := queue.autoclaim(t.Context())
+	if err != nil || !ok {
+		t.Fatalf("second autoclaim = (%#v, %v, %v), want the next entry", second, ok, err)
+	}
+	if first.Receipt == second.Receipt {
+		t.Fatalf("autoclaim receipts repeated %q; cursor did not advance", first.Receipt)
+	}
+}
+
 func TestValkeyStreamReturnsMalformedEntryForAcknowledgement(t *testing.T) {
 	_, client := newTestValkey(t)
 	queue := newTestStream(t, client, "malformed-worker")

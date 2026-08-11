@@ -31,6 +31,13 @@ type UseCases interface {
 	List(context.Context, ListInput) (ListPage, error)
 }
 
+// ModeUseCases is an optional capability so existing Session handlers can be
+// constructed without a realtime dependency while the runtime is disabled.
+type ModeUseCases interface {
+	GetMode(context.Context, DetailInput) (ModeSnapshot, error)
+	SwitchMode(context.Context, SwitchModeInput) (ModeSwitchResult, error)
+}
+
 // RealtimeTicket is the browser-facing mint response for WebRTC signaling.
 type RealtimeTicket struct {
 	Ticket    string    `json:"ticket"`
@@ -46,6 +53,7 @@ type RealtimeTicketMinter interface {
 // Handler exposes Issue #86's public voice-session HTTP contract.
 type Handler struct {
 	service   UseCases
+	modes     ModeUseCases
 	accountID AccountIDFromRequest
 	tickets   RealtimeTicketMinter
 }
@@ -68,6 +76,16 @@ func (h *Handler) WithRealtimeTickets(tickets RealtimeTicketMinter) *Handler {
 	return h
 }
 
+// WithRealtimeModes enables account-scoped mode query and compare-and-switch
+// routes. It is deliberately separate from the legacy Session use-case port.
+func (h *Handler) WithRealtimeModes(modes ModeUseCases) *Handler {
+	if h == nil {
+		return nil
+	}
+	h.modes = modes
+	return h
+}
+
 // Register attaches voice-session lifecycle routes behind authentication.
 func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) http.Handler) {
 	if authenticate == nil {
@@ -84,6 +102,10 @@ func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) h
 			"POST /api/v1/voice-sessions/{id}/realtime-ticket",
 			authenticate(http.HandlerFunc(h.mintRealtimeTicket)),
 		)
+	}
+	if h.modes != nil {
+		mux.Handle("GET /api/v1/voice-sessions/{id}/mode", authenticate(http.HandlerFunc(h.modeState)))
+		mux.Handle("POST /api/v1/voice-sessions/{id}/mode", authenticate(http.HandlerFunc(h.switchMode)))
 	}
 }
 
@@ -255,6 +277,71 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeHTTPJSON(w, http.StatusOK, state)
+}
+
+func (h *Handler) modeState(w http.ResponseWriter, r *http.Request) {
+	accountID, err := h.requireAccount(r)
+	if err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	if h.modes == nil {
+		writeHTTPError(w, r, ErrNotImplemented)
+		return
+	}
+	state, err := h.modes.GetMode(r.Context(), DetailInput{
+		AccountID: accountID,
+		SessionID: r.PathValue("id"),
+	})
+	if err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	writeHTTPJSON(w, http.StatusOK, state)
+}
+
+type switchModeRequest struct {
+	RuntimeInstanceID  string `json:"runtime_instance_id"`
+	ExpectedGeneration int64  `json:"expected_generation"`
+	TargetMode         Mode   `json:"target_mode"`
+}
+
+func (h *Handler) switchMode(w http.ResponseWriter, r *http.Request) {
+	accountID, err := h.requireAccount(r)
+	if err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	if h.modes == nil {
+		writeHTTPError(w, r, ErrNotImplemented)
+		return
+	}
+	var body switchModeRequest
+	if err := decodeHTTPJSON(r, &body); err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	operationID := r.Header.Get("Idempotency-Key")
+	if body.RuntimeInstanceID == "" || body.ExpectedGeneration < 1 ||
+		!body.TargetMode.Valid() || operationID == "" ||
+		len(operationID) > maxIdempotencyKeyLength {
+		writeHTTPError(w, r, ErrInvalidRequest)
+		return
+	}
+	result, err := h.modes.SwitchMode(r.Context(), SwitchModeInput{
+		AccountID:          accountID,
+		SessionID:          r.PathValue("id"),
+		RuntimeInstanceID:  body.RuntimeInstanceID,
+		OperationID:        operationID,
+		TraceID:            requestIDFromHTTP(r),
+		ExpectedGeneration: body.ExpectedGeneration,
+		TargetMode:         body.TargetMode,
+	})
+	if err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	writeHTTPJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) mintRealtimeTicket(w http.ResponseWriter, r *http.Request) {
@@ -455,6 +542,16 @@ func statusCodeForError(err error) (int, ErrorCode, string) {
 		return http.StatusServiceUnavailable, CodeRuntimeUnavailable, "runtime state is unavailable"
 	case errors.Is(err, ErrWebRTCUnavailable):
 		return http.StatusServiceUnavailable, CodeWebRTCUnavailable, "WebRTC state is unavailable"
+	case errors.Is(err, ErrModeNotAvailable):
+		return http.StatusUnprocessableEntity, CodeModeNotAvailable, "requested mode is not available"
+	case errors.Is(err, ErrModeGenerationConflict):
+		return http.StatusConflict, CodeModeGenerationConflict, "mode generation does not match"
+	case errors.Is(err, ErrModeRuntimeMismatch):
+		return http.StatusConflict, CodeModeRuntimeMismatch, "mode runtime instance does not match"
+	case errors.Is(err, ErrModeOperationConflict):
+		return http.StatusConflict, CodeModeOperationConflict, "mode operation conflicts with a previous request"
+	case errors.Is(err, ErrModeUnavailable):
+		return http.StatusServiceUnavailable, CodeModeUnavailable, "mode state is unavailable"
 	case errors.Is(err, ErrNotImplemented):
 		return http.StatusNotImplemented, CodeNotImplemented, "voice session dependency is not implemented yet"
 	default:

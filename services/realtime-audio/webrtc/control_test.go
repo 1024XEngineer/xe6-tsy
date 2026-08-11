@@ -130,9 +130,11 @@ func TestPionControlReceiverCloseCancelsInFlightCommand(t *testing.T) {
 
 func TestPionControlReceiverRejectsNonReliableOrderedChannel(t *testing.T) {
 	partialReliability := uint16(1)
+	partialChannel := newControlChannelRecorder(realtimev1.ControlDataChannelLabel, true)
+	partialChannel.maxRetransmits = &partialReliability
 	for _, channel := range []*controlChannelRecorder{
 		newControlChannelRecorder(realtimev1.ControlDataChannelLabel, false),
-		{label: realtimev1.ControlDataChannelLabel, ordered: true, state: pion.DataChannelStateOpen, maxRetransmits: &partialReliability},
+		partialChannel,
 	} {
 		_, err := newPionControlReceiver(channel, &controlHandlerRecorder{}, "session-1", "rtc-1")
 		if !errors.Is(err, ErrControlChannelInvalid) || channel.ReadyState() != pion.DataChannelStateClosed {

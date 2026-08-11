@@ -39,7 +39,7 @@ Mobile 端核心控制面客户端骨架，供 Vue、uni-app、Capacitor 或原�
 - HTTP `GET` 快照和 `POST /mode` 类型化模式命令；
 - generation/runtime instance/operation conflict 后刷新 ModeState，并废弃旧 operation；
 - 可订阅的展示状态模型；
-- 连接断开状态和可注入重连策略；
+- 连接断开状态和可注入的真实媒体重连适配器；未注入时明确失败，不使用状态 GET 冒充重连；
 - 模式快照不可用时按旧客户端兼容规则使用 `interpretation`，不伪造快照。
 
 明确未实现：

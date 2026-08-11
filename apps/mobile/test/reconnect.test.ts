@@ -21,13 +21,19 @@ class ReconnectTransport implements RealtimeTransport {
 test("reconnect policy is injectable and refreshes snapshots after recovery", async () => {
   const transport = new ReconnectTransport();
   const policy: ReconnectPolicy = { next: (attempt) => ({ waitMs: attempt === 1 ? 0 : 1, continue: attempt < 3 }) };
-  const client = new RuntimeClient("s1", transport, { reconnectPolicy: policy, sleep: async () => undefined });
+  let mediaReconnects = 0;
+  const client = new RuntimeClient("s1", transport, {
+    reconnectPolicy: policy,
+    sleep: async () => undefined,
+    reconnectMedia: async () => { mediaReconnects += 1; },
+  });
   client.observeConnection(await transport.getConnection("s1"));
   assert.equal(client.state.status, "reconnecting");
   await client.reconnect();
   assert.equal(client.state.connection?.state, "connected");
   assert.equal(client.state.status, "ready");
   assert.equal(transport.calls, 2);
+  assert.equal(mediaReconnects, 1);
 });
 
 test("reconnect policy retries a transient connection read", async () => {
@@ -41,9 +47,27 @@ test("reconnect policy retries a transient connection read", async () => {
     return original(sessionId);
   };
   const policy: ReconnectPolicy = { next: (attempt) => ({ waitMs: 0, continue: attempt <= 3 }) };
-  const client = new RuntimeClient("s1", transport, { reconnectPolicy: policy, sleep: async () => undefined });
+  let mediaReconnects = 0;
+  const client = new RuntimeClient("s1", transport, {
+    reconnectPolicy: policy,
+    sleep: async () => undefined,
+    reconnectMedia: async () => { mediaReconnects += 1; },
+  });
   client.observeConnection({ session_id: "s1", connection_id: "c1", state: "disconnected", version: 1, updated_at: "2026-01-01T00:00:00.000Z" });
   transport.failFirstRead = true;
   await client.reconnect();
   assert.equal(client.state.connection?.state, "connected");
+  assert.equal(mediaReconnects, 3);
+});
+
+test("reconnect fails explicitly when the platform media adapter is missing", async () => {
+  const transport = new ReconnectTransport();
+  const client = new RuntimeClient("s1", transport, { sleep: async () => undefined });
+  client.observeConnection({ session_id: "s1", connection_id: "c1", state: "disconnected", version: 1, updated_at: "2026-01-01T00:00:00.000Z" });
+
+  await client.reconnect();
+
+  assert.equal(client.state.status, "error");
+  assert.equal(client.state.errorCode, "media_reconnect_unavailable");
+  assert.equal(transport.calls, 0);
 });

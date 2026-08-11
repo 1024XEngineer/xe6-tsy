@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DEFAULT_MODE } from "../src/contracts.ts";
+import {
+  DEFAULT_MODE,
+  type ConnectionSnapshot,
+  type SwitchModeResult,
+} from "../src/contracts.ts";
 import { ModeConflictError, RuntimeClient } from "../src/runtime-client.ts";
 import { RealtimeApiError, type RealtimeTransport } from "../src/transport.ts";
 
@@ -22,12 +26,12 @@ function mode(generation = 1, runtimeInstanceId = "r1", active_mode: "assistant"
 class FakeTransport implements RealtimeTransport {
   currentMode = mode();
   nextModeError: unknown = null;
-  connectionSnapshot = connection();
+  connectionSnapshot: ConnectionSnapshot = connection();
 
   async getConnection() { return this.connectionSnapshot; }
   async getRuntime() { return runtime; }
   async getMode() { return this.currentMode; }
-  async switchMode(command: Parameters<RealtimeTransport["switchMode"]>[0]) {
+  async switchMode(command: Parameters<RealtimeTransport["switchMode"]>[0]): Promise<SwitchModeResult> {
     if (this.nextModeError) {
       const error = this.nextModeError;
       this.nextModeError = null;
@@ -66,7 +70,10 @@ test("runtime instance refresh invalidates pending operation identity", async ()
   const client = new RuntimeClient("s1", transport, { createId: (() => { let n = 0; return () => `id${++n}`; })() });
   await client.sync();
   transport.nextModeError = new RealtimeApiError(409, "mode_runtime_instance_mismatch");
-  transport.currentMode = mode(1, "r2");
+  transport.currentMode = {
+    ...mode(1, "r2"),
+    updated_at: "2026-01-01T00:00:01.000Z",
+  };
   await assert.rejects(client.switchMode("assistant"), ModeConflictError);
   assert.deepEqual(client.state.mode?.runtime_instance_id, "r2");
   assert.equal(client.state.staleOperationIds.length, 1);
@@ -90,4 +97,60 @@ test("mode refresh failure keeps the last confirmed mode", async () => {
   transport.getMode = async () => { throw new RealtimeApiError(503, "service_unavailable"); };
   assert.equal(await client.refreshMode(), null);
   assert.equal(client.state.effectiveMode, "assistant");
+});
+
+test("sync does not report non-ready connection states as ready", async () => {
+  for (const [state, expected] of [
+    ["new", "syncing"],
+    ["connecting", "syncing"],
+    ["closed", "error"],
+  ] as const) {
+    const transport = new FakeTransport();
+    transport.connectionSnapshot = { ...connection(), state };
+    const client = new RuntimeClient("s1", transport);
+    await client.sync();
+    assert.equal(client.state.status, expected, state);
+  }
+});
+
+test("late snapshots cannot roll connection, runtime, or mode backward", () => {
+  const client = new RuntimeClient("s1", new FakeTransport());
+  client.observeConnection({ ...connection(), connection_id: "c1", version: 2, updated_at: "2026-01-01T00:00:02.000Z" });
+  assert.equal(client.observeConnection({ ...connection(), connection_id: "c1", version: 1, updated_at: "2026-01-01T00:00:03.000Z" }), false);
+  client.observeConnection({ ...connection(), connection_id: "c2", version: 1, updated_at: "2026-01-01T00:00:04.000Z" });
+  assert.equal(client.observeConnection({ ...connection(), connection_id: "c1", version: 9, updated_at: "2026-01-01T00:00:09.000Z" }), false);
+
+  client.observeRuntime({ ...runtime, start_operation_id: "start1", updated_at: "2026-01-01T00:00:02.000Z" });
+  client.observeRuntime({ ...runtime, start_operation_id: "start2", updated_at: "2026-01-01T00:00:03.000Z" });
+  assert.equal(client.observeRuntime({ ...runtime, start_operation_id: "start1", updated_at: "2026-01-01T00:00:09.000Z" }), false);
+
+  client.observeMode(mode(1, "r1"));
+  client.observeMode({ ...mode(1, "r2"), updated_at: "2026-01-01T00:00:02.000Z" });
+  assert.equal(client.observeMode({ ...mode(9, "r1"), updated_at: "2026-01-01T00:00:09.000Z" }), false);
+  assert.equal(client.state.mode?.runtime_instance_id, "r2");
+});
+
+test("late successful mode response is discarded after runtime replacement", async () => {
+  let resolveSwitch!: (value: Awaited<ReturnType<RealtimeTransport["switchMode"]>>) => void;
+  const transport = new FakeTransport();
+  transport.switchMode = async (command): Promise<SwitchModeResult> => new Promise<SwitchModeResult>((resolve) => {
+    resolveSwitch = resolve;
+  });
+  const client = new RuntimeClient("s1", transport, { createId: () => "operation-1" });
+  await client.sync();
+
+  const pending = client.switchMode("assistant");
+  client.observeMode({ ...mode(1, "r2"), updated_at: "2026-01-01T00:00:02.000Z" });
+  const lastOperationId = "operation-1";
+  resolveSwitch({
+    operation_id: lastOperationId,
+    status: "applied",
+    state: { ...mode(2, "r1", "assistant"), last_operation_id: lastOperationId, updated_at: "2026-01-01T00:00:03.000Z" },
+  });
+
+  await assert.rejects(pending, (error: unknown) =>
+    error instanceof ModeConflictError && error.code === "stale_mode_response",
+  );
+  assert.equal(client.state.mode?.runtime_instance_id, "r2");
+  assert.equal(client.isOperationStale(lastOperationId), true);
 });

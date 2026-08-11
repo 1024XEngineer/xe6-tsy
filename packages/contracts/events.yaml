@@ -119,7 +119,7 @@ components:
         operation_id: { type: string, minLength: 1, description: The switch operation that produced this fact. }
         from_mode: { $ref: '#/components/schemas/RealtimeMode' }
         to_mode: { $ref: '#/components/schemas/RealtimeMode' }
-        resulting_generation: { type: integer, format: int64, minimum: 1 }
+        resulting_generation: { type: integer, format: int64, minimum: 2 }
         occurred_at: { type: string, format: date-time }
     AssistantReplyEvent:
       type: object

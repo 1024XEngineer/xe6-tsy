@@ -342,9 +342,6 @@ func TestModeCoordinatorRetriesFrozenEventBeforeStateCommit(t *testing.T) {
 	if state.ActiveMode != realtimev1.ModeInterpretation || state.Generation != 1 || state.LastOperationID != nil {
 		t.Fatalf("failed publication changed state = %#v", state)
 	}
-	if _, err := coordinator.Switch(t.Context(), modeCommand("operation-2", 1, realtimev1.ModeAssistant)); !errors.Is(err, ErrModeTransitionPending) {
-		t.Fatalf("different operation error = %v, want ErrModeTransitionPending", err)
-	}
 	result, err := coordinator.Switch(t.Context(), command)
 	if err != nil {
 		t.Fatalf("retry Switch() error = %v", err)
@@ -355,6 +352,33 @@ func TestModeCoordinatorRetriesFrozenEventBeforeStateCommit(t *testing.T) {
 	}
 	if result.State.ActiveMode != realtimev1.ModeAssistant || result.State.Generation != 2 {
 		t.Fatalf("retry result = %#v", result)
+	}
+}
+
+func TestModeCoordinatorLaterCommandRecoversPendingTransition(t *testing.T) {
+	publishErr := errors.New("outbox unavailable")
+	sink := &recordingModeChangedSink{failNext: publishErr}
+	coordinator := mustModeCoordinatorWithSink(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+		realtimev1.ModeInterpretation,
+		realtimev1.ModeAssistant,
+	}, sink)
+	first := modeCommand("operation-1", 1, realtimev1.ModeAssistant)
+
+	if _, err := coordinator.Switch(t.Context(), first); !errors.Is(err, publishErr) {
+		t.Fatalf("first Switch() error = %v, want %v", err, publishErr)
+	}
+	second := modeCommand("operation-2", 1, realtimev1.ModeInterpretation)
+	if _, err := coordinator.Switch(t.Context(), second); !errors.Is(err, ErrModeGenerationConflict) {
+		t.Fatalf("later Switch() error = %v, want ErrModeGenerationConflict", err)
+	}
+	state := coordinator.Snapshot()
+	if state.ActiveMode != realtimev1.ModeAssistant || state.Generation != 2 ||
+		state.LastOperationID == nil || *state.LastOperationID != first.OperationID {
+		t.Fatalf("recovered state = %#v", state)
+	}
+	attempts := sink.Attempts()
+	if len(attempts) != 2 || attempts[0] != attempts[1] || len(sink.Events()) != 1 {
+		t.Fatalf("recovery attempts = %#v, accepted = %#v", attempts, sink.Events())
 	}
 }
 

@@ -21,7 +21,6 @@ var (
 	ErrModeGenerationConflict      = errors.New("realtime mode generation conflict")
 	ErrModeRuntimeInstanceMismatch = errors.New("realtime mode runtime instance mismatch")
 	ErrModeOperationConflict       = errors.New("realtime mode operation conflict")
-	ErrModeTransitionPending       = errors.New("realtime mode transition is awaiting durable acceptance")
 	ErrModeEventUnavailable        = errors.New("realtime mode event persistence is unavailable")
 	ErrRuntimeInstanceIDRequired   = errors.New("realtime runtime instance id is required")
 )
@@ -195,7 +194,12 @@ func (c *modeCoordinator) Switch(
 			}
 			return c.commitPending(ctx)
 		}
-		return realtimev1.SwitchModeResult{}, ErrModeTransitionPending
+		// A later command may recover a frozen transition after the outbox becomes available.
+		// The recovered state is committed first; normal CAS validation below then rejects a
+		// command built from the old generation instead of leaving the runtime permanently stuck.
+		if _, err := c.commitPending(ctx); err != nil {
+			return realtimev1.SwitchModeResult{}, err
+		}
 	}
 	if command.RuntimeInstanceID != c.state.RuntimeInstanceID {
 		return realtimev1.SwitchModeResult{}, ErrModeRuntimeInstanceMismatch

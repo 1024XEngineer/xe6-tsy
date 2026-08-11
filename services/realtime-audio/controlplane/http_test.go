@@ -476,12 +476,10 @@ func TestMapErrorTTSCodecUnsupported(t *testing.T) {
 	}
 }
 
-func TestMapErrorTreatsModeEventFailuresAsUnavailable(t *testing.T) {
-	for _, err := range []error{runtime.ErrModeTransitionPending, runtime.ErrModeEventUnavailable} {
-		status, code := mapError(err)
-		if status != http.StatusServiceUnavailable || code != "service_unavailable" {
-			t.Fatalf("mapError(%v) = %d %q", err, status, code)
-		}
+func TestMapErrorTreatsModeEventFailureAsUnavailable(t *testing.T) {
+	status, code := mapError(runtime.ErrModeEventUnavailable)
+	if status != http.StatusServiceUnavailable || code != "service_unavailable" {
+		t.Fatalf("mapError(ErrModeEventUnavailable) = %d %q", status, code)
 	}
 }
 

@@ -11,31 +11,20 @@ import (
 
 const usageRecordedTopic = "usage.recorded"
 
-const (
-	valkeyWriteConflict int64 = -1
-	valkeyWriteReplay   int64 = 0
-	valkeyWriteAccepted int64 = 1
-)
-
-// acceptScript owns both the idempotency decision and stream append. Redis transactions do not
-// roll back earlier commands when a later queued command returns a runtime error, so a MULTI with
-// SET followed by XADD can leave a false deduplication marker. The script catches an XADD error and
-// removes the marker before returning; successful appends and their marker remain one atomic unit.
-var acceptScript = redis.NewScript(`
+// appendEntryScript keeps the stream append and dedup marker in one server-side critical
+// section. XADD deliberately runs first: when the stream key has the wrong type or XADD otherwise
+// fails, Redis aborts the script before SET can leave a dedup-only false acknowledgement.
+var appendEntryScript = redis.NewScript(`
 local stored = redis.call("GET", KEYS[1])
 if stored then
-    if stored == ARGV[1] then
-        return 0
-    end
-    return -1
+  if stored == ARGV[1] then
+    return 0
+  end
+  return -1
 end
 
+redis.call("XADD", KEYS[2], "*", "payload", ARGV[2])
 redis.call("SET", KEYS[1], ARGV[1])
-local appended = redis.pcall("XADD", KEYS[2], "*", "payload", ARGV[2])
-if type(appended) == "table" and appended.err then
-    redis.call("DEL", KEYS[1])
-    return redis.error_reply(appended.err)
-end
 return 1
 `)
 
@@ -81,18 +70,23 @@ func (w *ValkeyWriter) Accept(ctx context.Context, entry Entry) (Ack, error) {
 	}
 	dedupKey := w.dedupKey(stream, entry)
 	hashHex := hex.EncodeToString(entry.PayloadHash[:])
-	result, err := acceptScript.Run(ctx, w.client, []string{dedupKey, stream}, hashHex, entry.Payload).Int64()
+	result, err := appendEntryScript.Run(
+		ctx,
+		w.client,
+		[]string{dedupKey, stream},
+		hashHex,
+		entry.Payload,
+	).Int64()
 	if err != nil {
 		return Ack{}, err
 	}
-	switch result {
-	case valkeyWriteAccepted, valkeyWriteReplay:
-		return Ack{Accepted: true}, nil
-	case valkeyWriteConflict:
+	if result == -1 {
 		return Ack{}, ErrConflict
-	default:
-		return Ack{}, fmt.Errorf("accept outbox entry: unexpected script result %d", result)
 	}
+	if result != 0 && result != 1 {
+		return Ack{}, fmt.Errorf("append valkey outbox entry: unexpected script result %d", result)
+	}
+	return Ack{Accepted: true}, nil
 }
 
 func (w *ValkeyWriter) dedupKey(stream string, entry Entry) string {

@@ -154,7 +154,7 @@ func TestLifecycleStartFailureCanRetry(t *testing.T) {
 	if !errors.Is(err, errProvider) {
 		t.Fatalf("first Start() error = %v, want provider error", err)
 	}
-	if failed.StartOperationID != "operation-1" || failed.RuntimeState != RuntimeFailed || failed.LastErrorCode == nil || *failed.LastErrorCode != ErrorCodeStartFailed {
+	if failed.StartOperationID != "operation-1" || failed.RuntimeState != RuntimeFailed || failed.LastErrorCode == nil || *failed.LastErrorCode != string(ErrorCodeStartFailed) {
 		t.Fatalf("failed snapshot = %#v", failed)
 	}
 
@@ -170,7 +170,7 @@ func TestLifecycleStartFailureCanRetry(t *testing.T) {
 func TestLifecycleStartRejectsRetryAfterStopFailure(t *testing.T) {
 	pipeline := &fakePipeline{}
 	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, pipeline, &fakeConnection{})
-	errorCode := ErrorCodeStopFailed
+	errorCode := string(ErrorCodeStopFailed)
 	failed := RuntimeSnapshot{
 		SessionID:     "session-1",
 		RuntimeState:  RuntimeFailed,

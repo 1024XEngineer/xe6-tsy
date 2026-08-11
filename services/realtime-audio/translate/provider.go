@@ -1,6 +1,15 @@
 package translate
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrUnexpectedBehavior is returned when the model abandons translation
+// (for example after prompt injection) and a reinforced retry still fails.
+// Callers should treat this as a terminal, user-visible rejection rather than
+// a generic pipeline fault.
+var ErrUnexpectedBehavior = errors.New("translation rejected due to unexpected model behavior")
 
 // Request contains the final ASR text and the captured language direction.
 type Request struct {

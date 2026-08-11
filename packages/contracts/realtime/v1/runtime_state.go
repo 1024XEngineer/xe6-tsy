@@ -45,7 +45,18 @@ type RuntimeSnapshot struct {
 type RuntimeErrorCode string
 
 const (
-	RuntimeErrorStartFailed    RuntimeErrorCode = "realtime_start_failed"
-	RuntimeErrorStopFailed     RuntimeErrorCode = "realtime_stop_failed"
-	RuntimeErrorPipelineFailed RuntimeErrorCode = "realtime_pipeline_failed"
+	RuntimeErrorStartFailed         RuntimeErrorCode = "realtime_start_failed"
+	RuntimeErrorStopFailed          RuntimeErrorCode = "realtime_stop_failed"
+	RuntimeErrorPipelineFailed      RuntimeErrorCode = "realtime_pipeline_failed"
+	RuntimeErrorTranslationRejected RuntimeErrorCode = "realtime_translation_rejected"
 )
+
+// Valid reports whether the code belongs to the public runtime-error contract.
+func (c RuntimeErrorCode) Valid() bool {
+	switch c {
+	case RuntimeErrorStartFailed, RuntimeErrorStopFailed, RuntimeErrorPipelineFailed, RuntimeErrorTranslationRejected:
+		return true
+	default:
+		return false
+	}
+}

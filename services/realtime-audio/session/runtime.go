@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"fmt"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 // SetProcessingState serializes pipeline progress with lifecycle Start and Stop.
@@ -48,12 +50,19 @@ func (s *LifecycleService) SetProcessingState(ctx context.Context, update Proces
 
 // SetRuntimeFailed records a terminal media-pipeline failure without changing
 // business session state. Stop transitions win if shutdown is already active.
-func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID string) error {
+// Empty errorCode defaults to realtime_pipeline_failed.
+func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID string, errorCode realtimev1.RuntimeErrorCode) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if sessionID == "" {
 		return ErrSessionIDRequired
+	}
+	if errorCode == "" {
+		errorCode = ErrorCodePipelineFailed
+	}
+	if !errorCode.Valid() {
+		return fmt.Errorf("%w: %q", ErrInvalidRuntimeErrorCode, errorCode)
 	}
 
 	unlock := s.locks.lock(sessionID)
@@ -72,8 +81,8 @@ func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID strin
 	current.RuntimeState = RuntimeFailed
 	current.CurrentTurnID = nil
 	current.CurrentPlaybackID = nil
-	errorCode := ErrorCodePipelineFailed
-	current.LastErrorCode = &errorCode
+	code := string(errorCode)
+	current.LastErrorCode = &code
 	current.UpdatedAt = s.deps.Now()
 	if err := s.deps.Runtimes.Save(ctx, current); err != nil {
 		return fmt.Errorf("save runtime failure: %w", err)

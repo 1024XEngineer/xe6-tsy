@@ -138,6 +138,11 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		SourceLanguage: result.SourceLanguage, TargetLanguage: target,
 	})
 	if err != nil {
+		// Providers may still return token usage on rejected attempts. Publish
+		// that consumption before failing so retries cannot hide spend.
+		if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, translationResult); usageErr != nil {
+			return errors.Join(fmt.Errorf("translate Turn %s: %w", turn.ID, err), usageErr)
+		}
 		return fmt.Errorf("translate Turn %s: %w", turn.ID, err)
 	}
 	s.logLatencyCheckpoint("translate_done", turn, translateStartedAt,
@@ -282,6 +287,18 @@ func (s *PipelineService) publishUsage(ctx context.Context, turn TurnContext, se
 		return err
 	}
 	return s.usage.Publish(ctx, fact)
+}
+
+// publishTranslationUsageIfPresent records provider spend from a failed Translate
+// call when the adapter still returned usage metadata.
+func (s *PipelineService) publishTranslationUsageIfPresent(ctx context.Context, turn TurnContext, result translate.Result) error {
+	if strings.TrimSpace(result.Provider) == "" || strings.TrimSpace(result.Model) == "" {
+		return nil
+	}
+	if result.InputTokens == 0 && result.OutputTokens == 0 {
+		return nil
+	}
+	return s.publishUsage(ctx, turn, "translation", result.Provider, result.Model, 0, result.InputTokens, result.OutputTokens, result.CostAmount, result.Currency)
 }
 
 func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string) (UsageFact, error) {

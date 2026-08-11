@@ -48,7 +48,7 @@ services/realtime-audio/
 The provider packages keep vendor protocol details outside `pipeline`:
 
 - `asr/qwen` uses the Qwen realtime WebSocket endpoint. It sends `session.update`, streams PCM through `input_audio_buffer.append`, and sends `session.finish` before waiting for `session.finished`.
-- `translate/qwen` uses the OpenAI-compatible `POST /chat/completions` endpoint with `qwen3.6-flash`. Thinking is disabled by default for turn-level latency.
+- `translate/qwen` uses the OpenAI-compatible `POST /chat/completions` endpoint with `qwen3.6-flash`. Thinking is disabled by default for turn-level latency. User content nests ASR text inside sanitized `<source>` tags with a language-aware translate instruction; meta-refusals trigger one reinforced retry, then persist `realtime_translation_rejected` while still publishing token usage.
 - `tts/qwen` supports both Qwen3-TTS-Flash (`/services/aigc/multimodal-generation/generation`, `language_type`) and CosyVoice v3/v3.5 (`/services/audio/tts/SpeechSynthesizer`, `instruction`). CosyVoice instructions are generated from the target BCP-47 language so multilingual pairs can use the same stream port. For CosyVoice v3.5, configure a compatible designed voice with `TTS_VOICE`.
 - `tts/qwen` supports Qwen3-TTS-Flash HTTP SSE, Qwen3-TTS-Flash-Realtime WebSocket (`wss://dashscope.aliyuncs.com/api-ws/v1/realtime`), and CosyVoice v3/v3.5 (`/services/audio/tts/SpeechSynthesizer`). Realtime synthesis sends `session.update`, `input_text_buffer.append`, and `input_text_buffer.commit`, then streams `response.audio.delta` PCM. Use `qwen3-tts-flash-realtime` with a multilingual voice such as `Cherry`; CosyVoice instructions are generated from the target BCP-47 language and v3.5 requires a compatible designed voice in `TTS_VOICE`.
 
@@ -133,9 +133,12 @@ the turn stays `pending`, no attribution task or participant is created, and the
 exists, the API async attribution worker uses it to build the stable participant mapping and
 confirm/correct the turn.
 
-Terminal media worker failures set `last_error_code=realtime_pipeline_failed` and emit a structured
-`realtime pipeline worker failed` log with `session_id`, `operation_id`, `trace_id`, and the complete
-wrapped error. This log is the diagnostic source for failures after signaling and lifecycle Start.
+Terminal media worker failures emit a structured `realtime pipeline worker failed`
+log with `session_id`, `operation_id`, `trace_id`, `error_code`, and the complete
+wrapped error. `last_error_code` is usually `realtime_pipeline_failed`; when the
+translator abandons the task after a reinforced retry it is
+`realtime_translation_rejected` instead. This log is the diagnostic source for
+failures after signaling and lifecycle Start.
 
 Official protocol references:
 

@@ -15,6 +15,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 )
 
@@ -350,17 +351,19 @@ func (m *Manager) run(item *entry, ctx context.Context) {
 		reportFailure = true
 	}
 	if reportFailure {
+		errorCode := runtimeFailureCode(err)
 		m.logger.Error("realtime pipeline worker failed",
 			"session_id", item.request.SessionID,
 			"operation_id", item.operationID,
 			"trace_id", item.request.TraceID,
+			"error_code", errorCode,
 			"error", err,
 		)
 		m.mu.Lock()
 		item.terminal = true
 		item.err = err
 		m.mu.Unlock()
-		reportErr = m.reportFailure(ctx, item.request.SessionID)
+		reportErr = m.reportFailure(ctx, item.request.SessionID, errorCode)
 		if reportErr != nil && !errors.Is(reportErr, context.Canceled) {
 			m.logger.Error("realtime pipeline failure state report failed",
 				"session_id", item.request.SessionID,
@@ -399,20 +402,27 @@ func (m *Manager) PipelineActive(sessionID string) bool {
 	return item != nil && !item.finished
 }
 
-func (m *Manager) reportFailure(ctx context.Context, sessionID string) error {
+func (m *Manager) reportFailure(ctx context.Context, sessionID string, errorCode realtimev1.RuntimeErrorCode) error {
 	reportCtx, cancel := context.WithTimeout(ctx, failureReportTimeout)
 	defer cancel()
 
 	// Lifecycle Stop may hold its session lock while waiting for this worker.
 	// Keep the report cancelable so Stop cannot deadlock behind failure storage.
 	done := make(chan error, 1)
-	go func() { done <- m.failure.SetRuntimeFailed(reportCtx, sessionID) }()
+	go func() { done <- m.failure.SetRuntimeFailed(reportCtx, sessionID, errorCode) }()
 	select {
 	case err := <-done:
 		return err
 	case <-reportCtx.Done():
 		return reportCtx.Err()
 	}
+}
+
+func runtimeFailureCode(err error) realtimev1.RuntimeErrorCode {
+	if errors.Is(err, translate.ErrUnexpectedBehavior) {
+		return session.ErrorCodeTranslationRejected
+	}
+	return session.ErrorCodePipelineFailed
 }
 
 // Stop cancels processing, closes the input source, and waits for the loop.

@@ -25,6 +25,7 @@ var contractRuntimeErrorCodes = []RuntimeErrorCode{
 	RuntimeErrorStartFailed,
 	RuntimeErrorStopFailed,
 	RuntimeErrorPipelineFailed,
+	RuntimeErrorTranslationRejected,
 }
 
 func TestRuntimeStateContract(t *testing.T) {
@@ -35,6 +36,14 @@ func TestRuntimeStateContract(t *testing.T) {
 	}
 	if RuntimeState("unknown").Valid() {
 		t.Fatal("unknown runtime state must be invalid")
+	}
+	for _, code := range contractRuntimeErrorCodes {
+		if !code.Valid() {
+			t.Fatalf("RuntimeErrorCode(%q).Valid() = false", code)
+		}
+	}
+	if RuntimeErrorCode("unknown").Valid() {
+		t.Fatal("unknown runtime error code must be invalid")
 	}
 }
 

@@ -42,11 +42,21 @@ export type RuntimeState =
   | "stopping"
   | "failed";
 
+/** Mirrors packages/contracts RealtimeRuntimeErrorCode / openapi.yaml. */
+export type RuntimeErrorCode =
+  | "realtime_start_failed"
+  | "realtime_stop_failed"
+  | "realtime_pipeline_failed"
+  | "realtime_translation_rejected";
+
+export const RUNTIME_ERROR_TRANSLATION_REJECTED: RuntimeErrorCode =
+  "realtime_translation_rejected";
+
 export type VoiceSessionDetail = VoiceSession & {
   runtime_state: RuntimeState;
   current_turn_id: string | null;
   current_playback_id: string | null;
-  last_error_code: string | null;
+  last_error_code: RuntimeErrorCode | string | null;
   retryable: boolean;
   runtime_updated_at: string;
 };
@@ -57,7 +67,7 @@ export type VoiceSessionStateSnapshot = {
   runtime_state: RuntimeState;
   current_turn_id: string | null;
   current_playback_id: string | null;
-  last_error_code: string | null;
+  last_error_code: RuntimeErrorCode | string | null;
   retryable: boolean;
   runtime_updated_at: string;
 };

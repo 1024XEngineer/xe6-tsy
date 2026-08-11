@@ -41,6 +41,7 @@ func TestTurnProcessorRunsMockASRTranslationTTSFlow(t *testing.T) {
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
 		Pipeline: service,
+		Finals:   service,
 	})
 
 	turn, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{
@@ -106,6 +107,58 @@ func TestTurnProcessorRunsMockASRTranslationTTSFlow(t *testing.T) {
 	}
 }
 
+func TestTurnProcessorDispatchesASRFinalToInjectedHandler(t *testing.T) {
+	// 这条测试专门保护 TurnProcessor 与同传 Pipeline 之间的解耦边界。
+	// Pipeline 仍作为公共运行状态和错误收尾依赖注入，但 ASR final 必须只交给 Finals；
+	// 如果实现误改为直接调用 Pipeline.HandleASRFinal，下面的翻译和 FinalTurn 断言会立即失败。
+	asrProvider := asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+	}})
+	translator := &translate.FakeProvider{Result: translate.Result{
+		Text: "hello", Provider: "mock-translate", Model: "v1",
+	}}
+	finalSink := &recordingFinalSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: translator,
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: finalSink,
+		Usage:      &recordingUsageSink{},
+		Audio:      &recordingAudioSink{},
+		Runtime:    &recordingRuntimeReporter{},
+	})
+	finalHandler := &recordingASRFinalHandler{}
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: asrProvider,
+		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active",
+			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}),
+		Pipeline: service,
+		Finals:   finalHandler,
+	})
+
+	turn, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{
+		SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", AudioChunks: [][]byte{{1, 2}},
+	})
+	if err != nil {
+		t.Fatalf("ProcessAudio() error = %v", err)
+	}
+	if len(finalHandler.turns) != 1 || finalHandler.turns[0].ID != turn.ID {
+		t.Fatalf("ASR final Handler turns = %#v, want Turn %q", finalHandler.turns, turn.ID)
+	}
+	if len(finalHandler.results) != 1 || finalHandler.results[0].Text != "你好" || finalHandler.results[0].SourceLanguage != "zh-CN" {
+		t.Fatalf("ASR final Handler results = %#v, want normalized final result", finalHandler.results)
+	}
+	// recording Handler 不执行任何同传业务。因此这里必须保持零次翻译和零个 FinalTurn，
+	// 证明 ProcessAudio 没有绕过注入边界去调用内部保存的 PipelineService。
+	if requests := translator.Requests(); len(requests) != 0 {
+		t.Fatalf("translation requests = %#v, want none", requests)
+	}
+	if len(finalSink.events) != 0 {
+		t.Fatalf("FinalTurn events = %#v, want none", finalSink.events)
+	}
+}
+
 func TestTurnProcessorPropagatesUsageAcceptanceFailure(t *testing.T) {
 	wantErr := errors.New("usage sink unavailable")
 	service := NewPipelineService(PipelineDependencies{
@@ -120,6 +173,7 @@ func TestTurnProcessorPropagatesUsageAcceptanceFailure(t *testing.T) {
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
 		Pipeline: service,
+		Finals:   service,
 	})
 
 	_, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"})
@@ -137,18 +191,20 @@ func TestTurnProcessorObservesPartialWithoutTranslatingIt(t *testing.T) {
 	})
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}}
 	finalSink := &recordingFinalSink{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: translator,
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+		FinalTurns: finalSink,
+		Usage:      &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR: asrProvider,
 		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "active",
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
-		Pipeline: NewPipelineService(PipelineDependencies{
-			Translator: translator,
-			TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
-			FinalTurns: finalSink,
-			Usage:      &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
-		}),
+		Pipeline: service,
+		Finals:   service,
 	})
 
 	turn, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{
@@ -185,6 +241,7 @@ func TestTurnProcessorPropagatesPostFinalFailureClassification(t *testing.T) {
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
 		Pipeline: service,
+		Finals:   service,
 	})
 
 	_, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{
@@ -202,10 +259,12 @@ func TestTurnProcessorPropagatesPostFinalFailureClassification(t *testing.T) {
 }
 
 func TestTurnProcessorRejectsIncompletePipelineDependencies(t *testing.T) {
+	service := NewPipelineService(PipelineDependencies{})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR:      asr.NewFakeProvider(asr.FakeProviderConfig{}),
 		Opener:   NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{}),
-		Pipeline: NewPipelineService(PipelineDependencies{}),
+		Pipeline: service,
+		Finals:   service,
 	})
 
 	_, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{
@@ -216,24 +275,41 @@ func TestTurnProcessorRejectsIncompletePipelineDependencies(t *testing.T) {
 	}
 }
 
+func TestTurnProcessorRequiresFinalHandler(t *testing.T) {
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR:      asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Opener:   NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{}),
+		Pipeline: NewPipelineService(PipelineDependencies{}),
+	})
+
+	_, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{
+		SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1",
+	})
+	if !errors.Is(err, ErrTurnProcessorDependencyRequired) {
+		t.Fatalf("ProcessAudio() error = %v, want ErrTurnProcessorDependencyRequired", err)
+	}
+}
+
 func TestTurnProcessorConsumesASREventsBeforePushReturns(t *testing.T) {
 	stream := &pushEventStream{
 		events:      make(chan asr.Event),
 		partialSent: make(chan struct{}),
 		result:      asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"},
 	}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+		FinalTurns: &recordingFinalSink{},
+		Usage:      &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR: &pushEventProvider{stream: stream},
 		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "active",
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
-		Pipeline: NewPipelineService(PipelineDependencies{
-			Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
-			TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
-			FinalTurns: &recordingFinalSink{},
-			Usage:      &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
-		}),
+		Pipeline: service,
+		Finals:   service,
 	})
 
 	done := make(chan error, 1)
@@ -313,3 +389,18 @@ type rejectingUsageSink struct{ err error }
 func (s rejectingUsageSink) Publish(context.Context, UsageFact) error { return s.err }
 
 var _ UsageFactSink = rejectingUsageSink{}
+
+// recordingASRFinalHandler 只记录公共 ASR 流程交付的 Turn 和 final 结果，不执行翻译、
+// FinalTurn 持久化或 TTS。它使测试能够区分 Finals 注入点与 PipelineService 本身。
+type recordingASRFinalHandler struct {
+	turns   []TurnContext
+	results []asr.FinalResult
+}
+
+func (h *recordingASRFinalHandler) HandleASRFinal(_ context.Context, turn TurnContext, result asr.FinalResult) error {
+	h.turns = append(h.turns, turn)
+	h.results = append(h.results, result)
+	return nil
+}
+
+var _ ASRFinalHandler = (*recordingASRFinalHandler)(nil)

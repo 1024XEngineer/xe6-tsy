@@ -88,6 +88,7 @@ type Manager struct {
 	locks     keyedLocker
 	processor *pipeline.TurnProcessor
 	playback  *pipeline.PipelineService
+	router    *modeRouter
 	failure   session.RuntimeFailureReporter
 	logger    *slog.Logger
 	deps      Dependencies
@@ -160,11 +161,23 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		Latency:    pipeline.LatencyLogger{Logger: deps.Latency},
 		Now:        deps.Now,
 	})
+	// Router 注册表是模式能力的单一来源：Coordinator 会复用同一份模式列表，
+	// 从而保证“允许切换”的模式一定存在对应 Handler，不会出现状态切换成功但没有业务处理器的半配置状态。
+	router, err := newModeRouter(
+		realtimev1.ModeInterpretation,
+		map[realtimev1.Mode]pipeline.ASRFinalHandler{
+			realtimev1.ModeInterpretation: service,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create mode router: %w", err)
+	}
 	return &Manager{
 		processor: pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
-			ASR: providers.ASR, Opener: opener, Pipeline: service,
+			ASR: providers.ASR, Opener: opener, Pipeline: service, Finals: router,
 		}),
 		playback: service,
+		router:   router,
 		failure:  deps.Runtime, logger: deps.Logger,
 		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
 	}, nil
@@ -217,7 +230,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if m == nil || m.processor == nil || m.deps.FrameSources == nil || m.deps.NewSegmenter == nil {
+	if m == nil || m.processor == nil || m.router == nil || m.deps.FrameSources == nil || m.deps.NewSegmenter == nil {
 		return ErrDependencyRequired
 	}
 	if snapshot.SessionID == "" {
@@ -276,7 +289,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		snapshot.SessionID,
 		runtimeInstanceID,
 		realtimev1.ModeInterpretation,
-		[]realtimev1.Mode{realtimev1.ModeInterpretation},
+		m.router.availableModes(),
 		m.deps.Now,
 	)
 	if err != nil {

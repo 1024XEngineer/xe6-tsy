@@ -149,6 +149,73 @@ func TestValkeyWriterDetectsPayloadConflict(t *testing.T) {
 	}
 }
 
+func TestValkeyWriterDoesNotDeduplicateFailedStreamAppend(t *testing.T) {
+	tests := []struct {
+		name    string
+		topic   string
+		stream  string
+		key     string
+		payload any
+	}{
+		{
+			name:    "usage",
+			topic:   usageRecordedTopic,
+			stream:  "lingow:usage:recorded",
+			key:     validUsageFact().IdempotencyKey,
+			payload: validUsageFact(),
+		},
+		{
+			name:    "mode changed",
+			topic:   realtimev1.ModeChangedTopic,
+			stream:  "lingow:realtime:mode:changed",
+			key:     validModeChangedEvent().EventID,
+			payload: validModeChangedEvent(),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, err := miniredis.Run()
+			if err != nil {
+				t.Fatalf("miniredis.Run() error = %v", err)
+			}
+			t.Cleanup(server.Close)
+
+			client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+			writer, err := NewValkeyWriter(client, "lingow:usage:recorded", "lingow:realtime:mode:changed")
+			if err != nil {
+				t.Fatalf("NewValkeyWriter() error = %v", err)
+			}
+			adapter := NewAdapter(writer)
+			if err := client.Set(context.Background(), test.stream, "not-a-stream", 0).Err(); err != nil {
+				t.Fatalf("seed wrong-type stream: %v", err)
+			}
+
+			if err := adapter.Append(context.Background(), test.topic, test.key, test.payload); err == nil {
+				t.Fatal("Append() error = nil, want stream WRONGTYPE error")
+			}
+			dedupKey := writer.dedupKey(test.stream, Entry{Topic: test.topic, IdempotencyKey: test.key})
+			if exists, err := client.Exists(context.Background(), dedupKey).Result(); err != nil {
+				t.Fatalf("check dedup key: %v", err)
+			} else if exists != 0 {
+				t.Fatalf("dedup key exists after failed append, want absent")
+			}
+
+			if err := client.Del(context.Background(), test.stream).Err(); err != nil {
+				t.Fatalf("remove wrong-type stream: %v", err)
+			}
+			if err := adapter.Append(context.Background(), test.topic, test.key, test.payload); err != nil {
+				t.Fatalf("retry Append() error = %v", err)
+			}
+			if length, err := client.XLen(context.Background(), test.stream).Result(); err != nil {
+				t.Fatalf("XLen() error = %v", err)
+			} else if length != 1 {
+				t.Fatalf("stream length after retry = %d, want 1", length)
+			}
+		})
+	}
+}
+
 func validModeChangedEvent() realtimev1.ModeChangedEvent {
 	return realtimev1.ModeChangedEvent{
 		EventVersion: realtimev1.ModeChangedEventVersion,

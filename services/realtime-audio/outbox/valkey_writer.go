@@ -3,7 +3,6 @@ package outbox
 import (
 	"context"
 	"encoding/hex"
-	"errors"
 	"fmt"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
@@ -11,6 +10,34 @@ import (
 )
 
 const usageRecordedTopic = "usage.recorded"
+
+const (
+	valkeyWriteConflict int64 = -1
+	valkeyWriteReplay   int64 = 0
+	valkeyWriteAccepted int64 = 1
+)
+
+// acceptScript owns both the idempotency decision and stream append. Redis transactions do not
+// roll back earlier commands when a later queued command returns a runtime error, so a MULTI with
+// SET followed by XADD can leave a false deduplication marker. The script catches an XADD error and
+// removes the marker before returning; successful appends and their marker remain one atomic unit.
+var acceptScript = redis.NewScript(`
+local stored = redis.call("GET", KEYS[1])
+if stored then
+    if stored == ARGV[1] then
+        return 0
+    end
+    return -1
+end
+
+redis.call("SET", KEYS[1], ARGV[1])
+local appended = redis.pcall("XADD", KEYS[2], "*", "payload", ARGV[2])
+if type(appended) == "table" and appended.err then
+    redis.call("DEL", KEYS[1])
+    return redis.error_reply(appended.err)
+end
+return 1
+`)
 
 // ValkeyWriter publishes canonical outbox entries to a Redis/Valkey stream.
 type ValkeyWriter struct {
@@ -54,34 +81,17 @@ func (w *ValkeyWriter) Accept(ctx context.Context, entry Entry) (Ack, error) {
 	}
 	dedupKey := w.dedupKey(stream, entry)
 	hashHex := hex.EncodeToString(entry.PayloadHash[:])
-	for {
-		err := w.client.Watch(ctx, func(tx *redis.Tx) error {
-			stored, err := tx.Get(ctx, dedupKey).Result()
-			switch {
-			case err == nil && stored == hashHex:
-				return nil
-			case err == nil:
-				return ErrConflict
-			case !errors.Is(err, redis.Nil):
-				return err
-			}
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Set(ctx, dedupKey, hashHex, 0)
-				pipe.XAdd(ctx, &redis.XAddArgs{
-					Stream: stream,
-					Values: map[string]any{"payload": entry.Payload},
-				})
-				return nil
-			})
-			return err
-		}, dedupKey)
-		if errors.Is(err, redis.TxFailedErr) {
-			continue
-		}
-		if err != nil {
-			return Ack{}, err
-		}
+	result, err := acceptScript.Run(ctx, w.client, []string{dedupKey, stream}, hashHex, entry.Payload).Int64()
+	if err != nil {
+		return Ack{}, err
+	}
+	switch result {
+	case valkeyWriteAccepted, valkeyWriteReplay:
 		return Ack{Accepted: true}, nil
+	case valkeyWriteConflict:
+		return Ack{}, ErrConflict
+	default:
+		return Ack{}, fmt.Errorf("accept outbox entry: unexpected script result %d", result)
 	}
 }
 

@@ -27,6 +27,8 @@ const (
 type SessionSnapshot struct {
 	SessionID string
 	AccountID string
+	// InitialMode is captured at runtime creation; empty preserves legacy interpretation behavior.
+	InitialMode realtimev1.Mode
 	// StartOperationID is runtime ownership metadata copied from StartRealtimeCommand.
 	// It is not business session state and is never persisted by member 3 there.
 	StartOperationID string
@@ -81,6 +83,7 @@ type StartRealtimeCommand struct {
 	OperationID string
 	TraceID     string
 	StartedBy   string
+	InitialMode realtimev1.Mode
 }
 
 // StopRealtimeCommand carries the requested shutdown reason and timestamp.

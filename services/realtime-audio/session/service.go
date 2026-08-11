@@ -88,6 +88,7 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 	// business session state.
 	business.StartOperationID = command.OperationID
 	business.TraceID = command.TraceID
+	business.InitialMode = command.InitialMode
 	if business.TraceID == "" {
 		business.TraceID = command.OperationID
 	}

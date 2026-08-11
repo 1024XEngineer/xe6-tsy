@@ -64,6 +64,38 @@ func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) 
 	}
 }
 
+func TestManagerStartsInRequestedAssistantMode(t *testing.T) {
+	source := &fakeFrameSource{waitForClose: true}
+	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.AssistantReplies = &recordingAssistantReplySink{}
+	deps.NewRuntimeInstanceID = func() (string, error) { return "runtime-1", nil }
+	manager, err := newManager(config.Providers{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Assistant: assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{
+			Text: "hello", Language: "en-US", Provider: "mock-llm", Model: "v1",
+		}}),
+		Translation: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("newManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "start-1", TraceID: "trace-1",
+		InitialMode: realtimev1.ModeAssistant,
+	}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background(), snapshot.SessionID) })
+	state, err := manager.GetModeState(t.Context(), snapshot.SessionID)
+	if err != nil {
+		t.Fatalf("GetModeState() error = %v", err)
+	}
+	if state.ActiveMode != realtimev1.ModeAssistant || state.Generation != 1 {
+		t.Fatalf("initial mode = %#v, want assistant generation 1", state)
+	}
+}
+
 func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 	base := time.Unix(1700000000, 0).UTC()
 	source := &fakeFrameSource{frames: []audio.Frame{

@@ -167,6 +167,35 @@ func TestDataChannelFinalTurnSinkPublish(t *testing.T) {
 	})
 }
 
+func TestDataChannelAssistantReplySinkReportsDeliveryFailures(t *testing.T) {
+	t.Parallel()
+	event := realtimev1.AssistantReplyEvent{SessionID: "vs_1", EventID: "reply-1"}
+
+	t.Run("missing media", func(t *testing.T) {
+		err := (DataChannelAssistantReplySink{}).Publish(context.Background(), event)
+		if !errors.Is(err, ErrAssistantReplyMediaUnavailable) {
+			t.Fatalf("Publish error = %v, want media unavailable", err)
+		}
+	})
+	t.Run("media lookup failure", func(t *testing.T) {
+		err := (DataChannelAssistantReplySink{Media: stubMediaLookup{}}).Publish(context.Background(), event)
+		if err == nil {
+			t.Fatal("Publish error = nil, want lookup failure")
+		}
+	})
+	t.Run("channel unavailable", func(t *testing.T) {
+		sink := DataChannelAssistantReplySink{
+			Media: mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) {
+				return &fakeMediaTransport{events: &webrtc.PionEventSink{}}, nil
+			}),
+		}
+		err := sink.Publish(context.Background(), event)
+		if !errors.Is(err, ErrAssistantReplyChannelUnavailable) {
+			t.Fatalf("Publish error = %v, want channel unavailable", err)
+		}
+	})
+}
+
 func TestEnergySpeechClassifierDetectsLoudFrame(t *testing.T) {
 	quiet := make([]byte, 320)
 	loud := make([]byte, 320)

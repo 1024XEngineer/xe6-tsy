@@ -302,10 +302,11 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	if runtimeInstanceID == "" {
 		return ErrRuntimeInstanceIDRequired
 	}
+	initialMode := snapshot.InitialMode.OrLegacyDefault()
 	mode, err := newModeCoordinator(
 		snapshot.SessionID,
 		runtimeInstanceID,
-		realtimev1.ModeInterpretation,
+		initialMode,
 		m.router.availableModes(),
 		m.deps.Now,
 	)

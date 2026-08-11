@@ -2,6 +2,8 @@ package localruntime
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -9,6 +11,11 @@ import (
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
+)
+
+var (
+	ErrAssistantReplyMediaUnavailable   = errors.New("assistant reply media is unavailable")
+	ErrAssistantReplyChannelUnavailable = errors.New("assistant reply data channel is unavailable")
 )
 
 // DiscardAudioSink accepts TTS PCM without sending it to a browser track.
@@ -48,11 +55,14 @@ func (s DataChannelAssistantReplySink) Publish(ctx context.Context, event realti
 		return err
 	}
 	if s.Media == nil {
-		return nil
+		return ErrAssistantReplyMediaUnavailable
 	}
 	media, err := s.Media.CurrentMedia(ctx, event.SessionID)
-	if err != nil || media.TranslationEvents() == nil {
-		return nil
+	if err != nil {
+		return fmt.Errorf("resolve assistant reply media: %w", err)
+	}
+	if media == nil || media.TranslationEvents() == nil {
+		return ErrAssistantReplyChannelUnavailable
 	}
 	payload := FrontendAssistantReply{
 		Type: "assistant.reply", Event: "assistant.reply",
@@ -63,7 +73,12 @@ func (s DataChannelAssistantReplySink) Publish(ctx context.Context, event realti
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	_ = media.TranslationEvents().PublishJSON(publishCtx, payload)
+	if err := media.TranslationEvents().PublishJSON(publishCtx, payload); err != nil {
+		if errors.Is(err, webrtc.ErrMediaUnavailable) {
+			return errors.Join(ErrAssistantReplyChannelUnavailable, fmt.Errorf("publish assistant reply: %w", err))
+		}
+		return fmt.Errorf("publish assistant reply: %w", err)
+	}
 	return nil
 }
 

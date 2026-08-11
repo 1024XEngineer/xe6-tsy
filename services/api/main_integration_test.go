@@ -683,6 +683,7 @@ func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRu
 	realtime.stopState.Store(realtimev1.RuntimeStopped)
 	handler, err := controlplane.New(controlplane.Dependencies{
 		Lifecycle:   realtime,
+		Modes:       sessionRuntimeModeControl{},
 		Signaling:   sessionRuntimeSignaling{},
 		Connections: realtime,
 		Tickets:     ticketValidator,
@@ -694,6 +695,47 @@ func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRu
 	}
 	realtime.server = httptest.NewServer(handler)
 	return realtime
+}
+
+type sessionRuntimeModeControl struct{}
+
+func (sessionRuntimeModeControl) GetModeState(
+	ctx context.Context,
+	sessionID string,
+) (realtimev1.ModeStateSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return realtimev1.ModeStateSnapshot{}, err
+	}
+	return realtimev1.ModeStateSnapshot{
+		SessionID:         sessionID,
+		RuntimeInstanceID: "integration-runtime",
+		ActiveMode:        realtimev1.ModeInterpretation,
+		Generation:        1,
+		Phase:             realtimev1.ModePhaseActive,
+		UpdatedAt:         time.Now().UTC(),
+	}, nil
+}
+
+func (control sessionRuntimeModeControl) SwitchMode(
+	ctx context.Context,
+	command realtimev1.SwitchModeCommand,
+) (realtimev1.SwitchModeResult, error) {
+	state, err := control.GetModeState(ctx, command.SessionID)
+	if err != nil {
+		return realtimev1.SwitchModeResult{}, err
+	}
+	status := realtimev1.ModeSwitchUnchanged
+	if command.TargetMode != state.ActiveMode {
+		state.ActiveMode = command.TargetMode
+		state.Generation++
+		status = realtimev1.ModeSwitchApplied
+	}
+	state.LastOperationID = &command.OperationID
+	return realtimev1.SwitchModeResult{
+		OperationID: command.OperationID,
+		Status:      status,
+		State:       state,
+	}, nil
 }
 
 func (p *sessionRuntimeControlPlane) Start(_ context.Context, command rtsession.StartRealtimeCommand) (rtsession.RuntimeSnapshot, error) {

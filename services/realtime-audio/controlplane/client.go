@@ -17,15 +17,19 @@ import (
 const maxClientResponseBytes = 1 << 20
 
 var (
-	ErrClientDependency         = errors.New("invalid realtime client dependency")
-	ErrClientRequest            = errors.New("invalid realtime client request")
-	ErrClientUnauthorized       = errors.New("realtime client unauthorized")
-	ErrClientConflict           = errors.New("realtime client conflict")
-	ErrConnectionNotFound       = errors.New("realtime WebRTC connection not found")
-	ErrRuntimeNotFound          = errors.New("realtime runtime snapshot not found")
-	ErrRuntimeOperationConflict = errors.New("realtime runtime operation conflict")
-	ErrDependencyUnavailable    = errors.New("realtime dependency unavailable")
-	ErrInvalidResponse          = errors.New("invalid realtime response")
+	ErrClientDependency            = errors.New("invalid realtime client dependency")
+	ErrClientRequest               = errors.New("invalid realtime client request")
+	ErrClientUnauthorized          = errors.New("realtime client unauthorized")
+	ErrClientConflict              = errors.New("realtime client conflict")
+	ErrConnectionNotFound          = errors.New("realtime WebRTC connection not found")
+	ErrRuntimeNotFound             = errors.New("realtime runtime snapshot not found")
+	ErrRuntimeOperationConflict    = errors.New("realtime runtime operation conflict")
+	ErrModeNotAvailable            = errors.New("realtime mode is not available")
+	ErrModeGenerationConflict      = errors.New("realtime mode generation conflict")
+	ErrModeRuntimeInstanceMismatch = errors.New("realtime mode runtime instance mismatch")
+	ErrModeOperationConflict       = errors.New("realtime mode operation conflict")
+	ErrDependencyUnavailable       = errors.New("realtime dependency unavailable")
+	ErrInvalidResponse             = errors.New("invalid realtime response")
 )
 
 // TicketSource returns a short-lived bearer credential scoped to one Session.
@@ -385,6 +389,14 @@ func decodeClientError(status int, reader io.Reader) error {
 		return ErrRuntimeNotFound
 	case string(realtimev1.ErrorRuntimeOperationConflict):
 		return ErrRuntimeOperationConflict
+	case string(realtimev1.ErrorModeNotAvailable):
+		return ErrModeNotAvailable
+	case string(realtimev1.ErrorModeGenerationConflict):
+		return ErrModeGenerationConflict
+	case string(realtimev1.ErrorModeRuntimeInstanceMismatch):
+		return ErrModeRuntimeInstanceMismatch
+	case string(realtimev1.ErrorModeOperationConflict):
+		return ErrModeOperationConflict
 	case "conflict":
 		return ErrClientConflict
 	}

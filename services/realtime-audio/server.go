@@ -278,6 +278,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 
 	handler, err := controlplane.New(controlplane.Dependencies{
 		Lifecycle:       lifecycle,
+		Modes:           manager,
 		Fallback:        manager,
 		FallbackReplays: fallbackReplays,
 		Signaling:       signaling,

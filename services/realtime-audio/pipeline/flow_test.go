@@ -69,7 +69,9 @@ func TestTurnProcessorRunsMockASRTranslationTTSFlow(t *testing.T) {
 	if len(finalSink.events) != 1 || finalSink.events[0].TurnID != turn.ID || finalSink.events[0].LanguageConfigVersion != 3 {
 		t.Fatalf("FinalTurn events = %#v", finalSink.events)
 	}
-	if len(usageSink.facts) != 3 {
+	if len(usageSink.facts) != 3 || usageSink.facts[0].ServiceType != "asr" ||
+		usageSink.facts[1].ServiceType != "translation" || usageSink.facts[2].ServiceType != "tts" ||
+		usageSink.facts[0].AudioDurationMS != 1000 {
 		t.Fatalf("UsageFacts = %#v, want ASR, translation, TTS", usageSink.facts)
 	}
 	if len(audioSink.chunks) != 2 || audioSink.chunks[0].TurnID != turn.ID || audioSink.chunks[1].TurnID != turn.ID {
@@ -118,11 +120,12 @@ func TestTurnProcessorDispatchesASRFinalToInjectedHandler(t *testing.T) {
 		Text: "hello", Provider: "mock-translate", Model: "v1",
 	}}
 	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{}
 	service := NewPipelineService(PipelineDependencies{
 		Translator: translator,
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
 		FinalTurns: finalSink,
-		Usage:      &recordingUsageSink{},
+		Usage:      usageSink,
 		Audio:      &recordingAudioSink{},
 		Runtime:    &recordingRuntimeReporter{},
 	})
@@ -157,15 +160,22 @@ func TestTurnProcessorDispatchesASRFinalToInjectedHandler(t *testing.T) {
 	if len(finalSink.events) != 0 {
 		t.Fatalf("FinalTurn events = %#v, want none", finalSink.events)
 	}
+	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" || usageSink.facts[0].TurnID != turn.ID {
+		t.Fatalf("UsageFacts = %#v, want one ASR fact for injected Handler", usageSink.facts)
+	}
 }
 
-func TestTurnProcessorPropagatesUsageAcceptanceFailure(t *testing.T) {
+func TestTurnProcessorStopsBeforeHandlerWhenASRUsageFails(t *testing.T) {
 	wantErr := errors.New("usage sink unavailable")
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}}
+	finalSink := &recordingFinalSink{}
+	runtimeReporter := &recordingRuntimeReporter{}
 	service := NewPipelineService(PipelineDependencies{
-		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		Translator: translator,
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
-		FinalTurns: &recordingFinalSink{}, Usage: rejectingUsageSink{err: wantErr}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		FinalTurns: finalSink, Usage: rejectingUsageSink{err: wantErr}, Audio: &recordingAudioSink{}, Runtime: runtimeReporter,
 	})
+	finalHandler := &recordingASRFinalHandler{}
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}}),
 		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
@@ -173,12 +183,50 @@ func TestTurnProcessorPropagatesUsageAcceptanceFailure(t *testing.T) {
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
 		Pipeline: service,
-		Finals:   service,
+		Finals:   finalHandler,
 	})
 
 	_, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("ProcessAudio() error = %v, want %v", err, wantErr)
+	}
+	if len(finalHandler.turns) != 0 || len(translator.Requests()) != 0 || len(finalSink.events) != 0 {
+		t.Fatalf("ASR usage failure reached Handler or interpretation dependencies")
+	}
+	if len(runtimeReporter.updates) != 2 || runtimeReporter.updates[0].RuntimeState != session.RuntimeASRProcessing || runtimeReporter.updates[1].RuntimeState != session.RuntimeListening {
+		t.Fatalf("runtime updates = %#v, want ASR processing then listening", runtimeReporter.updates)
+	}
+}
+
+func TestTurnProcessorSkipsUsageAndHandlerForTrivialFinal(t *testing.T) {
+	usageSink := &recordingUsageSink{}
+	runtimeReporter := &recordingRuntimeReporter{}
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: runtimeReporter,
+	})
+	finalHandler := &recordingASRFinalHandler{}
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+			Text: "嗯", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+		}}),
+		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active",
+			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}),
+		Pipeline: service,
+		Finals:   finalHandler,
+	})
+
+	if _, err := processor.ProcessAudio(t.Context(), TurnProcessRequest{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}); err != nil {
+		t.Fatalf("ProcessAudio() error = %v", err)
+	}
+	if len(usageSink.facts) != 0 || len(finalHandler.turns) != 0 {
+		t.Fatalf("trivial final produced usage %#v or Handler calls %d", usageSink.facts, len(finalHandler.turns))
+	}
+	if len(runtimeReporter.updates) != 2 || runtimeReporter.updates[1].RuntimeState != session.RuntimeListening {
+		t.Fatalf("runtime updates = %#v, want listening restore", runtimeReporter.updates)
 	}
 }
 

@@ -54,7 +54,8 @@ func TestPipelineFinalFlowCarriesTurnID(t *testing.T) {
 	if finalSink.events[0].ProviderSpeakerID == nil || *finalSink.events[0].ProviderSpeakerID != "speaker-1" {
 		t.Fatalf("FinalTurn provider speaker evidence = %#v", finalSink.events[0])
 	}
-	if len(usageSink.facts) != 3 || usageSink.facts[0].TurnID != turn.ID || usageSink.facts[1].TurnID != turn.ID || usageSink.facts[2].TurnID != turn.ID || usageSink.facts[0].EventVersion != 1 {
+	if len(usageSink.facts) != 2 || usageSink.facts[0].TurnID != turn.ID || usageSink.facts[1].TurnID != turn.ID || usageSink.facts[0].EventVersion != 1 ||
+		usageSink.facts[0].ServiceType != "translation" || usageSink.facts[1].ServiceType != "tts" {
 		t.Fatalf("UsageFacts = %#v", usageSink.facts)
 	}
 	if len(audioSink.chunks) != 2 || audioSink.chunks[0].TurnID != turn.ID {
@@ -98,8 +99,8 @@ func TestPipelineSkipsTTSAcrossDisabledOutputRoute(t *testing.T) {
 	if len(finalSink.events) != 1 || finalSink.events[0].TTSEnabled || !finalSink.events[0].DeliveryEnabled {
 		t.Fatalf("FinalTurn output route = %#v", finalSink.events[0])
 	}
-	if len(usageSink.facts) != 2 {
-		t.Fatalf("usage facts = %#v, want ASR and translation only", usageSink.facts)
+	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "translation" {
+		t.Fatalf("usage facts = %#v, want translation only", usageSink.facts)
 	}
 }
 
@@ -166,7 +167,7 @@ func TestPipelineCarriesProviderSpeakerIDIntoFinalTurn(t *testing.T) {
 	}
 }
 
-func TestPipelineRejectsInvalidUsageBeforePublication(t *testing.T) {
+func TestPipelineRejectsInvalidTranslationUsageBeforePublication(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "unused"}}
 	usageSink := &recordingUsageSink{}
 	service := NewPipelineService(PipelineDependencies{
@@ -180,8 +181,8 @@ func TestPipelineRejectsInvalidUsageBeforePublication(t *testing.T) {
 	if !errors.Is(err, ErrInvalidUsageFact) {
 		t.Fatalf("HandleASRFinal() error = %v, want ErrInvalidUsageFact", err)
 	}
-	if len(usageSink.facts) != 0 || len(translator.Requests()) != 0 {
-		t.Fatalf("invalid UsageFact reached dependencies")
+	if len(usageSink.facts) != 0 || len(translator.Requests()) != 1 {
+		t.Fatalf("usage facts = %#v, translation requests = %#v", usageSink.facts, translator.Requests())
 	}
 }
 
@@ -211,8 +212,8 @@ func TestPipelineFinalTurnFailureStopsLaterStages(t *testing.T) {
 	if len(finalSink.events) != 1 {
 		t.Fatalf("FinalTurn attempts = %d, want 1", len(finalSink.events))
 	}
-	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
-		t.Fatalf("UsageFacts = %#v, want only ASR", usageSink.facts)
+	if len(usageSink.facts) != 0 {
+		t.Fatalf("UsageFacts = %#v, want none before FinalTurn acceptance", usageSink.facts)
 	}
 	if requests := ttsProvider.Requests(); len(requests) != 0 {
 		t.Fatalf("TTS requests = %#v, want none", requests)
@@ -244,14 +245,14 @@ func TestPipelinePublishesTranslationUsageWhenTranslateRejects(t *testing.T) {
 	if len(finalSink.events) != 0 {
 		t.Fatalf("FinalTurn events = %#v, want none", finalSink.events)
 	}
-	if len(usageSink.facts) != 2 {
-		t.Fatalf("UsageFacts = %#v, want ASR and translation", usageSink.facts)
+	if len(usageSink.facts) != 1 {
+		t.Fatalf("UsageFacts = %#v, want translation", usageSink.facts)
 	}
-	if usageSink.facts[0].ServiceType != "asr" || usageSink.facts[1].ServiceType != "translation" {
+	if usageSink.facts[0].ServiceType != "translation" {
 		t.Fatalf("UsageFacts = %#v", usageSink.facts)
 	}
-	if usageSink.facts[1].InputTokens != 9 || usageSink.facts[1].OutputTokens != 4 {
-		t.Fatalf("translation usage = %#v", usageSink.facts[1])
+	if usageSink.facts[0].InputTokens != 9 || usageSink.facts[0].OutputTokens != 4 {
+		t.Fatalf("translation usage = %#v", usageSink.facts[0])
 	}
 	if requests := ttsProvider.Requests(); len(requests) != 0 {
 		t.Fatalf("TTS requests = %#v, want none", requests)
@@ -284,8 +285,8 @@ func TestPipelineTranslationUsageFailureKeepsAcceptedFinalTurn(t *testing.T) {
 	if len(finalSink.events) != 1 {
 		t.Fatalf("accepted FinalTurns = %d, want 1", len(finalSink.events))
 	}
-	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
-		t.Fatalf("accepted UsageFacts = %#v, want only ASR", usageSink.facts)
+	if len(usageSink.facts) != 0 {
+		t.Fatalf("accepted UsageFacts = %#v, want none after rejected translation usage", usageSink.facts)
 	}
 	if requests := ttsProvider.Requests(); len(requests) != 0 {
 		t.Fatalf("TTS requests = %#v, want none", requests)
@@ -317,8 +318,8 @@ func TestPipelineRejectsInvalidTranslationUsageBeforeFinalTurn(t *testing.T) {
 	if len(finalSink.events) != 0 {
 		t.Fatalf("FinalTurn attempts = %d, want 0", len(finalSink.events))
 	}
-	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
-		t.Fatalf("UsageFacts = %#v, want only ASR", usageSink.facts)
+	if len(usageSink.facts) != 0 {
+		t.Fatalf("UsageFacts = %#v, want none", usageSink.facts)
 	}
 	if requests := ttsProvider.Requests(); len(requests) != 0 {
 		t.Fatalf("TTS requests = %#v, want none", requests)
@@ -457,8 +458,8 @@ func TestPipelineRejectsInvalidFinalTurnBeforePublication(t *testing.T) {
 	if len(finalSink.events) != 0 {
 		t.Fatalf("FinalTurn attempts = %d, want 0", len(finalSink.events))
 	}
-	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
-		t.Fatalf("UsageFacts = %#v, want only ASR", usageSink.facts)
+	if len(usageSink.facts) != 0 {
+		t.Fatalf("UsageFacts = %#v, want none", usageSink.facts)
 	}
 	if requests := ttsProvider.Requests(); len(requests) != 0 {
 		t.Fatalf("TTS requests = %#v, want none", requests)

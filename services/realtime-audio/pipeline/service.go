@@ -120,11 +120,6 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 			returnErr = errors.Join(returnErr, restoreErr)
 		}
 	}()
-	// ASR usage describes a completed recognition operation. Record it before
-	// calling the next provider so a usage failure cannot hide an untracked call.
-	if err := s.publishUsage(ctx, turn, "asr", result.Provider, result.Model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
-		return fmt.Errorf("publish ASR usage: %w", err)
-	}
 	// Turn owns the versioned language snapshot captured at start. Do not reread
 	// the current session config or a mid-turn change would alter this direction.
 	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)

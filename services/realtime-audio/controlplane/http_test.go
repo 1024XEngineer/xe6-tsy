@@ -13,6 +13,7 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 )
@@ -472,6 +473,15 @@ func TestMapErrorTTSCodecUnsupported(t *testing.T) {
 	status, code := mapError(webrtc.ErrTTSCodecUnsupported)
 	if status != http.StatusBadRequest || code != "tts_codec_unsupported" {
 		t.Fatalf("mapError(ErrTTSCodecUnsupported) = %d %q", status, code)
+	}
+}
+
+func TestMapErrorTreatsModeEventFailuresAsUnavailable(t *testing.T) {
+	for _, err := range []error{runtime.ErrModeTransitionPending, runtime.ErrModeEventUnavailable} {
+		status, code := mapError(err)
+		if status != http.StatusServiceUnavailable || code != "service_unavailable" {
+			t.Fatalf("mapError(%v) = %d %q", err, status, code)
+		}
 	}
 }
 

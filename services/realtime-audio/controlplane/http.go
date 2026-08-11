@@ -748,6 +748,8 @@ func mapError(err error) (int, string) {
 		return http.StatusConflict, string(realtimev1.ErrorModeRuntimeInstanceMismatch)
 	case errors.Is(err, runtime.ErrModeOperationConflict):
 		return http.StatusConflict, string(realtimev1.ErrorModeOperationConflict)
+	case errors.Is(err, runtime.ErrModeTransitionPending), errors.Is(err, runtime.ErrModeEventUnavailable):
+		return http.StatusServiceUnavailable, "service_unavailable"
 	case errors.Is(err, session.ErrInvalidRuntimeTransition):
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, webrtc.ErrConnectionNotFound):

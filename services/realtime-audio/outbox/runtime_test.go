@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/alicebob/miniredis/v2"
 )
 
@@ -84,6 +85,8 @@ func TestOpenRuntimeFromEnvUsesValkeyWhenConfigured(t *testing.T) {
 	t.Setenv("REDIS_URL", "redis://"+server.Addr())
 	t.Setenv("USAGE_STREAM", "lingow:usage:recorded")
 	t.Setenv("LINGOW_USAGE_STREAM", "")
+	t.Setenv("MODE_CHANGED_STREAM", "lingow:mode:configured")
+	t.Setenv("LINGOW_MODE_CHANGED_STREAM", "")
 
 	runtime, err := OpenRuntimeFromEnv(context.Background())
 	if err != nil {
@@ -92,6 +95,11 @@ func TestOpenRuntimeFromEnvUsesValkeyWhenConfigured(t *testing.T) {
 	t.Cleanup(func() { _ = runtime.Close() })
 	if runtime.Outbox == nil {
 		t.Fatal("Outbox = nil, want valkey-backed outbox")
+	}
+	adapter := runtime.Outbox.(*Adapter)
+	writer := adapter.writer.(*ValkeyWriter)
+	if writer.streams[realtimev1.ModeChangedTopic] != "lingow:mode:configured" {
+		t.Fatalf("mode stream = %q", writer.streams[realtimev1.ModeChangedTopic])
 	}
 }
 
@@ -106,6 +114,8 @@ func TestOpenRuntimeFromEnvFallsBackToLingowUsageStream(t *testing.T) {
 	t.Setenv("REDIS_URL", "redis://"+server.Addr())
 	t.Setenv("USAGE_STREAM", "")
 	t.Setenv("LINGOW_USAGE_STREAM", "lingow:usage:fallback")
+	t.Setenv("MODE_CHANGED_STREAM", "")
+	t.Setenv("LINGOW_MODE_CHANGED_STREAM", "lingow:mode:fallback")
 
 	runtime, err := OpenRuntimeFromEnv(context.Background())
 	if err != nil {
@@ -114,6 +124,11 @@ func TestOpenRuntimeFromEnvFallsBackToLingowUsageStream(t *testing.T) {
 	t.Cleanup(func() { _ = runtime.Close() })
 	if runtime.Outbox == nil {
 		t.Fatal("Outbox = nil, want valkey-backed outbox")
+	}
+	adapter := runtime.Outbox.(*Adapter)
+	writer := adapter.writer.(*ValkeyWriter)
+	if writer.streams[realtimev1.ModeChangedTopic] != "lingow:mode:fallback" {
+		t.Fatalf("mode stream = %q", writer.streams[realtimev1.ModeChangedTopic])
 	}
 }
 

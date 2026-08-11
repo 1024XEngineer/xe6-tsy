@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 const (
@@ -100,6 +102,7 @@ type CreateInput struct {
 type StartInput struct {
 	AccountID      string
 	SessionID      string
+	InitialMode    realtimev1.Mode
 	IdempotencyKey string
 	RequestHash    string
 	TraceID        string

@@ -315,6 +315,7 @@ export async function startVoiceSession(
   sessionId: string,
   idempotencyKey = newIdempotencyKey("start"),
   signal?: AbortSignal,
+  initialMode: "assistant" | "interpretation" = "interpretation",
 ): Promise<VoiceSession> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     signal?.throwIfAborted();
@@ -323,7 +324,11 @@ export async function startVoiceSession(
         `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/start`,
         {
           method: "POST",
-          headers: authHeaders(accessToken, idempotencyKey),
+          headers: {
+            ...authHeaders(accessToken, idempotencyKey),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ initial_mode: initialMode }),
           signal,
         },
       );

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 func TestServiceStartRunsPrerequisitesBeforeTransition(t *testing.T) {
@@ -47,7 +49,8 @@ func TestServiceStartRunsPrerequisitesBeforeTransition(t *testing.T) {
 	if command.SessionID != "vs_1" ||
 		command.OperationID != "op_1" ||
 		command.TraceID != "req_1" ||
-		command.StartedBy != "acct_1" {
+		command.StartedBy != "acct_1" ||
+		command.InitialMode != realtimev1.ModeInterpretation {
 		t.Fatalf("StartRealtimeCommand = %#v", command)
 	}
 	params := fixture.repository.transitions[0]

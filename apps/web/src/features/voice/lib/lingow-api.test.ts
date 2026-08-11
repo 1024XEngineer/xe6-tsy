@@ -53,6 +53,18 @@ describe("startVoiceSession", () => {
         RequestInit | undefined,
       ]>).map(([, init]) => new Headers(init?.headers).get("Idempotency-Key")),
     ).toEqual(["start-fixed", "start-fixed"]);
+    const [, init] = fetchMock.mock.calls[0] as unknown as [RequestInfo, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ initial_mode: "interpretation" });
+  });
+
+  it("sends an explicit assistant initial mode when requested", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: "vs-1", status: "active" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await startVoiceSession("token-1", "vs-1", "start-assistant", undefined, "assistant");
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [RequestInfo, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ initial_mode: "assistant" });
   });
 
   it("cancels the retry delay when the caller aborts", async () => {

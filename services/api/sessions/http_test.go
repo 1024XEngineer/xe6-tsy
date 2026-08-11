@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 func TestHandlerCreatePassesCanonicalRequest(t *testing.T) {
@@ -74,7 +76,7 @@ func TestHandlerRejectsClientAccountFields(t *testing.T) {
 	}
 }
 
-func TestHandlerStartRequiresEmptyBodyAndAddsTrace(t *testing.T) {
+func TestHandlerStartDefaultsInitialModeAndAddsTrace(t *testing.T) {
 	useCases := &handlerUseCases{
 		startResult: VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusActive},
 	}
@@ -98,24 +100,26 @@ func TestHandlerStartRequiresEmptyBodyAndAddsTrace(t *testing.T) {
 	if useCases.startInput.AccountID != "acct_1" ||
 		useCases.startInput.SessionID != "vs_1" ||
 		useCases.startInput.TraceID != "req_1" ||
-		useCases.startInput.StartedBy != "acct_1" {
+		useCases.startInput.StartedBy != "acct_1" ||
+		useCases.startInput.InitialMode != realtimev1.ModeInterpretation {
 		t.Fatalf("StartInput = %#v", useCases.startInput)
 	}
 	wantHash := canonicalHash("voice-sessions.start", struct {
-		SessionID string `json:"session_id"`
-	}{SessionID: "vs_1"})
+		SessionID   string          `json:"session_id"`
+		InitialMode realtimev1.Mode `json:"initial_mode"`
+	}{SessionID: "vs_1", InitialMode: realtimev1.ModeInterpretation})
 	if useCases.startInput.RequestHash != wantHash {
 		t.Fatalf("RequestHash = %q, want %q", useCases.startInput.RequestHash, wantHash)
 	}
 }
 
-func TestHandlerStartRejectsRequestBody(t *testing.T) {
+func TestHandlerStartRejectsUnknownInitialMode(t *testing.T) {
 	useCases := &handlerUseCases{}
 	handler := NewHandler(useCases, headerAccount)
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/voice-sessions/vs_1/start",
-		bytes.NewBufferString(`{}`),
+		bytes.NewBufferString(`{"initial_mode":"unknown"}`),
 	)
 	request.SetPathValue("id", "vs_1")
 	request.Header.Set("X-Test-Account", "acct_1")

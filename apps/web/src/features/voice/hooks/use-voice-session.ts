@@ -733,6 +733,7 @@ export function useVoiceSession() {
           session.id,
           undefined,
           startAbort.signal,
+          "interpretation",
         );
       } catch (startError) {
         const detail = errorMessage(startError, "启动失败");

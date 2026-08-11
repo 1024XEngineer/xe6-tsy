@@ -166,6 +166,11 @@ paths:
       parameters:
         - { $ref: '#/components/parameters/SessionID' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VoiceSessionStartRequest' }
       responses:
         '200': { description: Started session, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -612,6 +617,14 @@ components:
           $ref: '#/components/schemas/RealtimeMode'
           default: interpretation
           description: Optional for rolling compatibility. When omitted, realtime uses interpretation.
+    VoiceSessionStartRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        initial_mode:
+          $ref: '#/components/schemas/RealtimeMode'
+          default: interpretation
+          description: Optional for rolling compatibility. Empty request and interpretation are equivalent.
     RealtimeStopRequest:
       type: object
       additionalProperties: false

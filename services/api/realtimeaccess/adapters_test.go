@@ -181,7 +181,7 @@ func TestRealtimeLifecycleMapsCommandsSnapshotsAndErrors(t *testing.T) {
 
 	started, err := lifecycle.Start(t.Context(), sessions.StartRealtimeCommand{
 		SessionID: "session-1", OperationID: "operation-1",
-		TraceID: "trace-start", StartedBy: "account-1",
+		TraceID: "trace-start", StartedBy: "account-1", InitialMode: realtimev1.ModeAssistant,
 	})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -190,7 +190,8 @@ func TestRealtimeLifecycleMapsCommandsSnapshotsAndErrors(t *testing.T) {
 		started.RuntimeState != sessions.RuntimeListening ||
 		client.startRequest.OperationID != "operation-1" ||
 		client.startRequest.TraceID != "trace-start" ||
-		client.startRequest.StartedBy != "account-1" {
+		client.startRequest.StartedBy != "account-1" ||
+		client.startRequest.InitialMode != realtimev1.ModeAssistant {
 		t.Fatalf("Start() snapshot=%#v request=%#v", started, client.startRequest)
 	}
 

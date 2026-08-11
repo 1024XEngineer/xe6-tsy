@@ -134,6 +134,7 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 
 	controlPlaneCodes := spec.Components.Schemas["ControlPlaneErrorCode"].Enum
 	if want := []string{
+		"runtime_not_found",
 		"runtime_operation_conflict",
 		"mode_not_available",
 		"mode_generation_conflict",

@@ -7,6 +7,7 @@ import "time"
 type ControlPlaneErrorCode string
 
 const (
+	ErrorRuntimeNotFound             ControlPlaneErrorCode = "runtime_not_found"
 	ErrorRuntimeOperationConflict    ControlPlaneErrorCode = "runtime_operation_conflict"
 	ErrorModeNotAvailable            ControlPlaneErrorCode = "mode_not_available"
 	ErrorModeGenerationConflict      ControlPlaneErrorCode = "mode_generation_conflict"

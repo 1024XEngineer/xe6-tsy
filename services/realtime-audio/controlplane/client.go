@@ -385,7 +385,7 @@ func decodeClientError(status int, reader io.Reader) error {
 		return ErrClientUnauthorized
 	case string(realtimev1.ErrorConnectionNotFound):
 		return ErrConnectionNotFound
-	case "not_found":
+	case string(realtimev1.ErrorRuntimeNotFound), "not_found":
 		return ErrRuntimeNotFound
 	case string(realtimev1.ErrorRuntimeOperationConflict):
 		return ErrRuntimeOperationConflict

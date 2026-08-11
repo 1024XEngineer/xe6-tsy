@@ -747,6 +747,7 @@ type fixture struct {
 	handler        http.Handler
 	controlHandler *Handler
 	lifecycle      *lifecycleFake
+	modes          *modeControlFake
 	signaling      *signalingFake
 	connections    *connectionFake
 	tickets        *ticketFake
@@ -769,15 +770,19 @@ func newFixture(t *testing.T) fixture {
 		SessionID: "session-1", ConnectionID: "connection-1",
 		State: realtimev1.ConnectionConnected, Version: 1, UpdatedAt: now,
 	}}
+	modes := &modeControlFake{state: realtimev1.ModeStateSnapshot{
+		SessionID: "session-1", RuntimeInstanceID: "runtime-1", ActiveMode: realtimev1.ModeInterpretation,
+		Generation: 1, Phase: realtimev1.ModePhaseActive, UpdatedAt: now,
+	}}
 	handler, err := New(Dependencies{
-		Lifecycle: lifecycle, Signaling: &signalingFake{}, Connections: connections,
+		Lifecycle: lifecycle, Modes: modes, Signaling: &signalingFake{}, Connections: connections,
 		Tickets: tickets, Config: config, Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 	return fixture{
-		handler: handler, controlHandler: handler, lifecycle: lifecycle,
+		handler: handler, controlHandler: handler, lifecycle: lifecycle, modes: modes,
 		signaling: handler.signaling.(*signalingFake), connections: connections,
 		tickets: tickets, config: config,
 	}
@@ -793,7 +798,7 @@ func newReplayHandlerWithLimits(t *testing.T, lifecycle Lifecycle, now func() ti
 	tickets := &sessionTicketFake{expiresAt: baseNow.Add(time.Hour)}
 	config := &configFake{value: WebRTCConfig{SessionID: "session-1", ExpiresAt: baseNow.Add(time.Hour), ICETransportPolicy: "all"}}
 	handler, err := New(Dependencies{
-		Lifecycle: lifecycle, Signaling: &signalingFake{}, Connections: &connectionFake{},
+		Lifecycle: lifecycle, Modes: &modeControlFake{}, Signaling: &signalingFake{}, Connections: &connectionFake{},
 		Tickets: tickets, Config: config, Now: now,
 		ReplayTTL: replayTTL, ReplayMaxEntries: replayMax, ReplayMaxEntriesPerSession: replayMaxPerSession,
 	})

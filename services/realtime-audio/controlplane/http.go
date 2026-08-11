@@ -16,6 +16,7 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 )
@@ -131,6 +132,7 @@ type AudioConfig struct {
 // Dependencies wires existing lifecycle, ticket, signaling, and config ports.
 type Dependencies struct {
 	Lifecycle                  Lifecycle
+	Modes                      ModeControl
 	Fallback                   FallbackPlayback
 	FallbackReplays            FallbackPlaybackReplayStore
 	Signaling                  Signaling
@@ -146,6 +148,7 @@ type Dependencies struct {
 // Handler serves the realtime control-plane routes.
 type Handler struct {
 	lifecycle       Lifecycle
+	modes           ModeControl
 	fallback        FallbackPlayback
 	fallbackReplays FallbackPlaybackReplayStore
 	signaling       Signaling
@@ -175,7 +178,7 @@ type replayRecord struct {
 
 // New validates dependencies and registers the default /realtime/v1 routes.
 func New(dependencies Dependencies) (*Handler, error) {
-	if dependencies.Lifecycle == nil || dependencies.Signaling == nil ||
+	if dependencies.Lifecycle == nil || dependencies.Modes == nil || dependencies.Signaling == nil ||
 		dependencies.Connections == nil || dependencies.Tickets == nil ||
 		dependencies.Config == nil {
 		return nil, ErrInvalidDependency
@@ -197,6 +200,7 @@ func New(dependencies Dependencies) (*Handler, error) {
 	}
 	h := &Handler{
 		lifecycle:                  dependencies.Lifecycle,
+		modes:                      dependencies.Modes,
 		fallback:                   dependencies.Fallback,
 		fallbackReplays:            dependencies.FallbackReplays,
 		signaling:                  dependencies.Signaling,
@@ -221,6 +225,8 @@ func (h *Handler) registerRoutes(prefix string) {
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/stop", h.stop)
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/fallback-playback", h.fallbackPlayback)
 	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/runtime", h.runtime)
+	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/mode", h.modeState)
+	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/mode", h.switchMode)
 	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/connection", h.connection)
 	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/webrtc/config", h.configHandler)
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/webrtc/offer", h.offer)
@@ -720,6 +726,7 @@ func mapError(err error) (int, string) {
 		return http.StatusInternalServerError, "internal_error"
 	case errors.Is(err, ErrInvalidRequest), errors.Is(err, webrtc.ErrSessionIDRequired),
 		errors.Is(err, session.ErrStartOperationIDRequired),
+		errors.Is(err, runtime.ErrSessionIDRequired), errors.Is(err, runtime.ErrModeCommandInvalid),
 		errors.Is(err, webrtc.ErrOfferSDPRequired), errors.Is(err, webrtc.ErrOfferTypeInvalid),
 		errors.Is(err, webrtc.ErrIdempotencyKeyRequired), errors.Is(err, ErrIdempotencyKeyTooLong),
 		errors.Is(err, webrtc.ErrConnectionIDRequired), errors.Is(err, webrtc.ErrCandidateIDRequired),
@@ -733,6 +740,14 @@ func mapError(err error) (int, string) {
 		return http.StatusUnauthorized, "unauthorized"
 	case errors.Is(err, session.ErrRuntimeNotFound):
 		return http.StatusNotFound, "not_found"
+	case errors.Is(err, runtime.ErrModeNotAvailable):
+		return http.StatusUnprocessableEntity, string(realtimev1.ErrorModeNotAvailable)
+	case errors.Is(err, runtime.ErrModeGenerationConflict):
+		return http.StatusConflict, string(realtimev1.ErrorModeGenerationConflict)
+	case errors.Is(err, runtime.ErrModeRuntimeInstanceMismatch):
+		return http.StatusConflict, string(realtimev1.ErrorModeRuntimeInstanceMismatch)
+	case errors.Is(err, runtime.ErrModeOperationConflict):
+		return http.StatusConflict, string(realtimev1.ErrorModeOperationConflict)
 	case errors.Is(err, session.ErrInvalidRuntimeTransition):
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, webrtc.ErrConnectionNotFound):
@@ -746,6 +761,8 @@ func mapError(err error) (int, string) {
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, ErrReplayCapacity):
 		return http.StatusServiceUnavailable, "replay_capacity_exhausted"
+	case errors.Is(err, runtime.ErrDependencyRequired):
+		return http.StatusServiceUnavailable, "service_unavailable"
 	case errors.Is(err, ErrFallbackPlaybackInProgress):
 		return http.StatusConflict, "fallback_playback_in_progress"
 	case errors.Is(err, ErrInvalidDependency):
@@ -761,5 +778,6 @@ func mapError(err error) (int, string) {
 
 var _ http.Handler = (*Handler)(nil)
 var _ Lifecycle = (*session.LifecycleService)(nil)
+var _ ModeControl = (*runtime.Manager)(nil)
 var _ Signaling = (*webrtc.SignalingService)(nil)
 var _ ConnectionReader = (webrtc.ConnectionManager)(nil)

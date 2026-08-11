@@ -26,7 +26,7 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 	tickets := &ticketFake{ticket: webrtc.ConnectionTicket{SessionID: "session-1", AccountID: "account-1", ExpiresAt: now.Add(time.Hour)}}
 	signaling := &deliverySignaling{outbox: durable}
 	handler, err := New(Dependencies{
-		Lifecycle: lifecycle, Signaling: signaling, Connections: &connectionFake{},
+		Lifecycle: lifecycle, Modes: &modeControlFake{}, Signaling: signaling, Connections: &connectionFake{},
 		Tickets: tickets,
 		Config:  &configFake{value: WebRTCConfig{SessionID: "session-1", ExpiresAt: now.Add(time.Hour)}},
 		Now:     func() time.Time { return now },

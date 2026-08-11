@@ -23,6 +23,7 @@ export function VoiceExperience() {
     updateConfig,
     debug,
     configSyncStatus,
+    commandWindow,
     switchMode,
     toggle,
     wakeStatus,
@@ -135,9 +136,9 @@ export function VoiceExperience() {
               {hintMessage}
             </motion.p>
           ) : null}
-          {state.phase === "idle" && wakeStatus === "listening" ? (
+          {state.phase === "idle" && wakeStatus === "listening" && commandWindow.state === "open" ? (
             <p className={styles.commandWindowNotice} role="status">
-              有界语音命令窗口暂不可用，当前仅支持“开始/停止翻译”兼容唤醒词。
+              命令窗口已开启，请在 5 秒内说“开始翻译”或“停止翻译”。
             </p>
           ) : null}
         </motion.section>

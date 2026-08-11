@@ -51,6 +51,10 @@ import {
   type WakeListenerStatus,
 } from "../lib/wake-word/wake-listener";
 import {
+  LocalCommandWindow,
+  type CommandWindowSnapshot,
+} from "../lib/wake-word/command-window";
+import {
   initialSession,
   sessionReducer,
   type TranslationTurn,
@@ -225,6 +229,11 @@ export function useVoiceSession() {
   const pendingConfigUpdatesRef = useRef(0);
   const latestAutomaticOutputStatusRef = useRef<string | null>(null);
   const wakeRef = useRef<WakeWordListener | null>(null);
+  const commandWindowRef = useRef(new LocalCommandWindow());
+  const [commandWindow, setCommandWindow] = useState<CommandWindowSnapshot>({
+    state: "closed",
+    expiresAt: null,
+  });
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
 
@@ -467,6 +476,8 @@ export function useVoiceSession() {
 
   const end = useCallback(async () => {
     runningRef.current = false;
+    commandWindowRef.current.close();
+    setCommandWindow(commandWindowRef.current.snapshot());
     startAbortRef.current?.abort();
     startAbortRef.current = null;
     stopPolling();
@@ -582,6 +593,8 @@ export function useVoiceSession() {
   const start = useCallback(async () => {
     if (runningRef.current) return;
 
+    commandWindowRef.current.close();
+    setCommandWindow(commandWindowRef.current.snapshot());
     runningRef.current = true;
     const startAbort = new AbortController();
     startAbortRef.current = startAbort;
@@ -816,23 +829,37 @@ export function useVoiceSession() {
   }, [end, start]);
 
   useEffect(() => {
+    const localCommandWindow = commandWindowRef.current;
     const listener = new WakeWordListener({
       onCommand: (command, keyword) => {
+        const acceptedByWindow = commandWindowRef.current.consume(command);
+        if (acceptedByWindow) {
+          setCommandWindow(commandWindowRef.current.snapshot());
+        }
         if (command === "start") {
           if (runningRef.current || sessionIdRef.current) return;
-          setHintMessage(`已识别「${keyword}」，正在开启传译…`);
+          setHintMessage(
+            acceptedByWindow
+              ? `已确认「${keyword}」，正在开启传译…`
+              : `已识别「${keyword}」，正在开启传译…`,
+          );
           void startRef.current();
           return;
         }
         if (command === "stop") {
           if (!runningRef.current && !sessionIdRef.current) return;
-          setHintMessage(`已识别「${keyword}」，正在停止传译…`);
+          setHintMessage(
+            acceptedByWindow
+              ? `已确认「${keyword}」，正在停止传译…`
+              : `已识别「${keyword}」，正在停止传译…`,
+          );
           void endRef.current();
           return;
         }
         if (command === "listen") {
-          // Temporary verify hook until command-mode behavior lands.
-          console.log(`[wake] listen recognized: ${keyword}`);
+          const snapshot = commandWindowRef.current.open();
+          setCommandWindow(snapshot);
+          setHintMessage(`已识别「${keyword}」，请在 5 秒内说开始或停止翻译。`);
         }
       },
       onStatus: (status, detail) => {
@@ -865,7 +892,21 @@ export function useVoiceSession() {
     return () => {
       wakeRef.current = null;
       listener.stop();
+      localCommandWindow.dispose();
     };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const snapshot = commandWindowRef.current.snapshot();
+      setCommandWindow((previous) =>
+        previous.state === snapshot.state &&
+        previous.expiresAt === snapshot.expiresAt
+          ? previous
+          : snapshot,
+      );
+    }, 250);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(
@@ -891,6 +932,7 @@ export function useVoiceSession() {
       updateConfig,
       debug,
       wakeStatus,
+      commandWindow,
       switchMode,
       toggle,
     }),
@@ -906,6 +948,7 @@ export function useVoiceSession() {
       updateConfig,
       voiceConfig,
       wakeStatus,
+      commandWindow,
     ],
   );
 }

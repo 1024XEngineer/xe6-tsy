@@ -72,6 +72,7 @@ export class WakeWordListener {
   private kwsStream: SherpaKwsStream | null = null;
   private running = false;
   private lastFireAt = 0;
+  private lastCommand: WakeCommand | null = null;
   private status: WakeListenerStatus = "idle";
 
   constructor(handlers: WakeListenerHandlers) {
@@ -99,6 +100,8 @@ export class WakeWordListener {
       return;
     }
     this.running = true;
+    this.lastFireAt = 0;
+    this.lastCommand = null;
 
     try {
       this.setStatus("requesting_mic");
@@ -168,10 +171,18 @@ export class WakeWordListener {
 
   private emitKeyword(keyword: string): void {
     const now = Date.now();
-    if (now - this.lastFireAt < COOLDOWN_MS) return;
     const trigger = resolveWakeTrigger(keyword);
     if (!trigger) return;
+    // Keep duplicate detections quiet, while allowing a different command to
+    // follow the attention phrase inside the local command window.
+    if (
+      this.lastCommand === trigger.command &&
+      now - this.lastFireAt < COOLDOWN_MS
+    ) {
+      return;
+    }
     this.lastFireAt = now;
+    this.lastCommand = trigger.command;
     this.handlers.onCommand(trigger.command, trigger.label);
   }
 

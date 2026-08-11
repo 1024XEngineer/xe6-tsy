@@ -149,7 +149,11 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 	if deps.NewRuntimeInstanceID == nil {
 		deps.NewRuntimeInstanceID = defaultRuntimeInstanceID
 	}
-	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages)
+	manager := &Manager{
+		failure: deps.Runtime, logger: deps.Logger,
+		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
+	}
+	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages, managerTurnModeReader{manager: manager})
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
 		Translator: providers.Translation,
 		TTS:        providers.TTS,
@@ -164,7 +168,6 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 	// Router 注册表是模式能力的单一来源：Coordinator 会复用同一份模式列表，
 	// 从而保证“允许切换”的模式一定存在对应 Handler，不会出现状态切换成功但没有业务处理器的半配置状态。
 	router, err := newModeRouter(
-		realtimev1.ModeInterpretation,
 		map[realtimev1.Mode]pipeline.ASRFinalHandler{
 			realtimev1.ModeInterpretation: service,
 		},
@@ -172,15 +175,12 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 	if err != nil {
 		return nil, fmt.Errorf("create mode router: %w", err)
 	}
-	return &Manager{
-		processor: pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
-			ASR: providers.ASR, Opener: opener, Pipeline: service, Finals: router,
-		}),
-		playback: service,
-		router:   router,
-		failure:  deps.Runtime, logger: deps.Logger,
-		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
-	}, nil
+	manager.processor = pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
+		ASR: providers.ASR, Opener: opener, Pipeline: service, Finals: router,
+	})
+	manager.playback = service
+	manager.router = router
+	return manager, nil
 }
 
 // PlayFallback sends an immutable translated-text snapshot through the active

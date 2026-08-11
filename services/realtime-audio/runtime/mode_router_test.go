@@ -10,12 +10,12 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 )
 
-func TestModeRouterUsesConfiguredDefaultHandler(t *testing.T) {
+func TestModeRouterUsesTurnModeSnapshot(t *testing.T) {
 	interpretation := &recordingModeHandler{}
-	router := mustModeRouter(t, realtimev1.ModeInterpretation, map[realtimev1.Mode]pipeline.ASRFinalHandler{
+	router := mustModeRouter(t, map[realtimev1.Mode]pipeline.ASRFinalHandler{
 		realtimev1.ModeInterpretation: interpretation,
 	})
-	turn := pipeline.TurnContext{ID: "turn-1", SessionID: "session-1"}
+	turn := pipeline.TurnContext{ID: "turn-1", SessionID: "session-1", Mode: pipeline.TurnModeSnapshot{Mode: realtimev1.ModeInterpretation}}
 	result := asr.FinalResult{Text: "hello", SourceLanguage: "en-US"}
 
 	if err := router.HandleASRFinal(t.Context(), turn, result); err != nil {
@@ -23,14 +23,14 @@ func TestModeRouterUsesConfiguredDefaultHandler(t *testing.T) {
 	}
 	if interpretation.calls != 1 || interpretation.turn.ID != turn.ID ||
 		interpretation.turn.SessionID != turn.SessionID || interpretation.result != result {
-		t.Fatalf("default handler call = %#v", interpretation)
+		t.Fatalf("snapshot handler call = %#v", interpretation)
 	}
 }
 
 func TestModeRouterDispatchesExplicitRegisteredMode(t *testing.T) {
 	interpretation := &recordingModeHandler{}
 	assistant := &recordingModeHandler{}
-	router := mustModeRouter(t, realtimev1.ModeInterpretation, map[realtimev1.Mode]pipeline.ASRFinalHandler{
+	router := mustModeRouter(t, map[realtimev1.Mode]pipeline.ASRFinalHandler{
 		realtimev1.ModeInterpretation: interpretation,
 		realtimev1.ModeAssistant:      assistant,
 	})
@@ -48,7 +48,7 @@ func TestModeRouterRejectsUnavailableModeWithoutFallback(t *testing.T) {
 	registrations := map[realtimev1.Mode]pipeline.ASRFinalHandler{
 		realtimev1.ModeInterpretation: interpretation,
 	}
-	router := mustModeRouter(t, realtimev1.ModeInterpretation, registrations)
+	router := mustModeRouter(t, registrations)
 	registrations[realtimev1.ModeAssistant] = &recordingModeHandler{}
 
 	if err := router.Dispatch(t.Context(), realtimev1.ModeAssistant, pipeline.TurnContext{}, asr.FinalResult{}); !errors.Is(err, ErrModeNotAvailable) {
@@ -61,25 +61,17 @@ func TestModeRouterRejectsUnavailableModeWithoutFallback(t *testing.T) {
 
 func TestModeRouterValidatesRegistrations(t *testing.T) {
 	tests := []struct {
-		name        string
-		defaultMode realtimev1.Mode
-		handlers    map[realtimev1.Mode]pipeline.ASRFinalHandler
-		wantErr     error
+		name     string
+		handlers map[realtimev1.Mode]pipeline.ASRFinalHandler
+		wantErr  error
 	}{
 		{
-			name:        "invalid default",
-			defaultMode: realtimev1.Mode("unknown"),
-			wantErr:     ErrModeNotAvailable,
+			name:     "empty registrations",
+			handlers: map[realtimev1.Mode]pipeline.ASRFinalHandler{},
+			wantErr:  ErrModeNotAvailable,
 		},
 		{
-			name:        "default not registered",
-			defaultMode: realtimev1.ModeInterpretation,
-			handlers:    map[realtimev1.Mode]pipeline.ASRFinalHandler{},
-			wantErr:     ErrModeNotAvailable,
-		},
-		{
-			name:        "invalid registered mode",
-			defaultMode: realtimev1.ModeInterpretation,
+			name: "invalid registered mode",
 			handlers: map[realtimev1.Mode]pipeline.ASRFinalHandler{
 				realtimev1.ModeInterpretation: &recordingModeHandler{},
 				realtimev1.Mode("unknown"):    &recordingModeHandler{},
@@ -87,8 +79,7 @@ func TestModeRouterValidatesRegistrations(t *testing.T) {
 			wantErr: ErrModeNotAvailable,
 		},
 		{
-			name:        "nil handler",
-			defaultMode: realtimev1.ModeInterpretation,
+			name: "nil handler",
 			handlers: map[realtimev1.Mode]pipeline.ASRFinalHandler{
 				realtimev1.ModeInterpretation: nil,
 			},
@@ -98,7 +89,7 @@ func TestModeRouterValidatesRegistrations(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := newModeRouter(test.defaultMode, test.handlers); !errors.Is(err, test.wantErr) {
+			if _, err := newModeRouter(test.handlers); !errors.Is(err, test.wantErr) {
 				t.Fatalf("newModeRouter() error = %v, want %v", err, test.wantErr)
 			}
 		})
@@ -108,16 +99,17 @@ func TestModeRouterValidatesRegistrations(t *testing.T) {
 func TestModeRouterPropagatesHandlerAndContextErrors(t *testing.T) {
 	wantErr := errors.New("handler unavailable")
 	handler := &recordingModeHandler{err: wantErr}
-	router := mustModeRouter(t, realtimev1.ModeInterpretation, map[realtimev1.Mode]pipeline.ASRFinalHandler{
+	router := mustModeRouter(t, map[realtimev1.Mode]pipeline.ASRFinalHandler{
 		realtimev1.ModeInterpretation: handler,
 	})
+	turn := pipeline.TurnContext{Mode: pipeline.TurnModeSnapshot{Mode: realtimev1.ModeInterpretation}}
 
-	if err := router.HandleASRFinal(t.Context(), pipeline.TurnContext{}, asr.FinalResult{}); !errors.Is(err, wantErr) {
+	if err := router.HandleASRFinal(t.Context(), turn, asr.FinalResult{}); !errors.Is(err, wantErr) {
 		t.Fatalf("HandleASRFinal() error = %v, want %v", err, wantErr)
 	}
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := router.HandleASRFinal(canceled, pipeline.TurnContext{}, asr.FinalResult{}); !errors.Is(err, context.Canceled) {
+	if err := router.HandleASRFinal(canceled, turn, asr.FinalResult{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled HandleASRFinal() error = %v, want context.Canceled", err)
 	}
 	if handler.calls != 1 {
@@ -127,11 +119,10 @@ func TestModeRouterPropagatesHandlerAndContextErrors(t *testing.T) {
 
 func mustModeRouter(
 	t *testing.T,
-	defaultMode realtimev1.Mode,
 	handlers map[realtimev1.Mode]pipeline.ASRFinalHandler,
 ) *modeRouter {
 	t.Helper()
-	router, err := newModeRouter(defaultMode, handlers)
+	router, err := newModeRouter(handlers)
 	if err != nil {
 		t.Fatalf("newModeRouter() error = %v", err)
 	}

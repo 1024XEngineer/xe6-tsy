@@ -10,6 +10,7 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
@@ -245,6 +246,25 @@ func (m *Manager) currentModeCoordinator(sessionID string) (*modeCoordinator, er
 		return nil, session.ErrRuntimeNotFound
 	}
 	return item.mode, nil
+}
+
+// managerTurnModeReader adapts Manager's runtime-owned coordinator to the
+// narrow pipeline snapshot port without exposing coordinator mutation methods.
+type managerTurnModeReader struct {
+	manager *Manager
+}
+
+func (r managerTurnModeReader) GetTurnMode(ctx context.Context, sessionID string) (pipeline.TurnModeSnapshot, error) {
+	state, err := r.manager.GetModeState(ctx, sessionID)
+	if err != nil {
+		return pipeline.TurnModeSnapshot{}, err
+	}
+	return pipeline.TurnModeSnapshot{
+		SessionID:         state.SessionID,
+		RuntimeInstanceID: state.RuntimeInstanceID,
+		Mode:              state.ActiveMode,
+		Generation:        state.Generation,
+	}, nil
 }
 
 func defaultRuntimeInstanceID() (string, error) {

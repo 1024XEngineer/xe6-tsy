@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
@@ -91,7 +92,8 @@ func TestTurnOpenerSnapshotsLanguageConfig(t *testing.T) {
 			{Source: "en-US", Target: "zh-CN"},
 		},
 	}}
-	opener := NewTurnOpener(NewMemoryTurnAllocator(), reader)
+	modes := &fakeTurnModeReader{snapshot: validTurnModeSnapshot("session-1")}
+	opener := NewTurnOpener(NewMemoryTurnAllocator(), reader, modes)
 
 	turn, err := opener.OpenTurn(context.Background(), TurnOpenRequest{
 		SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1",
@@ -100,16 +102,24 @@ func TestTurnOpenerSnapshotsLanguageConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenTurn() error = %v", err)
 	}
-	if turn.ID == "" || turn.SequenceNo != 1 || reader.calls != 1 {
+	if turn.ID == "" || turn.SequenceNo != 1 || reader.calls != 1 || modes.calls != 1 {
 		t.Fatalf("turn = %#v, reader calls = %d", turn, reader.calls)
 	}
 	if turn.LanguageConfig.Version != 7 || turn.LanguageConfig.LanguagePairs[0].Target != "en-US" {
 		t.Fatalf("language snapshot = %#v", turn.LanguageConfig)
 	}
+	if turn.Mode.RuntimeInstanceID != "runtime-1" || turn.Mode.Mode != realtimev1.ModeInterpretation || turn.Mode.Generation != 1 {
+		t.Fatalf("mode snapshot = %#v", turn.Mode)
+	}
 
 	reader.snapshot.LanguagePairs[0].Target = "fr-FR"
+	modes.snapshot.Mode = realtimev1.ModeAssistant
+	modes.snapshot.Generation = 2
 	if turn.LanguageConfig.LanguagePairs[0].Target != "en-US" {
 		t.Fatalf("Turn language snapshot changed after reader mutation: %#v", turn.LanguageConfig)
+	}
+	if turn.Mode.Mode != realtimev1.ModeInterpretation || turn.Mode.Generation != 1 {
+		t.Fatalf("Turn mode snapshot changed after reader mutation: %#v", turn.Mode)
 	}
 }
 
@@ -131,7 +141,7 @@ func TestTurnOpenerRejectsLanguageConfigWithoutMatchingSession(t *testing.T) {
 					{Source: "zh-CN", Target: "en-US"},
 				},
 			}}
-			opener := NewTurnOpener(NewMemoryTurnAllocator(), reader)
+			opener := NewTurnOpener(NewMemoryTurnAllocator(), reader, &fakeTurnModeReader{snapshot: validTurnModeSnapshot("session-1")})
 
 			_, err := opener.OpenTurn(context.Background(), TurnOpenRequest{SessionID: "session-1"})
 			if !errors.Is(err, ErrLanguageConfigSessionMismatch) {
@@ -159,13 +169,54 @@ func TestTurnOpenerRejectsInvalidLanguageConfig(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			opener := NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 				SessionID: "session-1", Version: test.version, Status: "active", LanguagePairs: test.pairs,
-			}})
+			}}, &fakeTurnModeReader{snapshot: validTurnModeSnapshot("session-1")})
 
 			_, err := opener.OpenTurn(context.Background(), TurnOpenRequest{SessionID: "session-1"})
 			if !errors.Is(err, ErrLanguageConfigUnavailable) {
 				t.Fatalf("OpenTurn() error = %v, want ErrLanguageConfigUnavailable", err)
 			}
 		})
+	}
+}
+
+func TestTurnOpenerRejectsInvalidModeSnapshot(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*TurnModeSnapshot)
+		wantErr error
+	}{
+		{name: "different session", mutate: func(snapshot *TurnModeSnapshot) { snapshot.SessionID = "session-2" }, wantErr: ErrTurnModeSessionMismatch},
+		{name: "missing runtime", mutate: func(snapshot *TurnModeSnapshot) { snapshot.RuntimeInstanceID = "" }, wantErr: ErrTurnModeUnavailable},
+		{name: "invalid mode", mutate: func(snapshot *TurnModeSnapshot) { snapshot.Mode = realtimev1.Mode("unknown") }, wantErr: ErrTurnModeUnavailable},
+		{name: "zero generation", mutate: func(snapshot *TurnModeSnapshot) { snapshot.Generation = 0 }, wantErr: ErrTurnModeUnavailable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := validTurnModeSnapshot("session-1")
+			test.mutate(&snapshot)
+			opener := NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+				SessionID: "session-1", Version: 1, Status: "active",
+				LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+			}}, &fakeTurnModeReader{snapshot: snapshot})
+
+			_, err := opener.OpenTurn(t.Context(), TurnOpenRequest{SessionID: "session-1"})
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("OpenTurn() error = %v, want %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestTurnOpenerPropagatesModeSnapshotReadFailure(t *testing.T) {
+	wantErr := errors.New("runtime mode unavailable")
+	opener := NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		SessionID: "session-1", Version: 1, Status: "active",
+		LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+	}}, &fakeTurnModeReader{err: wantErr})
+
+	_, err := opener.OpenTurn(t.Context(), TurnOpenRequest{SessionID: "session-1"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("OpenTurn() error = %v, want %v", err, wantErr)
 	}
 }
 
@@ -180,3 +231,27 @@ func (f *fakeLanguageConfigReader) GetCurrentConfig(_ context.Context, _ string)
 }
 
 var _ session.LanguageConfigReader = (*fakeLanguageConfigReader)(nil)
+
+type fakeTurnModeReader struct {
+	snapshot TurnModeSnapshot
+	err      error
+	calls    int
+}
+
+func (f *fakeTurnModeReader) GetTurnMode(_ context.Context, _ string) (TurnModeSnapshot, error) {
+	f.calls++
+	return f.snapshot, f.err
+}
+
+func validTurnModeSnapshot(sessionID string) TurnModeSnapshot {
+	return TurnModeSnapshot{
+		SessionID: sessionID, RuntimeInstanceID: "runtime-1",
+		Mode: realtimev1.ModeInterpretation, Generation: 1,
+	}
+}
+
+func newTestTurnOpener(languages session.LanguageConfigReader) *TurnOpener {
+	return NewTurnOpener(NewMemoryTurnAllocator(), languages, &fakeTurnModeReader{snapshot: validTurnModeSnapshot("session-1")})
+}
+
+var _ TurnModeReader = (*fakeTurnModeReader)(nil)

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
@@ -18,6 +19,10 @@ var (
 	ErrLanguageConfigUnavailable = errors.New("active language configuration is required")
 	// ErrLanguageConfigSessionMismatch indicates that a reader returned another session's configuration.
 	ErrLanguageConfigSessionMismatch = errors.New("language configuration session mismatch")
+	// ErrTurnModeUnavailable indicates that no executable runtime mode was captured for the Turn.
+	ErrTurnModeUnavailable = errors.New("Turn mode snapshot is required")
+	// ErrTurnModeSessionMismatch indicates that a reader returned another session's runtime mode.
+	ErrTurnModeSessionMismatch = errors.New("Turn mode snapshot session mismatch")
 )
 
 // TurnAllocator creates the member-3-owned identifiers used by the pipeline.
@@ -60,7 +65,21 @@ type TurnOpenRequest struct {
 	StartedAt time.Time
 }
 
-// TurnContext carries the allocated Turn ID and its language snapshot through processing.
+// TurnModeSnapshot is the immutable runtime identity and mode captured when a Turn opens.
+// Generation is scoped to RuntimeInstanceID and must not be compared across runtime instances.
+type TurnModeSnapshot struct {
+	SessionID         string
+	RuntimeInstanceID string
+	Mode              realtimev1.Mode
+	Generation        int64
+}
+
+// TurnModeReader returns the authoritative mode state for the active runtime.
+type TurnModeReader interface {
+	GetTurnMode(ctx context.Context, sessionID string) (TurnModeSnapshot, error)
+}
+
+// TurnContext carries the allocated Turn ID and its immutable snapshots through processing.
 type TurnContext struct {
 	ID             string
 	SessionID      string
@@ -68,26 +87,28 @@ type TurnContext struct {
 	TraceID        string
 	SequenceNo     int64
 	LanguageConfig session.LanguageConfigSnapshot
+	Mode           TurnModeSnapshot
 	StartedAt      time.Time
 }
 
-// TurnOpener allocates a Turn and captures member 2's configuration once.
+// TurnOpener allocates a Turn and captures language and runtime mode state once.
 type TurnOpener struct {
 	allocator TurnAllocator
 	languages session.LanguageConfigReader
+	modes     TurnModeReader
 }
 
-// NewTurnOpener wires the allocator and language configuration boundary.
-func NewTurnOpener(allocator TurnAllocator, languages session.LanguageConfigReader) *TurnOpener {
-	return &TurnOpener{allocator: allocator, languages: languages}
+// NewTurnOpener wires the allocator and immutable Turn snapshot boundaries.
+func NewTurnOpener(allocator TurnAllocator, languages session.LanguageConfigReader, modes TurnModeReader) *TurnOpener {
+	return &TurnOpener{allocator: allocator, languages: languages, modes: modes}
 }
 
-// OpenTurn allocates the Turn ID before reading a copied language configuration.
+// OpenTurn allocates the Turn ID before reading copied language and mode snapshots.
 func (o *TurnOpener) OpenTurn(ctx context.Context, request TurnOpenRequest) (TurnContext, error) {
 	if request.SessionID == "" {
 		return TurnContext{}, ErrSessionIDRequired
 	}
-	if o == nil || o.allocator == nil || o.languages == nil {
+	if o == nil || o.allocator == nil || o.languages == nil || o.modes == nil {
 		return TurnContext{}, errors.New("Turn opener dependencies are required")
 	}
 
@@ -105,6 +126,16 @@ func (o *TurnOpener) OpenTurn(ctx context.Context, request TurnOpenRequest) (Tur
 	if !validLanguageConfig(config) {
 		return TurnContext{}, ErrLanguageConfigUnavailable
 	}
+	mode, err := o.modes.GetTurnMode(ctx, request.SessionID)
+	if err != nil {
+		return TurnContext{}, fmt.Errorf("read Turn mode: %w", err)
+	}
+	if mode.SessionID != request.SessionID {
+		return TurnContext{}, fmt.Errorf("%w: got %q for %q", ErrTurnModeSessionMismatch, mode.SessionID, request.SessionID)
+	}
+	if mode.RuntimeInstanceID == "" || !mode.Mode.Valid() || mode.Generation < 1 {
+		return TurnContext{}, ErrTurnModeUnavailable
+	}
 	config.LanguagePairs = append([]session.LanguagePair(nil), config.LanguagePairs...)
 	config.OutputRoutes = append([]session.OutputRoute(nil), config.OutputRoutes...)
 	startedAt := request.StartedAt
@@ -118,6 +149,7 @@ func (o *TurnOpener) OpenTurn(ctx context.Context, request TurnOpenRequest) (Tur
 		TraceID:        request.TraceID,
 		SequenceNo:     sequenceNo,
 		LanguageConfig: config,
+		Mode:           mode,
 		StartedAt:      startedAt,
 	}, nil
 }

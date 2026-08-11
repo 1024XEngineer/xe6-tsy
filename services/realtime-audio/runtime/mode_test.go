@@ -11,6 +11,7 @@ import (
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
@@ -24,6 +25,43 @@ func TestModeCoordinatorStartsWithIndependentModeState(t *testing.T) {
 		state.ActiveMode != realtimev1.ModeInterpretation || state.Generation != 1 ||
 		state.Phase != realtimev1.ModePhaseActive || state.LastOperationID != nil || state.UpdatedAt.IsZero() {
 		t.Fatalf("initial mode state = %#v", state)
+	}
+}
+
+func TestTurnModeSnapshotRemainsFixedAcrossModeSwitch(t *testing.T) {
+	coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+		realtimev1.ModeInterpretation,
+		realtimev1.ModeAssistant,
+	})
+	manager := &Manager{
+		locks: newKeyedLocker(),
+		entries: map[string]*entry{
+			"session-1": {mode: coordinator},
+		},
+	}
+	opener := pipeline.NewTurnOpener(
+		pipeline.NewMemoryTurnAllocator(),
+		&fakeLanguageReader{snapshot: activeConfig("session-1")},
+		managerTurnModeReader{manager: manager},
+	)
+
+	first, err := opener.OpenTurn(t.Context(), pipeline.TurnOpenRequest{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("first OpenTurn() error = %v", err)
+	}
+	if _, err := coordinator.Switch(t.Context(), modeCommand("operation-1", 1, realtimev1.ModeAssistant)); err != nil {
+		t.Fatalf("Switch() error = %v", err)
+	}
+	second, err := opener.OpenTurn(t.Context(), pipeline.TurnOpenRequest{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("second OpenTurn() error = %v", err)
+	}
+
+	if first.Mode.Mode != realtimev1.ModeInterpretation || first.Mode.Generation != 1 {
+		t.Fatalf("first Turn mode changed after switch = %#v", first.Mode)
+	}
+	if second.Mode.Mode != realtimev1.ModeAssistant || second.Mode.Generation != 2 {
+		t.Fatalf("second Turn mode = %#v, want assistant generation 2", second.Mode)
 	}
 }
 

@@ -36,7 +36,7 @@ func TestTurnProcessorRunsMockASRTranslationTTSFlow(t *testing.T) {
 	})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR: asrProvider,
-		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 3, Status: "active",
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
@@ -129,7 +129,7 @@ func TestTurnProcessorDispatchesASRFinalToInjectedHandler(t *testing.T) {
 	finalHandler := &recordingASRFinalHandler{}
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR: asrProvider,
-		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "active",
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
@@ -168,7 +168,7 @@ func TestTurnProcessorPropagatesUsageAcceptanceFailure(t *testing.T) {
 	})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}}),
-		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "active",
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
@@ -199,7 +199,7 @@ func TestTurnProcessorObservesPartialWithoutTranslatingIt(t *testing.T) {
 	})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR: asrProvider,
-		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "active",
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
@@ -236,7 +236,7 @@ func TestTurnProcessorPropagatesPostFinalFailureClassification(t *testing.T) {
 		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
 			Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
 		}}),
-		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "active",
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),
@@ -262,7 +262,7 @@ func TestTurnProcessorRejectsIncompletePipelineDependencies(t *testing.T) {
 	service := NewPipelineService(PipelineDependencies{})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR:      asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Opener:   NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{}),
+		Opener:   newTestTurnOpener(&fakeLanguageConfigReader{}),
 		Pipeline: service,
 		Finals:   service,
 	})
@@ -278,7 +278,7 @@ func TestTurnProcessorRejectsIncompletePipelineDependencies(t *testing.T) {
 func TestTurnProcessorRequiresFinalHandler(t *testing.T) {
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR:      asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Opener:   NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{}),
+		Opener:   newTestTurnOpener(&fakeLanguageConfigReader{}),
 		Pipeline: NewPipelineService(PipelineDependencies{}),
 	})
 
@@ -304,7 +304,7 @@ func TestTurnProcessorConsumesASREventsBeforePushReturns(t *testing.T) {
 	})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR: &pushEventProvider{stream: stream},
-		Opener: NewTurnOpener(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "active",
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}),

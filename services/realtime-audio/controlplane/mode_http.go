@@ -36,8 +36,7 @@ func (h *Handler) switchMode(writer http.ResponseWriter, request *http.Request) 
 		h.writeError(writer, request, err)
 		return
 	}
-	idempotencyKey, err := requiredIdempotencyKey(request)
-	if err != nil {
+	if _, err := requiredIdempotencyKey(request); err != nil {
 		h.writeError(writer, request, err)
 		return
 	}
@@ -51,10 +50,15 @@ func (h *Handler) switchMode(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 
-	replayKey := "mode\x00" + sessionID + "\x00" + idempotencyKey
-	h.handleReplay(writer, request.Context(), sessionID, replayKey, command, func() (any, error) {
-		return h.modes.SwitchMode(request.Context(), command)
-	})
+	// Mode replay belongs to the runtime-scoped coordinator. The handler-level
+	// cache outlives Stop/Start and could otherwise return a result from an old
+	// runtime instance without applying the command's runtime identity fence.
+	result, err := h.modes.SwitchMode(request.Context(), command)
+	if err != nil {
+		h.writeError(writer, request, err)
+		return
+	}
+	h.writeJSON(writer, http.StatusOK, result)
 }
 
 func validSwitchModeCommand(sessionID string, command realtimev1.SwitchModeCommand) bool {

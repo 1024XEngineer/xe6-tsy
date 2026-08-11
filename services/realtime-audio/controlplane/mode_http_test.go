@@ -25,7 +25,7 @@ func TestHandlerGetsAuthoritativeModeState(t *testing.T) {
 	}
 }
 
-func TestHandlerSwitchesModeIdempotently(t *testing.T) {
+func TestHandlerForwardsRepeatedModeCommandsToRuntimeIdempotency(t *testing.T) {
 	fixture := newFixture(t)
 	body := `{"session_id":"session-1","runtime_instance_id":"runtime-1","operation_id":"mode-1","trace_id":"trace-1","expected_generation":1,"target_mode":"assistant"}`
 
@@ -34,7 +34,7 @@ func TestHandlerSwitchesModeIdempotently(t *testing.T) {
 	if first.Code != http.StatusOK || second.Code != http.StatusOK {
 		t.Fatalf("mode switch statuses = %d, %d; bodies=%s %s", first.Code, second.Code, first.Body.String(), second.Body.String())
 	}
-	if fixture.modes.switchCalls != 1 || fixture.modes.command.OperationID != "mode-1" ||
+	if fixture.modes.switchCalls != 2 || fixture.modes.command.OperationID != "mode-1" ||
 		fixture.modes.command.TargetMode != realtimev1.ModeAssistant {
 		t.Fatalf("mode calls = %d, command = %#v", fixture.modes.switchCalls, fixture.modes.command)
 	}
@@ -44,6 +44,29 @@ func TestHandlerSwitchesModeIdempotently(t *testing.T) {
 	}
 	if result.OperationID != "mode-1" || result.State.ActiveMode != realtimev1.ModeAssistant || result.State.Generation != 2 {
 		t.Fatalf("mode result = %#v", result)
+	}
+}
+
+func TestHandlerDoesNotReplayModeResultAcrossRuntimeInstances(t *testing.T) {
+	fixture := newFixture(t)
+	body := `{"session_id":"session-1","runtime_instance_id":"runtime-1","operation_id":"mode-1","trace_id":"trace-1","expected_generation":1,"target_mode":"assistant"}`
+
+	first := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/mode", body, "mode:mode-1")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first mode switch status = %d, body=%s", first.Code, first.Body.String())
+	}
+	fixture.modes.state = realtimev1.ModeStateSnapshot{
+		SessionID: "session-1", RuntimeInstanceID: "runtime-2", ActiveMode: realtimev1.ModeInterpretation,
+		Generation: 1, Phase: realtimev1.ModePhaseActive, UpdatedAt: fixture.modes.state.UpdatedAt,
+	}
+
+	replayed := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/mode", body, "mode:mode-1")
+	if replayed.Code != http.StatusConflict ||
+		!stringsContainErrorCode(replayed.Body.String(), string(realtimev1.ErrorModeRuntimeInstanceMismatch)) {
+		t.Fatalf("old runtime replay response = %d %s", replayed.Code, replayed.Body.String())
+	}
+	if fixture.modes.switchCalls != 2 {
+		t.Fatalf("mode calls = %d, want old command checked against the new runtime", fixture.modes.switchCalls)
 	}
 }
 
@@ -127,6 +150,9 @@ func (f *modeControlFake) SwitchMode(_ context.Context, command realtimev1.Switc
 	f.command = command
 	if f.switchErr != nil {
 		return realtimev1.SwitchModeResult{}, f.switchErr
+	}
+	if command.RuntimeInstanceID != f.state.RuntimeInstanceID {
+		return realtimev1.SwitchModeResult{}, runtime.ErrModeRuntimeInstanceMismatch
 	}
 	operationID := command.OperationID
 	state := f.state

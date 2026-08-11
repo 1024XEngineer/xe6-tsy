@@ -12,10 +12,12 @@ import {
   listAutomaticOutputStatus,
   listSessionTurns,
   mintRealtimeTicket,
+  resolveVoiceInitialMode,
   RUNTIME_ERROR_TRANSLATION_REJECTED,
   startVoiceSession,
   type AutomaticOutputStatus,
   type RuntimeState,
+  type VoiceInitialMode,
   type VoiceTurn,
 } from "../lib/lingow-api";
 import { getOrCreateAuthSession } from "../lib/auth-session";
@@ -27,6 +29,7 @@ import {
   voiceConfigFromLanguageConfig,
 } from "../lib/languages";
 import { ApiError } from "../lib/http";
+import { parseAssistantReply } from "../lib/assistant-events";
 import { parseTranslationFinal } from "../lib/translation-events";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
 import {
@@ -76,7 +79,7 @@ function automaticOutputStatusMessage(
   }
 }
 
-function mapRuntimeToStatus(runtime: RuntimeState | null): string {
+function mapRuntimeToStatus(runtime: RuntimeState | null, mode: VoiceInitialMode): string {
   switch (runtime) {
     case "starting":
       return "正在启动会话";
@@ -85,11 +88,13 @@ function mapRuntimeToStatus(runtime: RuntimeState | null): string {
     case "asr_processing":
       return "正在识别";
     case "translating":
-      return "正在翻译";
+      return mode === "assistant" ? "正在思考" : "正在翻译";
+    case "thinking":
+      return "正在思考";
     case "tts_processing":
-      return "正在合成语音";
+      return mode === "assistant" ? "正在准备回复" : "正在合成语音";
     case "playing":
-      return "正在播放译音";
+      return mode === "assistant" ? "正在播放回复" : "正在播放译音";
     case "stopping":
       return "正在结束";
     case "failed":
@@ -104,7 +109,7 @@ function mapRuntimeToStatus(runtime: RuntimeState | null): string {
 function mapRuntimePhase(
   runtime: RuntimeState | null,
 ): "processing" | "playing" | "active" {
-  if (runtime === "asr_processing" || runtime === "translating") {
+  if (runtime === "asr_processing" || runtime === "translating" || runtime === "thinking") {
     return "processing";
   }
   if (runtime === "tts_processing" || runtime === "playing") {
@@ -157,16 +162,18 @@ function errorMessage(error: unknown, fallback: string): string {
   return message;
 }
 
-function idleHintForWake(status: WakeListenerStatus): string | null {
+function idleHintForWake(status: WakeListenerStatus, mode: VoiceInitialMode): string | null {
   switch (status) {
     case "requesting_mic":
-      return "请允许麦克风，以便唤醒词与传译共用同一输入。";
+      return `请允许麦克风，以便唤醒词与${mode === "assistant" ? "助手" : "传译"}共用同一输入。`;
     case "loading_model":
       return "正在加载本地唤醒模型（首次约十几 MB）…";
     case "listening":
-      return "可说「小灵，开始翻译」或轻触开始。";
+      return mode === "assistant"
+        ? "可说「小灵，开始翻译」开启助手，或轻触开始。"
+        : "可说「小灵，开始翻译」或轻触开始。";
     case "error":
-      return "唤醒词不可用，仍可用按钮开始传译。";
+      return `唤醒词不可用，仍可用按钮开始${mode === "assistant" ? "对话" : "传译"}。`;
     default:
       return null;
   }
@@ -174,6 +181,7 @@ function idleHintForWake(status: WakeListenerStatus): string | null {
 
 export function useVoiceSession() {
   const [state, dispatch] = useReducer(sessionReducer, initialSession);
+  const initialMode = resolveVoiceInitialMode();
   const [statusMessage, setStatusMessage] = useState("正在准备麦克风");
   const [hintMessage, setHintMessage] = useState<string | null>(null);
   const [automaticOutputMessage, setAutomaticOutputMessage] = useState<string | null>(null);
@@ -365,7 +373,7 @@ export function useVoiceSession() {
       else if (phase === "playing") dispatch({ type: "PLAYING" });
       else dispatch({ type: "ACTIVATE" });
 
-      setStatusMessage(mapRuntimeToStatus(snapshot.runtime_state));
+      setStatusMessage(mapRuntimeToStatus(snapshot.runtime_state, initialMode));
       setDebug((prev) => ({
         ...prev,
         runtimeState: snapshot.runtime_state,
@@ -384,7 +392,7 @@ export function useVoiceSession() {
     } catch (error) {
       setHintMessage(errorMessage(error, "轮询会话状态失败"));
     }
-  }, [syncAutomaticOutputStatus]);
+  }, [initialMode, syncAutomaticOutputStatus]);
 
   const startPolling = useCallback(() => {
     stopPolling();
@@ -419,10 +427,12 @@ export function useVoiceSession() {
     dispatch({ type: "END" });
     setStatusMessage(
       wakeRef.current?.getStatus() === "listening"
-        ? "轻触或说「小灵，开始翻译」"
+        ? initialMode === "assistant"
+          ? "轻触或说「小灵，开始翻译」开启助手"
+          : "轻触或说「小灵，开始翻译」"
         : "轻触开始",
     );
-    setHintMessage(idleHintForWake(wakeRef.current?.getStatus() ?? "idle"));
+    setHintMessage(idleHintForWake(wakeRef.current?.getStatus() ?? "idle", initialMode));
     setDebug((prev) => ({
       accountId: accountIdRef.current,
       sessionId: null,
@@ -430,7 +440,7 @@ export function useVoiceSession() {
       lastError: null,
       wakeStatus: prev.wakeStatus,
     }));
-  }, [cleanupMedia, stopPolling]);
+  }, [cleanupMedia, initialMode, stopPolling]);
 
   const start = useCallback(async () => {
     if (runningRef.current) return;
@@ -439,7 +449,7 @@ export function useVoiceSession() {
     const startAbort = new AbortController();
     startAbortRef.current = startAbort;
     dispatch({ type: "START" });
-    setStatusMessage("正在匿名登录");
+    setStatusMessage(initialMode === "assistant" ? "正在启动助手" : "正在启动传译");
     setHintMessage("连接 xe6-tsy API…");
     latestAutomaticOutputStatusRef.current = null;
     setAutomaticOutputMessage(null);
@@ -538,6 +548,19 @@ export function useVoiceSession() {
               });
               return;
             }
+            const assistantReply = parseAssistantReply(payload);
+            if (assistantReply) {
+              dispatch({
+                type: "ADD_ASSISTANT_REPLY",
+                reply: {
+                  replyId: assistantReply.replyId,
+                  turnId: assistantReply.turnId,
+                  text: assistantReply.text,
+                  language: assistantReply.language,
+                },
+              });
+              return;
+            }
             const event = parseTranslationFinal(payload);
             if (!event) return;
             dispatch({
@@ -563,7 +586,7 @@ export function useVoiceSession() {
         );
       }
 
-      setStatusMessage("正在启动传译");
+      setStatusMessage(initialMode === "assistant" ? "正在启动助手" : "正在启动传译");
       setHintMessage("WebRTC 已 connected，正在调用 API /start…");
       try {
         await startVoiceSession(
@@ -571,6 +594,7 @@ export function useVoiceSession() {
           session.id,
           undefined,
           startAbort.signal,
+          initialMode,
         );
       } catch (startError) {
         const detail = errorMessage(startError, "启动失败");
@@ -585,7 +609,9 @@ export function useVoiceSession() {
       dispatch({ type: "ACTIVATE" });
       setStatusMessage("正在聆听");
       setHintMessage(
-        `传译已开启 · ${formatActivePair(configRef.current)} · 可说「小灵，停止翻译」或轻触结束`,
+        initialMode === "assistant"
+          ? "助手已开启 · 可直接提问 · 说「小灵，停止翻译」或轻触结束"
+          : `传译已开启 · ${formatActivePair(configRef.current)} · 可说「小灵，停止翻译」或轻触结束`,
       );
       startPolling();
     } catch (error) {
@@ -626,7 +652,7 @@ export function useVoiceSession() {
         startAbortRef.current = null;
       }
     }
-  }, [cleanupMedia, startPolling, stopPolling]);
+  }, [cleanupMedia, initialMode, startPolling, stopPolling]);
 
   useEffect(() => {
     startRef.current = start;
@@ -646,13 +672,13 @@ export function useVoiceSession() {
       onCommand: (command, keyword) => {
         if (command === "start") {
           if (runningRef.current || sessionIdRef.current) return;
-          setHintMessage(`已识别「${keyword}」，正在开启传译…`);
+          setHintMessage(`已识别「${keyword}」，正在开启${initialMode === "assistant" ? "助手" : "传译"}…`);
           void startRef.current();
           return;
         }
         if (command === "stop") {
           if (!runningRef.current && !sessionIdRef.current) return;
-          setHintMessage(`已识别「${keyword}」，正在停止传译…`);
+          setHintMessage(`已识别「${keyword}」，正在停止${initialMode === "assistant" ? "对话" : "传译"}…`);
           void endRef.current();
           return;
         }
@@ -666,20 +692,20 @@ export function useVoiceSession() {
         setDebug((prev) => ({ ...prev, wakeStatus: status }));
         if (runningRef.current) return;
         if (status === "listening") {
-          setStatusMessage("轻触或说「小灵，开始翻译」");
-          setHintMessage(idleHintForWake(status));
+          setStatusMessage(initialMode === "assistant" ? "轻触或说「小灵，开始翻译」开启助手" : "轻触或说「小灵，开始翻译」");
+          setHintMessage(idleHintForWake(status, initialMode));
           return;
         }
         if (status === "error") {
           setStatusMessage("轻触开始");
-          setHintMessage(detail ?? idleHintForWake(status));
+          setHintMessage(detail ?? idleHintForWake(status, initialMode));
           return;
         }
         if (status === "requesting_mic" || status === "loading_model") {
           setStatusMessage(
             status === "requesting_mic" ? "请允许麦克风" : "正在加载唤醒模型",
           );
-          setHintMessage(detail ?? idleHintForWake(status));
+          setHintMessage(detail ?? idleHintForWake(status, initialMode));
         }
       },
     });
@@ -692,7 +718,7 @@ export function useVoiceSession() {
       wakeRef.current = null;
       listener.stop();
     };
-  }, []);
+  }, [initialMode]);
 
   useEffect(
     () => () => {
@@ -709,6 +735,8 @@ export function useVoiceSession() {
     () => ({
       state,
       latestTurn: state.turns.at(-1),
+      latestAssistantReply: state.assistantReplies.at(-1),
+      initialMode,
       statusMessage,
       hintMessage: hintMessage ?? state.notice,
       automaticOutputMessage,
@@ -724,6 +752,7 @@ export function useVoiceSession() {
       automaticOutputMessage,
       configSyncStatus,
       hintMessage,
+      initialMode,
       state,
       statusMessage,
       toggle,

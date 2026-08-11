@@ -4,19 +4,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VoiceExperience } from "./voice-experience";
 
 const closeWebRTC = vi.fn();
+let dataMessageHandler: ((payload: unknown) => void) | undefined;
 
 vi.mock("../lib/webrtc-session", () => ({
-  openWebRTCSession: vi.fn(async () => ({
-    connectionId: "conn-1",
-    peerConnection: {} as RTCPeerConnection,
-    localStream: {
-      getTracks: () => [],
-      getAudioTracks: () => [],
-    } as unknown as MediaStream,
-    remoteAudio: document.createElement("audio"),
-    dataChannel: null,
-    close: closeWebRTC,
-  })),
+  openWebRTCSession: vi.fn(async (options: { onDataMessage: (payload: unknown) => void }) => {
+    dataMessageHandler = options.onDataMessage;
+    return {
+      connectionId: "conn-1",
+      peerConnection: {} as RTCPeerConnection,
+      localStream: {
+        getTracks: () => [],
+        getAudioTracks: () => [],
+      } as unknown as MediaStream,
+      remoteAudio: document.createElement("audio"),
+      dataChannel: null,
+      close: closeWebRTC,
+    };
+  }),
 }));
 
 vi.mock("../lib/wake-word/wake-listener", () => {
@@ -48,6 +52,7 @@ function jsonResponse(body: unknown, status = 200) {
 describe("VoiceExperience", () => {
   let failFirstStart = false;
   let startRequests = 0;
+  let startInitialModes: Array<string | undefined> = [];
   let createdSessions = 0;
   let anonymousRequests = 0;
   let languageConfigVersion = 0;
@@ -69,9 +74,12 @@ describe("VoiceExperience", () => {
   }> = [];
 
   beforeEach(() => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "assistant");
     closeWebRTC.mockClear();
+    dataMessageHandler = undefined;
     failFirstStart = false;
     startRequests = 0;
+    startInitialModes = [];
     createdSessions = 0;
     anonymousRequests = 0;
     languageConfigVersion = 0;
@@ -189,6 +197,8 @@ describe("VoiceExperience", () => {
 
         if (url.includes("/start") && method === "POST") {
           startRequests += 1;
+          const body = init?.body ? JSON.parse(String(init.body)) as { initial_mode?: string } : {};
+          startInitialModes.push(body.initial_mode);
           if (failFirstStart && startRequests <= 2) {
             return jsonResponse(
               { error: { code: "realtime_start_failed", message: "temporary" } },
@@ -276,6 +286,7 @@ describe("VoiceExperience", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
   });
 
@@ -283,11 +294,11 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
 
     expect(screen.getByText("lingow")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "开始翻译" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "开始对话" })).toBeVisible();
     expect(screen.getByRole("button", { name: "设置" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /翻译/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /对话/ })).toHaveLength(1);
     expect(
-      screen.getByText("轻触或说「小灵，开始翻译」"),
+      screen.getByText("轻触或说「小灵，开始翻译」开启助手"),
     ).toBeInTheDocument();
     const idleVideo = screen.getByTestId("idle-voice-video");
     expect(idleVideo).toHaveAttribute("src", "/media/loop.mp4");
@@ -301,6 +312,32 @@ describe("VoiceExperience", () => {
       "nodownload nofullscreen noremoteplayback",
     );
     expect(screen.queryByTestId("active-voice-strands")).toBeNull();
+  });
+
+  it("renders assistant.reply text received on the shared DataChannel", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => expect(startRequests).toBe(1));
+
+    dataMessageHandler?.({
+      type: "assistant.reply",
+      id: "reply-1",
+      turn_id: "turn-1",
+      text: "我可以帮你查找路线。",
+      language: "zh-CN",
+    });
+
+    expect(await screen.findByText("我可以帮你查找路线。"))
+      .toBeInTheDocument();
+  });
+
+  it("starts new Web sessions in assistant mode", async () => {
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+    expect(startInitialModes).toEqual(["assistant"]);
   });
 
   it("opens the curved settings wheel from the header", () => {
@@ -373,7 +410,7 @@ describe("VoiceExperience", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "关闭设置" }));
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
 
     expect(languageConfigRequests.at(-1)?.output_routes).toEqual([
@@ -394,7 +431,7 @@ describe("VoiceExperience", () => {
     );
     render(<VoiceExperience />);
 
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
 
     expect(screen.getByText("双向播报 · 中文 ⇄ English")).toBeInTheDocument();
@@ -417,7 +454,7 @@ describe("VoiceExperience", () => {
     ];
     render(<VoiceExperience />);
 
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
     expect(
       await screen.findByText("自动投递全部失败，正在补播反向译文。"),
@@ -442,7 +479,7 @@ describe("VoiceExperience", () => {
     );
     render(<VoiceExperience />);
 
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
     expect(
       await screen.findByText("自动投递失败，已恢复双向播报。"),
@@ -485,7 +522,7 @@ describe("VoiceExperience", () => {
   it("connects through xe6-tsy APIs and shows the newest bilingual turn", async () => {
     render(<VoiceExperience />);
 
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
     await waitFor(() => {
       expect(screen.getByText("正在聆听")).toBeInTheDocument();
@@ -502,7 +539,7 @@ describe("VoiceExperience", () => {
 
   it("refreshes the language config version after a concurrent update", async () => {
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
@@ -531,7 +568,7 @@ describe("VoiceExperience", () => {
 
   it("opens the complete history from the newest subtitle", async () => {
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
     await waitFor(() => {
       expect(
@@ -546,32 +583,32 @@ describe("VoiceExperience", () => {
 
   it("ends the session from the same central control", async () => {
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
     await waitFor(() => {
       expect(screen.getByText("正在聆听")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "停止翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "停止对话" }));
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "开始翻译" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "开始对话" })).toBeVisible();
     });
     expect(
-      screen.getByText("轻触或说「小灵，开始翻译」"),
+      screen.getByText("轻触或说「小灵，开始翻译」开启助手"),
     ).toBeInTheDocument();
     expect(closeWebRTC).toHaveBeenCalled();
   });
 
   it("reuses the same anonymous account for later sessions", async () => {
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "停止翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "停止对话" }));
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "开始翻译" })).toBeVisible(),
+      expect(screen.getByRole("button", { name: "开始对话" })).toBeVisible(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(createdSessions).toBe(2));
 
     expect(anonymousRequests).toBe(1);
@@ -581,12 +618,12 @@ describe("VoiceExperience", () => {
     failFirstStart = true;
 
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "开始翻译" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "开始对话" })).toBeVisible();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
     expect(createdSessions).toBe(2);
     expect(startRequests).toBe(3);

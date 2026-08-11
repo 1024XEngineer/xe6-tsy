@@ -14,11 +14,19 @@ export type TranslationTurn = {
   translation: string;
 };
 
+export type AssistantReply = {
+  replyId: string;
+  turnId: string;
+  text: string;
+  language: string;
+};
+
 export type SessionState = {
   phase: SessionPhase;
   audioMode: AudioMode;
   notice: string | null;
   turns: TranslationTurn[];
+  assistantReplies: AssistantReply[];
 };
 
 export const initialSession: SessionState = {
@@ -26,6 +34,7 @@ export const initialSession: SessionState = {
   audioMode: null,
   notice: null,
   turns: [],
+  assistantReplies: [],
 };
 
 export type SessionEvent =
@@ -35,6 +44,7 @@ export type SessionEvent =
   | { type: "PLAYING" }
   | { type: "SET_TURNS"; turns: TranslationTurn[] }
   | { type: "ADD_TURN"; turn: TranslationTurn }
+  | { type: "ADD_ASSISTANT_REPLY"; reply: AssistantReply }
   | { type: "FALLBACK"; message: string }
   | { type: "ERROR"; message: string }
   | { type: "END" };
@@ -100,6 +110,16 @@ export function sessionReducer(
         ...state,
         phase: "active",
         turns: [...state.turns, event.turn],
+        notice: null,
+      };
+    case "ADD_ASSISTANT_REPLY":
+      if (state.assistantReplies.some((reply) => reply.replyId === event.reply.replyId)) {
+        return state;
+      }
+      return {
+        ...state,
+        phase: "active",
+        assistantReplies: [...state.assistantReplies, event.reply],
         notice: null,
       };
     case "FALLBACK":

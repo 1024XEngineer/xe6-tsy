@@ -61,4 +61,25 @@ describe("sessionReducer", () => {
 
     expect(sessionReducer(active, { type: "END" })).toEqual(initialSession);
   });
+
+  it("keeps assistant replies separate from translation turns", () => {
+    const reply = {
+      replyId: "reply-1",
+      turnId: "turn-1",
+      text: "我可以帮你查找路线。",
+      language: "zh-CN",
+    };
+    const withReply = sessionReducer(
+      { ...initialSession, phase: "active" },
+      { type: "ADD_ASSISTANT_REPLY", reply },
+    );
+    const duplicate = sessionReducer(withReply, {
+      type: "ADD_ASSISTANT_REPLY",
+      reply,
+    });
+
+    expect(withReply.assistantReplies).toEqual([reply]);
+    expect(withReply.turns).toEqual([]);
+    expect(duplicate.assistantReplies).toHaveLength(1);
+  });
 });

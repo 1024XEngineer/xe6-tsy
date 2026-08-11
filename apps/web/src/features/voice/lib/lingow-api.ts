@@ -6,6 +6,19 @@ import {
 } from "./languages";
 import { ApiError, newIdempotencyKey, parseJson } from "./http";
 
+export type VoiceInitialMode = "assistant" | "interpretation";
+
+// The Web experience is the assistant-first client. Invalid configuration
+// fails closed to interpretation so rollback never produces an unknown mode.
+export function resolveVoiceInitialMode(
+  configured = process.env.NEXT_PUBLIC_LINGOW_INITIAL_MODE,
+): VoiceInitialMode {
+  const normalized = configured?.trim().toLowerCase();
+  if (!normalized || normalized === "assistant") return "assistant";
+  if (normalized === "interpretation") return "interpretation";
+  return "interpretation";
+}
+
 export type AuthTokens = {
   access_token: string;
   refresh_token: string;
@@ -36,6 +49,7 @@ export type RuntimeState =
   | "starting"
   | "listening"
   | "asr_processing"
+  | "thinking"
   | "translating"
   | "tts_processing"
   | "playing"
@@ -314,6 +328,7 @@ export async function startVoiceSession(
   sessionId: string,
   idempotencyKey = newIdempotencyKey("start"),
   signal?: AbortSignal,
+  initialMode?: VoiceInitialMode,
 ): Promise<VoiceSession> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     signal?.throwIfAborted();
@@ -322,7 +337,13 @@ export async function startVoiceSession(
         `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/start`,
         {
           method: "POST",
-          headers: authHeaders(accessToken, idempotencyKey),
+          headers: {
+            ...authHeaders(accessToken, idempotencyKey),
+            ...(initialMode ? { "Content-Type": "application/json" } : {}),
+          },
+          ...(initialMode
+            ? { body: JSON.stringify({ initial_mode: initialMode }) }
+            : {}),
           signal,
         },
       );

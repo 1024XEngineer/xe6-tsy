@@ -8,6 +8,7 @@ import { useVoiceSession } from "../hooks/use-voice-session";
 import { formatActivePair } from "../lib/languages";
 import styles from "../voice.module.css";
 import { HistoryOverlay } from "./history-overlay";
+import { LatestAssistantReply } from "./latest-assistant-reply";
 import { LatestTranslation } from "./latest-translation";
 import { SettingsPanel } from "./settings-panel";
 import { VoiceControl } from "./voice-control";
@@ -16,6 +17,8 @@ export function VoiceExperience() {
   const {
     state,
     latestTurn,
+    latestAssistantReply,
+    initialMode,
     statusMessage,
     hintMessage,
     automaticOutputMessage,
@@ -71,7 +74,7 @@ export function VoiceExperience() {
           className={styles.voiceStage}
           transition={{ type: "spring", stiffness: 110, damping: 21 }}
         >
-          <VoiceControl phase={state.phase} onActivate={handleToggle} />
+          <VoiceControl mode={initialMode} phase={state.phase} onActivate={handleToggle} />
           <p aria-live="polite" className={styles.outputModeText}>
             {formatActivePair(voiceConfig)}
           </p>
@@ -108,7 +111,11 @@ export function VoiceExperience() {
           ) : null}
         </motion.section>
 
-        {latestTurn && !historyOpen ? (
+        {latestAssistantReply && initialMode === "assistant" && !historyOpen ? (
+          <div className={styles.latestSlot}>
+            <LatestAssistantReply reply={latestAssistantReply} />
+          </div>
+        ) : latestTurn && !historyOpen ? (
           <div className={styles.latestSlot}>
             <LatestTranslation
               onOpen={() => setHistoryOpen(true)}

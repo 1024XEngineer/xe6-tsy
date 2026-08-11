@@ -15,10 +15,7 @@ export type WakeTrigger = {
   command: WakeCommand;
   /** Canonical display name; also a keywords.txt `@…` suffix. */
   label: string;
-  /**
-   * Extra KWS @display names for nasal-final tolerance (小灵 → 小林).
-   * Not product names — callbacks always surface `label`.
-   */
+  /** Additional KWS display names, including pronunciation and mode aliases. */
   aliases?: readonly string[];
 };
 
@@ -27,13 +24,13 @@ export const WAKE_TRIGGERS: readonly WakeTrigger[] = [
     id: "start_translate",
     command: "start",
     label: "小灵，开始翻译",
-    aliases: ["小林，开始翻译"],
+    aliases: ["小林，开始翻译", "小灵，开始对话", "小林，开始对话"],
   },
   {
     id: "stop_translate",
     command: "stop",
     label: "小灵，停止翻译",
-    aliases: ["小林，停止翻译"],
+    aliases: ["小林，停止翻译", "小灵，停止对话", "小林，停止对话"],
   },
   {
     id: "attention",

@@ -25,6 +25,9 @@ type Repository interface {
 	Latest(context.Context, string) (Projection, error)
 }
 
+// shouldAdvance uses generation only inside a runtime because generation resets on restart.
+// Across runtimes, occurred_at is the available ordering signal; event ID breaks exact timestamp
+// ties deterministically. Clock skew therefore limits this audit view and is why it is not live state.
 func shouldAdvance(current Projection, event realtimev1.ModeChangedEvent) bool {
 	if current.RuntimeInstanceID == event.RuntimeInstanceID {
 		return event.ResultingGeneration > current.Generation

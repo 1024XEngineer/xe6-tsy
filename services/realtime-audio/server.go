@@ -16,6 +16,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/localruntime"
+	realtimemetrics "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/metrics"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
@@ -204,6 +205,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open realtime outbox: %w", err)
 	}
+	metricRegistry := realtimemetrics.Default()
 	var usage pipeline.UsageFactSink = &localruntime.MemoryUsageSink{}
 	if usageOutboxEnabled(os.Getenv) {
 		usage = sinks.Usage
@@ -252,7 +254,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		Languages:        languages,
 		FinalTurns:       finalTurns,
 		AssistantReplies: localruntime.DataChannelAssistantReplySink{Media: connections},
-		ModeChanges:      sinks.ModeChanges,
+		ModeChanges:      realtimemetrics.ObserveModeChangedSink(sinks.ModeChanges, metricRegistry),
 		Usage:            usage,
 		Audio:            audioSink,
 		Runtime:          runtimeBridge,
@@ -279,7 +281,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 
 	handler, err := controlplane.New(controlplane.Dependencies{
 		Lifecycle:       lifecycle,
-		Modes:           manager,
+		Modes:           realtimemetrics.ObserveModeControl(manager, metricRegistry),
 		Fallback:        manager,
 		FallbackReplays: fallbackReplays,
 		Signaling:       signaling,
@@ -300,7 +302,10 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure control-plane: %w", err)
 	}
-	return handler, nil
+	mux := http.NewServeMux()
+	realtimemetrics.Register(mux, metricRegistry)
+	mux.Handle("/", handler)
+	return mux, nil
 }
 
 func apiDatabaseEnabled(getenv func(string) string) bool {

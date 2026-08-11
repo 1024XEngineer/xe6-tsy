@@ -155,6 +155,26 @@ func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {
 	}
 }
 
+func TestNewControlPlaneHandlerServesRealtimeMetrics(t *testing.T) {
+	setMockProviderEnv(t)
+	handler, err := newControlPlaneHandler(strings.Repeat("m", 32))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf("metrics Content-Type = %q, want application/json", contentType)
+	}
+	if body := strings.TrimSpace(response.Body.String()); body == "" || !strings.Contains(body, "mode_commands") {
+		t.Fatalf("metrics body = %q, want mode_commands snapshot", body)
+	}
+}
+
 func TestNewControlPlaneHandlerRejectsMissingTicket(t *testing.T) {
 	setMockProviderEnv(t)
 	handler, err := newControlPlaneHandler(strings.Repeat("r", 32))

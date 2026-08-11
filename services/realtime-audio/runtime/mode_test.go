@@ -473,7 +473,7 @@ func TestManagerStopCancelsBlockingFinalTurnCommit(t *testing.T) {
 	manager.mu.Lock()
 	runCtx := manager.entries[snapshot.SessionID].ctx
 	manager.mu.Unlock()
-	gate := managerFinalTurnCommitGate{manager: manager}
+	gate := managerTurnCommitGate{manager: manager}
 	commitStarted := make(chan struct{})
 	commitDone := make(chan error, 1)
 	go func() {

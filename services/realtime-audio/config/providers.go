@@ -9,6 +9,8 @@ import (
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	asrqwen "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr/qwen"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant"
+	assistantqwen "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant/qwen"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 	translateqwen "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate/qwen"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
@@ -20,6 +22,7 @@ var ErrMockProviderRequired = errors.New("selected mock provider is required")
 // Providers is the vendor-neutral provider set injected into the Turn processor and pipeline.
 type Providers struct {
 	ASR         asr.Provider
+	Assistant   assistant.Provider
 	Translation translate.Provider
 	TTS         tts.Provider
 }
@@ -34,11 +37,38 @@ func BuildProviders(config ProviderConfig, offline Providers) (Providers, error)
 	if err != nil {
 		return Providers{}, fmt.Errorf("build translation provider: %w", err)
 	}
+	conversation, err := buildAssistant(config.Translation, offline.Assistant)
+	if err != nil {
+		return Providers{}, fmt.Errorf("build assistant provider: %w", err)
+	}
 	synthesizer, err := buildTTS(config.TTS, offline.TTS)
 	if err != nil {
 		return Providers{}, fmt.Errorf("build TTS provider: %w", err)
 	}
-	return Providers{ASR: recognizer, Translation: translator, TTS: synthesizer}, nil
+	return Providers{ASR: recognizer, Assistant: conversation, Translation: translator, TTS: synthesizer}, nil
+}
+
+func buildAssistant(config TranslationConfig, offline assistant.Provider) (assistant.Provider, error) {
+	switch normalizedProvider(config.Provider) {
+	case ProviderMock:
+		// Assistant is an additive capability for legacy offline callers. When it
+		// is absent, runtime registers only the existing interpretation Handler.
+		return offline, nil
+	case ProviderAliyun:
+		model := strings.TrimSpace(config.Model)
+		if model == "" {
+			model = defaultTranslationModel
+		}
+		if !strings.EqualFold(model, defaultTranslationModel) {
+			return nil, fmt.Errorf("%w: LLM_MODEL=%q (want %s)", ErrUnsupportedModel, model, defaultTranslationModel)
+		}
+		return assistantqwen.NewProvider(assistantqwen.Config{
+			APIKey: config.APIKey, BaseURL: config.BaseURL, Model: defaultTranslationModel,
+			Provider: string(ProviderAliyun), EnableThinking: config.EnableThinking, Timeout: config.Timeout,
+		})
+	default:
+		return nil, unsupportedProvider(config.Provider)
+	}
 }
 
 // BuildProvidersFromEnvironment is the startup boundary for provider selection.

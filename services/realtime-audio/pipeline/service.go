@@ -69,6 +69,7 @@ type PipelineDependencies struct {
 	VoiceID    string
 	Now        func() time.Time
 	Latency    LatencyLogger
+	Speech     *SpeechOutput
 }
 
 // PipelineService orchestrates one final ASR result through translation and TTS.
@@ -91,15 +92,19 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	speech := deps.Speech
+	if speech == nil {
+		speech = NewSpeechOutput(SpeechOutputDependencies{
+			TTS: deps.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
+			VoiceID: deps.VoiceID, Latency: deps.Latency,
+		})
+	}
 	return &PipelineService{
 		translator: deps.Translator,
 		finalTurns: deps.FinalTurns, finalGate: deps.FinalGate,
 		usage: deps.Usage, runtime: deps.Runtime,
-		speech: NewSpeechOutput(SpeechOutputDependencies{
-			TTS: deps.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
-			VoiceID: deps.VoiceID, Latency: deps.Latency,
-		}),
-		now: now, latency: deps.Latency,
+		speech: speech,
+		now:    now, latency: deps.Latency,
 	}
 }
 

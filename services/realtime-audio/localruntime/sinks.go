@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
@@ -20,6 +21,53 @@ type MemoryUsageSink struct {
 	mu    sync.Mutex
 	facts []pipeline.UsageFact
 }
+
+// DataChannelAssistantReplySink publishes finalized assistant replies over the
+// same WebRTC DataChannel used by translation events.
+type DataChannelAssistantReplySink struct {
+	Media MediaLookup
+}
+
+type FrontendAssistantReply struct {
+	Type              string    `json:"type"`
+	Event             string    `json:"event"`
+	EventVersion      int       `json:"event_version"`
+	ID                string    `json:"id"`
+	TraceID           string    `json:"trace_id"`
+	SessionID         string    `json:"session_id"`
+	TurnID            string    `json:"turn_id"`
+	RuntimeInstanceID string    `json:"runtime_instance_id"`
+	Generation        int64     `json:"generation"`
+	Text              string    `json:"text"`
+	Language          string    `json:"language"`
+	OccurredAt        time.Time `json:"occurred_at"`
+}
+
+func (s DataChannelAssistantReplySink) Publish(ctx context.Context, event realtimev1.AssistantReplyEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.Media == nil {
+		return nil
+	}
+	media, err := s.Media.CurrentMedia(ctx, event.SessionID)
+	if err != nil || media.TranslationEvents() == nil {
+		return nil
+	}
+	payload := FrontendAssistantReply{
+		Type: "assistant.reply", Event: "assistant.reply",
+		EventVersion: event.EventVersion, ID: event.EventID, TraceID: event.TraceID,
+		SessionID: event.SessionID, TurnID: event.TurnID,
+		RuntimeInstanceID: event.RuntimeInstanceID, Generation: event.Generation,
+		Text: event.Text, Language: event.Language, OccurredAt: event.OccurredAt,
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_ = media.TranslationEvents().PublishJSON(publishCtx, payload)
+	return nil
+}
+
+var _ pipeline.AssistantReplySink = DataChannelAssistantReplySink{}
 
 func (s *MemoryUsageSink) Publish(_ context.Context, fact pipeline.UsageFact) error {
 	s.mu.Lock()

@@ -69,6 +69,7 @@ type Dependencies struct {
 	NewSegmenter         SegmenterFactory
 	Languages            session.LanguageConfigReader
 	FinalTurns           recordsv1.FinalTurnSink
+	AssistantReplies     pipeline.AssistantReplySink
 	Usage                pipeline.UsageFactSink
 	Audio                pipeline.AudioChunkSink
 	Runtime              RuntimeReporter
@@ -154,25 +155,40 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
 	}
 	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages, managerTurnModeReader{manager: manager})
+	speech := pipeline.NewSpeechOutput(pipeline.SpeechOutputDependencies{
+		TTS: providers.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
+		VoiceID: deps.VoiceID, Latency: pipeline.LatencyLogger{Logger: deps.Latency},
+	})
+	commitGate := managerTurnCommitGate{manager: manager}
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
 		Translator: providers.Translation,
 		TTS:        providers.TTS,
 		FinalTurns: deps.FinalTurns,
-		FinalGate:  managerFinalTurnCommitGate{manager: manager},
+		FinalGate:  commitGate,
 		Usage:      deps.Usage,
 		Audio:      deps.Audio,
 		Runtime:    deps.Runtime,
 		VoiceID:    deps.VoiceID,
 		Latency:    pipeline.LatencyLogger{Logger: deps.Latency},
 		Now:        deps.Now,
+		Speech:     speech,
 	})
 	// Router 注册表是模式能力的单一来源：Coordinator 会复用同一份模式列表，
 	// 从而保证“允许切换”的模式一定存在对应 Handler，不会出现状态切换成功但没有业务处理器的半配置状态。
-	router, err := newModeRouter(
-		map[realtimev1.Mode]pipeline.ASRFinalHandler{
-			realtimev1.ModeInterpretation: service,
-		},
-	)
+	handlers := map[realtimev1.Mode]pipeline.ASRFinalHandler{
+		realtimev1.ModeInterpretation: service,
+	}
+	if providers.Assistant != nil {
+		if deps.AssistantReplies == nil {
+			return nil, fmt.Errorf("%w: assistant reply sink", ErrDependencyRequired)
+		}
+		handlers[realtimev1.ModeAssistant] = pipeline.NewAssistantHandler(pipeline.AssistantHandlerDependencies{
+			LLM: providers.Assistant, Replies: deps.AssistantReplies, Gate: commitGate,
+			Usage: deps.Usage, Speech: speech, Runtime: deps.Runtime, Now: deps.Now,
+			Latency: pipeline.LatencyLogger{Logger: deps.Latency},
+		})
+	}
+	router, err := newModeRouter(handlers)
 	if err != nil {
 		return nil, fmt.Errorf("create mode router: %w", err)
 	}

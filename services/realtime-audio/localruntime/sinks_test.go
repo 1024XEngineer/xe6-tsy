@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
@@ -54,6 +55,27 @@ func TestFrontendTranslationFinalJSONShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decoded["type"] != "translation.final" || decoded["translated_text"] != "Hello" {
+		t.Fatalf("payload = %#v", decoded)
+	}
+}
+
+func TestFrontendAssistantReplyJSONShape(t *testing.T) {
+	payload := FrontendAssistantReply{
+		Type: "assistant.reply", Event: "assistant.reply",
+		EventVersion: realtimev1.AssistantReplyEventVersion, ID: "reply-1",
+		TraceID: "trace-1", SessionID: "session-1", TurnID: "turn-1",
+		RuntimeInstanceID: "runtime-1", Generation: 2,
+		Text: "Hello", Language: "en-US", OccurredAt: time.Unix(2, 0).UTC(),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["type"] != "assistant.reply" || decoded["text"] != "Hello" || decoded["runtime_instance_id"] != "runtime-1" {
 		t.Fatalf("payload = %#v", decoded)
 	}
 }

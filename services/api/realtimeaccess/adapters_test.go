@@ -240,6 +240,20 @@ func TestRealtimeLifecycleMapsCommandsSnapshotsAndErrors(t *testing.T) {
 	if snapshot.RuntimeState != sessions.RuntimeFailed || snapshot.LastErrorCode == nil || *snapshot.LastErrorCode != lastError {
 		t.Fatalf("GetRuntimeState(runtime failed) snapshot = %#v", snapshot)
 	}
+
+	client.runtime = realtimev1.RuntimeSnapshot{
+		SessionID:        "session-1",
+		StartOperationID: "operation-1",
+		RuntimeState:     realtimev1.RuntimeAssistantProcessing,
+		UpdatedAt:        now,
+	}
+	snapshot, err = lifecycle.GetRuntimeState(t.Context(), "session-1")
+	if err != nil {
+		t.Fatalf("GetRuntimeState(assistant processing) error = %v", err)
+	}
+	if snapshot.RuntimeState != sessions.RuntimeAssistantProcessing {
+		t.Fatalf("GetRuntimeState(assistant processing) state = %q", snapshot.RuntimeState)
+	}
 }
 
 func TestRealtimeLifecycleRejectsUnknownMappings(t *testing.T) {

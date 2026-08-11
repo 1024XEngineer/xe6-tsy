@@ -142,7 +142,7 @@ func (event ModeChangedEvent) Validate() error {
 		return invalidModeChangedField("from_mode")
 	case !event.ToMode.Valid() || event.ToMode == event.FromMode:
 		return invalidModeChangedField("to_mode")
-	case event.ResultingGeneration < 1:
+	case event.ResultingGeneration < 2:
 		return invalidModeChangedField("resulting_generation")
 	case event.OccurredAt.IsZero():
 		return invalidModeChangedField("occurred_at")

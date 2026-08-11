@@ -36,7 +36,7 @@ func TestModeChangedEventValidation(t *testing.T) {
 		{name: "from mode", mutate: func(event *ModeChangedEvent) { event.FromMode = "unknown" }},
 		{name: "to mode", mutate: func(event *ModeChangedEvent) { event.ToMode = "unknown" }},
 		{name: "unchanged mode", mutate: func(event *ModeChangedEvent) { event.ToMode = event.FromMode }},
-		{name: "generation", mutate: func(event *ModeChangedEvent) { event.ResultingGeneration = 0 }},
+		{name: "generation", mutate: func(event *ModeChangedEvent) { event.ResultingGeneration = 1 }},
 		{name: "occurred at", mutate: func(event *ModeChangedEvent) { event.OccurredAt = time.Time{} }},
 	}
 	for _, test := range tests {
@@ -204,10 +204,14 @@ func TestOpenAPIModeContractMatchesGoTypes(t *testing.T) {
 		"session_id", "runtime_instance_id", "operation_id", "trace_id", "expected_generation", "target_mode",
 	})
 	assertStringList(t, nestedMap(t, schemas, "SwitchModeResult")["required"], []string{"operation_id", "status", "state"})
-	assertStringList(t, nestedMap(t, schemas, "ModeChangedEvent")["required"], []string{
+	modeChanged := nestedMap(t, schemas, "ModeChangedEvent")
+	assertStringList(t, modeChanged["required"], []string{
 		"event_version", "event_id", "trace_id", "session_id", "runtime_instance_id", "operation_id",
 		"from_mode", "to_mode", "resulting_generation", "occurred_at",
 	})
+	if got := nestedMap(t, nestedMap(t, modeChanged, "properties"), "resulting_generation")["minimum"]; got != 2 {
+		t.Fatalf("ModeChangedEvent resulting_generation minimum = %v, want 2", got)
+	}
 	assertStringList(t, nestedMap(t, schemas, "AssistantReplyEvent")["required"], []string{
 		"event_version", "event_id", "trace_id", "session_id", "turn_id", "runtime_instance_id",
 		"generation", "text", "language", "occurred_at",
@@ -266,6 +270,9 @@ func TestAsyncAPIModeEventsMatchGoContracts(t *testing.T) {
 	})
 	if got := nestedMap(t, nestedMap(t, modeChanged, "properties"), "event_version")["const"]; got != ModeChangedEventVersion {
 		t.Fatalf("ModeChangedEvent event_version = %v, want %d", got, ModeChangedEventVersion)
+	}
+	if got := nestedMap(t, nestedMap(t, modeChanged, "properties"), "resulting_generation")["minimum"]; got != 2 {
+		t.Fatalf("ModeChangedEvent resulting_generation minimum = %v, want 2", got)
 	}
 	assistantReply := nestedMap(t, schemas, "AssistantReplyEvent")
 	assertStringList(t, assistantReply["required"], []string{

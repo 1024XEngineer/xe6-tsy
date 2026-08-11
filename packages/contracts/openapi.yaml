@@ -956,7 +956,7 @@ components:
         anonymous_account_id:
           type: string
           description: When supplied, the request must include a Bearer access token for this same anonymous account.
-    Stage: { type: string, enum: [asr, translation, tts, diarization] }
+    Stage: { type: string, enum: [asr, translation, assistant_llm, tts, diarization] }
     UsageSummary:
       type: object
       required: [account_id, period_start, period_end, totals]

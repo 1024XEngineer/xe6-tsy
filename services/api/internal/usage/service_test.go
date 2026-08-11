@@ -43,6 +43,14 @@ func TestValidateAllowsCompleteOrUnavailablePricing(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsAssistantLLMStage(t *testing.T) {
+	input := validRecordInput()
+	input.ServiceType = StageAssistantLLM
+	if err := validate(input); err != nil {
+		t.Fatalf("validate() error = %v", err)
+	}
+}
+
 func TestValidateRejectsIncompletePricing(t *testing.T) {
 	for name, input := range map[string]RecordInput{
 		"cost only": func() RecordInput {

@@ -73,6 +73,14 @@ func TestUsageFactValidatesUsageRecordedV1Contract(t *testing.T) {
 	}
 }
 
+func TestUsageFactAcceptsAssistantLLMStage(t *testing.T) {
+	fact := validUsageFact()
+	fact.ServiceType = "assistant_llm"
+	if err := fact.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func validUsageFact() UsageFact {
 	return UsageFact{
 		EventVersion: UsageEventVersion, ID: "usage-1", TraceID: "trace-1",

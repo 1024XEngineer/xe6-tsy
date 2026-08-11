@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 26 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 26", len(migrations))
+	if len(migrations) != 27 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 27", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -341,5 +341,11 @@ func TestEmbeddedMigrations(t *testing.T) {
 		if !strings.Contains(targetLevelPreferences.SQL, expected) {
 			t.Fatalf("target-level preference migration does not contain %q", expected)
 		}
+	}
+
+	assistantLLMUsage := migrations[26]
+	if assistantLLMUsage.Version != 27 || assistantLLMUsage.Name != "assistant_llm_usage" ||
+		!strings.Contains(assistantLLMUsage.SQL, "'assistant_llm'") {
+		t.Fatalf("migration = %#v, want version 27 assistant LLM usage constraint", assistantLLMUsage)
 	}
 }

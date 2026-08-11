@@ -41,4 +41,29 @@ func TestStateStoreConnectionVersionIsMonotonic(t *testing.T) {
 	if store.ApplyConnection(base) {
 		t.Fatal("older connection version was accepted")
 	}
+	replacement := ConnectionSnapshot{SessionID: "session-1", ConnectionID: "connection-2", State: ConnectionConnected, Version: 1, UpdatedAt: time.Unix(3, 0).UTC()}
+	if !store.ApplyConnection(replacement) {
+		t.Fatal("replacement connection was rejected")
+	}
+	base.Version = 9
+	base.UpdatedAt = time.Unix(9, 0).UTC()
+	if store.ApplyConnection(base) {
+		t.Fatal("retired connection was restored")
+	}
+}
+
+func TestStateStoreRejectsRetiredRuntimeOperation(t *testing.T) {
+	store, err := NewStateStore("session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := RuntimeSnapshot{SessionID: "session-1", StartOperationID: "start-1", RuntimeState: RuntimeListening, UpdatedAt: time.Unix(1, 0).UTC()}
+	second := RuntimeSnapshot{SessionID: "session-1", StartOperationID: "start-2", RuntimeState: RuntimeListening, UpdatedAt: time.Unix(2, 0).UTC()}
+	if !store.ApplyRuntime(first) || !store.ApplyRuntime(second) {
+		t.Fatal("runtime replacement was rejected")
+	}
+	first.UpdatedAt = time.Unix(9, 0).UTC()
+	if store.ApplyRuntime(first) {
+		t.Fatal("retired runtime operation was restored")
+	}
 }

@@ -24,6 +24,8 @@ type StateStore struct {
 	mu                sync.Mutex
 	session           string
 	snapshot          Snapshot
+	retiredConnectIDs map[string]struct{}
+	retiredStartOps   map[string]struct{}
 	retiredRuntimeIDs map[string]struct{}
 }
 
@@ -31,7 +33,13 @@ func NewStateStore(sessionID string) (*StateStore, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, ErrInvalidConfig
 	}
-	return &StateStore{session: sessionID, snapshot: Snapshot{SessionID: sessionID}, retiredRuntimeIDs: make(map[string]struct{})}, nil
+	return &StateStore{
+		session:           sessionID,
+		snapshot:          Snapshot{SessionID: sessionID},
+		retiredConnectIDs: make(map[string]struct{}),
+		retiredStartOps:   make(map[string]struct{}),
+		retiredRuntimeIDs: make(map[string]struct{}),
+	}, nil
 }
 
 func (s *StateStore) ApplyConnection(next ConnectionSnapshot) bool {
@@ -40,8 +48,18 @@ func (s *StateStore) ApplyConnection(next ConnectionSnapshot) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.snapshot.HasConnect && next.Version <= s.snapshot.Connection.Version {
-		return false
+	if s.snapshot.HasConnect {
+		previous := s.snapshot.Connection
+		if previous.ConnectionID == next.ConnectionID {
+			if next.Version <= previous.Version {
+				return false
+			}
+		} else {
+			if _, retired := s.retiredConnectIDs[next.ConnectionID]; retired || !next.UpdatedAt.After(previous.UpdatedAt) {
+				return false
+			}
+			s.retiredConnectIDs[previous.ConnectionID] = struct{}{}
+		}
 	}
 	s.snapshot.Connection, s.snapshot.HasConnect = next, true
 	return true
@@ -53,8 +71,18 @@ func (s *StateStore) ApplyRuntime(next RuntimeSnapshot) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.snapshot.HasRuntime && !next.UpdatedAt.After(s.snapshot.Runtime.UpdatedAt) {
-		return false
+	if s.snapshot.HasRuntime {
+		previous := s.snapshot.Runtime
+		if previous.StartOperationID == next.StartOperationID {
+			if !next.UpdatedAt.After(previous.UpdatedAt) {
+				return false
+			}
+		} else {
+			if _, retired := s.retiredStartOps[next.StartOperationID]; retired || !next.UpdatedAt.After(previous.UpdatedAt) {
+				return false
+			}
+			s.retiredStartOps[previous.StartOperationID] = struct{}{}
+		}
 	}
 	s.snapshot.Runtime, s.snapshot.HasRuntime = next, true
 	return true

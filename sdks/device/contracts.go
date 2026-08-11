@@ -31,4 +31,6 @@ const (
 	ConnectionDisconnected = realtimev1.ConnectionDisconnected
 	ConnectionFailed       = realtimev1.ConnectionFailed
 	ConnectionClosed       = realtimev1.ConnectionClosed
+
+	RuntimeListening = realtimev1.RuntimeListening
 )

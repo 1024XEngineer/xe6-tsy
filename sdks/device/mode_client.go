@@ -269,17 +269,9 @@ func (c *ModeController) Refresh(ctx context.Context) (ModeStateSnapshot, error)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.hasState {
-		if c.state.RuntimeInstanceID != state.RuntimeInstanceID {
-			if _, retired := c.retired[state.RuntimeInstanceID]; retired || !state.UpdatedAt.After(c.state.UpdatedAt) {
-				return c.state, nil
-			}
-			c.retired[c.state.RuntimeInstanceID] = struct{}{}
-		} else if !newerModeState(c.state, state) {
-			return c.state, nil
-		}
+	if !c.applyModeLocked(state) {
+		return c.state, nil
 	}
-	c.state, c.hasState = state, true
 	return state, nil
 }
 
@@ -322,7 +314,15 @@ func (c *ModeController) SwitchOperation(ctx context.Context, operationID, trace
 	result, err := c.transport.SwitchMode(ctx, command)
 	if err == nil {
 		c.mu.Lock()
-		c.state, c.hasState = result.State, true
+		accepted := c.applyModeLocked(result.State)
+		current := c.state
+		responseIsCurrent := current.RuntimeInstanceID == result.State.RuntimeInstanceID &&
+			current.Generation == result.State.Generation && current.ActiveMode == result.State.ActiveMode
+		if !accepted && !responseIsCurrent {
+			c.discarded[operationID] = struct{}{}
+			c.mu.Unlock()
+			return SwitchModeResult{}, ErrOperationDiscarded
+		}
 		c.mu.Unlock()
 		return result, nil
 	}
@@ -337,6 +337,23 @@ func (c *ModeController) SwitchOperation(ctx context.Context, operationID, trace
 		return SwitchModeResult{}, errors.Join(err, ErrOperationDiscarded)
 	}
 	return SwitchModeResult{}, err
+}
+
+func (c *ModeController) applyModeLocked(next ModeStateSnapshot) bool {
+	if !c.hasState {
+		c.state, c.hasState = next, true
+		return true
+	}
+	if c.state.RuntimeInstanceID != next.RuntimeInstanceID {
+		if _, retired := c.retired[next.RuntimeInstanceID]; retired || !next.UpdatedAt.After(c.state.UpdatedAt) {
+			return false
+		}
+		c.retired[c.state.RuntimeInstanceID] = struct{}{}
+	} else if !newerModeState(c.state, next) {
+		return false
+	}
+	c.state = next
+	return true
 }
 
 func newerModeState(previous, next ModeStateSnapshot) bool {

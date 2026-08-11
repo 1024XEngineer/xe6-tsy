@@ -136,9 +136,10 @@ func TestModeControllerIgnoresLateOldRuntimeRefresh(t *testing.T) {
 }
 
 type fakeModeTransport struct {
-	state     ModeStateSnapshot
-	getCalls  int
-	switchErr error
+	state      ModeStateSnapshot
+	getCalls   int
+	switchErr  error
+	switchFunc func(SwitchModeCommand) (SwitchModeResult, error)
 }
 
 func (f *fakeModeTransport) GetModeState(context.Context, string) (ModeStateSnapshot, error) {
@@ -146,11 +147,55 @@ func (f *fakeModeTransport) GetModeState(context.Context, string) (ModeStateSnap
 	return f.state, nil
 }
 
-func (f *fakeModeTransport) SwitchMode(context.Context, SwitchModeCommand) (SwitchModeResult, error) {
+func (f *fakeModeTransport) SwitchMode(_ context.Context, command SwitchModeCommand) (SwitchModeResult, error) {
+	if f.switchFunc != nil {
+		return f.switchFunc(command)
+	}
 	if f.switchErr != nil {
 		return SwitchModeResult{}, f.switchErr
 	}
 	return SwitchModeResult{}, nil
+}
+
+func TestModeControllerDiscardsLateSuccessFromRetiredRuntime(t *testing.T) {
+	now := time.Now().UTC()
+	started := make(chan SwitchModeCommand, 1)
+	release := make(chan struct{})
+	transport := &fakeModeTransport{state: makeModeState("session-1", "runtime-1", 1, ModeInterpretation, now)}
+	transport.switchFunc = func(command SwitchModeCommand) (SwitchModeResult, error) {
+		started <- command
+		<-release
+		last := command.OperationID
+		state := makeModeState(command.SessionID, command.RuntimeInstanceID, 2, command.TargetMode, now.Add(2*time.Second))
+		state.LastOperationID = &last
+		return SwitchModeResult{OperationID: command.OperationID, Status: ModeSwitchApplied, State: state}, nil
+	}
+	controller, err := NewModeController(transport, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := controller.SwitchOperation(context.Background(), "operation-1", "trace-1", ModeAssistant)
+		done <- err
+	}()
+	<-started
+	transport.state = makeModeState("session-1", "runtime-2", 1, ModeInterpretation, now.Add(time.Second))
+	if _, err := controller.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-done; !errors.Is(err, ErrOperationDiscarded) {
+		t.Fatalf("late response error = %v", err)
+	}
+	state, _ := controller.Snapshot()
+	if state.RuntimeInstanceID != "runtime-2" {
+		t.Fatalf("runtime = %q, want runtime-2", state.RuntimeInstanceID)
+	}
 }
 
 func makeModeState(session, runtime string, generation int64, mode Mode, updated time.Time) ModeStateSnapshot {

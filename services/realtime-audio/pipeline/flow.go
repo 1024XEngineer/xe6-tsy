@@ -144,6 +144,12 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if result.SourceLanguage == "" {
 		return turn, p.pipeline.finishASRWithError(ctx, turn, ErrASRFinalRequired)
 	}
+	// Recognition cost belongs to the shared Turn lifecycle, not to an
+	// interpretation or assistant Handler. Publish it exactly once after final
+	// validation and before dispatching any mode-specific side effects.
+	if err := p.pipeline.publishUsage(ctx, turn, "asr", result.Provider, result.Model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
+		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("publish ASR usage: %w", err))
+	}
 	if err := p.finals.HandleASRFinal(ctx, turn, result); err != nil {
 		return turn, err
 	}

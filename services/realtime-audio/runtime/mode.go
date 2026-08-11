@@ -10,6 +10,7 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
@@ -90,6 +91,39 @@ func (c *modeCoordinator) Snapshot() realtimev1.ModeStateSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return cloneModeState(c.state)
+}
+
+// CommitFinalTurn linearizes generation validation with immutable FinalTurn
+// publication. Translation and playback must stay outside this critical section.
+func (c *modeCoordinator) CommitFinalTurn(
+	ctx context.Context,
+	turn pipeline.TurnContext,
+	commit pipeline.FinalTurnCommit,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if c == nil || commit == nil || turn.SessionID == "" || turn.Mode.SessionID != turn.SessionID ||
+		turn.Mode.RuntimeInstanceID == "" || !turn.Mode.Mode.Valid() || turn.Mode.Generation < 1 {
+		return false, ErrModeCommandInvalid
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if turn.SessionID != c.state.SessionID {
+		return false, ErrModeCommandInvalid
+	}
+	if turn.Mode.RuntimeInstanceID != c.state.RuntimeInstanceID ||
+		turn.Mode.Mode != c.state.ActiveMode || turn.Mode.Generation != c.state.Generation {
+		return false, nil
+	}
+	if err := commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Switch 负责单个 runtime 的模式切换。
@@ -245,6 +279,55 @@ func (m *Manager) currentModeCoordinator(sessionID string) (*modeCoordinator, er
 		return nil, session.ErrRuntimeNotFound
 	}
 	return item.mode, nil
+}
+
+// managerTurnModeReader adapts Manager's runtime-owned coordinator to the
+// narrow pipeline snapshot port without exposing coordinator mutation methods.
+type managerTurnModeReader struct {
+	manager *Manager
+}
+
+func (r managerTurnModeReader) GetTurnMode(ctx context.Context, sessionID string) (pipeline.TurnModeSnapshot, error) {
+	state, err := r.manager.GetModeState(ctx, sessionID)
+	if err != nil {
+		return pipeline.TurnModeSnapshot{}, err
+	}
+	return pipeline.TurnModeSnapshot{
+		SessionID:         state.SessionID,
+		RuntimeInstanceID: state.RuntimeInstanceID,
+		Mode:              state.ActiveMode,
+		Generation:        state.Generation,
+	}, nil
+}
+
+// managerFinalTurnCommitGate resolves the active coordinator under the Manager
+// lifecycle lock, then releases that lock before entering the coordinator.
+// FinalTurn sinks are external and may block while honoring cancellation; the
+// lifecycle lock must remain available so Stop can cancel the run context and
+// unblock the sink. The coordinator still serializes generation validation with
+// the publication callback.
+type managerFinalTurnCommitGate struct {
+	manager *Manager
+}
+
+func (g managerFinalTurnCommitGate) CommitFinalTurn(
+	ctx context.Context,
+	turn pipeline.TurnContext,
+	commit pipeline.FinalTurnCommit,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if g.manager == nil || turn.SessionID == "" {
+		return false, ErrDependencyRequired
+	}
+	unlock := g.manager.locks.lock(turn.SessionID)
+	coordinator, err := g.manager.currentModeCoordinator(turn.SessionID)
+	unlock()
+	if err != nil {
+		return false, err
+	}
+	return coordinator.CommitFinalTurn(ctx, turn, commit)
 }
 
 func defaultRuntimeInstanceID() (string, error) {

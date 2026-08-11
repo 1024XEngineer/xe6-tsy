@@ -11,6 +11,7 @@ import (
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
@@ -24,6 +25,151 @@ func TestModeCoordinatorStartsWithIndependentModeState(t *testing.T) {
 		state.ActiveMode != realtimev1.ModeInterpretation || state.Generation != 1 ||
 		state.Phase != realtimev1.ModePhaseActive || state.LastOperationID != nil || state.UpdatedAt.IsZero() {
 		t.Fatalf("initial mode state = %#v", state)
+	}
+}
+
+func TestTurnModeSnapshotRemainsFixedAcrossModeSwitch(t *testing.T) {
+	coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+		realtimev1.ModeInterpretation,
+		realtimev1.ModeAssistant,
+	})
+	manager := &Manager{
+		locks: newKeyedLocker(),
+		entries: map[string]*entry{
+			"session-1": {mode: coordinator},
+		},
+	}
+	opener := pipeline.NewTurnOpener(
+		pipeline.NewMemoryTurnAllocator(),
+		&fakeLanguageReader{snapshot: activeConfig("session-1")},
+		managerTurnModeReader{manager: manager},
+	)
+
+	first, err := opener.OpenTurn(t.Context(), pipeline.TurnOpenRequest{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("first OpenTurn() error = %v", err)
+	}
+	if _, err := coordinator.Switch(t.Context(), modeCommand("operation-1", 1, realtimev1.ModeAssistant)); err != nil {
+		t.Fatalf("Switch() error = %v", err)
+	}
+	second, err := opener.OpenTurn(t.Context(), pipeline.TurnOpenRequest{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("second OpenTurn() error = %v", err)
+	}
+
+	if first.Mode.Mode != realtimev1.ModeInterpretation || first.Mode.Generation != 1 {
+		t.Fatalf("first Turn mode changed after switch = %#v", first.Mode)
+	}
+	if second.Mode.Mode != realtimev1.ModeAssistant || second.Mode.Generation != 2 {
+		t.Fatalf("second Turn mode = %#v, want assistant generation 2", second.Mode)
+	}
+}
+
+func TestModeCoordinatorDropsFinalTurnAfterModeSwitch(t *testing.T) {
+	coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+		realtimev1.ModeInterpretation,
+		realtimev1.ModeAssistant,
+	})
+	turn := modeTurn(realtimev1.ModeInterpretation, 1)
+	if _, err := coordinator.Switch(t.Context(), modeCommand("operation-1", 1, realtimev1.ModeAssistant)); err != nil {
+		t.Fatalf("Switch() error = %v", err)
+	}
+	commitCalls := 0
+
+	committed, err := coordinator.CommitFinalTurn(t.Context(), turn, func(context.Context) error {
+		commitCalls++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("CommitFinalTurn() error = %v", err)
+	}
+	if committed || commitCalls != 0 {
+		t.Fatalf("CommitFinalTurn() = %v with %d callback calls, want stale drop", committed, commitCalls)
+	}
+}
+
+func TestModeCoordinatorRejectsEachSupersededTurnIdentity(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*pipeline.TurnContext)
+	}{
+		{name: "runtime instance", mutate: func(turn *pipeline.TurnContext) { turn.Mode.RuntimeInstanceID = "runtime-old" }},
+		{name: "mode", mutate: func(turn *pipeline.TurnContext) { turn.Mode.Mode = realtimev1.ModeAssistant }},
+		{name: "generation", mutate: func(turn *pipeline.TurnContext) { turn.Mode.Generation = 2 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+				realtimev1.ModeInterpretation,
+				realtimev1.ModeAssistant,
+			})
+			turn := modeTurn(realtimev1.ModeInterpretation, 1)
+			test.mutate(&turn)
+			commitCalls := 0
+
+			committed, err := coordinator.CommitFinalTurn(t.Context(), turn, func(context.Context) error {
+				commitCalls++
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("CommitFinalTurn() error = %v", err)
+			}
+			if committed || commitCalls != 0 {
+				t.Fatalf("CommitFinalTurn() = %v with %d callback calls, want stale drop", committed, commitCalls)
+			}
+		})
+	}
+}
+
+func TestModeCoordinatorSerializesFinalTurnCommitAndSwitch(t *testing.T) {
+	const runs = 128
+	for run := 0; run < runs; run++ {
+		coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+			realtimev1.ModeInterpretation,
+			realtimev1.ModeAssistant,
+		})
+		start := make(chan struct{})
+		var waitGroup sync.WaitGroup
+		var committed bool
+		var commitErr error
+		var switchErr error
+		commitCalls := 0
+		callbackGeneration := int64(0)
+		callbackMode := realtimev1.Mode("")
+
+		waitGroup.Add(2)
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			committed, commitErr = coordinator.CommitFinalTurn(t.Context(), modeTurn(realtimev1.ModeInterpretation, 1), func(context.Context) error {
+				commitCalls++
+				callbackGeneration = coordinator.state.Generation
+				callbackMode = coordinator.state.ActiveMode
+				return nil
+			})
+		}()
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			_, switchErr = coordinator.Switch(t.Context(), modeCommand("operation-1", 1, realtimev1.ModeAssistant))
+		}()
+		close(start)
+		waitGroup.Wait()
+
+		if commitErr != nil || switchErr != nil {
+			t.Fatalf("run %d errors: commit %v, switch %v", run, commitErr, switchErr)
+		}
+		if committed {
+			if commitCalls != 1 || callbackGeneration != 1 || callbackMode != realtimev1.ModeInterpretation {
+				t.Fatalf("run %d committed callback = calls %d, mode %q, generation %d", run, commitCalls, callbackMode, callbackGeneration)
+			}
+		} else if commitCalls != 0 {
+			t.Fatalf("run %d stale commit invoked callback %d times", run, commitCalls)
+		}
+		state := coordinator.Snapshot()
+		if state.ActiveMode != realtimev1.ModeAssistant || state.Generation != 2 {
+			t.Fatalf("run %d final state = %#v", run, state)
+		}
 	}
 }
 
@@ -315,6 +461,55 @@ func TestManagerOwnsOneCoordinatorPerRuntimeEntry(t *testing.T) {
 	}
 }
 
+func TestManagerStopCancelsBlockingFinalTurnCommit(t *testing.T) {
+	manager, _ := newModeTestManager(t, []string{"runtime-1"}, nil)
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "start-1", TraceID: "trace-1",
+	}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	manager.mu.Lock()
+	runCtx := manager.entries[snapshot.SessionID].ctx
+	manager.mu.Unlock()
+	gate := managerFinalTurnCommitGate{manager: manager}
+	commitStarted := make(chan struct{})
+	commitDone := make(chan error, 1)
+	go func() {
+		_, err := gate.CommitFinalTurn(runCtx, modeTurn(realtimev1.ModeInterpretation, 1), func(ctx context.Context) error {
+			close(commitStarted)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		commitDone <- err
+	}()
+	select {
+	case <-commitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for blocking FinalTurn commit")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- manager.Stop(context.Background(), snapshot.SessionID) }()
+	select {
+	case err := <-commitDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("CommitFinalTurn() error = %v, want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FinalTurn commit did not unblock when Stop canceled the runtime")
+	}
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not complete after canceling the runtime")
+	}
+}
+
 func TestManagerDoesNotOpenMediaWhenRuntimeIdentityCreationFails(t *testing.T) {
 	idErr := errors.New("random source unavailable")
 	manager, sourceOpens := newModeTestManager(t, nil, idErr)
@@ -357,6 +552,16 @@ func modeCommand(operationID string, generation int64, target realtimev1.Mode) r
 		TraceID:            "trace-1",
 		ExpectedGeneration: generation,
 		TargetMode:         target,
+	}
+}
+
+func modeTurn(mode realtimev1.Mode, generation int64) pipeline.TurnContext {
+	return pipeline.TurnContext{
+		SessionID: "session-1",
+		Mode: pipeline.TurnModeSnapshot{
+			SessionID: "session-1", RuntimeInstanceID: "runtime-1",
+			Mode: mode, Generation: generation,
+		},
 	}
 }
 

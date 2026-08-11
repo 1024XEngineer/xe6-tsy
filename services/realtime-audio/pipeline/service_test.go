@@ -23,7 +23,7 @@ func TestPipelineFinalFlowCarriesTurnID(t *testing.T) {
 	finalSink := &recordingFinalSink{}
 	usageSink := &recordingUsageSink{}
 	audioSink := &recordingAudioSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: translator, TTS: ttsProvider,
 		FinalTurns: finalSink, Usage: usageSink, Audio: audioSink, Runtime: &recordingRuntimeReporter{}, VoiceID: "voice-1",
 		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
@@ -54,7 +54,8 @@ func TestPipelineFinalFlowCarriesTurnID(t *testing.T) {
 	if finalSink.events[0].ProviderSpeakerID == nil || *finalSink.events[0].ProviderSpeakerID != "speaker-1" {
 		t.Fatalf("FinalTurn provider speaker evidence = %#v", finalSink.events[0])
 	}
-	if len(usageSink.facts) != 3 || usageSink.facts[0].TurnID != turn.ID || usageSink.facts[1].TurnID != turn.ID || usageSink.facts[2].TurnID != turn.ID || usageSink.facts[0].EventVersion != 1 {
+	if len(usageSink.facts) != 2 || usageSink.facts[0].TurnID != turn.ID || usageSink.facts[1].TurnID != turn.ID || usageSink.facts[0].EventVersion != 1 ||
+		usageSink.facts[0].ServiceType != "translation" || usageSink.facts[1].ServiceType != "tts" {
 		t.Fatalf("UsageFacts = %#v", usageSink.facts)
 	}
 	if len(audioSink.chunks) != 2 || audioSink.chunks[0].TurnID != turn.ID {
@@ -65,7 +66,7 @@ func TestPipelineFinalFlowCarriesTurnID(t *testing.T) {
 func TestPipelineRejectsUnsupportedSourceBeforeTranslation(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "unused"}}
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
-	service := NewPipelineService(PipelineDependencies{Translator: translator, TTS: ttsProvider, FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{}})
+	service := newTestPipelineService(PipelineDependencies{Translator: translator, TTS: ttsProvider, FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{}})
 	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{Text: "bonjour", SourceLanguage: "fr-FR", Provider: "mock-asr", Model: "v1"})
 	if !errors.Is(err, ErrUnsupportedSourceLanguage) {
 		t.Fatalf("error = %v, want ErrUnsupportedSourceLanguage", err)
@@ -75,11 +76,27 @@ func TestPipelineRejectsUnsupportedSourceBeforeTranslation(t *testing.T) {
 	}
 }
 
+func TestPipelineRequiresFinalTurnCommitGate(t *testing.T) {
+	service := NewPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{},
+		Usage:      &recordingUsageSink{},
+		Audio:      &recordingAudioSink{},
+		Runtime:    &recordingRuntimeReporter{},
+	})
+
+	err := service.HandleASRFinal(t.Context(), testTurn(), asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN"})
+	if !errors.Is(err, ErrPipelineDependencyRequired) {
+		t.Fatalf("HandleASRFinal() error = %v, want ErrPipelineDependencyRequired", err)
+	}
+}
+
 func TestPipelineSkipsTTSAcrossDisabledOutputRoute(t *testing.T) {
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
 	finalSink := &recordingFinalSink{}
 	usageSink := &recordingUsageSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        ttsProvider,
 		FinalTurns: finalSink,
@@ -98,14 +115,14 @@ func TestPipelineSkipsTTSAcrossDisabledOutputRoute(t *testing.T) {
 	if len(finalSink.events) != 1 || finalSink.events[0].TTSEnabled || !finalSink.events[0].DeliveryEnabled {
 		t.Fatalf("FinalTurn output route = %#v", finalSink.events[0])
 	}
-	if len(usageSink.facts) != 2 {
-		t.Fatalf("usage facts = %#v, want ASR and translation only", usageSink.facts)
+	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "translation" {
+		t.Fatalf("usage facts = %#v, want translation only", usageSink.facts)
 	}
 }
 
 func TestPipelineAlwaysProducesPendingAttribution(t *testing.T) {
 	finalSink := &recordingFinalSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
 		FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
@@ -124,7 +141,7 @@ func TestPipelineAlwaysProducesPendingAttribution(t *testing.T) {
 
 func TestPipelineKeepsPendingWithoutProviderSpeakerID(t *testing.T) {
 	finalSink := &recordingFinalSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
 		FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
@@ -146,7 +163,7 @@ func TestPipelineKeepsPendingWithoutProviderSpeakerID(t *testing.T) {
 
 func TestPipelineCarriesProviderSpeakerIDIntoFinalTurn(t *testing.T) {
 	finalSink := &recordingFinalSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
 		FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
@@ -166,10 +183,10 @@ func TestPipelineCarriesProviderSpeakerIDIntoFinalTurn(t *testing.T) {
 	}
 }
 
-func TestPipelineRejectsInvalidUsageBeforePublication(t *testing.T) {
+func TestPipelineRejectsInvalidTranslationUsageBeforePublication(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "unused"}}
 	usageSink := &recordingUsageSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
 		FinalTurns: &recordingFinalSink{}, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	})
@@ -180,8 +197,8 @@ func TestPipelineRejectsInvalidUsageBeforePublication(t *testing.T) {
 	if !errors.Is(err, ErrInvalidUsageFact) {
 		t.Fatalf("HandleASRFinal() error = %v, want ErrInvalidUsageFact", err)
 	}
-	if len(usageSink.facts) != 0 || len(translator.Requests()) != 0 {
-		t.Fatalf("invalid UsageFact reached dependencies")
+	if len(usageSink.facts) != 0 || len(translator.Requests()) != 1 {
+		t.Fatalf("usage facts = %#v, translation requests = %#v", usageSink.facts, translator.Requests())
 	}
 }
 
@@ -190,7 +207,7 @@ func TestPipelineFinalTurnFailureStopsLaterStages(t *testing.T) {
 	finalSink := &recordingFinalSink{err: wantErr}
 	usageSink := &recordingUsageSink{}
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        ttsProvider,
 		FinalTurns: finalSink,
@@ -211,11 +228,76 @@ func TestPipelineFinalTurnFailureStopsLaterStages(t *testing.T) {
 	if len(finalSink.events) != 1 {
 		t.Fatalf("FinalTurn attempts = %d, want 1", len(finalSink.events))
 	}
-	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
-		t.Fatalf("UsageFacts = %#v, want only ASR", usageSink.facts)
+	if len(usageSink.facts) != 0 {
+		t.Fatalf("UsageFacts = %#v, want none before FinalTurn acceptance", usageSink.facts)
 	}
 	if requests := ttsProvider.Requests(); len(requests) != 0 {
 		t.Fatalf("TTS requests = %#v, want none", requests)
+	}
+}
+
+func TestPipelineDropsSupersededTurnBeforeFinalTurnAndTTS(t *testing.T) {
+	translator := &translate.FakeProvider{Result: translate.Result{
+		Text: "hello", Provider: "mock-translate", Model: "v1", InputTokens: 2, OutputTokens: 1,
+	}}
+	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{}
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
+	runtimeReporter := &recordingRuntimeReporter{}
+	gate := &supersededFinalTurnGate{}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator,
+		TTS:        ttsProvider,
+		FinalTurns: finalSink,
+		FinalGate:  gate,
+		Usage:      usageSink,
+		Audio:      &recordingAudioSink{},
+		Runtime:    runtimeReporter,
+	})
+
+	err := service.HandleASRFinal(t.Context(), testTurn(), asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+	})
+	if err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	if gate.calls != 1 || len(finalSink.events) != 0 || len(ttsProvider.Requests()) != 0 || len(usageSink.facts) != 1 {
+		t.Fatalf("superseded Turn side effects: gate calls %d, FinalTurns %d, TTS %d, Usage %#v", gate.calls, len(finalSink.events), len(ttsProvider.Requests()), usageSink.facts)
+	}
+	if usageSink.facts[0].ServiceType != "translation" || usageSink.facts[0].InputTokens != 2 || usageSink.facts[0].OutputTokens != 1 {
+		t.Fatalf("superseded translation usage = %#v", usageSink.facts[0])
+	}
+	if len(translator.Requests()) != 1 {
+		t.Fatalf("translation requests = %#v, want completed pre-commit translation", translator.Requests())
+	}
+	if len(runtimeReporter.updates) != 2 || runtimeReporter.updates[0].RuntimeState != session.RuntimeTranslating || runtimeReporter.updates[1].RuntimeState != session.RuntimeListening {
+		t.Fatalf("runtime updates = %#v, want translating then listening", runtimeReporter.updates)
+	}
+}
+
+func TestPipelineReturnsSupersededTranslationUsageFailure(t *testing.T) {
+	wantErr := errors.New("usage outbox unavailable")
+	usageSink := &recordingUsageSink{failService: "translation", err: wantErr}
+	finalSink := &recordingFinalSink{}
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        ttsProvider,
+		FinalTurns: finalSink,
+		FinalGate:  &supersededFinalTurnGate{},
+		Usage:      usageSink,
+		Audio:      &recordingAudioSink{},
+		Runtime:    &recordingRuntimeReporter{},
+	})
+
+	err := service.HandleASRFinal(context.Background(), testTurn(), asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("HandleASRFinal() error = %v, want %v", err, wantErr)
+	}
+	if len(finalSink.events) != 0 || len(ttsProvider.Requests()) != 0 {
+		t.Fatalf("superseded Turn published later-stage side effects: FinalTurns %d, TTS %d", len(finalSink.events), len(ttsProvider.Requests()))
 	}
 }
 
@@ -223,7 +305,7 @@ func TestPipelinePublishesTranslationUsageWhenTranslateRejects(t *testing.T) {
 	usageSink := &recordingUsageSink{}
 	finalSink := &recordingFinalSink{}
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{
 			Result: translate.Result{Provider: "mock-translate", Model: "v1", InputTokens: 9, OutputTokens: 4},
 			Err:    translate.ErrUnexpectedBehavior,
@@ -244,14 +326,14 @@ func TestPipelinePublishesTranslationUsageWhenTranslateRejects(t *testing.T) {
 	if len(finalSink.events) != 0 {
 		t.Fatalf("FinalTurn events = %#v, want none", finalSink.events)
 	}
-	if len(usageSink.facts) != 2 {
-		t.Fatalf("UsageFacts = %#v, want ASR and translation", usageSink.facts)
+	if len(usageSink.facts) != 1 {
+		t.Fatalf("UsageFacts = %#v, want translation", usageSink.facts)
 	}
-	if usageSink.facts[0].ServiceType != "asr" || usageSink.facts[1].ServiceType != "translation" {
+	if usageSink.facts[0].ServiceType != "translation" {
 		t.Fatalf("UsageFacts = %#v", usageSink.facts)
 	}
-	if usageSink.facts[1].InputTokens != 9 || usageSink.facts[1].OutputTokens != 4 {
-		t.Fatalf("translation usage = %#v", usageSink.facts[1])
+	if usageSink.facts[0].InputTokens != 9 || usageSink.facts[0].OutputTokens != 4 {
+		t.Fatalf("translation usage = %#v", usageSink.facts[0])
 	}
 	if requests := ttsProvider.Requests(); len(requests) != 0 {
 		t.Fatalf("TTS requests = %#v, want none", requests)
@@ -263,7 +345,7 @@ func TestPipelineTranslationUsageFailureKeepsAcceptedFinalTurn(t *testing.T) {
 	finalSink := &recordingFinalSink{}
 	usageSink := &recordingUsageSink{failService: "translation", err: wantErr}
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        ttsProvider,
 		FinalTurns: finalSink,
@@ -284,8 +366,8 @@ func TestPipelineTranslationUsageFailureKeepsAcceptedFinalTurn(t *testing.T) {
 	if len(finalSink.events) != 1 {
 		t.Fatalf("accepted FinalTurns = %d, want 1", len(finalSink.events))
 	}
-	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
-		t.Fatalf("accepted UsageFacts = %#v, want only ASR", usageSink.facts)
+	if len(usageSink.facts) != 0 {
+		t.Fatalf("accepted UsageFacts = %#v, want none after rejected translation usage", usageSink.facts)
 	}
 	if requests := ttsProvider.Requests(); len(requests) != 0 {
 		t.Fatalf("TTS requests = %#v, want none", requests)
@@ -296,7 +378,7 @@ func TestPipelineRejectsInvalidTranslationUsageBeforeFinalTurn(t *testing.T) {
 	finalSink := &recordingFinalSink{}
 	usageSink := &recordingUsageSink{}
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Model: "v1"}},
 		TTS:        ttsProvider,
 		FinalTurns: finalSink,
@@ -317,8 +399,8 @@ func TestPipelineRejectsInvalidTranslationUsageBeforeFinalTurn(t *testing.T) {
 	if len(finalSink.events) != 0 {
 		t.Fatalf("FinalTurn attempts = %d, want 0", len(finalSink.events))
 	}
-	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
-		t.Fatalf("UsageFacts = %#v, want only ASR", usageSink.facts)
+	if len(usageSink.facts) != 0 {
+		t.Fatalf("UsageFacts = %#v, want none", usageSink.facts)
 	}
 	if requests := ttsProvider.Requests(); len(requests) != 0 {
 		t.Fatalf("TTS requests = %#v, want none", requests)
@@ -377,7 +459,7 @@ func TestPipelineTTSFailureReportsAcceptedFinalTurn(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			finalSink := &recordingFinalSink{}
-			service := NewPipelineService(PipelineDependencies{
+			service := newTestPipelineService(PipelineDependencies{
 				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 				TTS:        tts.NewFakeProvider(test.config),
 				FinalTurns: finalSink,
@@ -415,7 +497,7 @@ func TestPipelineRuntimeFailureAfterFinalTurnIsClassified(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			finalSink := &recordingFinalSink{}
-			service := NewPipelineService(PipelineDependencies{
+			service := newTestPipelineService(PipelineDependencies{
 				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 				TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
 				FinalTurns: finalSink, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
@@ -439,7 +521,7 @@ func TestPipelineRejectsInvalidFinalTurnBeforePublication(t *testing.T) {
 	finalSink := &recordingFinalSink{}
 	usageSink := &recordingUsageSink{}
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Provider: "mock-translate", Model: "v1"}},
 		TTS:        ttsProvider,
 		FinalTurns: finalSink,
@@ -457,8 +539,8 @@ func TestPipelineRejectsInvalidFinalTurnBeforePublication(t *testing.T) {
 	if len(finalSink.events) != 0 {
 		t.Fatalf("FinalTurn attempts = %d, want 0", len(finalSink.events))
 	}
-	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "asr" {
-		t.Fatalf("UsageFacts = %#v, want only ASR", usageSink.facts)
+	if len(usageSink.facts) != 0 {
+		t.Fatalf("UsageFacts = %#v, want none", usageSink.facts)
 	}
 	if requests := ttsProvider.Requests(); len(requests) != 0 {
 		t.Fatalf("TTS requests = %#v, want none", requests)
@@ -468,7 +550,7 @@ func TestPipelineRejectsInvalidFinalTurnBeforePublication(t *testing.T) {
 func TestPipelineCancellationClosesBlockedTTSStream(t *testing.T) {
 	stream := &blockingTTSStream{chunks: make(chan tts.AudioChunk), closed: make(chan struct{})}
 	provider := &blockingTTSProvider{stream: stream, started: make(chan struct{})}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        provider, FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	})
@@ -503,7 +585,7 @@ func TestPipelineCancellationClosesBlockedTTSStream(t *testing.T) {
 
 func TestPipelineCompletesPlaybackAfterTTSFinishes(t *testing.T) {
 	audioSink := &recordingPlaybackSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
 			Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
@@ -526,7 +608,7 @@ func TestPipelinePlaysFallbackWithoutPublishingAnotherFinalTurn(t *testing.T) {
 		Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
 		Result: tts.Result{Provider: "mock-tts", Model: "v1"},
 	})
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{}, TTS: ttsProvider,
 		FinalTurns: finalSink, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	})
@@ -561,7 +643,7 @@ func TestPipelineMarksPrePlaybackFallbackFailures(t *testing.T) {
 		},
 		{
 			name: "runtime report failure",
-			svc: NewPipelineService(PipelineDependencies{
+			svc: newTestPipelineService(PipelineDependencies{
 				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello"}},
 				TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
 					Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
@@ -572,7 +654,7 @@ func TestPipelineMarksPrePlaybackFallbackFailures(t *testing.T) {
 		},
 		{
 			name: "tts start failure",
-			svc: NewPipelineService(PipelineDependencies{
+			svc: newTestPipelineService(PipelineDependencies{
 				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello"}},
 				TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{StartErr: errors.New("tts start unavailable")}),
 				FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
@@ -596,7 +678,7 @@ func TestPipelineMarksPrePlaybackFallbackFailures(t *testing.T) {
 }
 
 func TestPipelineDoesNotMarkPostStartFallbackFailures(t *testing.T) {
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello"}},
 		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
 			Chunks:    []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
@@ -619,7 +701,7 @@ func TestPipelineDoesNotMarkPostStartFallbackFailures(t *testing.T) {
 func TestPipelineCancelsPlaybackAfterTTSError(t *testing.T) {
 	wantErr := errors.New("TTS finish failed")
 	audioSink := &recordingPlaybackSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
 			Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}}, FinishErr: wantErr,
@@ -637,7 +719,7 @@ func TestPipelineCancelsPlaybackAfterTTSError(t *testing.T) {
 
 func TestPipelineIgnoresPartialASREvents(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "unused"}}
-	service := NewPipelineService(PipelineDependencies{Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}), FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{}})
+	service := newTestPipelineService(PipelineDependencies{Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}), FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{}})
 	if err := service.HandleASREvent(context.Background(), testTurn(), asr.Event{Type: asr.EventPartial, Text: "你"}); err != nil {
 		t.Fatalf("HandleASREvent() error = %v", err)
 	}
@@ -653,6 +735,37 @@ func testTurn() TurnContext {
 type recordingFinalSink struct {
 	events []FinalTurnEvent
 	err    error
+}
+
+type acceptingFinalTurnGate struct{}
+
+type supersededFinalTurnGate struct {
+	calls int
+}
+
+func (acceptingFinalTurnGate) CommitFinalTurn(ctx context.Context, _ TurnContext, commit FinalTurnCommit) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if commit == nil {
+		return false, ErrPipelineDependencyRequired
+	}
+	if err := commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (g *supersededFinalTurnGate) CommitFinalTurn(_ context.Context, _ TurnContext, _ FinalTurnCommit) (bool, error) {
+	g.calls++
+	return false, nil
+}
+
+func newTestPipelineService(deps PipelineDependencies) *PipelineService {
+	if deps.FinalGate == nil {
+		deps.FinalGate = acceptingFinalTurnGate{}
+	}
+	return NewPipelineService(deps)
 }
 
 func (s *recordingFinalSink) Publish(_ context.Context, event FinalTurnEvent) error {
@@ -769,6 +882,8 @@ func hasFallbackPlaybackNotStarted(err error) bool {
 }
 
 var _ recordsv1.FinalTurnSink = (*recordingFinalSink)(nil)
+var _ FinalTurnCommitGate = acceptingFinalTurnGate{}
+var _ FinalTurnCommitGate = (*supersededFinalTurnGate)(nil)
 var _ UsageFactSink = (*recordingUsageSink)(nil)
 var _ AudioChunkSink = (*recordingAudioSink)(nil)
 var _ session.RuntimeStateReporter = (*recordingRuntimeReporter)(nil)

@@ -562,7 +562,9 @@ func (m *Manager) playbackInterrupter() PlaybackInterrupter {
 
 func (g runtimeCommandGate) Open(request command.OpenRequest) error {
 	if g.interrupter != nil {
-		_ = g.interrupter.InterruptCurrent(context.Background(), request.SessionID, "wake_word_detected")
+		interruptCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = g.interrupter.InterruptCurrent(interruptCtx, request.SessionID, "wake_word_detected")
+		cancel()
 	}
 	return g.gate.Open(request)
 }

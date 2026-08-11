@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -119,19 +120,47 @@ func NewManager(providerConfig config.ProviderConfig, offline config.Providers, 
 	if err != nil {
 		return nil, err
 	}
-	return newManager(providers, deps)
+	return newManagerWithLabels(providers, labelsFromConfig(providerConfig), deps)
 }
 
 // NewManagerFromEnvironment loads provider selection without loading .env files.
 func NewManagerFromEnvironment(offline config.Providers, deps Dependencies) (*Manager, error) {
-	providers, err := config.BuildProvidersFromEnvironment(offline)
+	providerConfig, err := config.LoadProviderConfigFromEnvironment()
 	if err != nil {
 		return nil, err
 	}
-	return newManager(providers, deps)
+	return NewManager(providerConfig, offline, deps)
 }
 
 func newManager(providers config.Providers, deps Dependencies) (*Manager, error) {
+	return newManagerWithLabels(providers, providerLabels{}, deps)
+}
+
+type providerLabels struct {
+	asr         string
+	llm         string
+	translation string
+	tts         string
+}
+
+func labelsFromConfig(providerConfig config.ProviderConfig) providerLabels {
+	return providerLabels{
+		asr:         normalizedProviderLabel(providerConfig.ASR.Provider),
+		llm:         normalizedProviderLabel(providerConfig.Translation.Provider),
+		translation: normalizedProviderLabel(providerConfig.Translation.Provider),
+		tts:         normalizedProviderLabel(providerConfig.TTS.Provider),
+	}
+}
+
+func normalizedProviderLabel(provider config.ProviderName) string {
+	label := strings.ToLower(strings.TrimSpace(string(provider)))
+	if label == "" {
+		return string(config.ProviderMock)
+	}
+	return label
+}
+
+func newManagerWithLabels(providers config.Providers, labels providerLabels, deps Dependencies) (*Manager, error) {
 	if deps.FrameSources == nil || deps.NewSegmenter == nil || deps.Languages == nil ||
 		deps.FinalTurns == nil || deps.ModeChanges == nil || deps.Usage == nil || deps.Audio == nil || deps.Runtime == nil {
 		return nil, ErrDependencyRequired
@@ -158,17 +187,18 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages, managerTurnModeReader{manager: manager})
 	speech := pipeline.NewSpeechOutput(pipeline.SpeechOutputDependencies{
 		TTS: providers.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
-		VoiceID: deps.VoiceID, Latency: pipeline.LatencyLogger{Logger: deps.Latency},
+		VoiceID: deps.VoiceID, Provider: labels.tts, Latency: pipeline.LatencyLogger{Logger: deps.Latency},
 	})
 	commitGate := managerTurnCommitGate{manager: manager}
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
-		Translator: providers.Translation,
+		Translator: providers.Translation, TranslationProvider: labels.translation,
 		FinalTurns: deps.FinalTurns,
 		FinalGate:  commitGate,
 		Usage:      deps.Usage,
 		Runtime:    deps.Runtime,
 		Now:        deps.Now,
 		Speech:     speech,
+		Latency:    pipeline.LatencyLogger{Logger: deps.Latency},
 	})
 	// Router 注册表是模式能力的单一来源：Coordinator 会复用同一份模式列表，
 	// 从而保证“允许切换”的模式一定存在对应 Handler，不会出现状态切换成功但没有业务处理器的半配置状态。
@@ -180,7 +210,7 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 			return nil, fmt.Errorf("%w: assistant reply sink", ErrDependencyRequired)
 		}
 		handlers[realtimev1.ModeAssistant] = pipeline.NewAssistantHandler(pipeline.AssistantHandlerDependencies{
-			LLM: providers.Assistant, Replies: deps.AssistantReplies, Gate: commitGate,
+			LLM: providers.Assistant, Provider: labels.llm, Replies: deps.AssistantReplies, Gate: commitGate,
 			Usage: deps.Usage, Speech: speech, Runtime: deps.Runtime, Now: deps.Now,
 			Latency: pipeline.LatencyLogger{Logger: deps.Latency},
 		})
@@ -190,7 +220,7 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		return nil, fmt.Errorf("create mode router: %w", err)
 	}
 	manager.processor = pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
-		ASR: providers.ASR, Opener: opener, Pipeline: service, Finals: router,
+		ASR: providers.ASR, ASRProvider: labels.asr, Opener: opener, Pipeline: service, Finals: router,
 	})
 	manager.playback = service
 	manager.router = router

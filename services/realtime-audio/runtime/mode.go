@@ -410,11 +410,14 @@ func (m *Manager) SwitchMode(
 	coordinator, runCtx, err := m.currentModeRuntime(command.SessionID)
 	if err != nil {
 		unlock()
+		m.logModeSwitch(command, realtimev1.SwitchModeResult{}, err)
 		return realtimev1.SwitchModeResult{}, err
 	}
 	if runCtx == nil {
 		unlock()
-		return coordinator.Switch(ctx, command)
+		result, switchErr := coordinator.Switch(ctx, command)
+		m.logModeSwitch(command, result, switchErr)
+		return result, switchErr
 	}
 	switchCtx, cancel := context.WithCancel(ctx)
 	stopCancellation := context.AfterFunc(runCtx, cancel)
@@ -423,7 +426,52 @@ func (m *Manager) SwitchMode(
 		stopCancellation()
 		cancel()
 	}()
-	return coordinator.Switch(switchCtx, command)
+	result, switchErr := coordinator.Switch(switchCtx, command)
+	m.logModeSwitch(command, result, switchErr)
+	return result, switchErr
+}
+
+// logModeSwitch records control-plane correlation after the coordinator has
+// decided the command. It never invents a Turn ID or provider because mode
+// commands are independent of media processing and provider execution.
+func (m *Manager) logModeSwitch(command realtimev1.SwitchModeCommand, result realtimev1.SwitchModeResult, err error) {
+	if m == nil || m.logger == nil {
+		return
+	}
+	fields := make([]any, 0, 14)
+	if command.SessionID != "" {
+		fields = append(fields, "session_id", command.SessionID)
+	}
+	if command.OperationID != "" {
+		fields = append(fields, "operation_id", command.OperationID)
+	}
+	if command.TraceID != "" {
+		fields = append(fields, "trace_id", command.TraceID)
+	}
+	if command.RuntimeInstanceID != "" {
+		fields = append(fields, "runtime_instance_id", command.RuntimeInstanceID)
+	}
+	if command.ExpectedGeneration > 0 {
+		fields = append(fields, "expected_generation", command.ExpectedGeneration)
+	}
+	if command.TargetMode.Valid() {
+		fields = append(fields, "target_mode", command.TargetMode)
+	}
+	if result.State.SessionID != "" && result.State.ActiveMode.Valid() {
+		fields = append(fields, "mode", result.State.ActiveMode)
+	}
+	if result.State.Generation > 0 {
+		fields = append(fields, "generation", result.State.Generation)
+	}
+	if result.Status != "" {
+		fields = append(fields, "status", result.Status)
+	}
+	if err != nil {
+		fields = append(fields, "error", err)
+		m.logger.Warn("realtime mode switch rejected", fields...)
+		return
+	}
+	m.logger.Info("realtime mode switch resolved", fields...)
 }
 
 func (m *Manager) currentModeCoordinator(sessionID string) (*modeCoordinator, error) {

@@ -59,29 +59,32 @@ type FinalTurnCommitGate interface {
 
 // PipelineDependencies wires provider and event boundaries for one service.
 type PipelineDependencies struct {
-	Translator translate.Provider
-	TTS        tts.Provider
-	FinalTurns recordsv1.FinalTurnSink
-	FinalGate  FinalTurnCommitGate
-	Usage      UsageFactSink
-	Audio      AudioChunkSink
-	Runtime    session.RuntimeStateReporter
-	VoiceID    string
-	Now        func() time.Time
-	Latency    LatencyLogger
-	Speech     *SpeechOutput
+	Translator          translate.Provider
+	TranslationProvider string
+	TTS                 tts.Provider
+	TTSProvider         string
+	FinalTurns          recordsv1.FinalTurnSink
+	FinalGate           FinalTurnCommitGate
+	Usage               UsageFactSink
+	Audio               AudioChunkSink
+	Runtime             session.RuntimeStateReporter
+	VoiceID             string
+	Now                 func() time.Time
+	Latency             LatencyLogger
+	Speech              *SpeechOutput
 }
 
 // PipelineService orchestrates one final ASR result through translation and TTS.
 type PipelineService struct {
-	translator translate.Provider
-	finalTurns recordsv1.FinalTurnSink
-	finalGate  FinalTurnCommitGate
-	usage      UsageFactSink
-	runtime    session.RuntimeStateReporter
-	speech     *SpeechOutput
-	now        func() time.Time
-	latency    LatencyLogger
+	translator          translate.Provider
+	translationProvider string
+	finalTurns          recordsv1.FinalTurnSink
+	finalGate           FinalTurnCommitGate
+	usage               UsageFactSink
+	runtime             session.RuntimeStateReporter
+	speech              *SpeechOutput
+	now                 func() time.Time
+	latency             LatencyLogger
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
@@ -96,11 +99,11 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 	if speech == nil {
 		speech = NewSpeechOutput(SpeechOutputDependencies{
 			TTS: deps.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
-			VoiceID: deps.VoiceID, Latency: deps.Latency,
+			VoiceID: deps.VoiceID, Provider: deps.TTSProvider, Latency: deps.Latency,
 		})
 	}
 	return &PipelineService{
-		translator: deps.Translator,
+		translator: deps.Translator, translationProvider: deps.TranslationProvider,
 		finalTurns: deps.FinalTurns, finalGate: deps.FinalGate,
 		usage: deps.Usage, runtime: deps.Runtime,
 		speech: speech,
@@ -154,6 +157,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		SourceLanguage: result.SourceLanguage, TargetLanguage: target,
 	})
 	if err != nil {
+		s.latency.ProviderFailure("translation", turn, observedProvider(s.translationProvider, translationResult.Provider), err)
 		// Providers may still return token usage on rejected attempts. Publish
 		// that consumption before failing so retries cannot hide spend.
 		if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, translationResult); usageErr != nil {
@@ -161,7 +165,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		}
 		return fmt.Errorf("translate Turn %s: %w", turn.ID, err)
 	}
-	s.logLatencyCheckpoint("translate_done", turn, translateStartedAt,
+	s.latency.ProviderCheckpoint("translate_done", turn, translateStartedAt, observedProvider(s.translationProvider, translationResult.Provider),
 		"source_language", result.SourceLanguage,
 		"target_language", target,
 		"provider_latency_ms", translationResult.LatencyMS,

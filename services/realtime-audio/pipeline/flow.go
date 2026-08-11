@@ -42,29 +42,32 @@ type ASRFinalHandler interface {
 // TurnProcessor 负责公共 Turn 生命周期，并把 ASR final 交给与模式无关的 Handler 接口。
 // 它拥有一次 ASR 读取和一次 final 分发的权责，避免 assistant、同传等模式重复调用 ASR。
 type TurnProcessor struct {
-	recognizer asr.Provider
-	opener     *TurnOpener
-	pipeline   *PipelineService
-	finals     ASRFinalHandler
+	recognizer  asr.Provider
+	asrProvider string
+	opener      *TurnOpener
+	pipeline    *PipelineService
+	finals      ASRFinalHandler
 }
 
 // TurnProcessorDependencies 注入可离线测试的 ASR、Turn 配置读取、媒体生命周期和 final Handler。
 // Pipeline 仍负责公共运行状态/失败收尾；Finals 负责 ASR final 之后的模式处理。
 type TurnProcessorDependencies struct {
-	ASR      asr.Provider
-	Opener   *TurnOpener
-	Pipeline *PipelineService
-	Finals   ASRFinalHandler
+	ASR         asr.Provider
+	ASRProvider string
+	Opener      *TurnOpener
+	Pipeline    *PipelineService
+	Finals      ASRFinalHandler
 }
 
 // NewTurnProcessor 创建一个处理完整音频 Turn 的公共 Runner。
 // 构造只保存依赖，真正的 Turn、ASR 流和 Handler 副作用都在 ProcessAudio 中发生。
 func NewTurnProcessor(deps TurnProcessorDependencies) *TurnProcessor {
 	return &TurnProcessor{
-		recognizer: deps.ASR,
-		opener:     deps.Opener,
-		pipeline:   deps.Pipeline,
-		finals:     deps.Finals,
+		recognizer:  deps.ASR,
+		asrProvider: deps.ASRProvider,
+		opener:      deps.Opener,
+		pipeline:    deps.Pipeline,
+		finals:      deps.Finals,
 	}
 }
 
@@ -94,13 +97,15 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		SessionID: turn.SessionID, TurnID: turn.ID, SourceLanguage: request.SourceLanguage,
 	})
 	if err != nil {
+		p.pipeline.latency.ProviderFailure("asr_start", turn, p.asrProvider, err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("start ASR stream: %w", err))
 	}
 	if stream == nil {
+		p.pipeline.latency.ProviderFailure("asr_stream", turn, p.asrProvider, ErrASRStreamRequired)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, ErrASRStreamRequired)
 	}
 	asrStartedAt := time.Now()
-	p.pipeline.logLatencyCheckpoint("asr_stream_started", turn, asrStartedAt)
+	p.pipeline.latency.ProviderCheckpoint("asr_stream_started", turn, asrStartedAt, p.asrProvider)
 	defer stream.Close()
 	streamCtx, stopEvents := context.WithCancel(ctx)
 	defer stopEvents()
@@ -109,15 +114,18 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	go collectFinalASREvent(streamCtx, p.pipeline.latency, turn, asrStartedAt, stream.Events(), finalEvents, eventErrors)
 	for _, chunk := range request.AudioChunks {
 		if err := stream.PushAudio(ctx, append([]byte(nil), chunk...)); err != nil {
+			p.pipeline.latency.ProviderFailure("asr_push_audio", turn, p.asrProvider, err)
 			return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("push audio for Turn %s: %w", turn.ID, err))
 		}
 	}
 
 	result, err := stream.Finish(ctx)
 	if err != nil {
+		p.pipeline.latency.ProviderFailure("asr_finish", turn, p.asrProvider, err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("finish ASR stream: %w", err))
 	}
 	if err := <-eventErrors; err != nil {
+		p.pipeline.latency.ProviderFailure("asr_events", turn, p.asrProvider, err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, err)
 	}
 	select {
@@ -129,7 +137,7 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		result.SourceLanguage = request.SourceLanguage
 	}
 	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
-	p.pipeline.logLatencyCheckpoint("asr_final", turn, asrStartedAt,
+	p.pipeline.latency.ProviderCheckpoint("asr_final", turn, asrStartedAt, observedProvider(p.asrProvider, result.Provider),
 		"source_language", result.SourceLanguage,
 		"text_bytes", len(result.Text),
 	)

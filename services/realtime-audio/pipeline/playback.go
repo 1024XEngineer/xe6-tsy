@@ -55,11 +55,12 @@ func (e speechOutputNotStartedError) Unwrap() error { return e.err }
 // SpeechOutputDependencies are the provider-neutral media dependencies shared
 // by interpretation, assistant, and durable fallback playback.
 type SpeechOutputDependencies struct {
-	TTS     tts.Provider
-	Audio   AudioChunkSink
-	Runtime session.RuntimeStateReporter
-	VoiceID string
-	Latency LatencyLogger
+	TTS      tts.Provider
+	Audio    AudioChunkSink
+	Runtime  session.RuntimeStateReporter
+	VoiceID  string
+	Provider string
+	Latency  LatencyLogger
 }
 
 // SpeechOutputRequest is immutable text accepted by the common playback path.
@@ -77,18 +78,19 @@ var ErrSpeechOutputRequestInvalid = errors.New("speech output request is invalid
 // SpeechOutput owns only text synthesis, audio chunks, and playback lifecycle.
 // It deliberately does not publish FinalTurn, AssistantReply, or UsageFact.
 type SpeechOutput struct {
-	tts     tts.Provider
-	audio   AudioChunkSink
-	runtime session.RuntimeStateReporter
-	voiceID string
-	latency LatencyLogger
+	tts      tts.Provider
+	audio    AudioChunkSink
+	runtime  session.RuntimeStateReporter
+	voiceID  string
+	provider string
+	latency  LatencyLogger
 }
 
 // NewSpeechOutput creates the shared output boundary used by every speaking mode.
 func NewSpeechOutput(deps SpeechOutputDependencies) *SpeechOutput {
 	return &SpeechOutput{
 		tts: deps.TTS, audio: deps.Audio, runtime: deps.Runtime,
-		voiceID: deps.VoiceID, latency: deps.Latency,
+		voiceID: deps.VoiceID, provider: deps.Provider, latency: deps.Latency,
 	}
 }
 
@@ -151,9 +153,10 @@ func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (t
 		Text: request.Text, TargetLanguage: request.Language, VoiceID: o.voiceID,
 	})
 	if err != nil {
+		o.latency.ProviderFailure("tts_start", request.Turn, o.provider, err)
 		return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("start TTS: %w", err)}
 	}
-	o.latency.Checkpoint("tts_stream_started", request.Turn, ttsStartedAt,
+	o.latency.ProviderCheckpoint("tts_stream_started", request.Turn, ttsStartedAt, o.provider,
 		"playback_id", request.PlaybackID,
 		"target_language", request.Language,
 	)
@@ -164,6 +167,7 @@ func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (t
 	}
 	ttsResult, err := stream.Finish(ctx)
 	if err != nil {
+		o.latency.ProviderFailure("tts_finish", request.Turn, o.provider, err)
 		return tts.Result{}, errors.Join(err, o.cancelPlayback(ctx, request.Turn.SessionID, request.PlaybackID, "tts_finish_failed", played))
 	}
 	if err := o.completePlayback(ctx, request.Turn.SessionID, request.PlaybackID, played); err != nil {
@@ -214,7 +218,7 @@ func (o *SpeechOutput) publishChunks(ctx context.Context, request SpeechOutputRe
 			}
 			if !firstChunkLogged {
 				firstChunkLogged = true
-				o.latency.Checkpoint("tts_first_chunk", request.Turn, startedAt,
+				o.latency.ProviderCheckpoint("tts_first_chunk", request.Turn, startedAt, o.provider,
 					"playback_id", request.PlaybackID, "encoding", chunk.Encoding, "bytes", len(chunk.Data),
 				)
 			}

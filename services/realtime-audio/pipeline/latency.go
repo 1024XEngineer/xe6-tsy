@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -13,18 +14,67 @@ func (l LatencyLogger) Checkpoint(stage string, turn TurnContext, since time.Tim
 	if l.Logger == nil {
 		return
 	}
-	fields := []any{
-		"stage", stage,
-		"session_id", turn.SessionID,
-		"turn_id", turn.ID,
-		"trace_id", turn.TraceID,
-		"mode", turn.Mode.Mode,
-		"runtime_instance_id", turn.Mode.RuntimeInstanceID,
-		"generation", turn.Mode.Generation,
-	}
+	fields := turnLogFields(stage, turn)
 	if !since.IsZero() {
 		fields = append(fields, "elapsed_ms", time.Since(since).Milliseconds())
 	}
 	fields = append(fields, attrs...)
 	l.Logger.Info("realtime latency checkpoint", fields...)
+}
+
+// ProviderCheckpoint adds the configured provider only when provider selection
+// is known at the composition boundary.
+func (l LatencyLogger) ProviderCheckpoint(stage string, turn TurnContext, since time.Time, provider string, attrs ...any) {
+	if provider = strings.TrimSpace(provider); provider != "" {
+		attrs = append([]any{"provider", provider}, attrs...)
+	}
+	l.Checkpoint(stage, turn, since, attrs...)
+}
+
+// ProviderFailure logs the immutable Turn snapshot at the provider boundary.
+// Operation IDs are intentionally absent because a Turn does not own the
+// session lifecycle or mode command operation that happened to precede it.
+func (l LatencyLogger) ProviderFailure(stage string, turn TurnContext, provider string, err error) {
+	if l.Logger == nil || err == nil {
+		return
+	}
+	fields := turnLogFields(stage, turn)
+	if provider = strings.TrimSpace(provider); provider != "" {
+		fields = append(fields, "provider", provider)
+	}
+	fields = append(fields, "error", err)
+	l.Logger.Error("realtime provider failed", fields...)
+}
+
+func turnLogFields(stage string, turn TurnContext) []any {
+	fields := make([]any, 0, 14)
+	if stage = strings.TrimSpace(stage); stage != "" {
+		fields = append(fields, "stage", stage)
+	}
+	if turn.SessionID != "" {
+		fields = append(fields, "session_id", turn.SessionID)
+	}
+	if turn.ID != "" {
+		fields = append(fields, "turn_id", turn.ID)
+	}
+	if turn.TraceID != "" {
+		fields = append(fields, "trace_id", turn.TraceID)
+	}
+	if turn.Mode.RuntimeInstanceID != "" {
+		fields = append(fields, "runtime_instance_id", turn.Mode.RuntimeInstanceID)
+	}
+	if turn.Mode.Mode.Valid() {
+		fields = append(fields, "mode", turn.Mode.Mode)
+	}
+	if turn.Mode.Generation > 0 {
+		fields = append(fields, "generation", turn.Mode.Generation)
+	}
+	return fields
+}
+
+func observedProvider(configured, observed string) string {
+	if observed = strings.TrimSpace(observed); observed != "" {
+		return observed
+	}
+	return strings.TrimSpace(configured)
 }

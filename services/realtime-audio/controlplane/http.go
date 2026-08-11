@@ -108,6 +108,7 @@ type WebRTCConfig struct {
 	ICEServers         []ICEServer       `json:"ice_servers"`
 	ICETransportPolicy string            `json:"ice_transport_policy"`
 	DataChannel        DataChannelConfig `json:"data_channel"`
+	ControlDataChannel ControlDataChannelConfig `json:"control_data_channel"`
 	Audio              AudioConfig       `json:"audio"`
 }
 
@@ -120,6 +121,14 @@ type ICEServer struct {
 type DataChannelConfig struct {
 	Label   string `json:"label"`
 	Ordered bool   `json:"ordered"`
+}
+
+// ControlDataChannelConfig advertises the optional client-created uplink channel while leaving
+// the legacy data_channel field scoped to translation and playback events.
+type ControlDataChannelConfig struct {
+	Label           string `json:"label"`
+	Ordered         bool   `json:"ordered"`
+	ProtocolVersion int    `json:"protocol_version"`
 }
 
 type AudioConfig struct {

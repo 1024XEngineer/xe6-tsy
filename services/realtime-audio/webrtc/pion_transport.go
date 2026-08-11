@@ -27,6 +27,7 @@ type PionTransport struct {
 	mediaConnection pionMediaPeerConnection
 	mediaConfig     MediaConfig
 	mediaNow        func() time.Time
+	control         *PionControlReceiver
 }
 
 // AudioSource returns the normalized inbound source, when media was enabled.
@@ -67,6 +68,30 @@ func (t *PionTransport) Playback() *playback.Service {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.playback
+}
+
+func (t *PionTransport) attachControlChannel(
+	channel pionControlDataChannel,
+	handler ControlCommandHandler,
+	sessionID string,
+	connectionID string,
+) {
+	if t == nil || channel == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.closeDone != nil || t.control != nil {
+		t.mu.Unlock()
+		_ = channel.Close()
+		return
+	}
+	receiver, err := newPionControlReceiver(channel, handler, sessionID, connectionID)
+	if err != nil {
+		t.mu.Unlock()
+		return
+	}
+	t.control = receiver
+	t.mu.Unlock()
 }
 
 // Answer applies an offer and returns the fully gathered local answer.
@@ -226,15 +251,20 @@ func (t *PionTransport) Close(ctx context.Context) error {
 	t.mu.Lock()
 	source := t.audioSource
 	events := t.events
+	control := t.control
 	t.mu.Unlock()
 	if events != nil {
 		events.close(ErrTransportClosed)
+	}
+	var controlErr error
+	if control != nil {
+		controlErr = control.Close(ctx)
 	}
 	var sourceErr error
 	if source != nil {
 		sourceErr = source.Close()
 	}
-	closeErr := errors.Join(sourceErr, connection.Close())
+	closeErr := errors.Join(controlErr, sourceErr, connection.Close())
 	t.mu.Lock()
 	t.closeErr = closeErr
 	close(done)

@@ -62,20 +62,40 @@ func (tokenVerifierFake) VerifyAccessToken(_ context.Context, token string) (acc
 }
 
 type accountFake struct {
-	verifyPhoneCalled bool
-	verifyPhoneCtx    context.Context
-	verifyPhoneAnon   string
-	phoneChallengeErr error
+	verifyPhoneCalled    bool
+	verifyPhoneCtx       context.Context
+	verifyPhoneAnon      string
+	phoneChallengeCalled bool
+	phoneChallengeErr    error
 }
 
 func (f *accountFake) CreateAnonymous(context.Context) (accounts.AuthResult, error) {
 	return accounts.AuthResult{}, domain.ErrNotImplemented
 }
 func (f *accountFake) CreatePhoneChallenge(context.Context, string) (string, error) {
+	f.phoneChallengeCalled = true
 	if f.phoneChallengeErr != nil {
 		return "", f.phoneChallengeErr
 	}
 	return "", domain.ErrNotImplemented
+}
+
+func TestPhoneChallengeRejectsOversizedJSONBody(t *testing.T) {
+	accounts := &accountFake{}
+	handler := webapi.New(accounts, usage.NewUseCases(), &deliveryFake{}, tokenVerifierFake{})
+	validBody := `{"phone":"15500000000"}`
+	body := validBody + strings.Repeat(" ", 1<<20-len(validBody)+1)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verification-codes", strings.NewReader(body))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	if accounts.phoneChallengeCalled {
+		t.Fatal("oversized request reached service")
+	}
 }
 func (f *accountFake) VerifyPhone(ctx context.Context, _, _, anonymousAccountID string) (accounts.AuthResult, error) {
 	f.verifyPhoneCalled = true

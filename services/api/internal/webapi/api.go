@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -170,9 +171,15 @@ func requestID(r *http.Request) string {
 	return "req_" + hex.EncodeToString(bytes)
 }
 
+const maxRequestBodyBytes = 1 << 20
+
 // decodeJSON accepts one bounded JSON value and rejects unknown fields or trailing content.
 func decodeJSON(r *http.Request, target any) error {
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	payload, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes+1))
+	if err != nil || len(payload) > maxRequestBodyBytes {
+		return domain.ErrInvalidArgument
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return domain.ErrInvalidArgument

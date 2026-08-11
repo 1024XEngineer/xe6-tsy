@@ -94,6 +94,32 @@ func TestHTTPIdempotencyKeyTooLong(t *testing.T) {
 	}
 }
 
+func TestHTTPCreateConfigRejectsOversizedBody(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	svc := NewService(store, MapSessionOwner{"vs_http": "acct_http"})
+	mux := http.NewServeMux()
+	NewHandler(svc, func(r *http.Request) (string, bool) {
+		return webapi.AccountIDFromContext(r.Context())
+	}).Register(mux, withoutAuthentication)
+
+	validBody, err := json.Marshal(CreateLanguageConfigRequest{Languages: bilingualPairs()})
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+	body := append(validBody, bytes.Repeat([]byte(" "), maxRequestBodyBytes-len(validBody)+1)...)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_http/language-configs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "oversized-body")
+	req = req.WithContext(webapi.WithAccountID(req.Context(), "acct_http"))
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHTTPSingleOutputRequiresReadyDeliveryTarget(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	svc := NewService(store, MapSessionOwner{"vs_http": "acct_http"}, &deliveryReadinessStub{})

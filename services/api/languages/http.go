@@ -1,6 +1,7 @@
 package languages
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -173,9 +174,15 @@ func (h *Handler) requireAccount(r *http.Request) (string, error) {
 	return accountID, nil
 }
 
+const maxRequestBodyBytes = 1 << 20
+
 func decodeJSONBody(r *http.Request, target any) error {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	payload, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes+1))
+	if err != nil || len(payload) > maxRequestBodyBytes {
+		return invalidRequest("json body")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return invalidRequest("json body")

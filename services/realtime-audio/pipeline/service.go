@@ -204,6 +204,12 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("commit FinalTurn: %w", err)
 	}
 	if !committed {
+		// Translation already completed before the generation check. Even when a
+		// mode switch supersedes the Turn and FinalTurn is dropped, its provider
+		// usage remains billable and must be recorded exactly once.
+		if err := s.usage.Publish(ctx, translationUsage); err != nil {
+			return fmt.Errorf("publish superseded translation usage: %w", err)
+		}
 		return nil
 	}
 	acceptedFinalTurn = true

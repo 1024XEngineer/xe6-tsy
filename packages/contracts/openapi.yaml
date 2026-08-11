@@ -210,6 +210,39 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/mode:
+    get:
+      operationId: getVoiceSessionMode
+      security: [{ accountContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200': { description: Authoritative realtime mode snapshot, content: { application/json: { schema: { $ref: '#/components/schemas/ModeStateSnapshot' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    post:
+      operationId: switchVoiceSessionMode
+      security: [{ accountContext: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/SessionID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/RequestID' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SwitchVoiceSessionModeRequest' }
+      responses:
+        '200': { description: Mode switch result from realtime, content: { application/json: { schema: { $ref: '#/components/schemas/SwitchModeResult' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /voice-sessions/{id}/realtime-ticket:
     post:
       operationId: mintVoiceSessionRealtimeTicket
@@ -568,6 +601,7 @@ components:
     SessionID: { name: id, in: path, required: true, schema: { type: string } }
     MessageID: { name: message_id, in: path, required: true, schema: { type: string } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+    RequestID: { name: X-Request-ID, in: header, required: false, schema: { type: string, minLength: 1, maxLength: 200 } }
   requestBodies:
     RefreshToken:
       required: true
@@ -791,6 +825,14 @@ components:
       additionalProperties: false
       properties:
         reason: { $ref: '#/components/schemas/EndVoiceSessionReason' }
+    SwitchVoiceSessionModeRequest:
+      type: object
+      additionalProperties: false
+      required: [runtime_instance_id, expected_generation, target_mode]
+      properties:
+        runtime_instance_id: { type: string, minLength: 1 }
+        expected_generation: { type: integer, format: int64, minimum: 1 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
     VoiceSession:
       type: object
       additionalProperties: false

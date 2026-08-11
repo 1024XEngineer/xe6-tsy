@@ -60,6 +60,19 @@ control-plane 客户端接入。
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
 
+## 模式控制 API
+
+当 `LINGOW_SESSION_RUNTIME=enabled` 时，Session API 额外挂载：
+
+- `GET /api/v1/voice-sessions/{id}/mode`：返回 realtime 当前权威 `ModeStateSnapshot`；
+- `POST /api/v1/voice-sessions/{id}/mode`：在已认证账户拥有且处于 `active` 的 Session 上转发一次模式切换。
+
+切换请求的 JSON 只包含 `runtime_instance_id`、`expected_generation` 和 `target_mode`。操作 ID 必须来自
+`Idempotency-Key`，追踪 ID 来自 `X-Request-ID`；API 会先执行 Session 归属校验，再把这些字段交给 realtime
+的 compare-and-switch 协调器。API 不保存 `active_mode`、不实现本地幂等缓存，也不通过 Stop/Start 模拟切换。
+重复操作、代次冲突和 runtime 实例冲突均由 realtime 返回，API 只做稳定错误映射。旧的 Session state 查询
+仍只读取原有媒体 RuntimeSnapshot，避免模式依赖故障改变旧接口的失败路径。
+
 `services/realtime-audio` 提供本地可运行的 `/realtime/v1` HTTP 入口（`go run .`，默认
 `:8090`）；当前使用 Pion + `localruntime` 适配器，真实 ASR/TTS pipeline 仍为后续工作。
 `LINGOW_SESSION_RUNTIME` 默认 `disabled`；disabled 时 Session 路由明确返回 501，

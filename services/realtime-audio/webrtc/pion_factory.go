@@ -74,6 +74,14 @@ func (p *pionPeerConnectionAdapter) OnTrack(handler func(pionRemoteTrack)) {
 	})
 }
 
+func (p *pionPeerConnectionAdapter) OnInboundDataChannel(handler func(pionInboundDataChannel)) {
+	p.PeerConnection.OnDataChannel(func(channel *pion.DataChannel) {
+		if handler != nil {
+			handler(channel)
+		}
+	})
+}
+
 type pionRemoteTrackAdapter struct {
 	track *pion.TrackRemote
 }
@@ -146,7 +154,10 @@ func (f *PionTransportFactory) Create(
 		}
 		onState(mapped, now())
 	})
-	transport := &PionTransport{peerConnection: connection}
+	transport := &PionTransport{
+		peerConnection: connection,
+		wakeWords:      newPionWakeWordSource(defaultWakeWordQueueCapacity),
+	}
 	if mediaConnection, ok := connection.(pionMediaPeerConnection); ok {
 		if err := configurePionMedia(transport, mediaConnection, f.media, now); err != nil {
 			_ = connection.Close()
@@ -179,6 +190,9 @@ func configurePionMedia(transport *PionTransport, connection pionMediaPeerConnec
 	connection.OnTrack(func(track pionRemoteTrack) {
 		_ = source.Attach(track)
 	})
+	if inboundConnection, ok := connection.(pionInboundDataChannelPeerConnection); ok {
+		configurePionWakeWordIngress(transport.wakeWords, inboundConnection, normalized.DataChannelLabel)
+	}
 	transport.mu.Lock()
 	transport.audioSource = source
 	transport.events = newPionEventSink(channel)

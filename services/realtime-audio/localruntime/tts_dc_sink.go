@@ -29,6 +29,9 @@ type DataChannelTTSAudioSink struct {
 
 var _ pipeline.AudioPlaybackLifecycle = (*DataChannelTTSAudioSink)(nil)
 var _ pipeline.AudioChunkSink = (*DataChannelTTSAudioSink)(nil)
+var _ interface {
+	InterruptCurrent(context.Context, string, string) error
+} = (*DataChannelTTSAudioSink)(nil)
 
 type ttsBuffer struct {
 	sessionID string
@@ -114,6 +117,27 @@ func (s *DataChannelTTSAudioSink) Cancel(ctx context.Context, sessionID, playbac
 	delete(s.buffers, playbackID)
 	s.mu.Unlock()
 	return ctx.Err()
+}
+
+// InterruptCurrent discards every not-yet-published PCM buffer for a session.
+// Browser playback is stopped by the local wake-word path; clearing these
+// buffers prevents a TTS completion racing with the wake signal from sending
+// stale audio after the command window opens.
+func (s *DataChannelTTSAudioSink) InterruptCurrent(ctx context.Context, sessionID, _ string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || sessionID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	for playbackID, buffer := range s.buffers {
+		if buffer != nil && buffer.sessionID == sessionID {
+			delete(s.buffers, playbackID)
+		}
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 type normalizedTTSAudio struct {

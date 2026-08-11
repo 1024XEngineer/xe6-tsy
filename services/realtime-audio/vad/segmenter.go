@@ -54,6 +54,18 @@ type Segmenter struct {
 	prefixFrames  []audio.Frame
 }
 
+// Reset abandons the current utterance and all timestamp/prefix history.
+//
+// A wake-word command is a separate input boundary from ordinary turns. The
+// caller must reset the segmenter before feeding the first command frame so
+// audio buffered before the wake signal cannot be joined to a later turn.
+func (s *Segmenter) Reset() {
+	if s == nil {
+		return
+	}
+	s.reset()
+}
+
 func NewSegmenter(classifier Classifier, options Options) (*Segmenter, error) {
 	if classifier == nil {
 		return nil, ErrClassifierRequired

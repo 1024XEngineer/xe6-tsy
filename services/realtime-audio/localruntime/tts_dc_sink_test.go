@@ -244,6 +244,29 @@ func TestDataChannelTTSAudioSinkPublishCompleteCancel(t *testing.T) {
 	})
 }
 
+func TestDataChannelTTSAudioSinkInterruptCurrentDropsSessionBuffers(t *testing.T) {
+	sink := &DataChannelTTSAudioSink{}
+	if err := sink.Publish(context.Background(), pipeline.AudioChunk{
+		SessionID: "session-1", PlaybackID: "playback-1", Data: []byte{1},
+	}); err != nil {
+		t.Fatalf("Publish(session-1) error = %v", err)
+	}
+	if err := sink.Publish(context.Background(), pipeline.AudioChunk{
+		SessionID: "session-2", PlaybackID: "playback-2", Data: []byte{2},
+	}); err != nil {
+		t.Fatalf("Publish(session-2) error = %v", err)
+	}
+	if err := sink.InterruptCurrent(context.Background(), "session-1", "wake_word_detected"); err != nil {
+		t.Fatalf("InterruptCurrent() error = %v", err)
+	}
+	if len(sink.buffers) != 1 {
+		t.Fatalf("buffers after interrupt = %d, want only another session", len(sink.buffers))
+	}
+	if _, ok := sink.buffers["playback-1"]; ok {
+		t.Fatal("session-1 playback buffer was not removed")
+	}
+}
+
 func makeWAV(pcm []byte) []byte {
 	buf := make([]byte, 44+len(pcm))
 	copy(buf[0:], []byte("RIFF"))

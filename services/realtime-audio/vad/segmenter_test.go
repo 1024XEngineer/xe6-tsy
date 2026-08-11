@@ -115,6 +115,27 @@ func TestSegmenterPrependsRecentAudioBeforeSpeech(t *testing.T) {
 	}
 }
 
+func TestSegmenterResetDropsActiveUtteranceAndTimestampHistory(t *testing.T) {
+	segmenter := newTestSegmenter(t, fakeClassifier{speech: true})
+	if _, err := segmenter.Push(context.Background(), testFrame(t, 1, time.Unix(21, 0))); err != nil {
+		t.Fatalf("Push() error = %v", err)
+	}
+
+	segmenter.Reset()
+	segmenter.classifier = fakeClassifier{speech: false}
+	if _, err := segmenter.Push(context.Background(), testFrame(t, 2, time.Unix(20, 0))); err != nil {
+		t.Fatalf("Push() after Reset error = %v", err)
+	}
+	segmenter.classifier = fakeClassifier{speech: true}
+	events, err := segmenter.Push(context.Background(), testFrame(t, 3, time.Unix(20, 0).Add(300*time.Millisecond)))
+	if err != nil {
+		t.Fatalf("Push() speech after Reset error = %v", err)
+	}
+	if len(events) != 2 || events[0].Type != EventOpened || events[1].Type != EventAudio {
+		t.Fatalf("events after Reset = %#v, want a fresh opened segment", events)
+	}
+}
+
 func TestSegmenterFinalizesAtMaximumDurationAndDoesNotDuplicate(t *testing.T) {
 	segmenter := newTestSegmenter(t, fakeClassifier{speech: true})
 	if _, err := segmenter.Push(context.Background(), testFrame(t, 1, time.Unix(20, 0))); err != nil {

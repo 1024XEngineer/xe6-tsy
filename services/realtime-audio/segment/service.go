@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 )
@@ -30,6 +32,21 @@ type TurnProcessor interface {
 	ProcessAudio(ctx context.Context, request pipeline.TurnProcessRequest) (pipeline.TurnContext, error)
 }
 
+// WakeWordSource exposes validated local wake-word detections. The source is
+// optional: transports without a local detector continue through the ordinary
+// VAD path unchanged.
+type WakeWordSource interface {
+	Receive(context.Context) (realtimev1.WakeWordDetectedSignal, error)
+}
+
+// CommandGate is the narrow command-channel contract consumed before ordinary
+// VAD. Implementations quarantine every frame while armed and return to a
+// dormant state after success or any bounded failure.
+type CommandGate interface {
+	Open(command.OpenRequest) error
+	Consume(context.Context, audio.Frame) command.Result
+}
+
 // Request carries immutable session metadata used for every utterance read from a source.
 type Request struct {
 	SessionID      string
@@ -43,6 +60,8 @@ type Dependencies struct {
 	Source    FrameSource
 	Segmenter *vad.Segmenter
 	Processor TurnProcessor
+	Command   CommandGate
+	WakeWords WakeWordSource
 	Latency   *slog.Logger
 }
 
@@ -51,6 +70,8 @@ type Service struct {
 	source    FrameSource
 	segmenter *vad.Segmenter
 	processor TurnProcessor
+	command   CommandGate
+	wakeWords WakeWordSource
 	latency   *slog.Logger
 }
 
@@ -61,7 +82,10 @@ func NewService(deps Dependencies) (*Service, error) {
 	if deps.Source == nil || deps.Segmenter == nil || deps.Processor == nil {
 		return nil, ErrDependencyRequired
 	}
-	return &Service{source: deps.Source, segmenter: deps.Segmenter, processor: deps.Processor, latency: deps.Latency}, nil
+	return &Service{
+		source: deps.Source, segmenter: deps.Segmenter, processor: deps.Processor,
+		command: deps.Command, wakeWords: deps.WakeWords, latency: deps.Latency,
+	}, nil
 }
 
 // Run owns the source until EOF, context cancellation, or a processing error closes the loop.
@@ -82,7 +106,6 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	finalizedEvents := make(chan vad.Event, finalizedEventQueueCapacity)
 	processingErrors := make(chan error, 1)
 	workerDone := make(chan struct{})
@@ -111,9 +134,32 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 			}
 		}
 	}
+	wakeSignals := make(chan realtimev1.WakeWordDetectedSignal, 1)
+	wakeDone := make(chan struct{})
+	if s.command != nil && s.wakeWords != nil {
+		go s.receiveWakeWords(runCtx, wakeSignals, wakeDone)
+	} else {
+		close(wakeDone)
+	}
+	defer func() {
+		cancel()
+		<-wakeDone
+	}()
+
+	openPendingWake := func() {
+		for {
+			select {
+			case signal := <-wakeSignals:
+				s.openCommandWindow(request, signal)
+			default:
+				return
+			}
+		}
+	}
 	var lastSeen time.Time
 	var loopErr error
 	for {
+		openPendingWake()
 		frame, err := s.source.ReadFrame(runCtx)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -135,6 +181,15 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 			}
 			loopErr = fmt.Errorf("read audio frame: %w", err)
 			break
+		}
+		// A wake signal may arrive while ReadFrame is blocked. Drain it before
+		// routing this frame so command audio cannot reach ordinary VAD.
+		openPendingWake()
+		if s.command != nil {
+			result := s.command.Consume(runCtx, frame)
+			if result.Consumed {
+				continue
+			}
 		}
 		lastSeen = frame.CapturedAt
 		events, err := s.segmenter.Push(runCtx, frame)
@@ -170,6 +225,42 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	default:
 	}
 	return loopErr
+}
+
+func (s *Service) receiveWakeWords(
+	ctx context.Context,
+	signals chan<- realtimev1.WakeWordDetectedSignal,
+	done chan<- struct{},
+) {
+	defer close(done)
+	for {
+		signal, err := s.wakeWords.Receive(ctx)
+		if err != nil {
+			// A detector ending is an optional capability failure. The media
+			// loop remains healthy and continues ordinary input processing.
+			return
+		}
+		select {
+		case signals <- signal:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Service) openCommandWindow(request Request, signal realtimev1.WakeWordDetectedSignal) {
+	if s == nil || s.command == nil || signal.Validate() != nil {
+		return
+	}
+	if err := s.command.Open(command.OpenRequest{
+		SessionID: request.SessionID, CommandID: signal.SignalID,
+		SourceLanguage: request.SourceLanguage, OpenedAt: signal.DetectedAt,
+	}); err != nil {
+		return
+	}
+	// Reset before the command frame is consumed. This drops any ordinary
+	// utterance that was in flight when the hardware wake signal arrived.
+	s.segmenter.Reset()
 }
 
 func (s *Service) flush(ctx context.Context, lastSeen time.Time) ([]vad.Event, error) {

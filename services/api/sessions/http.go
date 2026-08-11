@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -311,8 +311,11 @@ func parseListLimit(raw string) (int, error) {
 }
 
 func decodeHTTPJSON(r *http.Request, target any) error {
-	defer r.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, maxHTTPBodyBytes))
+	body, err := readHTTPBody(r)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return ErrInvalidRequest
@@ -324,15 +327,14 @@ func decodeHTTPJSON(r *http.Request, target any) error {
 }
 
 func decodeOptionalHTTPJSON(r *http.Request, target any) error {
-	defer r.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxHTTPBodyBytes))
+	body, err := readHTTPBody(r)
 	if err != nil {
-		return ErrInvalidRequest
+		return err
 	}
-	if len(strings.TrimSpace(string(body))) == 0 {
+	if len(bytes.TrimSpace(body)) == 0 {
 		return nil
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return ErrInvalidRequest
@@ -344,15 +346,23 @@ func decodeOptionalHTTPJSON(r *http.Request, target any) error {
 }
 
 func rejectNonEmptyBody(r *http.Request) error {
-	defer r.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxHTTPBodyBytes))
+	body, err := readHTTPBody(r)
 	if err != nil {
-		return ErrInvalidRequest
+		return err
 	}
-	if strings.TrimSpace(string(body)) != "" {
+	if len(bytes.TrimSpace(body)) != 0 {
 		return ErrInvalidRequest
 	}
 	return nil
+}
+
+func readHTTPBody(r *http.Request) ([]byte, error) {
+	defer r.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxHTTPBodyBytes+1))
+	if err != nil || len(body) > maxHTTPBodyBytes {
+		return nil, ErrInvalidRequest
+	}
+	return body, nil
 }
 
 func canonicalHash(operation string, value any) string {

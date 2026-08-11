@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
+	"github.com/1024XEngineer/xe6-tsy/services/api/metrics"
 )
 
 type consumerStreamStub struct {
@@ -15,6 +16,8 @@ type consumerStreamStub struct {
 	messages []StreamMessage
 	acked    []string
 	nacked   []string
+	ackErr   error
+	nackErr  error
 }
 
 func (s *consumerStreamStub) Enqueue(payload []byte) {
@@ -46,14 +49,14 @@ func (s *consumerStreamStub) Ack(_ context.Context, receipt string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.acked = append(s.acked, receipt)
-	return nil
+	return s.ackErr
 }
 
 func (s *consumerStreamStub) Nack(_ context.Context, receipt string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nacked = append(s.nacked, receipt)
-	return nil
+	return s.nackErr
 }
 
 type consumerServiceStub struct {
@@ -136,6 +139,87 @@ func TestConsumerProcessOnceAcksForbiddenEvent(t *testing.T) {
 	}
 	if len(stream.acked) != 1 {
 		t.Fatalf("acked=%#v, want permanent reject acked", stream.acked)
+	}
+}
+
+func TestConsumerProcessOncePropagatesAcknowledgementFailures(t *testing.T) {
+	validPayload, err := MarshalRecordInput(validRecordInput())
+	if err != nil {
+		t.Fatalf("MarshalRecordInput() error = %v", err)
+	}
+	ackErr := errors.New("ack unavailable")
+	nackErr := errors.New("nack unavailable")
+	transientErr := errors.New("postgres unavailable")
+	tests := []struct {
+		name          string
+		payload       []byte
+		serviceErr    error
+		ackErr        error
+		nackErr       error
+		wantProcessed bool
+		wantErrors    []error
+		wantAcked     int
+		wantNacked    int
+	}{
+		{
+			name:          "empty payload ack failure",
+			ackErr:        ackErr,
+			wantProcessed: false,
+			wantErrors:    []error{ackErr},
+			wantAcked:     1,
+		},
+		{
+			name:          "invalid payload ack failure",
+			payload:       []byte(`{"event_version":2}`),
+			ackErr:        ackErr,
+			wantProcessed: true,
+			wantErrors:    []error{ackErr},
+			wantAcked:     1,
+		},
+		{
+			name:          "permanent failure ack failure",
+			payload:       validPayload,
+			serviceErr:    domain.ErrForbidden,
+			ackErr:        ackErr,
+			wantProcessed: true,
+			wantErrors:    []error{domain.ErrForbidden, ackErr},
+			wantAcked:     1,
+		},
+		{
+			name:          "transient failure nack failure",
+			payload:       validPayload,
+			serviceErr:    transientErr,
+			nackErr:       nackErr,
+			wantProcessed: true,
+			wantErrors:    []error{transientErr, nackErr},
+			wantNacked:    1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := metrics.Current()
+			stream := &consumerStreamStub{ackErr: test.ackErr, nackErr: test.nackErr}
+			stream.Enqueue(test.payload)
+			consumer := NewConsumer(stream, &consumerServiceStub{err: test.serviceErr})
+
+			processed, err := consumer.ProcessOnce(t.Context())
+
+			if processed != test.wantProcessed {
+				t.Fatalf("processed = %v, want %v", processed, test.wantProcessed)
+			}
+			for _, wantErr := range test.wantErrors {
+				if !errors.Is(err, wantErr) {
+					t.Fatalf("ProcessOnce() error = %v, want %v", err, wantErr)
+				}
+			}
+			if len(stream.acked) != test.wantAcked || len(stream.nacked) != test.wantNacked {
+				t.Fatalf("acked=%#v nacked=%#v", stream.acked, stream.nacked)
+			}
+			if got := metrics.Current().UsageRejected; got != before.UsageRejected {
+				t.Fatalf("usage rejected = %d, want %d after acknowledgement failure", got, before.UsageRejected)
+			}
+		})
 	}
 }
 

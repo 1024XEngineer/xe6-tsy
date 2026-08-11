@@ -26,6 +26,7 @@ type Dependencies struct {
 	LanguageConfigs            LanguageConfigReader
 	WebRTCConnections          WebRTCConnectionReader
 	Realtime                   RealtimeLifecycle
+	Modes                      RealtimeModeControl
 	IDs                        IDGenerator
 	Clock                      Clock
 	Logger                     *slog.Logger
@@ -123,6 +124,18 @@ type EndInput struct {
 type DetailInput struct {
 	AccountID string
 	SessionID string
+}
+
+// SwitchModeInput combines authenticated ownership with the runtime identity
+// and generation supplied by the latest ModeSnapshot.
+type SwitchModeInput struct {
+	AccountID          string
+	SessionID          string
+	RuntimeInstanceID  string
+	OperationID        string
+	TraceID            string
+	ExpectedGeneration int64
+	TargetMode         Mode
 }
 
 // ListInput carries account-scoped persistent filters only.

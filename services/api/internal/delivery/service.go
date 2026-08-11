@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
@@ -19,9 +18,6 @@ type UseCases struct {
 	turns               TurnReader
 	destinations        DestinationReader
 	queue               Queue
-	keys                sync.Mutex
-	createKeys          map[string]string
-	retryKeys           map[string]string
 	destinationKey      []byte
 	appEnv              string
 	emailBindChallenges EmailBindChallengeRepository
@@ -35,7 +31,7 @@ type UseCases struct {
 func NewUseCases() *UseCases { return &UseCases{} }
 
 func NewPersistentUseCases(repository Repository, turns TurnReader, destinations DestinationReader, queue Queue) *UseCases {
-	return &UseCases{repository: repository, turns: turns, destinations: destinations, queue: queue, createKeys: make(map[string]string), retryKeys: make(map[string]string)}
+	return &UseCases{repository: repository, turns: turns, destinations: destinations, queue: queue}
 }
 
 // ConfigureTargetBinding enables message-target bind/list/unbind operations on a
@@ -119,12 +115,6 @@ func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, erro
 		}
 		return Message{}, err
 	}
-	u.keys.Lock()
-	if u.createKeys == nil {
-		u.createKeys = make(map[string]string)
-	}
-	u.createKeys[scopedIdempotencyKey(input.AccountID, input.IdempotencyKey)] = message.ID
-	u.keys.Unlock()
 	// The lightweight in-memory repository has no durable Outbox, so tests and
 	// compatibility adapters enqueue directly. Production Outbox repositories
 	// publish through OutboxDispatcher after commit.
@@ -168,15 +158,6 @@ func (u *UseCases) Retry(ctx context.Context, accountID, messageID, key string) 
 	if accountID == "" || messageID == "" || key == "" || len(key) > MaxIdempotencyKeyLength {
 		return Message{}, domain.ErrInvalidArgument
 	}
-	u.keys.Lock()
-	known := u.retryKeys[scopedIdempotencyKey(accountID, key)]
-	u.keys.Unlock()
-	if known != "" {
-		if known != messageID {
-			return Message{}, domain.ErrConflict
-		}
-		return u.repository.GetMessage(ctx, accountID, messageID)
-	}
 	if existing, handled, err := u.resolveRetryIdempotency(ctx, accountID, messageID, key); handled || err != nil {
 		return existing, err
 	}
@@ -198,12 +179,6 @@ func (u *UseCases) Retry(ctx context.Context, accountID, messageID, key string) 
 		}
 		return Message{}, err
 	}
-	u.keys.Lock()
-	if u.retryKeys == nil {
-		u.retryKeys = make(map[string]string)
-	}
-	u.retryKeys[scopedIdempotencyKey(accountID, key)] = messageID
-	u.keys.Unlock()
 	if !isOutboxBacked(u.repository) && u.queue != nil {
 		if err := u.queue.Enqueue(ctx, attempt.ID, key); err != nil {
 			return Message{}, err
@@ -628,10 +603,6 @@ func (u *UseCases) RevokeMessageTarget(ctx context.Context, accountID string, ch
 }
 
 func isOutboxBacked(repository Repository) bool { _, ok := repository.(OutboxRepository); return ok }
-
-func scopedIdempotencyKey(accountID, key string) string {
-	return accountID + "\x00" + key
-}
 
 func hasDuplicateTurnIDs(turnIDs []string) bool {
 	seen := make(map[string]struct{}, len(turnIDs))

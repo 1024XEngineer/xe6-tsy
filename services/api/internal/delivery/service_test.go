@@ -854,18 +854,17 @@ func TestRetryRejectsOversizedIdempotencyKey(t *testing.T) {
 	}
 }
 
-func TestRetryUsesDurableLookupAfterProcessStateIsLost(t *testing.T) {
+func TestRetryUsesDurableLookupInsteadOfProcessCache(t *testing.T) {
 	repository := &retryRepositoryStub{current: map[string]Message{
 		"account-1": {ID: "message-1", AccountID: "account-1", Status: MessageStatusFailed, Attempts: 1},
 	}}
 	ctx := context.Background()
-	first := NewPersistentUseCases(repository, nil, nil, nil)
-	if _, err := first.Retry(ctx, "account-1", "message-1", "retry-key"); err != nil {
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	if _, err := service.Retry(ctx, "account-1", "message-1", "retry-key"); err != nil {
 		t.Fatalf("first Retry() error = %v", err)
 	}
 	repository.lookup = Message{ID: "message-1", AccountID: "account-1", Status: MessageStatusRetrying, Attempts: 2}
-	second := NewPersistentUseCases(repository, nil, nil, nil)
-	message, err := second.Retry(ctx, "account-1", "message-1", "retry-key")
+	message, err := service.Retry(ctx, "account-1", "message-1", "retry-key")
 	if err != nil {
 		t.Fatalf("replayed Retry() error = %v", err)
 	}

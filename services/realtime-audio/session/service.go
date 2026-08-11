@@ -64,7 +64,7 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 			return current, ErrRuntimeOperationConflict
 		}
 		processingState := current.RuntimeState == RuntimeListening ||
-			current.RuntimeState == RuntimeASRProcessing || current.RuntimeState == RuntimeTranslating ||
+			current.RuntimeState == RuntimeASRProcessing || current.RuntimeState == RuntimeTranslating || current.RuntimeState == RuntimeThinking ||
 			current.RuntimeState == RuntimeTTSProcessing || current.RuntimeState == RuntimePlaying
 		if !processingState {
 			return current, nil

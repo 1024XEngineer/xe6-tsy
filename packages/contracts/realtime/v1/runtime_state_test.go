@@ -15,6 +15,7 @@ var contractRuntimeStates = []RuntimeState{
 	RuntimeListening,
 	RuntimeASRProcessing,
 	RuntimeTranslating,
+	RuntimeThinking,
 	RuntimeTTSProcessing,
 	RuntimePlaying,
 	RuntimeStopping,

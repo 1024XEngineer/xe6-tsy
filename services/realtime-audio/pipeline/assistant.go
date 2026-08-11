@@ -82,6 +82,12 @@ func (h *AssistantHandler) HandleASRFinal(ctx context.Context, turn TurnContext,
 			returnErr = errors.Join(returnErr, restoreErr)
 		}
 	}()
+	turnID := turn.ID
+	if err := h.runtime.SetProcessingState(ctx, session.ProcessingStateUpdate{
+		SessionID: turn.SessionID, RuntimeState: session.RuntimeThinking, CurrentTurnID: &turnID,
+	}); err != nil {
+		return fmt.Errorf("report assistant thinking runtime: %w", err)
+	}
 
 	startedAt := time.Now()
 	reply, err := h.llm.Reply(ctx, assistant.Request{

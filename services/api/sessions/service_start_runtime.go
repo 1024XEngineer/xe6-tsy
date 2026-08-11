@@ -75,6 +75,7 @@ func (s *Service) continueOwnedStartRuntime(
 	case RuntimeListening,
 		RuntimeASRProcessing,
 		RuntimeTranslating,
+		RuntimeThinking,
 		RuntimeTTSProcessing,
 		RuntimePlaying:
 		return s.activateOwnedStartRuntime(ctx, input, operation)

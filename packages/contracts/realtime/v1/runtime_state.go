@@ -11,6 +11,7 @@ const (
 	RuntimeListening     RuntimeState = "listening"
 	RuntimeASRProcessing RuntimeState = "asr_processing"
 	RuntimeTranslating   RuntimeState = "translating"
+	RuntimeThinking      RuntimeState = "thinking"
 	RuntimeTTSProcessing RuntimeState = "tts_processing"
 	RuntimePlaying       RuntimeState = "playing"
 	RuntimeStopping      RuntimeState = "stopping"
@@ -21,7 +22,7 @@ const (
 func (s RuntimeState) Valid() bool {
 	switch s {
 	case RuntimeStopped, RuntimeStarting, RuntimeListening, RuntimeASRProcessing,
-		RuntimeTranslating, RuntimeTTSProcessing, RuntimePlaying, RuntimeStopping,
+		RuntimeTranslating, RuntimeThinking, RuntimeTTSProcessing, RuntimePlaying, RuntimeStopping,
 		RuntimeFailed:
 		return true
 	default:

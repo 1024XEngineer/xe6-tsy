@@ -7,7 +7,11 @@ import "time"
 type ControlPlaneErrorCode string
 
 const (
-	ErrorRuntimeOperationConflict ControlPlaneErrorCode = "runtime_operation_conflict"
+	ErrorRuntimeOperationConflict    ControlPlaneErrorCode = "runtime_operation_conflict"
+	ErrorModeNotAvailable            ControlPlaneErrorCode = "mode_not_available"
+	ErrorModeGenerationConflict      ControlPlaneErrorCode = "mode_generation_conflict"
+	ErrorModeRuntimeInstanceMismatch ControlPlaneErrorCode = "mode_runtime_instance_mismatch"
+	ErrorModeOperationConflict       ControlPlaneErrorCode = "mode_operation_conflict"
 )
 
 // FallbackPlaybackReceiptStatus distinguishes a newly accepted command from
@@ -26,6 +30,8 @@ type StartRequest struct {
 	OperationID string `json:"operation_id"`
 	TraceID     string `json:"trace_id"`
 	StartedBy   string `json:"started_by"`
+	// InitialMode is optional for rolling compatibility. Empty means interpretation.
+	InitialMode Mode `json:"initial_mode,omitempty"`
 }
 
 // StopRequest binds a business End intent to realtime cleanup confirmation.

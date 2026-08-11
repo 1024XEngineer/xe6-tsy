@@ -133,7 +133,13 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 	}
 
 	controlPlaneCodes := spec.Components.Schemas["ControlPlaneErrorCode"].Enum
-	if want := []string{"runtime_operation_conflict"}; !reflect.DeepEqual(controlPlaneCodes, want) {
+	if want := []string{
+		"runtime_operation_conflict",
+		"mode_not_available",
+		"mode_generation_conflict",
+		"mode_runtime_instance_mismatch",
+		"mode_operation_conflict",
+	}; !reflect.DeepEqual(controlPlaneCodes, want) {
 		t.Fatalf("ControlPlaneErrorCode enum = %v, want %v", controlPlaneCodes, want)
 	}
 	for _, code := range spec.Components.Schemas["WebRTCErrorCode"].Enum {

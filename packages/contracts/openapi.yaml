@@ -485,6 +485,48 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /realtime/v1/sessions/{session_id}/mode:
+    servers:
+      - url: /
+    get:
+      operationId: getRealtimeModeState
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Current authoritative mode state for the realtime runtime
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModeStateSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      operationId: switchRealtimeMode
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SwitchModeCommand' }
+      responses:
+        '200':
+          description: Mode switch applied, replayed, or already in the requested mode
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SwitchModeResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /realtime/v1/sessions/{session_id}/connection:
     servers:
       - url: /
@@ -544,7 +586,7 @@ components:
       enum: [realtime_start_failed, realtime_stop_failed, realtime_pipeline_failed]
     ControlPlaneErrorCode:
       type: string
-      enum: [runtime_operation_conflict]
+      enum: [runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict]
     RuntimeOperationConflictError:
       type: object
       additionalProperties: false
@@ -566,6 +608,10 @@ components:
         operation_id: { type: string, minLength: 1 }
         trace_id: { type: string }
         started_by: { type: string }
+        initial_mode:
+          $ref: '#/components/schemas/RealtimeMode'
+          default: interpretation
+          description: Optional for rolling compatibility. When omitted, realtime uses interpretation.
     RealtimeStopRequest:
       type: object
       additionalProperties: false
@@ -608,6 +654,77 @@ components:
         current_playback_id: { type: [string, 'null'] }
         last_error_code: { type: [string, 'null'] }
         updated_at: { type: string, format: date-time }
+    RealtimeMode:
+      type: string
+      enum: [assistant, interpretation]
+    ModePhase:
+      type: string
+      enum: [active, switching]
+    ModeStateSnapshot:
+      type: object
+      additionalProperties: false
+      required: [session_id, runtime_instance_id, active_mode, generation, phase, last_operation_id, updated_at]
+      properties:
+        session_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        active_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        generation: { type: integer, format: int64, minimum: 1 }
+        phase: { $ref: '#/components/schemas/ModePhase' }
+        last_operation_id: { type: [string, 'null'] }
+        updated_at: { type: string, format: date-time }
+    SwitchModeCommand:
+      type: object
+      additionalProperties: false
+      required: [session_id, runtime_instance_id, operation_id, trace_id, expected_generation, target_mode]
+      properties:
+        session_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        operation_id: { type: string, minLength: 1 }
+        trace_id: { type: string, minLength: 1 }
+        expected_generation: { type: integer, format: int64, minimum: 1 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+    ModeSwitchStatus:
+      type: string
+      enum: [applied, unchanged]
+    SwitchModeResult:
+      type: object
+      additionalProperties: false
+      required: [operation_id, status, state]
+      properties:
+        operation_id: { type: string, minLength: 1 }
+        status: { $ref: '#/components/schemas/ModeSwitchStatus' }
+        state: { $ref: '#/components/schemas/ModeStateSnapshot' }
+    ModeChangedEvent:
+      type: object
+      additionalProperties: false
+      required: [event_version, event_id, trace_id, session_id, runtime_instance_id, operation_id, from_mode, to_mode, resulting_generation, occurred_at]
+      properties:
+        event_version: { type: integer, const: 1 }
+        event_id: { type: string, minLength: 1 }
+        trace_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        operation_id: { type: string, minLength: 1 }
+        from_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        to_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        resulting_generation: { type: integer, format: int64, minimum: 1 }
+        occurred_at: { type: string, format: date-time }
+    AssistantReplyEvent:
+      type: object
+      additionalProperties: false
+      description: A finalized assistant reply. It must never be encoded as a translation FinalTurn.
+      required: [event_version, event_id, trace_id, session_id, turn_id, runtime_instance_id, generation, text, language, occurred_at]
+      properties:
+        event_version: { type: integer, const: 1 }
+        event_id: { type: string, minLength: 1 }
+        trace_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        turn_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        generation: { type: integer, format: int64, minimum: 1 }
+        text: { type: string, minLength: 1 }
+        language: { type: string, minLength: 1 }
+        occurred_at: { type: string, format: date-time }
     VoiceSessionStatus:
       type: string
       enum: [created, active, ended, failed]

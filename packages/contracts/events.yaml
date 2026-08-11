@@ -14,6 +14,16 @@ channels:
     messages:
       finalTurn:
         $ref: '#/components/messages/FinalTurn'
+  modeChanged:
+    address: realtime.mode.changed
+    messages:
+      modeChanged:
+        $ref: '#/components/messages/ModeChanged'
+  assistantReply:
+    address: assistant.reply
+    messages:
+      assistantReply:
+        $ref: '#/components/messages/AssistantReply'
 operations:
   consumeUsageRecorded:
     action: receive
@@ -27,6 +37,18 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/finalTurn'
+  sendModeChanged:
+    action: send
+    channel:
+      $ref: '#/channels/modeChanged'
+  consumeModeChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/modeChanged'
+  sendAssistantReply:
+    action: send
+    channel:
+      $ref: '#/channels/assistantReply'
 components:
   messages:
     UsageRecorded:
@@ -41,6 +63,20 @@ components:
       contentType: application/json
       payload:
         $ref: '#/components/schemas/FinalTurnEvent'
+    ModeChanged:
+      name: realtime.mode.changed
+      title: Realtime mode changed
+      summary: A durable mode-change fact emitted after realtime makes the new mode active.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ModeChangedEvent'
+    AssistantReply:
+      name: assistant.reply
+      title: Assistant reply
+      summary: A finalized realtime assistant reply that is distinct from a translation FinalTurn.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/AssistantReplyEvent'
   schemas:
     UsageRecordedPayload:
       type: object
@@ -66,6 +102,41 @@ components:
     AttributionStatus:
       type: string
       enum: [pending, provisional, confirmed, corrected]
+    RealtimeMode:
+      type: string
+      enum: [assistant, interpretation]
+    ModeChangedEvent:
+      type: object
+      additionalProperties: false
+      description: The authoritative mode-change fact. API consumers project it for audit and queries without owning the realtime mode state machine.
+      required: [event_version, event_id, trace_id, session_id, runtime_instance_id, operation_id, from_mode, to_mode, resulting_generation, occurred_at]
+      properties:
+        event_version: { type: integer, const: 1, description: Payload schema version. }
+        event_id: { type: string, minLength: 1, description: Durable event idempotency key. }
+        trace_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        operation_id: { type: string, minLength: 1, description: The switch operation that produced this fact. }
+        from_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        to_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        resulting_generation: { type: integer, format: int64, minimum: 1 }
+        occurred_at: { type: string, format: date-time }
+    AssistantReplyEvent:
+      type: object
+      additionalProperties: false
+      description: A finalized assistant reply. It must never be published as a translation FinalTurn.
+      required: [event_version, event_id, trace_id, session_id, turn_id, runtime_instance_id, generation, text, language, occurred_at]
+      properties:
+        event_version: { type: integer, const: 1, description: Payload schema version. }
+        event_id: { type: string, minLength: 1 }
+        trace_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        turn_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        generation: { type: integer, format: int64, minimum: 1 }
+        text: { type: string, minLength: 1 }
+        language: { type: string, minLength: 1 }
+        occurred_at: { type: string, format: date-time }
     FinalTurnEvent:
       type: object
       additionalProperties: false

@@ -59,6 +59,15 @@ func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) 
 	if err != nil || result.State.ActiveMode != realtimev1.ModeAssistant || result.State.Generation != 2 {
 		t.Fatalf("SwitchMode() = %#v, %v", result, err)
 	}
+	result, err = manager.SwitchMode(t.Context(), realtimev1.SwitchModeCommand{
+		SessionID: snapshot.SessionID, RuntimeInstanceID: before.RuntimeInstanceID,
+		OperationID: "switch-2", TraceID: snapshot.TraceID,
+		ExpectedGeneration: result.State.Generation, TargetMode: realtimev1.ModeInterpretation,
+	})
+	if err != nil || result.State.ActiveMode != realtimev1.ModeInterpretation || result.State.Generation != 3 ||
+		result.State.RuntimeInstanceID != before.RuntimeInstanceID {
+		t.Fatalf("reverse SwitchMode() = %#v, %v", result, err)
+	}
 	if source.CloseCalls() != 0 {
 		t.Fatalf("mode switch closed shared audio source %d times", source.CloseCalls())
 	}

@@ -127,6 +127,22 @@ API 同时运行 PostgreSQL `final_turn_outbox` consumer。事件使用 `event_i
 重试，非法事件或幂等冲突 Reject。服务关闭时停止领取新事件，并在数据库 pool 关闭前等待当前结算；
 如果结算失败，进程以错误退出而不会把它伪装成正常关闭。
 
+## 模式变更审计投影
+
+启用 `LINGOW_SESSION_RUNTIME` 时，API 会从 `LINGOW_MODE_CHANGED_STREAM` 消费
+`realtime.mode.changed`，在同一事务内写入不可变的 `realtime_mode_events` 审计事实，并更新
+`realtime_mode_projections`。后者只表示 API **最新已观察**的模式，不是实时状态权威；需要当前状态时
+仍必须查询 `services/realtime-audio`。
+
+同一 `runtime_instance_id` 内仅更高 `generation` 可以推进投影；跨 runtime 以 `occurred_at` 排序，
+时间相同再以稳定 `event_id` 决定结果。跨 runtime 的排序依赖主机时钟，因此部署必须保持时钟同步，
+查询方也不能把该投影用于实时并发控制。相同 `event_id` 和完整契约 payload 可安全重放，异载荷冲突、
+非法事件和不存在的 Session 会被确认并拒绝，临时 PostgreSQL 错误保留 pending 等待重试。
+
+本地默认使用 `lingow:realtime:mode:changed`、`lingow-mode-projection` 和
+`mode-projection-worker`；生产环境必须为每个 API 实例配置唯一的
+`LINGOW_MODE_CHANGED_CONSUMER`。启用 Session runtime 后 `REDIS_URL` 为必填项。
+
 ## 语音记录存储集成测试
 
 语音记录 migration 使用 PostgreSQL，并通过 `integration` build tag 与默认离线测试隔离。创建

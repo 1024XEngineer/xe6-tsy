@@ -211,6 +211,40 @@ func TestServiceModeRejectsInvalidDependencySnapshots(t *testing.T) {
 	}
 }
 
+func TestServiceSwitchModeRejectsInvalidDependencyResults(t *testing.T) {
+	input := validModeTestInput()
+	base := ModeSwitchResult{
+		OperationID: input.OperationID,
+		Status:      realtimev1.ModeSwitchApplied,
+		State:       validModeTestSnapshot(),
+	}
+	base.State.ActiveMode = input.TargetMode
+	base.State.Generation = input.ExpectedGeneration + 1
+	base.State.Phase = realtimev1.ModePhaseActive
+	for _, test := range []struct {
+		name string
+		edit func(*ModeSwitchResult)
+	}{
+		{name: "operation mismatch", edit: func(result *ModeSwitchResult) { result.OperationID = "other" }},
+		{name: "runtime mismatch", edit: func(result *ModeSwitchResult) { result.State.RuntimeInstanceID = "other" }},
+		{name: "target mismatch", edit: func(result *ModeSwitchResult) { result.State.ActiveMode = ModeInterpretation }},
+		{name: "generation mismatch", edit: func(result *ModeSwitchResult) { result.State.Generation = input.ExpectedGeneration }},
+		{name: "phase switching", edit: func(result *ModeSwitchResult) { result.State.Phase = realtimev1.ModePhaseSwitching }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := base
+			test.edit(&result)
+			service := newModeTestService(t, &fakeRepository{
+				getOwnedResult: queryTestSession(StatusActive),
+			}, &modeControlFake{result: result})
+			_, err := service.SwitchMode(t.Context(), input)
+			if !errors.Is(err, ErrModeUnavailable) {
+				t.Fatalf("SwitchMode() error = %v, want ErrModeUnavailable", err)
+			}
+		})
+	}
+}
+
 type modeControlFake struct {
 	snapshot     ModeSnapshot
 	result       ModeSwitchResult

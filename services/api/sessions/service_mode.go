@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 // GetMode returns the authoritative realtime snapshot after account ownership
@@ -45,8 +47,7 @@ func (s *Service) SwitchMode(ctx context.Context, input SwitchModeInput) (ModeSw
 	if err != nil {
 		return ModeSwitchResult{}, mapModeDependencyError(ctx, err)
 	}
-	if result.OperationID != input.OperationID || !result.Status.Valid() ||
-		!validModeSnapshot(result.State, input.SessionID) {
+	if !validModeSwitchResult(result, input) {
 		return ModeSwitchResult{}, ErrModeUnavailable
 	}
 	return result, nil
@@ -88,6 +89,24 @@ func validModeSnapshot(snapshot ModeSnapshot, sessionID string) bool {
 	return snapshot.SessionID == sessionID && snapshot.RuntimeInstanceID != "" &&
 		snapshot.ActiveMode.Valid() && snapshot.Generation >= 1 &&
 		snapshot.Phase.Valid() && !snapshot.UpdatedAt.IsZero()
+}
+
+func validModeSwitchResult(result ModeSwitchResult, input SwitchModeInput) bool {
+	if result.OperationID != input.OperationID || !result.Status.Valid() ||
+		!validModeSnapshot(result.State, input.SessionID) ||
+		result.State.RuntimeInstanceID != input.RuntimeInstanceID ||
+		result.State.ActiveMode != input.TargetMode ||
+		result.State.Phase != realtimev1.ModePhaseActive {
+		return false
+	}
+	switch result.Status {
+	case realtimev1.ModeSwitchApplied:
+		return result.State.Generation == input.ExpectedGeneration+1
+	case realtimev1.ModeSwitchUnchanged:
+		return result.State.Generation == input.ExpectedGeneration
+	default:
+		return false
+	}
 }
 
 func mapModeDependencyError(ctx context.Context, err error) error {

@@ -29,7 +29,7 @@ CREATE TABLE realtime_mode_events (
 CREATE INDEX realtime_mode_events_session_occurred_idx
     ON realtime_mode_events (session_id, occurred_at ASC, event_id ASC);
 
-CREATE FUNCTION recordstore_reject_realtime_mode_event_updates()
+CREATE FUNCTION recordstore_reject_realtime_mode_event_mutations()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
@@ -38,10 +38,10 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER realtime_mode_events_reject_updates
-    BEFORE UPDATE ON realtime_mode_events
+CREATE TRIGGER realtime_mode_events_reject_mutations
+    BEFORE UPDATE OR DELETE ON realtime_mode_events
     FOR EACH ROW
-    EXECUTE FUNCTION recordstore_reject_realtime_mode_event_updates();
+    EXECUTE FUNCTION recordstore_reject_realtime_mode_event_mutations();
 
 -- This is a latest-observed audit projection only; realtime remains authoritative. Ordering is
 -- generation-based within one runtime and occurred_at-based across runtimes. The repository uses

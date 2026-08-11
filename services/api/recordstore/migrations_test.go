@@ -356,7 +356,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	for _, expected := range []string{
 		"CREATE TABLE realtime_mode_events",
 		"payload_hash BYTEA NOT NULL",
-		"CREATE TRIGGER realtime_mode_events_reject_updates",
+		"CREATE TRIGGER realtime_mode_events_reject_mutations",
+		"BEFORE UPDATE OR DELETE ON realtime_mode_events",
 		"CREATE TABLE realtime_mode_projections",
 		"latest-observed audit projection",
 		"event_id as a deterministic tie-breaker",

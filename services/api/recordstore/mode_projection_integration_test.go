@@ -92,6 +92,8 @@ func TestModeProjectionPostgresRetainsAuditAndOrdersProjection(t *testing.T) {
 	if auditCount != len(events) {
 		t.Fatalf("audit event count = %d, want %d", auditCount, len(events))
 	}
+	_, err = pool.Exec(t.Context(), `DELETE FROM realtime_mode_events WHERE event_id='event-20'`)
+	assertPostgresCode(t, err, "P0001")
 }
 
 func TestModeProjectionPostgresValidationAndMissingProjection(t *testing.T) {

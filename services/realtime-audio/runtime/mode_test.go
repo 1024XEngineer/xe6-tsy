@@ -461,6 +461,55 @@ func TestManagerOwnsOneCoordinatorPerRuntimeEntry(t *testing.T) {
 	}
 }
 
+func TestManagerStopCancelsBlockingFinalTurnCommit(t *testing.T) {
+	manager, _ := newModeTestManager(t, []string{"runtime-1"}, nil)
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "start-1", TraceID: "trace-1",
+	}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	manager.mu.Lock()
+	runCtx := manager.entries[snapshot.SessionID].ctx
+	manager.mu.Unlock()
+	gate := managerFinalTurnCommitGate{manager: manager}
+	commitStarted := make(chan struct{})
+	commitDone := make(chan error, 1)
+	go func() {
+		_, err := gate.CommitFinalTurn(runCtx, modeTurn(realtimev1.ModeInterpretation, 1), func(ctx context.Context) error {
+			close(commitStarted)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		commitDone <- err
+	}()
+	select {
+	case <-commitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for blocking FinalTurn commit")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- manager.Stop(context.Background(), snapshot.SessionID) }()
+	select {
+	case err := <-commitDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("CommitFinalTurn() error = %v, want context canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FinalTurn commit did not unblock when Stop canceled the runtime")
+	}
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() did not complete after canceling the runtime")
+	}
+}
+
 func TestManagerDoesNotOpenMediaWhenRuntimeIdentityCreationFails(t *testing.T) {
 	idErr := errors.New("random source unavailable")
 	manager, sourceOpens := newModeTestManager(t, nil, idErr)

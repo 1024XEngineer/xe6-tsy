@@ -300,8 +300,12 @@ func (r managerTurnModeReader) GetTurnMode(ctx context.Context, sessionID string
 	}, nil
 }
 
-// managerFinalTurnCommitGate keeps Manager lifecycle lock ordering consistent
-// with Stop and SwitchMode before entering the per-runtime coordinator lock.
+// managerFinalTurnCommitGate resolves the active coordinator under the Manager
+// lifecycle lock, then releases that lock before entering the coordinator.
+// FinalTurn sinks are external and may block while honoring cancellation; the
+// lifecycle lock must remain available so Stop can cancel the run context and
+// unblock the sink. The coordinator still serializes generation validation with
+// the publication callback.
 type managerFinalTurnCommitGate struct {
 	manager *Manager
 }
@@ -318,8 +322,8 @@ func (g managerFinalTurnCommitGate) CommitFinalTurn(
 		return false, ErrDependencyRequired
 	}
 	unlock := g.manager.locks.lock(turn.SessionID)
-	defer unlock()
 	coordinator, err := g.manager.currentModeCoordinator(turn.SessionID)
+	unlock()
 	if err != nil {
 		return false, err
 	}

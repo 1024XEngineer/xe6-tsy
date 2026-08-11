@@ -65,18 +65,19 @@ type RuntimeReporter interface {
 
 // Dependencies contains member-3-owned adapters and downstream sinks.
 type Dependencies struct {
-	FrameSources FrameSourceFactory
-	NewSegmenter SegmenterFactory
-	Languages    session.LanguageConfigReader
-	FinalTurns   recordsv1.FinalTurnSink
-	Usage        pipeline.UsageFactSink
-	Audio        pipeline.AudioChunkSink
-	Runtime      RuntimeReporter
-	Allocator    pipeline.TurnAllocator
-	VoiceID      string
-	Logger       *slog.Logger
-	Latency      *slog.Logger
-	Now          func() time.Time
+	FrameSources         FrameSourceFactory
+	NewSegmenter         SegmenterFactory
+	Languages            session.LanguageConfigReader
+	FinalTurns           recordsv1.FinalTurnSink
+	Usage                pipeline.UsageFactSink
+	Audio                pipeline.AudioChunkSink
+	Runtime              RuntimeReporter
+	Allocator            pipeline.TurnAllocator
+	VoiceID              string
+	Logger               *slog.Logger
+	Latency              *slog.Logger
+	Now                  func() time.Time
+	NewRuntimeInstanceID RuntimeInstanceIDFactory
 }
 
 // Manager owns one processing context per started realtime session.
@@ -101,6 +102,7 @@ type entry struct {
 	ctx         context.Context
 	done        chan struct{}
 	operationID string
+	mode        *modeCoordinator
 	err         error
 	active      bool
 	stopping    bool
@@ -139,6 +141,12 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 	}
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
+	}
+	if deps.Now == nil {
+		deps.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if deps.NewRuntimeInstanceID == nil {
+		deps.NewRuntimeInstanceID = defaultRuntimeInstanceID
 	}
 	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages)
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
@@ -257,6 +265,23 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		}
 		m.mu.Unlock()
 	}
+	runtimeInstanceID, err := m.deps.NewRuntimeInstanceID()
+	if err != nil {
+		return err
+	}
+	if runtimeInstanceID == "" {
+		return ErrRuntimeInstanceIDRequired
+	}
+	mode, err := newModeCoordinator(
+		snapshot.SessionID,
+		runtimeInstanceID,
+		realtimev1.ModeInterpretation,
+		[]realtimev1.Mode{realtimev1.ModeInterpretation},
+		m.deps.Now,
+	)
+	if err != nil {
+		return fmt.Errorf("create mode coordinator: %w", err)
+	}
 	input, err := m.deps.FrameSources.Open(ctx, snapshot)
 	if err != nil {
 		return fmt.Errorf("open audio input: %w", err)
@@ -285,6 +310,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		cancel: cancel, source: owned, service: service,
 		ctx:         runCtx,
 		operationID: snapshot.StartOperationID,
+		mode:        mode,
 		request: segment.Request{
 			SessionID: snapshot.SessionID, AccountID: snapshot.AccountID,
 			TraceID: snapshot.TraceID, SourceLanguage: input.SourceLanguage,

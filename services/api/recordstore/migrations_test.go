@@ -356,8 +356,10 @@ func TestEmbeddedMigrations(t *testing.T) {
 	for _, expected := range []string{
 		"CREATE TABLE realtime_mode_events",
 		"payload_hash BYTEA NOT NULL",
+		"CREATE TRIGGER realtime_mode_events_reject_updates",
 		"CREATE TABLE realtime_mode_projections",
-		"latest-observed projection",
+		"latest-observed audit projection",
+		"event_id as a deterministic tie-breaker",
 	} {
 		if !strings.Contains(strings.ToLower(modeProjection.SQL), strings.ToLower(expected)) {
 			t.Fatalf("mode projection migration does not contain %q", expected)

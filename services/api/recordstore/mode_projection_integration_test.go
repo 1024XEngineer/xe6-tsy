@@ -68,10 +68,10 @@ func TestModeProjectionPostgresRetainsAuditAndOrdersProjection(t *testing.T) {
 	events := []realtimev1.ModeChangedEvent{
 		modeProjectionEvent("event-20", "mode_order_session", "runtime-a", 3, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, time20),
 		modeProjectionEvent("event-21", "mode_order_session", "runtime-a", 2, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time20.Add(time.Second)),
-		modeProjectionEvent("event-25-b", "mode_order_session", "runtime-b", 1, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, time25),
+		modeProjectionEvent("event-25-b", "mode_order_session", "runtime-b", 2, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, time25),
 		modeProjectionEvent("event-24-z", "mode_order_session", "runtime-a", 4, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time25.Add(-time.Second)),
 		modeProjectionEvent("event-25-a", "mode_order_session", "runtime-c", 9, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time25),
-		modeProjectionEvent("event-25-c", "mode_order_session", "runtime-d", 1, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time25),
+		modeProjectionEvent("event-25-c", "mode_order_session", "runtime-d", 2, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time25),
 	}
 	for _, event := range events {
 		if err := repository.Project(t.Context(), event); err != nil {
@@ -82,7 +82,7 @@ func TestModeProjectionPostgresRetainsAuditAndOrdersProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Latest() error = %v", err)
 	}
-	if projection.LastEventID != "event-25-c" || projection.RuntimeInstanceID != "runtime-d" || projection.Generation != 1 {
+	if projection.LastEventID != "event-25-c" || projection.RuntimeInstanceID != "runtime-d" || projection.Generation != 2 {
 		t.Fatalf("Latest() = %#v, want deterministic event-25-c projection", projection)
 	}
 	var auditCount int

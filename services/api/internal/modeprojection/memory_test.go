@@ -11,7 +11,7 @@ import (
 
 func TestMemoryRepositoryProjectsModeChangesIdempotently(t *testing.T) {
 	repository := NewMemoryRepository()
-	first := modeEvent("event-1", "runtime-1", 1, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time.Unix(10, 0))
+	first := modeEvent("event-1", "runtime-1", 2, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time.Unix(10, 0))
 	if err := repository.Project(t.Context(), first); err != nil {
 		t.Fatalf("first projection: %v", err)
 	}
@@ -34,8 +34,8 @@ func TestMemoryRepositoryProjectsModeChangesIdempotently(t *testing.T) {
 
 func TestMemoryRepositoryIgnoresOutOfOrderEventsWithinRuntime(t *testing.T) {
 	repository := NewMemoryRepository()
-	newer := modeEvent("event-2", "runtime-1", 2, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, time.Unix(20, 0))
-	older := modeEvent("event-1", "runtime-1", 1, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time.Unix(10, 0))
+	newer := modeEvent("event-2", "runtime-1", 3, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, time.Unix(20, 0))
+	older := modeEvent("event-1", "runtime-1", 2, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time.Unix(10, 0))
 	if err := repository.Project(t.Context(), newer); err != nil {
 		t.Fatalf("newer projection: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestMemoryRepositoryUsesOccurredAtAcrossRuntimes(t *testing.T) {
 	repository := NewMemoryRepository()
 	oldRuntime := modeEvent("event-old", "runtime-old", 4, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time.Unix(20, 0))
 	delayedOldRuntime := modeEvent("event-delayed", "runtime-old", 3, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, time.Unix(15, 0))
-	newRuntime := modeEvent("event-new", "runtime-new", 1, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, time.Unix(25, 0))
+	newRuntime := modeEvent("event-new", "runtime-new", 2, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, time.Unix(25, 0))
 	for _, event := range []realtimev1.ModeChangedEvent{oldRuntime, newRuntime, delayedOldRuntime} {
 		if err := repository.Project(t.Context(), event); err != nil {
 			t.Fatalf("project %s: %v", event.EventID, err)
@@ -67,7 +67,7 @@ func TestMemoryRepositoryUsesOccurredAtAcrossRuntimes(t *testing.T) {
 func TestMemoryRepositoryDoesNotBreakCrossRuntimeTimestampTies(t *testing.T) {
 	repository := NewMemoryRepository()
 	first := modeEvent("event-z", "runtime-1", 2, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time.Unix(20, 0))
-	tied := modeEvent("event-a", "runtime-2", 1, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, first.OccurredAt)
+	tied := modeEvent("event-a", "runtime-2", 2, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, first.OccurredAt)
 	for _, event := range []realtimev1.ModeChangedEvent{first, tied} {
 		if err := repository.Project(t.Context(), event); err != nil {
 			t.Fatalf("project %s: %v", event.EventID, err)
@@ -83,9 +83,9 @@ func TestMemoryRepositoryUsesEventIDToBreakCrossRuntimeTimestampTie(t *testing.T
 	repository := NewMemoryRepository()
 	occurredAt := time.Unix(30, 0).UTC()
 	for _, event := range []realtimev1.ModeChangedEvent{
-		modeEvent("event-b", "runtime-b", 1, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, occurredAt),
+		modeEvent("event-b", "runtime-b", 2, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, occurredAt),
 		modeEvent("event-a", "runtime-a", 9, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, occurredAt),
-		modeEvent("event-c", "runtime-c", 1, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, occurredAt),
+		modeEvent("event-c", "runtime-c", 2, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, occurredAt),
 	} {
 		if err := repository.Project(t.Context(), event); err != nil {
 			t.Fatalf("Project(%s) error = %v", event.EventID, err)

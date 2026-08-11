@@ -21,7 +21,7 @@ CREATE TABLE realtime_mode_events (
     CONSTRAINT realtime_mode_events_from_mode_valid CHECK (from_mode IN ('assistant', 'interpretation')),
     CONSTRAINT realtime_mode_events_to_mode_valid CHECK (to_mode IN ('assistant', 'interpretation')),
     CONSTRAINT realtime_mode_events_mode_changed CHECK (from_mode <> to_mode),
-    CONSTRAINT realtime_mode_events_generation_positive CHECK (resulting_generation >= 1),
+    CONSTRAINT realtime_mode_events_generation_positive CHECK (resulting_generation >= 2),
     CONSTRAINT realtime_mode_events_session_key FOREIGN KEY (session_id)
         REFERENCES voice_sessions (id) ON DELETE RESTRICT
 );
@@ -57,7 +57,7 @@ CREATE TABLE realtime_mode_projections (
     CONSTRAINT realtime_mode_projections_session_id_not_empty CHECK (session_id <> ''),
     CONSTRAINT realtime_mode_projections_runtime_id_not_empty CHECK (runtime_instance_id <> ''),
     CONSTRAINT realtime_mode_projections_mode_valid CHECK (active_mode IN ('assistant', 'interpretation')),
-    CONSTRAINT realtime_mode_projections_generation_positive CHECK (generation >= 1),
+    CONSTRAINT realtime_mode_projections_generation_positive CHECK (generation >= 2),
     CONSTRAINT realtime_mode_projections_last_event_key FOREIGN KEY (last_event_id)
         REFERENCES realtime_mode_events (event_id) ON DELETE RESTRICT,
     CONSTRAINT realtime_mode_projections_session_key FOREIGN KEY (session_id)

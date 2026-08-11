@@ -51,6 +51,33 @@ type projectorStub struct {
 	events []realtimev1.ModeChangedEvent
 }
 
+type receiveErrorStream struct {
+	mu     sync.Mutex
+	calls  int
+	called chan struct{}
+	err    error
+}
+
+func (s *receiveErrorStream) Receive(context.Context) (StreamMessage, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	select {
+	case s.called <- struct{}{}:
+	default:
+	}
+	return StreamMessage{}, s.err
+}
+
+func (*receiveErrorStream) Ack(context.Context, string) error  { return nil }
+func (*receiveErrorStream) Nack(context.Context, string) error { return nil }
+
+func (s *receiveErrorStream) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
 func (s *projectorStub) Project(_ context.Context, event realtimev1.ModeChangedEvent) error {
 	s.events = append(s.events, event)
 	return s.err
@@ -177,6 +204,27 @@ func TestConsumerRunReturnsAfterCancellation(t *testing.T) {
 		if err := consumer.Run(ctx); err != nil {
 			t.Fatalf("Run() error = %v, want nil", err)
 		}
+	}
+}
+
+func TestConsumerRunBacksOffAfterStreamFailure(t *testing.T) {
+	stream := &receiveErrorStream{
+		called: make(chan struct{}, 1),
+		err:    errors.New("valkey unavailable"),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- NewConsumer(stream, &projectorStub{}).Run(ctx)
+	}()
+
+	<-stream.called
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run() error = %v, want nil after cancellation", err)
+	}
+	if calls := stream.callCount(); calls != 1 {
+		t.Fatalf("Receive() calls = %d, want one call before retry backoff was canceled", calls)
 	}
 }
 

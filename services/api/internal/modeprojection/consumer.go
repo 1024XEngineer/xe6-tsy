@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
+
+const consumerRetryDelay = time.Second
 
 // Projector records durable mode-change facts without becoming the authoritative runtime state.
 // Implementations must make replay of the same event id and payload side-effect free.
@@ -29,8 +32,9 @@ func NewConsumer(stream StreamConsumer, projector Projector) *Consumer {
 	return &Consumer{stream: stream, projector: projector}
 }
 
-// Run consumes until the context is canceled. Per-message failures are settled by ProcessOnce,
-// so a transient storage outage cannot terminate the supervised API runtime component.
+// Run consumes until the context is canceled. ProcessOnce settles each message, while transient
+// dependency failures use a context-aware delay so an outage neither terminates the component nor
+// turns into a CPU and log hot loop.
 func (c *Consumer) Run(ctx context.Context) error {
 	if c == nil || c.stream == nil || c.projector == nil {
 		<-ctx.Done()
@@ -39,15 +43,29 @@ func (c *Consumer) Run(ctx context.Context) error {
 	for {
 		processed, err := c.ProcessOnce(ctx)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil
 			}
 			slog.Error("mode projection consumer iteration failed", "error", err)
+			if !waitForConsumerRetry(ctx) {
+				return nil
+			}
 			continue
 		}
 		if !processed && ctx.Err() != nil {
 			return nil
 		}
+	}
+}
+
+func waitForConsumerRetry(ctx context.Context) bool {
+	timer := time.NewTimer(consumerRetryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

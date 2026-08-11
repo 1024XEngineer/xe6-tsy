@@ -140,8 +140,10 @@ func validateIdentity(accountID string, sessionID string) error {
 	return nil
 }
 
+const maxIdempotencyKeyLength = 200
+
 func validateIdempotency(key string, requestHash string) error {
-	if key == "" || requestHash == "" {
+	if key == "" || len(key) > maxIdempotencyKeyLength || requestHash == "" {
 		return ErrInvalidRequest
 	}
 	return nil

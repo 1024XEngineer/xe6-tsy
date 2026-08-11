@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -262,6 +263,7 @@ func TestServiceStartValidatesBeforeDependencies(t *testing.T) {
 		{name: "missing account", ctx: context.Background(), edit: func(input *StartInput) { input.AccountID = "" }, want: ErrUnauthorized},
 		{name: "missing session", ctx: context.Background(), edit: func(input *StartInput) { input.SessionID = "" }, want: ErrInvalidRequest},
 		{name: "missing idempotency key", ctx: context.Background(), edit: func(input *StartInput) { input.IdempotencyKey = "" }, want: ErrInvalidRequest},
+		{name: "oversized idempotency key", ctx: context.Background(), edit: func(input *StartInput) { input.IdempotencyKey = strings.Repeat("k", maxIdempotencyKeyLength+1) }, want: ErrInvalidRequest},
 		{name: "missing request hash", ctx: context.Background(), edit: func(input *StartInput) { input.RequestHash = "" }, want: ErrInvalidRequest},
 		{name: "missing trace ID", ctx: context.Background(), edit: func(input *StartInput) { input.TraceID = "" }, want: ErrInvalidRequest},
 	}

@@ -187,6 +187,7 @@ func TestServiceCreateValidatesInput(t *testing.T) {
 	}{
 		{name: "missing account", edit: func(input *CreateInput) { input.AccountID = "" }, want: ErrUnauthorized},
 		{name: "missing idempotency key", edit: func(input *CreateInput) { input.IdempotencyKey = "" }, want: ErrInvalidRequest},
+		{name: "oversized idempotency key", edit: func(input *CreateInput) { input.IdempotencyKey = strings.Repeat("k", maxIdempotencyKeyLength+1) }, want: ErrInvalidRequest},
 		{name: "missing request hash", edit: func(input *CreateInput) { input.RequestHash = "" }, want: ErrInvalidRequest},
 		{name: "unsupported codec", edit: editAudio(func(config *AudioConfig) { config.Codec = "pcm" }), want: ErrUnsupportedAudio},
 		{name: "unsupported sample rate", edit: editAudio(func(config *AudioConfig) { config.SampleRateHz = 16000 }), want: ErrUnsupportedAudio},

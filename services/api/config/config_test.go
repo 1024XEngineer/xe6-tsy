@@ -71,6 +71,46 @@ func TestLoadSetsRealtimeHTTPTimeoutDefault(t *testing.T) {
 	}
 }
 
+func TestLoadSessionRuntimeReadsModeProjectionStreamConfig(t *testing.T) {
+	config, err := LoadFrom(mapSessionRuntimeEnv(map[string]string{
+		"LINGOW_MODE_CHANGED_STREAM":   "lingow:realtime:mode:changed:test",
+		"LINGOW_MODE_CHANGED_GROUP":    "mode-projection-test",
+		"LINGOW_MODE_CHANGED_CONSUMER": "api-test-1",
+	}))
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if config.ModeChangedStream != "lingow:realtime:mode:changed:test" ||
+		config.ModeChangedGroup != "mode-projection-test" ||
+		config.ModeChangedConsumer != "api-test-1" {
+		t.Fatalf("mode projection stream config = (%q, %q, %q)", config.ModeChangedStream, config.ModeChangedGroup, config.ModeChangedConsumer)
+	}
+}
+
+func TestLoadSessionRuntimeRequiresRedis(t *testing.T) {
+	_, err := LoadFrom(mapSessionRuntimeEnv(map[string]string{"REDIS_URL": ""}))
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+	}
+}
+
+func TestLoadSessionRuntimeRequiresUniqueModeConsumerInProduction(t *testing.T) {
+	_, err := LoadFrom(mapSessionRuntimeEnv(map[string]string{
+		"APP_ENV": "production",
+	}))
+	if !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+	}
+
+	_, err = LoadFrom(mapSessionRuntimeEnv(map[string]string{
+		"APP_ENV":                      "production",
+		"LINGOW_MODE_CHANGED_CONSUMER": "api-prod-mode-1",
+	}))
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v, want nil", err)
+	}
+}
+
 func TestLoadValidatesRealtimeBaseURL(t *testing.T) {
 	tests := []struct {
 		rawURL string
@@ -347,6 +387,7 @@ func mapSessionRuntimeEnv(values map[string]string) func(string) (string, bool) 
 		"LINGOW_SESSION_RUNTIME": "enabled",
 		"REALTIME_BASE_URL":      "http://127.0.0.1:8090",
 		"REALTIME_TICKET_SECRET": "realtime-ticket-secret-123456789012",
+		"REDIS_URL":              "redis://localhost:6379/0",
 	}
 	for key, value := range values {
 		env[key] = value

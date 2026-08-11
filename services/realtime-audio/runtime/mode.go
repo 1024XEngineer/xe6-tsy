@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -20,17 +21,16 @@ var (
 	ErrModeGenerationConflict      = errors.New("realtime mode generation conflict")
 	ErrModeRuntimeInstanceMismatch = errors.New("realtime mode runtime instance mismatch")
 	ErrModeOperationConflict       = errors.New("realtime mode operation conflict")
+	ErrModeEventUnavailable        = errors.New("realtime mode event persistence is unavailable")
 	ErrRuntimeInstanceIDRequired   = errors.New("realtime runtime instance id is required")
 )
 
-// modeOperationRetentionLimit 限制成功切换结果的保留数量。
-// coordinator 只保留最近的一小段记录，让短时间重试仍然幂等，
-// 同时避免长连接 Runtime 的内存占用随着操作数量无限增长。
+// modeOperationRetentionLimit bounds replay metadata for long-running connections while retaining
+// enough recent results for ordinary request retries.
 const modeOperationRetentionLimit = 256
 
-// RuntimeInstanceIDFactory 负责生成进程内的 Runtime 身份。
-// 只要 Start 需要替换一个已经停止或进入终态的 entry，就必须重新生成。
-// 这样即使持久化的 Start 操作被重试，也不会把旧 Runtime 误认为新实例。
+// RuntimeInstanceIDFactory creates process-local runtime identities. Replacing a stopped or
+// terminal entry must create a new identity so persisted Start retries cannot target old state.
 type RuntimeInstanceIDFactory func() (string, error)
 
 type modeOperationRecord struct {
@@ -38,9 +38,19 @@ type modeOperationRecord struct {
 	result  realtimev1.SwitchModeResult
 }
 
-// modeCoordinator 只负责一个 runtime entry 的业务模式状态。
-// 它把所有模式切换命令串行化，保证 HTTP、未来的 DataChannel，或者
-// 其他入口都走同一条状态迁移路径，避免并发命令把状态拆成两套。
+// ModeChangedSink accepts the immutable fact before a mode transition becomes visible.
+type ModeChangedSink interface {
+	Publish(context.Context, realtimev1.ModeChangedEvent) error
+}
+
+type pendingModeTransition struct {
+	command realtimev1.SwitchModeCommand
+	result  realtimev1.SwitchModeResult
+	event   realtimev1.ModeChangedEvent
+}
+
+// modeCoordinator owns the business mode for one runtime entry. It serializes HTTP and future
+// DataChannel commands through one transition path.
 type modeCoordinator struct {
 	mu              sync.Mutex
 	state           realtimev1.ModeStateSnapshot
@@ -48,6 +58,8 @@ type modeCoordinator struct {
 	operations      map[string]modeOperationRecord
 	operationOrder  []string
 	operationCursor int
+	pending         *pendingModeTransition
+	modeChanges     ModeChangedSink
 	now             func() time.Time
 }
 
@@ -56,9 +68,10 @@ func newModeCoordinator(
 	runtimeInstanceID string,
 	initialMode realtimev1.Mode,
 	available []realtimev1.Mode,
+	modeChanges ModeChangedSink,
 	now func() time.Time,
 ) (*modeCoordinator, error) {
-	if sessionID == "" || runtimeInstanceID == "" || now == nil {
+	if sessionID == "" || runtimeInstanceID == "" || modeChanges == nil || now == nil {
 		return nil, ErrModeCommandInvalid
 	}
 	registered := make(map[realtimev1.Mode]struct{}, len(available))
@@ -83,6 +96,7 @@ func newModeCoordinator(
 		available:      registered,
 		operations:     make(map[string]modeOperationRecord, modeOperationRetentionLimit),
 		operationOrder: make([]string, 0, modeOperationRetentionLimit),
+		modeChanges:    modeChanges,
 		now:            now,
 	}, nil
 }
@@ -143,17 +157,9 @@ func (c *modeCoordinator) commitTurn(
 	return true, nil
 }
 
-// Switch 负责单个 runtime 的模式切换。
-// 处理顺序是：先检查是否存在可重放的已执行操作，再校验 runtime 实例和
-// generation，最后才真正提交状态变更。这样同一个 operation_id 的重试
-// 可以稳定返回第一次结果，而不同载荷会被识别为冲突。
-//
-// 这里的锁只保护一个 entry 的模式状态，不影响外层媒体管线。取消请求只会在
-// 进入锁前和拿到锁后各检查一次；一旦状态变更开始，就视为原子提交，不能再
-// 依赖 context 进行回滚。
-//
-// 重放记录只保留最近的一小段窗口。被淘汰的旧命令不再拥有精确重放能力，
-// 会像新请求一样重新走当前 generation 的 CAS 校验。
+// Switch serializes one runtime's mode commands and commits a changed state only after its
+// immutable event receives durable acceptance. A failed or uncertain append leaves the frozen
+// transition pending so only the same operation can retry the exact payload.
 func (c *modeCoordinator) Switch(
 	ctx context.Context,
 	command realtimev1.SwitchModeCommand,
@@ -181,6 +187,20 @@ func (c *modeCoordinator) Switch(
 		}
 		return cloneModeResult(previous.result), nil
 	}
+	if c.pending != nil {
+		if c.pending.command.OperationID == command.OperationID {
+			if c.pending.command != command {
+				return realtimev1.SwitchModeResult{}, ErrModeOperationConflict
+			}
+			return c.commitPending(ctx)
+		}
+		// A later command may recover a frozen transition after the outbox becomes available.
+		// The recovered state is committed first; normal CAS validation below then rejects a
+		// command built from the old generation instead of leaving the runtime permanently stuck.
+		if _, err := c.commitPending(ctx); err != nil {
+			return realtimev1.SwitchModeResult{}, err
+		}
+	}
 	if command.RuntimeInstanceID != c.state.RuntimeInstanceID {
 		return realtimev1.SwitchModeResult{}, ErrModeRuntimeInstanceMismatch
 	}
@@ -191,33 +211,82 @@ func (c *modeCoordinator) Switch(
 		return realtimev1.SwitchModeResult{}, ErrModeNotAvailable
 	}
 
-	status := realtimev1.ModeSwitchUnchanged
 	if command.TargetMode != c.state.ActiveMode {
-		// 当前阶段的切换在锁内一次性完成。保留 switching 中间状态，
-		// 是为了给后续阶段预留边界：届时可以在同一把 coordinator 锁内
-		// 暂停新 Turn，并取消尚未提交的异步工作。
-		c.state.Phase = realtimev1.ModePhaseSwitching
-		c.state.ActiveMode = command.TargetMode
-		c.state.Generation++
-		status = realtimev1.ModeSwitchApplied
+		c.pending = c.prepareTransition(command)
+		return c.commitPending(ctx)
 	}
+
 	operationID := command.OperationID
 	c.state.LastOperationID = &operationID
 	c.state.UpdatedAt = c.now().UTC()
 	c.state.Phase = realtimev1.ModePhaseActive
 	result := realtimev1.SwitchModeResult{
 		OperationID: command.OperationID,
-		Status:      status,
+		Status:      realtimev1.ModeSwitchUnchanged,
 		State:       cloneModeState(c.state),
 	}
 	c.rememberOperation(command, result)
 	return cloneModeResult(result), nil
 }
 
-// rememberOperation 负责把本次成功切换记录进重放缓存。
-// 它只保存固定数量的最近操作，避免 runtime 生命周期内的 operation 历史
-// 无界增长。
-// 调用方必须已经持有 coordinator 的锁。
+func (c *modeCoordinator) prepareTransition(command realtimev1.SwitchModeCommand) *pendingModeTransition {
+	fromMode := c.state.ActiveMode
+	occurredAt := c.now().UTC()
+	operationID := command.OperationID
+	next := cloneModeState(c.state)
+	next.ActiveMode = command.TargetMode
+	next.Generation++
+	next.Phase = realtimev1.ModePhaseActive
+	next.LastOperationID = &operationID
+	next.UpdatedAt = occurredAt
+	return &pendingModeTransition{
+		command: command,
+		result: realtimev1.SwitchModeResult{
+			OperationID: command.OperationID,
+			Status:      realtimev1.ModeSwitchApplied,
+			State:       next,
+		},
+		event: realtimev1.ModeChangedEvent{
+			EventVersion:        realtimev1.ModeChangedEventVersion,
+			EventID:             modeChangedEventID(command),
+			TraceID:             command.TraceID,
+			SessionID:           command.SessionID,
+			RuntimeInstanceID:   command.RuntimeInstanceID,
+			OperationID:         command.OperationID,
+			FromMode:            fromMode,
+			ToMode:              command.TargetMode,
+			ResultingGeneration: next.Generation,
+			OccurredAt:          occurredAt,
+		},
+	}
+}
+
+// commitPending keeps the coordinator lock held across durable acceptance. This intentionally
+// blocks other commands for the same runtime so state and event order cannot diverge.
+func (c *modeCoordinator) commitPending(ctx context.Context) (realtimev1.SwitchModeResult, error) {
+	pending := c.pending
+	if pending == nil {
+		return realtimev1.SwitchModeResult{}, ErrModeCommandInvalid
+	}
+	if err := c.modeChanges.Publish(ctx, pending.event); err != nil {
+		return realtimev1.SwitchModeResult{}, fmt.Errorf("%w: %w", ErrModeEventUnavailable, err)
+	}
+	c.state = cloneModeState(pending.result.State)
+	c.rememberOperation(pending.command, pending.result)
+	c.pending = nil
+	return cloneModeResult(pending.result), nil
+}
+
+// modeChangedEventID scopes operation idempotency to one session runtime and is stable across
+// uncertain delivery retries.
+func modeChangedEventID(command realtimev1.SwitchModeCommand) string {
+	payload := command.SessionID + "\x00" + command.RuntimeInstanceID + "\x00" + command.OperationID
+	digest := sha256.Sum256([]byte(payload))
+	return "mode_changed_" + hex.EncodeToString(digest[:])
+}
+
+// rememberOperation stores one successful result in a bounded replay window. The caller must hold
+// the coordinator lock.
 func (c *modeCoordinator) rememberOperation(
 	command realtimev1.SwitchModeCommand,
 	result realtimev1.SwitchModeResult,
@@ -233,9 +302,7 @@ func (c *modeCoordinator) rememberOperation(
 	c.operations[command.OperationID] = modeOperationRecord{command: command, result: result}
 }
 
-// GetModeState 返回当前 runtime 的权威模式状态。
-// 这个状态只描述 assistant / interpretation 之类的业务模式，不和媒体
-// RuntimeSnapshot 的 listening、playing、stopping 状态混在一起。
+// GetModeState returns the runtime-owned business mode without duplicating media lifecycle state.
 func (m *Manager) GetModeState(ctx context.Context, sessionID string) (realtimev1.ModeStateSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return realtimev1.ModeStateSnapshot{}, err
@@ -259,9 +326,8 @@ func (m *Manager) GetModeState(ctx context.Context, sessionID string) (realtimev
 	return coordinator.Snapshot(), nil
 }
 
-// SwitchMode 把模式切换命令应用到现有 runtime entry。
-// 它只改业务模式，不会启动、停止，也不会重建 WebRTC 连接或媒体管线。
-// 这样模式切换就只是同一条实时会话里的状态迁移，而不是一次新的会话生命周期。
+// SwitchMode changes business handling on an existing runtime without stopping, starting, or
+// rebuilding its WebRTC connection and media pipeline.
 func (m *Manager) SwitchMode(
 	ctx context.Context,
 	command realtimev1.SwitchModeCommand,
@@ -277,25 +343,42 @@ func (m *Manager) SwitchMode(
 	}
 
 	unlock := m.locks.lock(command.SessionID)
-	defer unlock()
 	if err := ctx.Err(); err != nil {
+		unlock()
 		return realtimev1.SwitchModeResult{}, err
 	}
-	coordinator, err := m.currentModeCoordinator(command.SessionID)
+	coordinator, runCtx, err := m.currentModeRuntime(command.SessionID)
 	if err != nil {
+		unlock()
 		return realtimev1.SwitchModeResult{}, err
 	}
-	return coordinator.Switch(ctx, command)
+	if runCtx == nil {
+		unlock()
+		return coordinator.Switch(ctx, command)
+	}
+	switchCtx, cancel := context.WithCancel(ctx)
+	stopCancellation := context.AfterFunc(runCtx, cancel)
+	unlock()
+	defer func() {
+		stopCancellation()
+		cancel()
+	}()
+	return coordinator.Switch(switchCtx, command)
 }
 
 func (m *Manager) currentModeCoordinator(sessionID string) (*modeCoordinator, error) {
+	coordinator, _, err := m.currentModeRuntime(sessionID)
+	return coordinator, err
+}
+
+func (m *Manager) currentModeRuntime(sessionID string) (*modeCoordinator, context.Context, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	item := m.entries[sessionID]
 	if item == nil || item.mode == nil || item.stopping || item.terminal || item.finished {
-		return nil, session.ErrRuntimeNotFound
+		return nil, nil, session.ErrRuntimeNotFound
 	}
-	return item.mode, nil
+	return item.mode, item.ctx, nil
 }
 
 // managerTurnModeReader adapts Manager's runtime-owned coordinator to the

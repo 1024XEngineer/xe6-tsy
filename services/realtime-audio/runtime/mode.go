@@ -22,6 +22,8 @@ var (
 	ErrRuntimeInstanceIDRequired   = errors.New("realtime runtime instance id is required")
 )
 
+const modeOperationRetentionLimit = 256
+
 // RuntimeInstanceIDFactory creates a process-local runtime identity. A new ID
 // is required whenever Start replaces a stopped or terminal entry, even when
 // the durable Start operation is retried.
@@ -36,11 +38,13 @@ type modeOperationRecord struct {
 // lock serializes every command source so HTTP and future DataChannel commands
 // cannot create separate state-transition paths.
 type modeCoordinator struct {
-	mu         sync.Mutex
-	state      realtimev1.ModeStateSnapshot
-	available  map[realtimev1.Mode]struct{}
-	operations map[string]modeOperationRecord
-	now        func() time.Time
+	mu              sync.Mutex
+	state           realtimev1.ModeStateSnapshot
+	available       map[realtimev1.Mode]struct{}
+	operations      map[string]modeOperationRecord
+	operationOrder  []string
+	operationCursor int
+	now             func() time.Time
 }
 
 func newModeCoordinator(
@@ -72,9 +76,10 @@ func newModeCoordinator(
 			Phase:             realtimev1.ModePhaseActive,
 			UpdatedAt:         now().UTC(),
 		},
-		available:  registered,
-		operations: make(map[string]modeOperationRecord),
-		now:        now,
+		available:      registered,
+		operations:     make(map[string]modeOperationRecord, modeOperationRetentionLimit),
+		operationOrder: make([]string, 0, modeOperationRetentionLimit),
+		now:            now,
 	}, nil
 }
 
@@ -84,6 +89,13 @@ func (c *modeCoordinator) Snapshot() realtimev1.ModeStateSnapshot {
 	return cloneModeState(c.state)
 }
 
+// Switch serializes validation and state mutation for one runtime. A retained
+// operation is checked before runtime-instance and generation CAS so an exact
+// retry returns its first result after later transitions, while a changed
+// payload conflicts. Cancellation is observed before and after lock acquisition;
+// once mutation starts it is atomic and cannot be rolled back by cancellation.
+// Replay records are bounded to the most recent operations. An evicted command
+// is treated as a new request and must still pass the current generation CAS.
 func (c *modeCoordinator) Switch(
 	ctx context.Context,
 	command realtimev1.SwitchModeCommand,
@@ -140,8 +152,25 @@ func (c *modeCoordinator) Switch(
 		Status:      status,
 		State:       cloneModeState(c.state),
 	}
-	c.operations[command.OperationID] = modeOperationRecord{command: command, result: result}
+	c.rememberOperation(command, result)
 	return cloneModeResult(result), nil
+}
+
+// rememberOperation keeps exact replay results within a fixed memory bound.
+// The coordinator lock must be held by the caller.
+func (c *modeCoordinator) rememberOperation(
+	command realtimev1.SwitchModeCommand,
+	result realtimev1.SwitchModeResult,
+) {
+	if len(c.operationOrder) < modeOperationRetentionLimit {
+		c.operationOrder = append(c.operationOrder, command.OperationID)
+	} else {
+		evicted := c.operationOrder[c.operationCursor]
+		delete(c.operations, evicted)
+		c.operationOrder[c.operationCursor] = command.OperationID
+		c.operationCursor = (c.operationCursor + 1) % modeOperationRetentionLimit
+	}
+	c.operations[command.OperationID] = modeOperationRecord{command: command, result: result}
 }
 
 // GetModeState returns the authoritative mode state without mixing it into the

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -178,6 +179,43 @@ func TestModeCoordinatorRejectsOperationPayloadConflict(t *testing.T) {
 
 	if _, err := coordinator.Switch(t.Context(), command); !errors.Is(err, ErrModeOperationConflict) {
 		t.Fatalf("conflicting Switch() error = %v, want ErrModeOperationConflict", err)
+	}
+}
+
+func TestModeCoordinatorBoundsOperationReplayRetention(t *testing.T) {
+	coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+		realtimev1.ModeInterpretation,
+		realtimev1.ModeAssistant,
+	})
+	firstCommand := modeCommand("operation-0", 1, realtimev1.ModeAssistant)
+	latestCommand := firstCommand
+	var latestResult realtimev1.SwitchModeResult
+	for index := 0; index <= modeOperationRetentionLimit; index++ {
+		target := realtimev1.ModeAssistant
+		if index%2 == 1 {
+			target = realtimev1.ModeInterpretation
+		}
+		latestCommand = modeCommand(fmt.Sprintf("operation-%d", index), int64(index+1), target)
+		result, err := coordinator.Switch(t.Context(), latestCommand)
+		if err != nil {
+			t.Fatalf("Switch(%d) error = %v", index, err)
+		}
+		latestResult = result
+	}
+
+	if len(coordinator.operations) != modeOperationRetentionLimit ||
+		len(coordinator.operationOrder) != modeOperationRetentionLimit {
+		t.Fatalf("retained operations = map %d, order %d", len(coordinator.operations), len(coordinator.operationOrder))
+	}
+	if _, ok := coordinator.operations[firstCommand.OperationID]; ok {
+		t.Fatalf("oldest operation %q was not evicted", firstCommand.OperationID)
+	}
+	if _, err := coordinator.Switch(t.Context(), firstCommand); !errors.Is(err, ErrModeGenerationConflict) {
+		t.Fatalf("evicted operation replay error = %v, want ErrModeGenerationConflict", err)
+	}
+	replayed, err := coordinator.Switch(t.Context(), latestCommand)
+	if err != nil || replayed.State.Generation != latestResult.State.Generation {
+		t.Fatalf("retained operation replay = %#v, %v", replayed, err)
 	}
 }
 

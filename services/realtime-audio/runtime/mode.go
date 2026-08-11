@@ -214,6 +214,61 @@ func (c *modeCoordinator) Switch(
 	return cloneModeResult(result), nil
 }
 
+func (m *Manager) logModeSwitch(
+	command realtimev1.SwitchModeCommand,
+	result realtimev1.SwitchModeResult,
+	err error,
+) {
+	if m == nil || m.logger == nil {
+		return
+	}
+	fields := []any{
+		"event", "mode_switch",
+		"session_id", command.SessionID,
+		"trace_id", command.TraceID,
+		"runtime_instance_id", command.RuntimeInstanceID,
+		"operation_id", command.OperationID,
+		"expected_generation", command.ExpectedGeneration,
+		"target_mode", command.TargetMode,
+	}
+	if err != nil {
+		fields = append(fields, "status", "failed", "error_class", modeSwitchErrorClass(err))
+		m.logger.Warn("realtime mode observation", fields...)
+		return
+	}
+	fields = append(fields,
+		"status", result.Status,
+		"active_mode", result.State.ActiveMode,
+		"generation", result.State.Generation,
+	)
+	m.logger.Info("realtime mode observation", fields...)
+}
+
+func modeSwitchErrorClass(err error) string {
+	switch {
+	case errors.Is(err, ErrModeCommandInvalid):
+		return "invalid_command"
+	case errors.Is(err, ErrModeNotAvailable):
+		return "not_available"
+	case errors.Is(err, ErrModeGenerationConflict):
+		return "generation_conflict"
+	case errors.Is(err, ErrModeRuntimeInstanceMismatch):
+		return "runtime_instance_mismatch"
+	case errors.Is(err, ErrModeOperationConflict):
+		return "operation_conflict"
+	case errors.Is(err, session.ErrRuntimeNotFound):
+		return "runtime_not_found"
+	case errors.Is(err, ErrSessionIDRequired), errors.Is(err, ErrDependencyRequired):
+		return "invalid_request"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		return "unknown"
+	}
+}
+
 // rememberOperation 负责把本次成功切换记录进重放缓存。
 // 它只保存固定数量的最近操作，避免 runtime 生命周期内的 operation 历史
 // 无界增长。
@@ -265,7 +320,10 @@ func (m *Manager) GetModeState(ctx context.Context, sessionID string) (realtimev
 func (m *Manager) SwitchMode(
 	ctx context.Context,
 	command realtimev1.SwitchModeCommand,
-) (realtimev1.SwitchModeResult, error) {
+) (result realtimev1.SwitchModeResult, returnErr error) {
+	defer func() {
+		m.logModeSwitch(command, result, returnErr)
+	}()
 	if err := ctx.Err(); err != nil {
 		return realtimev1.SwitchModeResult{}, err
 	}

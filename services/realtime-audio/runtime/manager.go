@@ -347,6 +347,14 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	m.mu.Lock()
 	m.entries[snapshot.SessionID] = item
 	m.mu.Unlock()
+	m.logger.Info("realtime mode observation",
+		"event", "runtime_started",
+		"session_id", snapshot.SessionID,
+		"trace_id", snapshot.TraceID,
+		"runtime_instance_id", runtimeInstanceID,
+		"operation_id", snapshot.StartOperationID,
+		"active_mode", initialMode,
+	)
 	return nil
 }
 

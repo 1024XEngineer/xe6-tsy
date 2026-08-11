@@ -77,6 +77,12 @@ Router 同时注册 `AssistantHandler`；两个 Handler 复用同一个 `SpeechO
 重新读取，不能盲目覆盖。模式切换只替换 Router 状态，不执行 Session Stop/Start，也不重新建立
 WebRTC。当前阶段尚未投递持久化 `realtime.mode.changed`，该可靠事件在后续独立阶段接入。
 
+阶段 16 的模式观测使用结构化日志作为可聚合指标来源：`runtime_started` 只在 runtime entry
+成功登记后记录一次，可按 `active_mode` 统计入口分布；`mode_switch` 按请求记录
+`applied`、`unchanged` 或 `failed`，失败率按这些结果统计并用 `error_class` 分组；助手回复延迟
+使用现有 `assistant_reply_done` 检查点，且附带 `mode`、`runtime_instance_id` 和 `generation`。
+这些日志不是独立的 `/metrics` counter，聚合系统应按 `operation_id` 去重重试请求（如需操作级口径）。
+
 ## Local utterance VAD
 
 The realtime entrypoint segments microphone audio with **Silero VAD** before ASR:

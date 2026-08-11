@@ -26,10 +26,12 @@ import (
 )
 
 func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) {
+	var output bytes.Buffer
 	source := &fakeFrameSource{waitForClose: true}
 	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
 	deps.AssistantReplies = &recordingAssistantReplySink{}
 	deps.NewRuntimeInstanceID = func() (string, error) { return "runtime-1", nil }
+	deps.Logger = slog.New(slog.NewJSONHandler(&output, nil))
 	manager, err := newManager(config.Providers{
 		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
 		Assistant: assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{
@@ -51,13 +53,28 @@ func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) 
 	if err != nil || before.ActiveMode != realtimev1.ModeInterpretation || before.Generation != 1 {
 		t.Fatalf("initial mode = %#v, %v", before, err)
 	}
-	result, err := manager.SwitchMode(t.Context(), realtimev1.SwitchModeCommand{
+	command := realtimev1.SwitchModeCommand{
 		SessionID: snapshot.SessionID, RuntimeInstanceID: before.RuntimeInstanceID,
 		OperationID: "switch-1", TraceID: snapshot.TraceID,
 		ExpectedGeneration: before.Generation, TargetMode: realtimev1.ModeAssistant,
-	})
+	}
+	result, err := manager.SwitchMode(t.Context(), command)
 	if err != nil || result.State.ActiveMode != realtimev1.ModeAssistant || result.State.Generation != 2 {
 		t.Fatalf("SwitchMode() = %#v, %v", result, err)
+	}
+	command.OperationID = "switch-2"
+	if _, err := manager.SwitchMode(t.Context(), command); !errors.Is(err, ErrModeGenerationConflict) {
+		t.Fatalf("stale SwitchMode() error = %v, want generation conflict", err)
+	}
+	for _, field := range []string{
+		`"event":"runtime_started"`, `"trace_id":"trace-1"`, `"active_mode":"interpretation"`,
+		`"event":"mode_switch"`, `"status":"applied"`,
+		`"expected_generation":1`,
+		`"status":"failed"`, `"error_class":"generation_conflict"`,
+	} {
+		if !strings.Contains(output.String(), field) {
+			t.Fatalf("mode logs = %s, missing %s", output.String(), field)
+		}
 	}
 	if source.CloseCalls() != 0 {
 		t.Fatalf("mode switch closed shared audio source %d times", source.CloseCalls())

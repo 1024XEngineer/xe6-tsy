@@ -162,7 +162,7 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 	})
 	return &Manager{
 		processor: pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
-			ASR: providers.ASR, Opener: opener, Pipeline: service,
+			ASR: providers.ASR, Opener: opener, Pipeline: service, Finals: service,
 		}),
 		playback: service,
 		failure:  deps.Runtime, logger: deps.Logger,

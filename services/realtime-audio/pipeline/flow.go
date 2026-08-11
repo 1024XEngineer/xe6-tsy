@@ -32,11 +32,18 @@ type TurnProcessRequest struct {
 	AudioChunks    [][]byte
 }
 
-// TurnProcessor connects ASR stream completion to the existing Turn and translation pipeline.
+// ASRFinalHandler consumes one stable recognition result. Implementations own
+// mode-specific work after the shared ASR boundary and must not rerun ASR.
+type ASRFinalHandler interface {
+	HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) error
+}
+
+// TurnProcessor connects ASR stream completion to a mode-independent final handler.
 type TurnProcessor struct {
 	recognizer asr.Provider
 	opener     *TurnOpener
 	pipeline   *PipelineService
+	finals     ASRFinalHandler
 }
 
 // TurnProcessorDependencies wires the offline-capable ASR-to-pipeline flow.
@@ -44,11 +51,17 @@ type TurnProcessorDependencies struct {
 	ASR      asr.Provider
 	Opener   *TurnOpener
 	Pipeline *PipelineService
+	Finals   ASRFinalHandler
 }
 
 // NewTurnProcessor creates a processor for one complete audio Turn.
 func NewTurnProcessor(deps TurnProcessorDependencies) *TurnProcessor {
-	return &TurnProcessor{recognizer: deps.ASR, opener: deps.Opener, pipeline: deps.Pipeline}
+	return &TurnProcessor{
+		recognizer: deps.ASR,
+		opener:     deps.Opener,
+		pipeline:   deps.Pipeline,
+		finals:     deps.Finals,
+	}
 }
 
 // ProcessAudio allocates one Turn, runs ASR, ignores partial events, and handles one final result.
@@ -56,7 +69,7 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if err := ctx.Err(); err != nil {
 		return TurnContext{}, err
 	}
-	if p == nil || p.recognizer == nil || p.opener == nil || p.pipeline == nil {
+	if p == nil || p.recognizer == nil || p.opener == nil || p.pipeline == nil || p.finals == nil {
 		return TurnContext{}, ErrTurnProcessorDependencyRequired
 	}
 	if err := p.pipeline.validate(); err != nil {
@@ -125,7 +138,7 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if result.SourceLanguage == "" {
 		return turn, p.pipeline.finishASRWithError(ctx, turn, ErrASRFinalRequired)
 	}
-	if err := p.pipeline.HandleASRFinal(ctx, turn, result); err != nil {
+	if err := p.finals.HandleASRFinal(ctx, turn, result); err != nil {
 		return turn, err
 	}
 	return turn, nil

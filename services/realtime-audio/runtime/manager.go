@@ -162,14 +162,10 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 	commitGate := managerTurnCommitGate{manager: manager}
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
 		Translator: providers.Translation,
-		TTS:        providers.TTS,
 		FinalTurns: deps.FinalTurns,
 		FinalGate:  commitGate,
 		Usage:      deps.Usage,
-		Audio:      deps.Audio,
 		Runtime:    deps.Runtime,
-		VoiceID:    deps.VoiceID,
-		Latency:    pipeline.LatencyLogger{Logger: deps.Latency},
 		Now:        deps.Now,
 		Speech:     speech,
 	})

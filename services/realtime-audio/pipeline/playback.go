@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
@@ -70,6 +71,9 @@ type SpeechOutputRequest struct {
 	PlaybackID string
 }
 
+// ErrSpeechOutputRequestInvalid rejects an output request before runtime state or TTS side effects begin.
+var ErrSpeechOutputRequestInvalid = errors.New("speech output request is invalid")
+
 // SpeechOutput owns only text synthesis, audio chunks, and playback lifecycle.
 // It deliberately does not publish FinalTurn, AssistantReply, or UsageFact.
 type SpeechOutput struct {
@@ -91,7 +95,7 @@ func NewSpeechOutput(deps SpeechOutputDependencies) *SpeechOutput {
 // PlayFallback synthesizes one previously persisted translation without
 // translating or publishing another FinalTurn.
 func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayback) (returnErr error) {
-	if s == nil || s.speech == nil || s.speech.validate() != nil || s.usage == nil || s.runtime == nil {
+	if s == nil || s.speech == nil || s.usage == nil || s.runtime == nil {
 		return MarkFallbackPlaybackNotStarted(ErrPipelineDependencyRequired)
 	}
 	if input.SessionID == "" || input.TurnID == "" || input.AccountID == "" || input.TraceID == "" ||
@@ -132,6 +136,11 @@ func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayba
 func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (tts.Result, error) {
 	if err := o.validate(); err != nil {
 		return tts.Result{}, speechOutputNotStartedError{err: err}
+	}
+	if request.Turn.SessionID == "" || request.Turn.ID == "" ||
+		strings.TrimSpace(request.Language) == "" || strings.TrimSpace(request.Text) == "" ||
+		strings.TrimSpace(request.PlaybackID) == "" {
+		return tts.Result{}, speechOutputNotStartedError{err: ErrSpeechOutputRequestInvalid}
 	}
 	if err := o.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID); err != nil {
 		return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("report TTS runtime: %w", err)}
@@ -175,9 +184,7 @@ func (o *SpeechOutput) reportRuntime(ctx context.Context, turn TurnContext, stat
 	update := session.ProcessingStateUpdate{
 		SessionID: turn.SessionID, RuntimeState: state, CurrentTurnID: &turnID,
 	}
-	if playbackID != "" {
-		update.CurrentPlaybackID = &playbackID
-	}
+	update.CurrentPlaybackID = &playbackID
 	return o.runtime.SetProcessingState(ctx, update)
 }
 

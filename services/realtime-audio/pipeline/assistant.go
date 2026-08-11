@@ -158,7 +158,7 @@ func (h *AssistantHandler) HandleASRFinal(ctx context.Context, turn TurnContext,
 
 func (h *AssistantHandler) validate() error {
 	if h == nil || h.llm == nil || h.replies == nil || h.gate == nil || h.usage == nil ||
-		h.speech == nil || h.speech.validate() != nil || h.runtime == nil {
+		h.speech == nil || h.runtime == nil {
 		return ErrPipelineDependencyRequired
 	}
 	return nil

@@ -251,7 +251,7 @@ func (s *PipelineService) logLatencyCheckpoint(stage string, turn TurnContext, s
 }
 
 func (s *PipelineService) validate() error {
-	if s == nil || s.translator == nil || s.finalTurns == nil || s.finalGate == nil || s.usage == nil || s.runtime == nil || s.speech == nil || s.speech.validate() != nil {
+	if s == nil || s.translator == nil || s.finalTurns == nil || s.finalGate == nil || s.usage == nil || s.runtime == nil || s.speech == nil {
 		return ErrPipelineDependencyRequired
 	}
 	return nil

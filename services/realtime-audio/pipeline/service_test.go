@@ -14,6 +14,19 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 )
 
+func TestSpeechOutputRejectsEmptyPlaybackID(t *testing.T) {
+	speech := NewSpeechOutput(SpeechOutputDependencies{
+		TTS:   tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	_, err := speech.Play(t.Context(), SpeechOutputRequest{
+		Turn: testTurn(), Language: "en-US", Text: "hello",
+	})
+	if !errors.Is(err, ErrSpeechOutputRequestInvalid) {
+		t.Fatalf("Play() error = %v, want ErrSpeechOutputRequestInvalid", err)
+	}
+}
+
 func TestPipelineFinalFlowCarriesTurnID(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1", InputTokens: 2, OutputTokens: 1}}
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{

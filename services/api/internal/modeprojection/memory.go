@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"sync"
+	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
@@ -27,15 +28,19 @@ func NewMemoryRepository() *MemoryRepository {
 	}
 }
 
-func (r *MemoryRepository) ProjectModeChanged(ctx context.Context, event realtimev1.ModeChangedEvent, payloadHash [sha256.Size]byte) error {
+func (r *MemoryRepository) Project(ctx context.Context, event realtimev1.ModeChangedEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := event.Validate(); err != nil {
-		return err
+		return domain.ErrInvalidArgument
 	}
 	if r == nil {
 		return domain.ErrNotImplemented
+	}
+	payloadHash, err := hashModeChangedEvent(event)
+	if err != nil {
+		return err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -55,23 +60,27 @@ func (r *MemoryRepository) ProjectModeChanged(ctx context.Context, event realtim
 			Generation:        event.ResultingGeneration,
 			LastEventID:       event.EventID,
 			OccurredAt:        event.OccurredAt,
+			UpdatedAt:         time.Now().UTC(),
 		}
 	}
 	return nil
 }
 
-// Projection returns a copy of the latest observed state, if one exists.
-func (r *MemoryRepository) Projection(ctx context.Context, sessionID string) (Projection, bool, error) {
+// Latest returns the latest fact observed by API and never claims realtime authority.
+func (r *MemoryRepository) Latest(ctx context.Context, sessionID string) (Projection, error) {
 	if err := ctx.Err(); err != nil {
-		return Projection{}, false, err
+		return Projection{}, err
 	}
 	if r == nil || sessionID == "" {
-		return Projection{}, false, domain.ErrInvalidArgument
+		return Projection{}, domain.ErrInvalidArgument
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	projection, ok := r.projections[sessionID]
-	return projection, ok, nil
+	if !ok {
+		return Projection{}, domain.ErrNotFound
+	}
+	return projection, nil
 }
 
 var _ Repository = (*MemoryRepository)(nil)

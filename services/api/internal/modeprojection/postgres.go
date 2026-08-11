@@ -2,7 +2,7 @@ package modeprojection
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 
@@ -21,12 +21,19 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
 }
 
-func (r *PostgresRepository) ProjectModeChanged(ctx context.Context, event realtimev1.ModeChangedEvent, payloadHash [sha256.Size]byte) error {
+func (r *PostgresRepository) Project(ctx context.Context, event realtimev1.ModeChangedEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if r == nil || r.pool == nil {
 		return domain.ErrNotImplemented
 	}
 	if err := event.Validate(); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", domain.ErrInvalidArgument, err)
+	}
+	payloadHash, err := hashModeChangedEvent(event)
+	if err != nil {
+		return fmt.Errorf("hash mode changed event: %w", err)
 	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -79,7 +86,13 @@ WHERE (
     AND EXCLUDED.generation > realtime_mode_projections.generation
 ) OR (
     realtime_mode_projections.runtime_instance_id <> EXCLUDED.runtime_instance_id
-    AND EXCLUDED.occurred_at > realtime_mode_projections.occurred_at
+    AND (
+        EXCLUDED.occurred_at > realtime_mode_projections.occurred_at
+        OR (
+            EXCLUDED.occurred_at = realtime_mode_projections.occurred_at
+            AND EXCLUDED.last_event_id > realtime_mode_projections.last_event_id
+        )
+    )
 )`,
 		event.SessionID, event.RuntimeInstanceID, event.ToMode, event.ResultingGeneration,
 		event.EventID, event.OccurredAt.UTC(),
@@ -92,8 +105,37 @@ WHERE (
 	return nil
 }
 
+// Latest reads API's latest-observed audit projection without performing account authorization.
+// Callers that need live state must query realtime; this method has no recovery side effects.
+func (r *PostgresRepository) Latest(ctx context.Context, sessionID string) (Projection, error) {
+	if err := ctx.Err(); err != nil {
+		return Projection{}, err
+	}
+	if r == nil || r.pool == nil {
+		return Projection{}, domain.ErrNotImplemented
+	}
+	if sessionID == "" {
+		return Projection{}, domain.ErrInvalidArgument
+	}
+	var projection Projection
+	err := r.pool.QueryRow(ctx, `
+SELECT session_id, runtime_instance_id, active_mode, generation,
+       last_event_id, occurred_at, updated_at
+FROM realtime_mode_projections
+WHERE session_id = $1`, sessionID).Scan(
+		&projection.SessionID,
+		&projection.RuntimeInstanceID,
+		&projection.ActiveMode,
+		&projection.Generation,
+		&projection.LastEventID,
+		&projection.OccurredAt,
+		&projection.UpdatedAt,
+	)
+	return projection, mapError(err)
+}
+
 func equalHash(left, right []byte) bool {
-	return len(left) == len(right) && string(left) == string(right)
+	return len(left) == len(right) && subtle.ConstantTimeCompare(left, right) == 1
 }
 
 func mapError(err error) error {

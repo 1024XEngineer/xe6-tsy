@@ -1,6 +1,10 @@
 package realtimev1
 
-import "time"
+import (
+	"errors"
+	"fmt"
+	"time"
+)
 
 const (
 	// ModeChangedTopic carries durable realtime mode changes to control-plane consumers.
@@ -11,6 +15,8 @@ const (
 	ModeChangedEventVersion    = 1
 	AssistantReplyEventVersion = 1
 )
+
+var ErrInvalidModeChangedEvent = errors.New("invalid mode changed event")
 
 // Mode identifies the business handler used after the shared ASR final result.
 type Mode string
@@ -115,6 +121,38 @@ type ModeChangedEvent struct {
 	ToMode              Mode      `json:"to_mode"`
 	ResultingGeneration int64     `json:"resulting_generation"`
 	OccurredAt          time.Time `json:"occurred_at"`
+}
+
+// Validate enforces the durable mode-change v1 contract before publication or projection.
+func (event ModeChangedEvent) Validate() error {
+	switch {
+	case event.EventVersion != ModeChangedEventVersion:
+		return invalidModeChangedField("event_version")
+	case event.EventID == "":
+		return invalidModeChangedField("event_id")
+	case event.TraceID == "":
+		return invalidModeChangedField("trace_id")
+	case event.SessionID == "":
+		return invalidModeChangedField("session_id")
+	case event.RuntimeInstanceID == "":
+		return invalidModeChangedField("runtime_instance_id")
+	case event.OperationID == "":
+		return invalidModeChangedField("operation_id")
+	case !event.FromMode.Valid():
+		return invalidModeChangedField("from_mode")
+	case !event.ToMode.Valid() || event.ToMode == event.FromMode:
+		return invalidModeChangedField("to_mode")
+	case event.ResultingGeneration < 1:
+		return invalidModeChangedField("resulting_generation")
+	case event.OccurredAt.IsZero():
+		return invalidModeChangedField("occurred_at")
+	default:
+		return nil
+	}
+}
+
+func invalidModeChangedField(field string) error {
+	return fmt.Errorf("%w: %s", ErrInvalidModeChangedEvent, field)
 }
 
 // AssistantReplyEvent is a finalized realtime assistant reply and is never a translation FinalTurn.

@@ -2,6 +2,7 @@ package realtimev1
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,48 @@ import (
 var contractModes = []Mode{ModeAssistant, ModeInterpretation}
 var contractModePhases = []ModePhase{ModePhaseActive, ModePhaseSwitching}
 var contractModeSwitchStatuses = []ModeSwitchStatus{ModeSwitchApplied, ModeSwitchUnchanged}
+
+func TestModeChangedEventValidation(t *testing.T) {
+	event := validModeChangedEvent()
+	if err := event.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*ModeChangedEvent)
+	}{
+		{name: "event version", mutate: func(event *ModeChangedEvent) { event.EventVersion = 2 }},
+		{name: "event id", mutate: func(event *ModeChangedEvent) { event.EventID = "" }},
+		{name: "trace id", mutate: func(event *ModeChangedEvent) { event.TraceID = "" }},
+		{name: "session id", mutate: func(event *ModeChangedEvent) { event.SessionID = "" }},
+		{name: "runtime instance id", mutate: func(event *ModeChangedEvent) { event.RuntimeInstanceID = "" }},
+		{name: "operation id", mutate: func(event *ModeChangedEvent) { event.OperationID = "" }},
+		{name: "from mode", mutate: func(event *ModeChangedEvent) { event.FromMode = "unknown" }},
+		{name: "to mode", mutate: func(event *ModeChangedEvent) { event.ToMode = "unknown" }},
+		{name: "unchanged mode", mutate: func(event *ModeChangedEvent) { event.ToMode = event.FromMode }},
+		{name: "generation", mutate: func(event *ModeChangedEvent) { event.ResultingGeneration = 0 }},
+		{name: "occurred at", mutate: func(event *ModeChangedEvent) { event.OccurredAt = time.Time{} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := validModeChangedEvent()
+			test.mutate(&invalid)
+			if err := invalid.Validate(); !errors.Is(err, ErrInvalidModeChangedEvent) {
+				t.Fatalf("Validate() error = %v, want ErrInvalidModeChangedEvent", err)
+			}
+		})
+	}
+}
+
+func validModeChangedEvent() ModeChangedEvent {
+	return ModeChangedEvent{
+		EventVersion: ModeChangedEventVersion, EventID: "mode-event-1", TraceID: "trace-1",
+		SessionID: "session-1", RuntimeInstanceID: "runtime-1", OperationID: "operation-1",
+		FromMode: ModeInterpretation, ToMode: ModeAssistant, ResultingGeneration: 2,
+		OccurredAt: time.Unix(1700000000, 0).UTC(),
+	}
+}
 
 func TestModeValuesAndLegacyDefault(t *testing.T) {
 	for _, mode := range contractModes {

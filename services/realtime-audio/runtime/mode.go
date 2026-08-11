@@ -22,11 +22,14 @@ var (
 	ErrRuntimeInstanceIDRequired   = errors.New("realtime runtime instance id is required")
 )
 
+// modeOperationRetentionLimit 限制成功切换结果的保留数量。
+// coordinator 只保留最近的一小段记录，让短时间重试仍然幂等，
+// 同时避免长连接 Runtime 的内存占用随着操作数量无限增长。
 const modeOperationRetentionLimit = 256
 
-// RuntimeInstanceIDFactory creates a process-local runtime identity. A new ID
-// is required whenever Start replaces a stopped or terminal entry, even when
-// the durable Start operation is retried.
+// RuntimeInstanceIDFactory 负责生成进程内的 Runtime 身份。
+// 只要 Start 需要替换一个已经停止或进入终态的 entry，就必须重新生成。
+// 这样即使持久化的 Start 操作被重试，也不会把旧 Runtime 误认为新实例。
 type RuntimeInstanceIDFactory func() (string, error)
 
 type modeOperationRecord struct {
@@ -34,9 +37,9 @@ type modeOperationRecord struct {
 	result  realtimev1.SwitchModeResult
 }
 
-// modeCoordinator owns the business mode for exactly one runtime entry. Its
-// lock serializes every command source so HTTP and future DataChannel commands
-// cannot create separate state-transition paths.
+// modeCoordinator 只负责一个 runtime entry 的业务模式状态。
+// 它把所有模式切换命令串行化，保证 HTTP、未来的 DataChannel，或者
+// 其他入口都走同一条状态迁移路径，避免并发命令把状态拆成两套。
 type modeCoordinator struct {
 	mu              sync.Mutex
 	state           realtimev1.ModeStateSnapshot
@@ -89,13 +92,17 @@ func (c *modeCoordinator) Snapshot() realtimev1.ModeStateSnapshot {
 	return cloneModeState(c.state)
 }
 
-// Switch serializes validation and state mutation for one runtime. A retained
-// operation is checked before runtime-instance and generation CAS so an exact
-// retry returns its first result after later transitions, while a changed
-// payload conflicts. Cancellation is observed before and after lock acquisition;
-// once mutation starts it is atomic and cannot be rolled back by cancellation.
-// Replay records are bounded to the most recent operations. An evicted command
-// is treated as a new request and must still pass the current generation CAS.
+// Switch 负责单个 runtime 的模式切换。
+// 处理顺序是：先检查是否存在可重放的已执行操作，再校验 runtime 实例和
+// generation，最后才真正提交状态变更。这样同一个 operation_id 的重试
+// 可以稳定返回第一次结果，而不同载荷会被识别为冲突。
+//
+// 这里的锁只保护一个 entry 的模式状态，不影响外层媒体管线。取消请求只会在
+// 进入锁前和拿到锁后各检查一次；一旦状态变更开始，就视为原子提交，不能再
+// 依赖 context 进行回滚。
+//
+// 重放记录只保留最近的一小段窗口。被淘汰的旧命令不再拥有精确重放能力，
+// 会像新请求一样重新走当前 generation 的 CAS 校验。
 func (c *modeCoordinator) Switch(
 	ctx context.Context,
 	command realtimev1.SwitchModeCommand,
@@ -135,9 +142,9 @@ func (c *modeCoordinator) Switch(
 
 	status := realtimev1.ModeSwitchUnchanged
 	if command.TargetMode != c.state.ActiveMode {
-		// The transition is atomic today. Keeping switching as an explicit
-		// internal phase reserves the boundary where later stages pause new
-		// Turns and cancel uncommitted work under this same coordinator lock.
+		// 当前阶段的切换在锁内一次性完成。保留 switching 中间状态，
+		// 是为了给后续阶段预留边界：届时可以在同一把 coordinator 锁内
+		// 暂停新 Turn，并取消尚未提交的异步工作。
 		c.state.Phase = realtimev1.ModePhaseSwitching
 		c.state.ActiveMode = command.TargetMode
 		c.state.Generation++
@@ -156,8 +163,10 @@ func (c *modeCoordinator) Switch(
 	return cloneModeResult(result), nil
 }
 
-// rememberOperation keeps exact replay results within a fixed memory bound.
-// The coordinator lock must be held by the caller.
+// rememberOperation 负责把本次成功切换记录进重放缓存。
+// 它只保存固定数量的最近操作，避免 runtime 生命周期内的 operation 历史
+// 无界增长。
+// 调用方必须已经持有 coordinator 的锁。
 func (c *modeCoordinator) rememberOperation(
 	command realtimev1.SwitchModeCommand,
 	result realtimev1.SwitchModeResult,
@@ -173,8 +182,9 @@ func (c *modeCoordinator) rememberOperation(
 	c.operations[command.OperationID] = modeOperationRecord{command: command, result: result}
 }
 
-// GetModeState returns the authoritative mode state without mixing it into the
-// media RuntimeSnapshot state machine.
+// GetModeState 返回当前 runtime 的权威模式状态。
+// 这个状态只描述 assistant / interpretation 之类的业务模式，不和媒体
+// RuntimeSnapshot 的 listening、playing、stopping 状态混在一起。
 func (m *Manager) GetModeState(ctx context.Context, sessionID string) (realtimev1.ModeStateSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return realtimev1.ModeStateSnapshot{}, err
@@ -198,8 +208,9 @@ func (m *Manager) GetModeState(ctx context.Context, sessionID string) (realtimev
 	return coordinator.Snapshot(), nil
 }
 
-// SwitchMode applies a command to the existing runtime entry. It never starts,
-// stops, or replaces the WebRTC connection or media pipeline.
+// SwitchMode 把模式切换命令应用到现有 runtime entry。
+// 它只改业务模式，不会启动、停止，也不会重建 WebRTC 连接或媒体管线。
+// 这样模式切换就只是同一条实时会话里的状态迁移，而不是一次新的会话生命周期。
 func (m *Manager) SwitchMode(
 	ctx context.Context,
 	command realtimev1.SwitchModeCommand,

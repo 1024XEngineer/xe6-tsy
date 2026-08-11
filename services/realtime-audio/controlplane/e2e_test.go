@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -73,16 +74,22 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 		t.Fatalf("mode state status = %d, body=%s", modeState.Code, modeState.Body.String())
 	}
 	modeBody := `{"session_id":"session-1","runtime_instance_id":"runtime-1","operation_id":"mode-1","trace_id":"trace-1","expected_generation":1,"target_mode":"assistant"}`
-	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/mode", modeBody, "mode:mode-1"); response.Code != http.StatusOK {
-		t.Fatalf("mode switch status = %d, body=%s", response.Code, response.Body.String())
+	assistantSwitch := do(http.MethodPost, "/realtime/v1/sessions/session-1/mode", modeBody, "mode:mode-1")
+	if assistantSwitch.Code != http.StatusOK {
+		t.Fatalf("mode switch status = %d, body=%s", assistantSwitch.Code, assistantSwitch.Body.String())
 	}
 	afterAssistant := do(http.MethodGet, "/realtime/v1/sessions/session-1/connection", "", "")
 	if afterAssistant.Code != http.StatusOK {
 		t.Fatalf("connection after assistant switch status = %d, body=%s", afterAssistant.Code, afterAssistant.Body.String())
 	}
 	modeBody = `{"session_id":"session-1","runtime_instance_id":"runtime-1","operation_id":"mode-2","trace_id":"trace-2","expected_generation":2,"target_mode":"interpretation"}`
-	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/mode", modeBody, "mode:mode-2"); response.Code != http.StatusOK {
-		t.Fatalf("reverse mode switch status = %d, body=%s", response.Code, response.Body.String())
+	interpretationSwitch := do(http.MethodPost, "/realtime/v1/sessions/session-1/mode", modeBody, "mode:mode-2")
+	if interpretationSwitch.Code != http.StatusOK {
+		t.Fatalf("reverse mode switch status = %d, body=%s", interpretationSwitch.Code, interpretationSwitch.Body.String())
+	}
+	finalMode := do(http.MethodGet, "/realtime/v1/sessions/session-1/mode", "", "")
+	if finalMode.Code != http.StatusOK {
+		t.Fatalf("final mode state status = %d, body=%s", finalMode.Code, finalMode.Body.String())
 	}
 	afterInterpretation := do(http.MethodGet, "/realtime/v1/sessions/session-1/connection", "", "")
 	if afterInterpretation.Code != http.StatusOK {
@@ -101,6 +108,23 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 	if beforeConnection.ConnectionID != "connection-1" || assistantConnection != beforeConnection || interpretationConnection != beforeConnection {
 		t.Fatalf("connection changed across bidirectional mode switches: before=%#v assistant=%#v interpretation=%#v",
 			beforeConnection, assistantConnection, interpretationConnection)
+	}
+	var assistantResult, interpretationResult realtimev1.SwitchModeResult
+	if err := json.NewDecoder(assistantSwitch.Body).Decode(&assistantResult); err != nil {
+		t.Fatalf("decode assistant switch result: %v", err)
+	}
+	if err := json.NewDecoder(interpretationSwitch.Body).Decode(&interpretationResult); err != nil {
+		t.Fatalf("decode interpretation switch result: %v", err)
+	}
+	var finalModeState realtimev1.ModeStateSnapshot
+	if err := json.NewDecoder(finalMode.Body).Decode(&finalModeState); err != nil {
+		t.Fatalf("decode final mode state: %v", err)
+	}
+	if assistantResult.State.ActiveMode != realtimev1.ModeAssistant || assistantResult.State.Generation != 2 ||
+		interpretationResult.State.ActiveMode != realtimev1.ModeInterpretation || interpretationResult.State.Generation != 3 ||
+		!reflect.DeepEqual(finalModeState, interpretationResult.State) {
+		t.Fatalf("bidirectional mode results = assistant %#v, interpretation %#v, final %#v",
+			assistantResult, interpretationResult, finalModeState)
 	}
 	if lifecycle.starts != 1 || lifecycle.stops != 0 {
 		t.Fatalf("mode switches touched lifecycle: starts=%d stops=%d", lifecycle.starts, lifecycle.stops)
@@ -122,7 +146,7 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 	if signaling.offers != 2 {
 		t.Fatalf("offer calls = %d, want 2 replay attempts", signaling.offers)
 	}
-	if modes.switchCalls != 2 || modes.getCalls != 1 {
+	if modes.switchCalls != 2 || modes.getCalls != 2 {
 		t.Fatalf("mode calls = switch %d, get %d", modes.switchCalls, modes.getCalls)
 	}
 	if got := len(durable.Entries()); got != 2 {

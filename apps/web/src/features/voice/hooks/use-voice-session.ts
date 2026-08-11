@@ -859,7 +859,9 @@ export function useVoiceSession() {
         if (command === "listen") {
           const snapshot = commandWindowRef.current.open();
           setCommandWindow(snapshot);
-          setHintMessage(`已识别「${keyword}」，请在 5 秒内说开始或停止翻译。`);
+          setHintMessage(
+            `已识别「${keyword}」，请在 5 秒内说「小灵，开始翻译」或「小灵，停止翻译」。`,
+          );
         }
       },
       onStatus: (status, detail) => {

@@ -50,6 +50,8 @@ describe("VoiceExperience", () => {
   let startRequests = 0;
   let createdSessions = 0;
   let anonymousRequests = 0;
+  let modeRequests = 0;
+  let activeMode: "assistant" | "interpretation" = "interpretation";
   let languageConfigVersion = 0;
   let conflictNextLanguageConfig = false;
   let automaticDeliveryReady = true;
@@ -74,6 +76,8 @@ describe("VoiceExperience", () => {
     startRequests = 0;
     createdSessions = 0;
     anonymousRequests = 0;
+    modeRequests = 0;
+    activeMode = "interpretation";
     languageConfigVersion = 0;
     conflictNextLanguageConfig = false;
     automaticDeliveryReady = true;
@@ -239,6 +243,44 @@ describe("VoiceExperience", () => {
             retryable: false,
             runtime_updated_at: "2026-07-31T00:00:02Z",
           });
+        }
+
+        if (url.endsWith("/connection")) {
+          return jsonResponse({
+            session_id: "vs-1",
+            connection_id: "conn-1",
+            state: "connected",
+            version: 1,
+            updated_at: "2026-07-31T00:00:02Z",
+          });
+        }
+
+        if (url.endsWith("/mode")) {
+          if (method === "POST") {
+            modeRequests += 1;
+            const body = JSON.parse(String(init?.body)) as {
+              target_mode: "assistant" | "interpretation";
+            };
+            activeMode = body.target_mode;
+          }
+          const state = {
+            session_id: "vs-1",
+            runtime_instance_id: "runtime-1",
+            active_mode: activeMode,
+            generation: activeMode === "assistant" ? 2 : 1,
+            phase: "active",
+            last_operation_id: method === "POST" ? "mode-operation-test" : null,
+            updated_at: "2026-07-31T00:00:02Z",
+          };
+          return jsonResponse(
+            method === "POST"
+              ? {
+                  operation_id: "mode-operation-test",
+                  status: "applied",
+                  state,
+                }
+              : state,
+          );
         }
 
         if (url.includes("/turns")) {
@@ -497,6 +539,21 @@ describe("VoiceExperience", () => {
       expect(
         screen.getByText("Hello, how can I get to the main venue?"),
       ).toBeInTheDocument();
+    });
+  });
+
+  it("shows runtime connection/mode state and sends a typed mode command", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/连接：connected/)).toBeInTheDocument();
+      expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "AI 助手" }));
+    await waitFor(() => {
+      expect(modeRequests).toBe(1);
+      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
     });
   });
 

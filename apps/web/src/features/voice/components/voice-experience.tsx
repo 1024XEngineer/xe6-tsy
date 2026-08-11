@@ -23,7 +23,9 @@ export function VoiceExperience() {
     updateConfig,
     debug,
     configSyncStatus,
+    switchMode,
     toggle,
+    wakeStatus,
   } = useVoiceSession();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -75,6 +77,33 @@ export function VoiceExperience() {
           <p aria-live="polite" className={styles.outputModeText}>
             {formatActivePair(voiceConfig)}
           </p>
+          {state.phase !== "idle" ? (
+            <div aria-label="实时状态" className={styles.runtimeStatus}>
+              <span>连接：{debug.connectionState ?? "未知"}</span>
+              <span>Runtime：{debug.runtimeState ?? "未知"}</span>
+              <span>
+                Mode：{debug.modeState?.active_mode ?? "传统同传"}
+              </span>
+            </div>
+          ) : null}
+          {debug.modeState ? (
+            <div aria-label="模式切换" className={styles.modeControls} role="group">
+              {(["assistant", "interpretation"] as const).map((mode) => (
+                <button
+                  aria-pressed={debug.modeState?.active_mode === mode}
+                  disabled={debug.modeCommandPending || debug.modeState?.phase === "switching"}
+                  key={mode}
+                  onClick={() => void switchMode(mode)}
+                  type="button"
+                >
+                  {mode === "assistant" ? "AI 助手" : "同声传译"}
+                </button>
+              ))}
+              {debug.modeCommandPending || debug.modeState?.phase === "switching" ? (
+                <span role="status">模式切换中…</span>
+              ) : null}
+            </div>
+          ) : null}
           {automaticOutputMessage ? (
             <p className={styles.automaticOutputText} role="status">
               {automaticOutputMessage}
@@ -105,6 +134,11 @@ export function VoiceExperience() {
             >
               {hintMessage}
             </motion.p>
+          ) : null}
+          {state.phase === "idle" && wakeStatus === "listening" ? (
+            <p className={styles.commandWindowNotice} role="status">
+              有界语音命令窗口暂不可用，当前仅支持“开始/停止翻译”兼容唤醒词。
+            </p>
           ) : null}
         </motion.section>
 

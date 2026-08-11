@@ -18,6 +18,14 @@ import {
   type RuntimeState,
   type VoiceTurn,
 } from "../lib/lingow-api";
+import {
+  getRealtimeConnection,
+  getRealtimeModeState,
+  switchRealtimeMode,
+  type ModeStateSnapshot,
+  type RealtimeConnectionState,
+  type RealtimeMode,
+} from "../lib/realtime-api";
 import { getOrCreateAuthSession } from "../lib/auth-session";
 import {
   DEFAULT_VOICE_CONFIG,
@@ -26,7 +34,7 @@ import {
   type VoiceSessionConfig,
   voiceConfigFromLanguageConfig,
 } from "../lib/languages";
-import { ApiError } from "../lib/http";
+import { ApiError, newIdempotencyKey } from "../lib/http";
 import { parseTranslationFinal } from "../lib/translation-events";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
 import {
@@ -55,6 +63,9 @@ export type SessionDebugInfo = {
   accountId: string | null;
   sessionId: string | null;
   runtimeState: RuntimeState | null;
+  connectionState: RealtimeConnectionState | null;
+  modeState: ModeStateSnapshot | null;
+  modeCommandPending: boolean;
   lastError: string | null;
   wakeStatus: WakeListenerStatus;
 };
@@ -86,6 +97,8 @@ function mapRuntimeToStatus(runtime: RuntimeState | null): string {
       return "正在识别";
     case "translating":
       return "正在翻译";
+    case "thinking":
+      return "助手正在思考";
     case "tts_processing":
       return "正在合成语音";
     case "playing":
@@ -186,6 +199,9 @@ export function useVoiceSession() {
     accountId: null,
     sessionId: null,
     runtimeState: null,
+    connectionState: null,
+    modeState: null,
+    modeCommandPending: false,
     lastError: null,
     wakeStatus: "idle",
   });
@@ -197,7 +213,11 @@ export function useVoiceSession() {
   const sessionIdRef = useRef<string | null>(null);
   const webrtcRef = useRef<WebRTCSessionHandles | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectInFlightRef = useRef(false);
   const startAbortRef = useRef<AbortController | null>(null);
+  const realtimeTicketRef = useRef<string | null>(null);
+  const modeStateRef = useRef<ModeStateSnapshot | null>(null);
   const activeLanguageConfigVersionRef = useRef<number | null>(null);
   const lastAppliedVoiceConfigRef = useRef<VoiceSessionConfig>(voiceConfig);
   const activeConfigUpdateChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -207,6 +227,101 @@ export function useVoiceSession() {
   const wakeRef = useRef<WakeWordListener | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
+
+  const applyModeSnapshot = useCallback((snapshot: ModeStateSnapshot | null) => {
+    const previous = modeStateRef.current;
+    const runtimeChanged = Boolean(
+      previous && snapshot && previous.runtime_instance_id !== snapshot.runtime_instance_id,
+    );
+    modeStateRef.current = snapshot;
+    setDebug((prev) => ({
+      ...prev,
+      modeState: snapshot,
+      modeCommandPending: runtimeChanged ? false : prev.modeCommandPending,
+    }));
+    if (runtimeChanged) {
+      setHintMessage("realtime runtime 已更换，模式快照已刷新，请重新发送模式命令。");
+    }
+  }, []);
+
+  const refreshModeSnapshot = useCallback(async (): Promise<ModeStateSnapshot | null> => {
+    const ticket = realtimeTicketRef.current;
+    const sessionId = sessionIdRef.current;
+    if (!ticket || !sessionId || !runningRef.current) return null;
+    try {
+      const snapshot = await getRealtimeModeState(ticket, sessionId);
+      if (sessionIdRef.current !== sessionId) return null;
+      applyModeSnapshot(snapshot);
+      return snapshot;
+    } catch {
+      // Older realtime deployments do not expose mode yet. Keep interpretation
+      // controls hidden and preserve the existing translation path.
+      return null;
+    }
+  }, [applyModeSnapshot]);
+
+  const refreshControlSnapshots = useCallback(async () => {
+    const ticket = realtimeTicketRef.current;
+    const sessionId = sessionIdRef.current;
+    if (!ticket || !sessionId || !runningRef.current) return;
+
+    const [connectionResult, modeResult] = await Promise.allSettled([
+      getRealtimeConnection(ticket, sessionId),
+      getRealtimeModeState(ticket, sessionId),
+    ]);
+    if (sessionIdRef.current !== sessionId) return;
+    if (connectionResult.status === "fulfilled") {
+      setDebug((prev) => ({
+        ...prev,
+        connectionState: connectionResult.value.state,
+      }));
+    }
+    if (modeResult.status === "fulfilled") {
+      applyModeSnapshot(modeResult.value);
+    }
+  }, [applyModeSnapshot]);
+
+  const stopReconnectSupervisor = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearInterval(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    reconnectInFlightRef.current = false;
+  }, []);
+
+  const startReconnectSupervisor = useCallback(
+    (sessionId: string) => {
+      if (reconnectTimerRef.current || !runningRef.current) return;
+      reconnectTimerRef.current = setInterval(() => {
+        if (!runningRef.current || sessionIdRef.current !== sessionId) {
+          stopReconnectSupervisor();
+          return;
+        }
+        if (reconnectInFlightRef.current) return;
+        reconnectInFlightRef.current = true;
+        void (async () => {
+          try {
+            const ticket = realtimeTicketRef.current;
+            if (!ticket) return;
+            const connection = await getRealtimeConnection(ticket, sessionId);
+            if (sessionIdRef.current !== sessionId) return;
+            setDebug((prev) => ({ ...prev, connectionState: connection.state }));
+            if (connection.state === "connected") {
+              stopReconnectSupervisor();
+              await refreshControlSnapshots();
+              setHintMessage("实时连接状态已恢复同步。");
+            }
+          } catch {
+            // Reconnect only refreshes the authoritative snapshot. Media replace
+            // remains an explicit backend capability and is not guessed here.
+          } finally {
+            reconnectInFlightRef.current = false;
+          }
+        })();
+      }, 2000);
+    },
+    [refreshControlSnapshots, stopReconnectSupervisor],
+  );
 
   const updateConfig = useCallback((next: VoiceSessionConfig) => {
     const normalized = normalizeVoiceConfig(next);
@@ -381,10 +496,11 @@ export function useVoiceSession() {
       } else if (snapshot.last_error_code) {
         setHintMessage(`last_error_code: ${snapshot.last_error_code}`);
       }
+      void refreshControlSnapshots();
     } catch (error) {
       setHintMessage(errorMessage(error, "轮询会话状态失败"));
     }
-  }, [syncAutomaticOutputStatus]);
+  }, [refreshControlSnapshots, syncAutomaticOutputStatus]);
 
   const startPolling = useCallback(() => {
     stopPolling();
@@ -399,6 +515,7 @@ export function useVoiceSession() {
     startAbortRef.current?.abort();
     startAbortRef.current = null;
     stopPolling();
+    stopReconnectSupervisor();
     cleanupMedia();
 
     const token = accessTokenRef.current;
@@ -412,6 +529,8 @@ export function useVoiceSession() {
     }
 
     sessionIdRef.current = null;
+    realtimeTicketRef.current = null;
+    modeStateRef.current = null;
     activeLanguageConfigVersionRef.current = null;
     latestAutomaticOutputStatusRef.current = null;
     setAutomaticOutputMessage(null);
@@ -427,10 +546,74 @@ export function useVoiceSession() {
       accountId: accountIdRef.current,
       sessionId: null,
       runtimeState: null,
+      connectionState: null,
+      modeState: null,
+      modeCommandPending: false,
       lastError: null,
       wakeStatus: prev.wakeStatus,
     }));
-  }, [cleanupMedia, stopPolling]);
+  }, [cleanupMedia, stopPolling, stopReconnectSupervisor]);
+
+  const switchMode = useCallback(
+    async (targetMode: RealtimeMode) => {
+      const ticket = realtimeTicketRef.current;
+      const sessionId = sessionIdRef.current;
+      const current = modeStateRef.current;
+      if (!ticket || !sessionId || !current || !runningRef.current) {
+        setHintMessage("当前实时模式快照不可用，继续使用传统同传入口。");
+        return;
+      }
+
+      const operationId = newIdempotencyKey("mode-operation");
+      const command = {
+        session_id: sessionId,
+        runtime_instance_id: current.runtime_instance_id,
+        operation_id: operationId,
+        trace_id: newIdempotencyKey("mode-trace"),
+        expected_generation: current.generation,
+        target_mode: targetMode,
+      };
+      setDebug((prev) => ({ ...prev, modeCommandPending: true }));
+      try {
+        const result = await switchRealtimeMode(ticket, sessionId, command);
+        if (sessionIdRef.current !== sessionId) return;
+        if (result.state.runtime_instance_id !== command.runtime_instance_id) {
+          await refreshModeSnapshot();
+          setHintMessage("realtime runtime 已变化，旧模式命令已丢弃，请重新选择模式。");
+          return;
+        }
+        applyModeSnapshot(result.state);
+        setHintMessage(
+          result.status === "unchanged"
+            ? `已处于${targetMode === "assistant" ? "助手" : "同声传译"}模式。`
+            : `已切换到${targetMode === "assistant" ? "助手" : "同声传译"}模式。`,
+        );
+      } catch (error) {
+        const conflict =
+          error instanceof ApiError &&
+          (error.code === "mode_generation_conflict" ||
+            error.code === "mode_runtime_instance_mismatch" ||
+            error.code === "mode_operation_conflict");
+        if (conflict) {
+          // A changed generation/runtime instance invalidates this command.
+          // Refresh only; never replay the stale operation automatically.
+          const refreshed = await refreshModeSnapshot();
+          setHintMessage(
+            refreshed
+              ? "模式状态已更新，请重新选择目标模式。"
+              : "模式状态已变化，请稍后重试。",
+          );
+        } else {
+          setHintMessage(errorMessage(error, "模式切换失败，当前同传仍可继续。"));
+        }
+      } finally {
+        if (sessionIdRef.current === sessionId) {
+          setDebug((prev) => ({ ...prev, modeCommandPending: false }));
+        }
+      }
+    },
+    [applyModeSnapshot, refreshModeSnapshot],
+  );
 
   const start = useCallback(async () => {
     if (runningRef.current) return;
@@ -447,6 +630,9 @@ export function useVoiceSession() {
       accountId: null,
       sessionId: null,
       runtimeState: null,
+      connectionState: "connecting",
+      modeState: null,
+      modeCommandPending: false,
       lastError: null,
       wakeStatus: prev.wakeStatus,
     }));
@@ -496,6 +682,7 @@ export function useVoiceSession() {
         session.id,
       );
       const ticket = ticketResponse.ticket;
+      realtimeTicketRef.current = ticket;
 
       let sessionStream: MediaStream | null = null;
       let ttsResumeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -551,6 +738,18 @@ export function useVoiceSession() {
               },
             });
           },
+          onConnectionStateChange: (connectionState) => {
+            if (sessionIdRef.current !== session.id) return;
+            setDebug((prev) => ({ ...prev, connectionState }));
+            if (connectionState === "disconnected" || connectionState === "failed") {
+              setHintMessage(
+                "实时连接已断开，正在重新同步状态…",
+              );
+              startReconnectSupervisor(session.id);
+            } else if (connectionState === "connected") {
+              stopReconnectSupervisor();
+            }
+          },
         });
         sessionStream = webrtcRef.current.localStream;
       } catch (webrtcError) {
@@ -587,6 +786,7 @@ export function useVoiceSession() {
       setHintMessage(
         `传译已开启 · ${formatActivePair(configRef.current)} · 可说「小灵，停止翻译」或轻触结束`,
       );
+      setDebug((prev) => ({ ...prev, connectionState: "connected" }));
       startPolling();
     } catch (error) {
       if (startAbort.signal.aborted) return;
@@ -605,11 +805,20 @@ export function useVoiceSession() {
       const failedAccessToken = accessTokenRef.current;
       cleanupMedia();
       stopPolling();
+      stopReconnectSupervisor();
       sessionIdRef.current = null;
+      realtimeTicketRef.current = null;
+      modeStateRef.current = null;
       activeLanguageConfigVersionRef.current = null;
       latestAutomaticOutputStatusRef.current = null;
       setAutomaticOutputMessage(null);
       setConfigSyncStatus("idle");
+      setDebug((prev) => ({
+        ...prev,
+        connectionState: null,
+        modeState: null,
+        modeCommandPending: false,
+      }));
       runningRef.current = false;
       dispatch({ type: "END" });
       setStatusMessage("联调失败");
@@ -626,7 +835,7 @@ export function useVoiceSession() {
         startAbortRef.current = null;
       }
     }
-  }, [cleanupMedia, startPolling, stopPolling]);
+  }, [cleanupMedia, startPolling, startReconnectSupervisor, stopPolling, stopReconnectSupervisor]);
 
   useEffect(() => {
     startRef.current = start;
@@ -700,9 +909,10 @@ export function useVoiceSession() {
       startAbortRef.current?.abort();
       startAbortRef.current = null;
       stopPolling();
+      stopReconnectSupervisor();
       cleanupMedia();
     },
-    [cleanupMedia, stopPolling],
+    [cleanupMedia, stopPolling, stopReconnectSupervisor],
   );
 
   return useMemo(
@@ -717,6 +927,7 @@ export function useVoiceSession() {
       updateConfig,
       debug,
       wakeStatus,
+      switchMode,
       toggle,
     }),
     [
@@ -726,6 +937,7 @@ export function useVoiceSession() {
       hintMessage,
       state,
       statusMessage,
+      switchMode,
       toggle,
       updateConfig,
       voiceConfig,

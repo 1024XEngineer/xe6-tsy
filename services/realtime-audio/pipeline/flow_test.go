@@ -30,7 +30,7 @@ func TestTurnProcessorRunsMockASRTranslationTTSFlow(t *testing.T) {
 	usageSink := &recordingUsageSink{}
 	audioSink := &recordingAudioSink{}
 	runtimeReporter := &recordingRuntimeReporter{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: translator, TTS: ttsProvider, FinalTurns: finalSink,
 		Usage: usageSink, Audio: audioSink, Runtime: runtimeReporter, VoiceID: "voice-1",
 	})
@@ -121,7 +121,7 @@ func TestTurnProcessorDispatchesASRFinalToInjectedHandler(t *testing.T) {
 	}}
 	finalSink := &recordingFinalSink{}
 	usageSink := &recordingUsageSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: translator,
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
 		FinalTurns: finalSink,
@@ -170,7 +170,7 @@ func TestTurnProcessorStopsBeforeHandlerWhenASRUsageFails(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}}
 	finalSink := &recordingFinalSink{}
 	runtimeReporter := &recordingRuntimeReporter{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: translator,
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
 		FinalTurns: finalSink, Usage: rejectingUsageSink{err: wantErr}, Audio: &recordingAudioSink{}, Runtime: runtimeReporter,
@@ -201,7 +201,7 @@ func TestTurnProcessorStopsBeforeHandlerWhenASRUsageFails(t *testing.T) {
 func TestTurnProcessorSkipsUsageAndHandlerForTrivialFinal(t *testing.T) {
 	usageSink := &recordingUsageSink{}
 	runtimeReporter := &recordingRuntimeReporter{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{},
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
 		FinalTurns: &recordingFinalSink{}, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: runtimeReporter,
@@ -239,7 +239,7 @@ func TestTurnProcessorObservesPartialWithoutTranslatingIt(t *testing.T) {
 	})
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}}
 	finalSink := &recordingFinalSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: translator,
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
 		FinalTurns: finalSink,
@@ -273,7 +273,7 @@ func TestTurnProcessorObservesPartialWithoutTranslatingIt(t *testing.T) {
 func TestTurnProcessorPropagatesPostFinalFailureClassification(t *testing.T) {
 	wantErr := errors.New("translation usage unavailable")
 	finalSink := &recordingFinalSink{}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
 		FinalTurns: finalSink,
@@ -307,7 +307,7 @@ func TestTurnProcessorPropagatesPostFinalFailureClassification(t *testing.T) {
 }
 
 func TestTurnProcessorRejectsIncompletePipelineDependencies(t *testing.T) {
-	service := NewPipelineService(PipelineDependencies{})
+	service := newTestPipelineService(PipelineDependencies{})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR:      asr.NewFakeProvider(asr.FakeProviderConfig{}),
 		Opener:   newTestTurnOpener(&fakeLanguageConfigReader{}),
@@ -327,7 +327,7 @@ func TestTurnProcessorRequiresFinalHandler(t *testing.T) {
 	processor := NewTurnProcessor(TurnProcessorDependencies{
 		ASR:      asr.NewFakeProvider(asr.FakeProviderConfig{}),
 		Opener:   newTestTurnOpener(&fakeLanguageConfigReader{}),
-		Pipeline: NewPipelineService(PipelineDependencies{}),
+		Pipeline: newTestPipelineService(PipelineDependencies{}),
 	})
 
 	_, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{
@@ -344,7 +344,7 @@ func TestTurnProcessorConsumesASREventsBeforePushReturns(t *testing.T) {
 		partialSent: make(chan struct{}),
 		result:      asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"},
 	}
-	service := NewPipelineService(PipelineDependencies{
+	service := newTestPipelineService(PipelineDependencies{
 		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
 		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
 		FinalTurns: &recordingFinalSink{},

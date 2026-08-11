@@ -46,11 +46,23 @@ type AudioPlaybackLifecycle interface {
 	Cancel(ctx context.Context, sessionID, playbackID, reason string) error
 }
 
+// FinalTurnCommit publishes one immutable FinalTurn while the runtime mode
+// generation remains protected by its coordinator.
+type FinalTurnCommit func(ctx context.Context) error
+
+// FinalTurnCommitGate atomically validates a Turn's runtime mode snapshot and
+// runs its FinalTurn publication. committed=false with a nil error means the
+// Turn was superseded by a runtime restart or mode switch and must be dropped.
+type FinalTurnCommitGate interface {
+	CommitFinalTurn(ctx context.Context, turn TurnContext, commit FinalTurnCommit) (committed bool, err error)
+}
+
 // PipelineDependencies wires provider and event boundaries for one service.
 type PipelineDependencies struct {
 	Translator translate.Provider
 	TTS        tts.Provider
 	FinalTurns recordsv1.FinalTurnSink
+	FinalGate  FinalTurnCommitGate
 	Usage      UsageFactSink
 	Audio      AudioChunkSink
 	Runtime    session.RuntimeStateReporter
@@ -64,6 +76,7 @@ type PipelineService struct {
 	translator translate.Provider
 	tts        tts.Provider
 	finalTurns recordsv1.FinalTurnSink
+	finalGate  FinalTurnCommitGate
 	usage      UsageFactSink
 	audio      AudioChunkSink
 	runtime    session.RuntimeStateReporter
@@ -82,7 +95,8 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 	}
 	return &PipelineService{
 		translator: deps.Translator, tts: deps.TTS,
-		finalTurns: deps.FinalTurns, usage: deps.Usage, audio: deps.Audio, runtime: deps.Runtime,
+		finalTurns: deps.FinalTurns, finalGate: deps.FinalGate,
+		usage: deps.Usage, audio: deps.Audio, runtime: deps.Runtime,
 		voiceID: deps.VoiceID, now: now, latency: deps.Latency,
 	}
 }
@@ -179,11 +193,18 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err := finalEvent.Validate(); err != nil {
 		return fmt.Errorf("validate FinalTurn: %w", err)
 	}
-	// Reliable FinalTurn publication is the turn commit point. A failure here may
-	// retry the whole turn; after success the immutable body is accepted and later
-	// failures must not retranslate or publish a second logical turn.
-	if err := s.finalTurns.Publish(ctx, finalEvent); err != nil {
-		return fmt.Errorf("publish FinalTurn: %w", err)
+	// Reliable FinalTurn publication is the turn commit point. The gate keeps the
+	// runtime generation stable across validation and publication. A superseded
+	// Turn exits normally; after a successful commit later failures must not
+	// retranslate or publish a second logical turn.
+	committed, err := s.finalGate.CommitFinalTurn(ctx, turn, func(commitCtx context.Context) error {
+		return s.finalTurns.Publish(commitCtx, finalEvent)
+	})
+	if err != nil {
+		return fmt.Errorf("commit FinalTurn: %w", err)
+	}
+	if !committed {
+		return nil
 	}
 	acceptedFinalTurn = true
 	if err := s.usage.Publish(ctx, translationUsage); err != nil {
@@ -270,7 +291,7 @@ func (s *PipelineService) cancelPlayback(ctx context.Context, sessionID, playbac
 }
 
 func (s *PipelineService) validate() error {
-	if s == nil || s.translator == nil || s.finalTurns == nil || s.usage == nil || s.audio == nil || s.runtime == nil {
+	if s == nil || s.translator == nil || s.finalTurns == nil || s.finalGate == nil || s.usage == nil || s.audio == nil || s.runtime == nil {
 		return ErrPipelineDependencyRequired
 	}
 	return nil

@@ -93,6 +93,39 @@ func (c *modeCoordinator) Snapshot() realtimev1.ModeStateSnapshot {
 	return cloneModeState(c.state)
 }
 
+// CommitFinalTurn linearizes generation validation with immutable FinalTurn
+// publication. Translation and playback must stay outside this critical section.
+func (c *modeCoordinator) CommitFinalTurn(
+	ctx context.Context,
+	turn pipeline.TurnContext,
+	commit pipeline.FinalTurnCommit,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if c == nil || commit == nil || turn.SessionID == "" || turn.Mode.SessionID != turn.SessionID ||
+		turn.Mode.RuntimeInstanceID == "" || !turn.Mode.Mode.Valid() || turn.Mode.Generation < 1 {
+		return false, ErrModeCommandInvalid
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if turn.SessionID != c.state.SessionID {
+		return false, ErrModeCommandInvalid
+	}
+	if turn.Mode.RuntimeInstanceID != c.state.RuntimeInstanceID ||
+		turn.Mode.Mode != c.state.ActiveMode || turn.Mode.Generation != c.state.Generation {
+		return false, nil
+	}
+	if err := commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Switch 负责单个 runtime 的模式切换。
 // 处理顺序是：先检查是否存在可重放的已执行操作，再校验 runtime 实例和
 // generation，最后才真正提交状态变更。这样同一个 operation_id 的重试
@@ -265,6 +298,32 @@ func (r managerTurnModeReader) GetTurnMode(ctx context.Context, sessionID string
 		Mode:              state.ActiveMode,
 		Generation:        state.Generation,
 	}, nil
+}
+
+// managerFinalTurnCommitGate keeps Manager lifecycle lock ordering consistent
+// with Stop and SwitchMode before entering the per-runtime coordinator lock.
+type managerFinalTurnCommitGate struct {
+	manager *Manager
+}
+
+func (g managerFinalTurnCommitGate) CommitFinalTurn(
+	ctx context.Context,
+	turn pipeline.TurnContext,
+	commit pipeline.FinalTurnCommit,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if g.manager == nil || turn.SessionID == "" {
+		return false, ErrDependencyRequired
+	}
+	unlock := g.manager.locks.lock(turn.SessionID)
+	defer unlock()
+	coordinator, err := g.manager.currentModeCoordinator(turn.SessionID)
+	if err != nil {
+		return false, err
+	}
+	return coordinator.CommitFinalTurn(ctx, turn, commit)
 }
 
 func defaultRuntimeInstanceID() (string, error) {

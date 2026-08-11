@@ -158,6 +158,7 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		Translator: providers.Translation,
 		TTS:        providers.TTS,
 		FinalTurns: deps.FinalTurns,
+		FinalGate:  managerFinalTurnCommitGate{manager: manager},
 		Usage:      deps.Usage,
 		Audio:      deps.Audio,
 		Runtime:    deps.Runtime,

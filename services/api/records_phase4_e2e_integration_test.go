@@ -349,6 +349,7 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 			Model:    "integration-tts-model",
 		}}),
 		FinalTurns: pipeline.NewPostgresFinalTurnSink(pool),
+		FinalGate:  phase4FinalTurnGate{},
 		Usage:      phase4UsageSink{},
 		Audio:      phase4AudioSink{},
 		Runtime:    phase4RuntimeReporter{},
@@ -579,6 +580,15 @@ func (d *phase4AckDelivery) Ack() error {
 }
 
 type phase4UsageSink struct{}
+
+type phase4FinalTurnGate struct{}
+
+func (phase4FinalTurnGate) CommitFinalTurn(ctx context.Context, _ pipeline.TurnContext, commit pipeline.FinalTurnCommit) (bool, error) {
+	if err := commit(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
 
 func (phase4UsageSink) Publish(context.Context, pipeline.UsageFact) error { return nil }
 

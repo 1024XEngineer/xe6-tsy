@@ -12,17 +12,17 @@ import (
 )
 
 var (
-	// ErrTurnProcessorDependencyRequired indicates that the ASR-to-pipeline boundary is incomplete.
+	// ErrTurnProcessorDependencyRequired 表示公共 ASR 流程缺少必要的生命周期组件或 final Handler。
 	ErrTurnProcessorDependencyRequired = errors.New("turn processor dependency is required")
-	// ErrASRStreamRequired rejects a provider that did not return an owned stream.
+	// ErrASRStreamRequired 表示 ASR Provider 没有返回可由当前 Turn 管理的流。
 	ErrASRStreamRequired = errors.New("ASR stream is required")
-	// ErrASRFinalRequired rejects a stream that completed without a usable final result.
+	// ErrASRFinalRequired 表示 ASR 流结束时没有产生可处理的 final 结果。
 	ErrASRFinalRequired = errors.New("ASR final result is required")
-	// ErrDuplicateASRFinal rejects a stream that emits more than one final result for a Turn.
+	// ErrDuplicateASRFinal 表示同一个 Turn 收到多个 final；公共流程只允许提交一次。
 	ErrDuplicateASRFinal = errors.New("duplicate ASR final result")
 )
 
-// TurnProcessRequest contains the audio and immutable metadata for one member-3 Turn.
+// TurnProcessRequest 保存一个实时 Turn 的音频和不可变元数据。
 type TurnProcessRequest struct {
 	SessionID      string
 	AccountID      string
@@ -32,13 +32,15 @@ type TurnProcessRequest struct {
 	AudioChunks    [][]byte
 }
 
-// ASRFinalHandler consumes one stable recognition result. Implementations own
-// mode-specific work after the shared ASR boundary and must not rerun ASR.
+// ASRFinalHandler 消费一个已经稳定的 ASR final 结果。
+// 实现方只负责 ASR 之后的业务处理，不得重新启动 ASR，也不得把 partial 当作 final。
+// Handler 返回的错误会原样回到 TurnProcessor，由上层决定 Runtime 失败或重试策略。
 type ASRFinalHandler interface {
 	HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) error
 }
 
-// TurnProcessor connects ASR stream completion to a mode-independent final handler.
+// TurnProcessor 负责公共 Turn 生命周期，并把 ASR final 交给与模式无关的 Handler 接口。
+// 它拥有一次 ASR 读取和一次 final 分发的权责，避免 assistant、同传等模式重复调用 ASR。
 type TurnProcessor struct {
 	recognizer asr.Provider
 	opener     *TurnOpener
@@ -46,7 +48,8 @@ type TurnProcessor struct {
 	finals     ASRFinalHandler
 }
 
-// TurnProcessorDependencies wires the offline-capable ASR-to-pipeline flow.
+// TurnProcessorDependencies 注入可离线测试的 ASR、Turn 配置读取、媒体生命周期和 final Handler。
+// Pipeline 仍负责公共运行状态/失败收尾；Finals 负责 ASR final 之后的模式处理。
 type TurnProcessorDependencies struct {
 	ASR      asr.Provider
 	Opener   *TurnOpener
@@ -54,7 +57,8 @@ type TurnProcessorDependencies struct {
 	Finals   ASRFinalHandler
 }
 
-// NewTurnProcessor creates a processor for one complete audio Turn.
+// NewTurnProcessor 创建一个处理完整音频 Turn 的公共 Runner。
+// 构造只保存依赖，真正的 Turn、ASR 流和 Handler 副作用都在 ProcessAudio 中发生。
 func NewTurnProcessor(deps TurnProcessorDependencies) *TurnProcessor {
 	return &TurnProcessor{
 		recognizer: deps.ASR,
@@ -64,7 +68,8 @@ func NewTurnProcessor(deps TurnProcessorDependencies) *TurnProcessor {
 	}
 }
 
-// ProcessAudio allocates one Turn, runs ASR, ignores partial events, and handles one final result.
+// ProcessAudio 分配一个 Turn、执行一次 ASR、忽略 partial，并将唯一 final 交给 Handler。
+// 空文本或纯填充词只恢复 listening，不进入模式 Handler，也不会产生翻译或播放副作用。
 func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessRequest) (TurnContext, error) {
 	if err := ctx.Err(); err != nil {
 		return TurnContext{}, err
@@ -129,7 +134,8 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		"text_bytes", len(result.Text),
 	)
 	if strings.TrimSpace(result.Text) == "" || isTrivialASRText(result.Text) {
-		// Local VAD / Manual commit can produce empty or filler cuts; keep listening.
+		// 本地 VAD 或手动 commit 可能产生空片段、语气词片段；这类输入不应进入业务模式，
+		// 直接恢复 listening，避免生成无意义的 FinalTurn、用量和 TTS。
 		if err := p.pipeline.reportListening(ctx, turn); err != nil {
 			return turn, err
 		}
@@ -164,6 +170,9 @@ func isTrivialASRText(text string) bool {
 	return false
 }
 
+// collectFinalASREvent 独立消费 ASR 事件，过滤 partial，并保证一个 Turn 至多保留一个 final。
+// 它通过有缓冲 channel 与 ProcessAudio 汇合，避免 Provider 在 Finish 前发送事件时阻塞；
+// duplicate final 通过错误通道返回，不能静默覆盖第一次结果。
 func collectFinalASREvent(ctx context.Context, latency LatencyLogger, turn TurnContext, asrStartedAt time.Time, events <-chan asr.Event, finalEvents chan<- *asr.FinalResult, eventErrors chan<- error) {
 	var final *asr.FinalResult
 	var eventErr error
@@ -200,6 +209,8 @@ func collectFinalASREvent(ctx context.Context, latency LatencyLogger, turn TurnC
 	}
 }
 
+// mergeFinalResult 以事件流里的 final 文本和语言为主，再用 Finish 返回的元数据补齐缺失字段。
+// 这样既保留实时事件的识别内容，也不会丢失 Provider 在 Finish 阶段才提供的计费、时长和说话人信息。
 func mergeFinalResult(event, finished asr.FinalResult) asr.FinalResult {
 	if event.Text == "" {
 		event.Text = finished.Text

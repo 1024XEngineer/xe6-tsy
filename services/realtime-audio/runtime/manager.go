@@ -161,6 +161,8 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		Latency:    pipeline.LatencyLogger{Logger: deps.Latency},
 		Now:        deps.Now,
 	})
+	// Router 注册表是模式能力的单一来源：Coordinator 会复用同一份模式列表，
+	// 从而保证“允许切换”的模式一定存在对应 Handler，不会出现状态切换成功但没有业务处理器的半配置状态。
 	router, err := newModeRouter(
 		realtimev1.ModeInterpretation,
 		map[realtimev1.Mode]pipeline.ASRFinalHandler{

@@ -132,6 +132,84 @@ func TestHandlerStartRejectsRequestBody(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsOversizedBodies(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		body        []byte
+		withTickets bool
+		handle      func(*Handler, http.ResponseWriter, *http.Request)
+	}{
+		{
+			name: "create valid JSON with trailing padding",
+			path: "/api/v1/voice-sessions",
+			body: oversizedHTTPBody(t, []byte(`{"capabilities":{}}`)),
+			handle: func(handler *Handler, w http.ResponseWriter, r *http.Request) {
+				handler.create(w, r)
+			},
+		},
+		{
+			name: "end valid JSON with trailing padding",
+			path: "/api/v1/voice-sessions/vs_1/end",
+			body: oversizedHTTPBody(t, []byte(`{"reason":"user_requested"}`)),
+			handle: func(handler *Handler, w http.ResponseWriter, r *http.Request) {
+				handler.end(w, r)
+			},
+		},
+		{
+			name: "start whitespace-only body",
+			path: "/api/v1/voice-sessions/vs_1/start",
+			body: oversizedHTTPBody(t, nil),
+			handle: func(handler *Handler, w http.ResponseWriter, r *http.Request) {
+				handler.start(w, r)
+			},
+		},
+		{
+			name:        "realtime ticket whitespace-only body",
+			path:        "/api/v1/voice-sessions/vs_1/realtime-ticket",
+			body:        oversizedHTTPBody(t, nil),
+			withTickets: true,
+			handle: func(handler *Handler, w http.ResponseWriter, r *http.Request) {
+				handler.mintRealtimeTicket(w, r)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			useCases := &handlerUseCases{}
+			minter := &ticketMinterFake{}
+			handler := NewHandler(useCases, headerAccount)
+			if test.withTickets {
+				handler.WithRealtimeTickets(minter)
+			}
+			request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewReader(test.body))
+			request.SetPathValue("id", "vs_1")
+			request.Header.Set("X-Test-Account", "acct_1")
+			request.Header.Set("Idempotency-Key", "test-key")
+			response := httptest.NewRecorder()
+
+			test.handle(handler, response, request)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body %s", response.Code, response.Body.String())
+			}
+			if useCases.createCalls != 0 || useCases.startCalls != 0 || useCases.endCalls != 0 {
+				t.Fatalf("use case calls = create:%d start:%d end:%d, want none", useCases.createCalls, useCases.startCalls, useCases.endCalls)
+			}
+			if minter.calls != 0 {
+				t.Fatalf("MintRealtimeTicket calls = %d, want 0", minter.calls)
+			}
+		})
+	}
+}
+
+func oversizedHTTPBody(t *testing.T, prefix []byte) []byte {
+	t.Helper()
+	padding := maxHTTPBodyBytes + 1 - len(prefix)
+	return append(append([]byte(nil), prefix...), bytes.Repeat([]byte(" "), padding)...)
+}
+
 func TestHandlerEndDefaultsReasonAndCanonicalHash(t *testing.T) {
 	useCases := &handlerUseCases{
 		endResult: VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusEnded},
@@ -617,6 +695,7 @@ func headerAccount(r *http.Request) (string, bool) {
 }
 
 type ticketMinterFake struct {
+	calls     int
 	accountID string
 	sessionID string
 	ticket    RealtimeTicket
@@ -624,6 +703,7 @@ type ticketMinterFake struct {
 }
 
 func (m *ticketMinterFake) MintRealtimeTicket(_ context.Context, accountID, sessionID string) (RealtimeTicket, error) {
+	m.calls++
 	m.accountID = accountID
 	m.sessionID = sessionID
 	return m.ticket, m.err

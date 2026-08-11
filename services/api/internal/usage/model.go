@@ -13,6 +13,8 @@ const (
 	StageASR Stage = "asr"
 	// StageTranslation records text-translation usage.
 	StageTranslation Stage = "translation"
+	// StageAssistantLLM records voice-assistant language-model usage.
+	StageAssistantLLM Stage = "assistant_llm"
 	// StageTTS records speech-synthesis usage.
 	StageTTS Stage = "tts"
 	// StageDiarization records speaker-diarization usage.

@@ -36,10 +36,12 @@ services/realtime-audio/
 ├── vad/
 ├── segment/
 ├── asr/
+├── assistant/
 ├── translate/
 ├── tts/
 ├── pipeline/
 ├── playback/
+├── runtime/
 └── session/
 ```
 
@@ -48,6 +50,7 @@ services/realtime-audio/
 The provider packages keep vendor protocol details outside `pipeline`:
 
 - `asr/qwen` uses the Qwen realtime WebSocket endpoint. It sends `session.update`, streams PCM through `input_audio_buffer.append`, and sends `session.finish` before waiting for `session.finished`.
+- `assistant/qwen` uses a dedicated assistant request contract over the OpenAI-compatible chat endpoint; it does not reuse translation prompts or publish translation `FinalTurn` records.
 - `translate/qwen` uses the OpenAI-compatible `POST /chat/completions` endpoint with `qwen3.6-flash`. Thinking is disabled by default for turn-level latency. User content nests ASR text inside sanitized `<source>` tags with a language-aware translate instruction; meta-refusals trigger one reinforced retry, then persist `realtime_translation_rejected` while still publishing token usage.
 - `tts/qwen` supports both Qwen3-TTS-Flash (`/services/aigc/multimodal-generation/generation`, `language_type`) and CosyVoice v3/v3.5 (`/services/audio/tts/SpeechSynthesizer`, `instruction`). CosyVoice instructions are generated from the target BCP-47 language so multilingual pairs can use the same stream port. For CosyVoice v3.5, configure a compatible designed voice with `TTS_VOICE`.
 - `tts/qwen` supports Qwen3-TTS-Flash HTTP SSE, Qwen3-TTS-Flash-Realtime WebSocket (`wss://dashscope.aliyuncs.com/api-ws/v1/realtime`), and CosyVoice v3/v3.5 (`/services/audio/tts/SpeechSynthesizer`). Realtime synthesis sends `session.update`, `input_text_buffer.append`, and `input_text_buffer.commit`, then streams `response.audio.delta` PCM. Use `qwen3-tts-flash-realtime` with a multilingual voice such as `Cherry`; CosyVoice instructions are generated from the target BCP-47 language and v3.5 requires a compatible designed voice in `TTS_VOICE`.
@@ -63,6 +66,12 @@ accepts `mock` or `aliyun`. Mock selection requires explicit offline provider in
 prevents a production startup from silently constructing fake behavior. Building Aliyun providers
 validates credentials and endpoints but does not make a network request. Ordinary unit tests
 continue to use offline fakes and never call a third-party service.
+
+`runtime.ModeRouter` keeps `interpretation` as the initial mode for legacy clients. When an assistant
+provider is configured, it also registers `AssistantHandler`; both handlers reuse one `SpeechOutput`
+and the existing WebRTC connection. Assistant replies are emitted as `assistant.reply` DataChannel
+events and their model usage is recorded under `assistant_llm`. No public mode-switch endpoint is
+enabled in this stage.
 
 ## Local utterance VAD
 

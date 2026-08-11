@@ -100,6 +100,23 @@ func (c *modeCoordinator) CommitFinalTurn(
 	turn pipeline.TurnContext,
 	commit pipeline.FinalTurnCommit,
 ) (bool, error) {
+	return c.commitTurn(ctx, turn, commit)
+}
+
+// CommitAssistantReply applies the same generation fence to assistant facts.
+func (c *modeCoordinator) CommitAssistantReply(
+	ctx context.Context,
+	turn pipeline.TurnContext,
+	commit pipeline.AssistantReplyCommit,
+) (bool, error) {
+	return c.commitTurn(ctx, turn, commit)
+}
+
+func (c *modeCoordinator) commitTurn(
+	ctx context.Context,
+	turn pipeline.TurnContext,
+	commit func(context.Context) error,
+) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -300,17 +317,16 @@ func (r managerTurnModeReader) GetTurnMode(ctx context.Context, sessionID string
 	}, nil
 }
 
-// managerFinalTurnCommitGate resolves the active coordinator under the Manager
+// managerTurnCommitGate resolves the active coordinator under the Manager
 // lifecycle lock, then releases that lock before entering the coordinator.
-// FinalTurn sinks are external and may block while honoring cancellation; the
-// lifecycle lock must remain available so Stop can cancel the run context and
-// unblock the sink. The coordinator still serializes generation validation with
-// the publication callback.
-type managerFinalTurnCommitGate struct {
+// Event sinks are external and may block while honoring cancellation; the
+// lifecycle lock must remain available so Stop can cancel the run context.
+// The coordinator still serializes generation validation with publication.
+type managerTurnCommitGate struct {
 	manager *Manager
 }
 
-func (g managerFinalTurnCommitGate) CommitFinalTurn(
+func (g managerTurnCommitGate) CommitFinalTurn(
 	ctx context.Context,
 	turn pipeline.TurnContext,
 	commit pipeline.FinalTurnCommit,
@@ -328,6 +344,26 @@ func (g managerFinalTurnCommitGate) CommitFinalTurn(
 		return false, err
 	}
 	return coordinator.CommitFinalTurn(ctx, turn, commit)
+}
+
+func (g managerTurnCommitGate) CommitAssistantReply(
+	ctx context.Context,
+	turn pipeline.TurnContext,
+	commit pipeline.AssistantReplyCommit,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if g.manager == nil || turn.SessionID == "" {
+		return false, ErrDependencyRequired
+	}
+	unlock := g.manager.locks.lock(turn.SessionID)
+	coordinator, err := g.manager.currentModeCoordinator(turn.SessionID)
+	unlock()
+	if err != nil {
+		return false, err
+	}
+	return coordinator.CommitAssistantReply(ctx, turn, commit)
 }
 
 func defaultRuntimeInstanceID() (string, error) {

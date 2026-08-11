@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
@@ -54,6 +55,27 @@ func TestFrontendTranslationFinalJSONShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decoded["type"] != "translation.final" || decoded["translated_text"] != "Hello" {
+		t.Fatalf("payload = %#v", decoded)
+	}
+}
+
+func TestFrontendAssistantReplyJSONShape(t *testing.T) {
+	payload := FrontendAssistantReply{
+		Type: "assistant.reply", Event: "assistant.reply",
+		EventVersion: realtimev1.AssistantReplyEventVersion, ID: "reply-1",
+		TraceID: "trace-1", SessionID: "session-1", TurnID: "turn-1",
+		RuntimeInstanceID: "runtime-1", Generation: 2,
+		Text: "Hello", Language: "en-US", OccurredAt: time.Unix(2, 0).UTC(),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["type"] != "assistant.reply" || decoded["text"] != "Hello" || decoded["runtime_instance_id"] != "runtime-1" {
 		t.Fatalf("payload = %#v", decoded)
 	}
 }
@@ -141,6 +163,35 @@ func TestDataChannelFinalTurnSinkPublish(t *testing.T) {
 		t.Parallel()
 		if err := (DiscardAudioSink{}).Publish(context.Background(), pipeline.AudioChunk{Data: []byte{1}}); err != nil {
 			t.Fatalf("DiscardAudioSink.Publish: %v", err)
+		}
+	})
+}
+
+func TestDataChannelAssistantReplySinkReportsDeliveryFailures(t *testing.T) {
+	t.Parallel()
+	event := realtimev1.AssistantReplyEvent{SessionID: "vs_1", EventID: "reply-1"}
+
+	t.Run("missing media", func(t *testing.T) {
+		err := (DataChannelAssistantReplySink{}).Publish(context.Background(), event)
+		if !errors.Is(err, ErrAssistantReplyMediaUnavailable) {
+			t.Fatalf("Publish error = %v, want media unavailable", err)
+		}
+	})
+	t.Run("media lookup failure", func(t *testing.T) {
+		err := (DataChannelAssistantReplySink{Media: stubMediaLookup{}}).Publish(context.Background(), event)
+		if err == nil {
+			t.Fatal("Publish error = nil, want lookup failure")
+		}
+	})
+	t.Run("channel unavailable", func(t *testing.T) {
+		sink := DataChannelAssistantReplySink{
+			Media: mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) {
+				return &fakeMediaTransport{events: &webrtc.PionEventSink{}}, nil
+			}),
+		}
+		err := sink.Publish(context.Background(), event)
+		if !errors.Is(err, ErrAssistantReplyChannelUnavailable) {
+			t.Fatalf("Publish error = %v, want channel unavailable", err)
 		}
 	})
 }

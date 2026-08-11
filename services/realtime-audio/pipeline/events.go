@@ -78,7 +78,7 @@ func (fact UsageFact) Validate() error {
 	}
 
 	switch fact.ServiceType {
-	case "asr", "translation", "tts", "diarization":
+	case "asr", "translation", "assistant_llm", "tts", "diarization":
 		return nil
 	default:
 		return invalidUsageField("service_type")

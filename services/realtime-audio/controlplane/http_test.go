@@ -19,7 +19,7 @@ import (
 
 func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
 	fixture := newFixture(t)
-	startBody := `{"operation_id":"operation-1","trace_id":"trace-start","started_by":"browser"}`
+	startBody := `{"operation_id":"operation-1","trace_id":"trace-start","started_by":"browser","initial_mode":"assistant"}`
 
 	first := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", startBody, "start-key")
 	if first.Code != http.StatusOK {
@@ -34,7 +34,8 @@ func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
 	}
 	if fixture.lifecycle.startCommand.OperationID != "operation-1" ||
 		fixture.lifecycle.startCommand.TraceID != "trace-start" ||
-		fixture.lifecycle.startCommand.StartedBy != "browser" {
+		fixture.lifecycle.startCommand.StartedBy != "browser" ||
+		fixture.lifecycle.startCommand.InitialMode != realtimev1.ModeAssistant {
 		t.Fatalf("start command = %#v, want complete request mapping", fixture.lifecycle.startCommand)
 	}
 

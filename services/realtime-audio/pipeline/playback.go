@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
@@ -43,10 +44,58 @@ func MarkFallbackPlaybackNotStarted(err error) error {
 	return fallbackPlaybackNotStartedError{err: err}
 }
 
+type speechOutputNotStartedError struct {
+	err error
+}
+
+func (e speechOutputNotStartedError) Error() string { return e.err.Error() }
+
+func (e speechOutputNotStartedError) Unwrap() error { return e.err }
+
+// SpeechOutputDependencies are the provider-neutral media dependencies shared
+// by interpretation, assistant, and durable fallback playback.
+type SpeechOutputDependencies struct {
+	TTS     tts.Provider
+	Audio   AudioChunkSink
+	Runtime session.RuntimeStateReporter
+	VoiceID string
+	Latency LatencyLogger
+}
+
+// SpeechOutputRequest is immutable text accepted by the common playback path.
+// The caller owns the business event and usage boundaries around this request.
+type SpeechOutputRequest struct {
+	Turn       TurnContext
+	Language   string
+	Text       string
+	PlaybackID string
+}
+
+// ErrSpeechOutputRequestInvalid rejects an output request before runtime state or TTS side effects begin.
+var ErrSpeechOutputRequestInvalid = errors.New("speech output request is invalid")
+
+// SpeechOutput owns only text synthesis, audio chunks, and playback lifecycle.
+// It deliberately does not publish FinalTurn, AssistantReply, or UsageFact.
+type SpeechOutput struct {
+	tts     tts.Provider
+	audio   AudioChunkSink
+	runtime session.RuntimeStateReporter
+	voiceID string
+	latency LatencyLogger
+}
+
+// NewSpeechOutput creates the shared output boundary used by every speaking mode.
+func NewSpeechOutput(deps SpeechOutputDependencies) *SpeechOutput {
+	return &SpeechOutput{
+		tts: deps.TTS, audio: deps.Audio, runtime: deps.Runtime,
+		voiceID: deps.VoiceID, latency: deps.Latency,
+	}
+}
+
 // PlayFallback synthesizes one previously persisted translation without
 // translating or publishing another FinalTurn.
 func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayback) (returnErr error) {
-	if s == nil || s.tts == nil || s.usage == nil || s.audio == nil || s.runtime == nil {
+	if s == nil || s.speech == nil || s.usage == nil || s.runtime == nil {
 		return MarkFallbackPlaybackNotStarted(ErrPipelineDependencyRequired)
 	}
 	if input.SessionID == "" || input.TurnID == "" || input.AccountID == "" || input.TraceID == "" ||
@@ -65,8 +114,14 @@ func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayba
 			returnErr = errors.Join(returnErr, fmt.Errorf("restore listening runtime: %w", err))
 		}
 	}()
-	ttsResult, err := s.playTranslatedText(ctx, turn, input.TargetLanguage, input.TranslatedText, input.PlaybackID)
+	ttsResult, err := s.speech.Play(ctx, SpeechOutputRequest{
+		Turn: turn, Language: input.TargetLanguage, Text: input.TranslatedText, PlaybackID: input.PlaybackID,
+	})
 	if err != nil {
+		var notStarted speechOutputNotStartedError
+		if errors.As(err, &notStarted) {
+			return MarkFallbackPlaybackNotStarted(err)
+		}
 		return err
 	}
 	if err := s.publishUsage(ctx, turn, "tts", ttsResult.Provider, ttsResult.Model, ttsResult.AudioDuration.Milliseconds(), 0, 0, ttsResult.CostAmount, ttsResult.Currency); err != nil {
@@ -75,40 +130,113 @@ func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayba
 	return nil
 }
 
-// playTranslatedText owns the media-plane boundary from immutable translated
-// text to synthesized chunks and playback lifecycle. Callers decide whether a
-// failure is recoverable after the FinalTurn commit; this method never retries
-// providers or publishes a second durable record.
-func (s *PipelineService) playTranslatedText(ctx context.Context, turn TurnContext, targetLanguage, text, playbackID string) (tts.Result, error) {
-	if s.tts == nil {
-		return tts.Result{}, MarkFallbackPlaybackNotStarted(ErrPipelineDependencyRequired)
+// Play sends immutable text through synthesis and the existing realtime audio
+// connection. Callers decide whether an error is recoverable after their own
+// business event commit; this method never retries a provider.
+func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (tts.Result, error) {
+	if err := o.validate(); err != nil {
+		return tts.Result{}, speechOutputNotStartedError{err: err}
 	}
-	if err := s.reportRuntime(ctx, turn, session.RuntimeTTSProcessing, playbackID); err != nil {
-		return tts.Result{}, MarkFallbackPlaybackNotStarted(fmt.Errorf("report TTS runtime: %w", err))
+	if request.Turn.SessionID == "" || request.Turn.ID == "" ||
+		strings.TrimSpace(request.Language) == "" || strings.TrimSpace(request.Text) == "" ||
+		strings.TrimSpace(request.PlaybackID) == "" {
+		return tts.Result{}, speechOutputNotStartedError{err: ErrSpeechOutputRequestInvalid}
+	}
+	if err := o.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID); err != nil {
+		return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("report TTS runtime: %w", err)}
 	}
 	ttsStartedAt := time.Now()
-	stream, err := s.tts.StartStream(ctx, tts.Request{
-		SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID,
-		Text: text, TargetLanguage: targetLanguage, VoiceID: s.voiceID,
+	stream, err := o.tts.StartStream(ctx, tts.Request{
+		SessionID: request.Turn.SessionID, TurnID: request.Turn.ID, PlaybackID: request.PlaybackID,
+		Text: request.Text, TargetLanguage: request.Language, VoiceID: o.voiceID,
 	})
 	if err != nil {
-		return tts.Result{}, MarkFallbackPlaybackNotStarted(fmt.Errorf("start TTS: %w", err))
+		return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("start TTS: %w", err)}
 	}
-	s.logLatencyCheckpoint("tts_stream_started", turn, ttsStartedAt,
-		"playback_id", playbackID,
-		"target_language", targetLanguage,
+	o.latency.Checkpoint("tts_stream_started", request.Turn, ttsStartedAt,
+		"playback_id", request.PlaybackID,
+		"target_language", request.Language,
 	)
 	defer stream.Close()
-	played, err := s.publishTTSChunks(ctx, turn, playbackID, ttsStartedAt, stream.Chunks())
+	played, err := o.publishChunks(ctx, request, ttsStartedAt, stream.Chunks())
 	if err != nil {
-		return tts.Result{}, errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_stream_failed", played))
+		return tts.Result{}, errors.Join(err, o.cancelPlayback(ctx, request.Turn.SessionID, request.PlaybackID, "tts_stream_failed", played))
 	}
 	ttsResult, err := stream.Finish(ctx)
 	if err != nil {
-		return tts.Result{}, errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_finish_failed", played))
+		return tts.Result{}, errors.Join(err, o.cancelPlayback(ctx, request.Turn.SessionID, request.PlaybackID, "tts_finish_failed", played))
 	}
-	if err := s.completePlayback(ctx, turn.SessionID, playbackID, played); err != nil {
+	if err := o.completePlayback(ctx, request.Turn.SessionID, request.PlaybackID, played); err != nil {
 		return tts.Result{}, fmt.Errorf("complete playback: %w", err)
 	}
 	return ttsResult, nil
+}
+
+func (o *SpeechOutput) validate() error {
+	if o == nil || o.tts == nil || o.audio == nil || o.runtime == nil {
+		return ErrPipelineDependencyRequired
+	}
+	return nil
+}
+
+func (o *SpeechOutput) reportRuntime(ctx context.Context, turn TurnContext, state session.RuntimeState, playbackID string) error {
+	turnID := turn.ID
+	update := session.ProcessingStateUpdate{
+		SessionID: turn.SessionID, RuntimeState: state, CurrentTurnID: &turnID,
+	}
+	update.CurrentPlaybackID = &playbackID
+	return o.runtime.SetProcessingState(ctx, update)
+}
+
+func (o *SpeechOutput) publishChunks(ctx context.Context, request SpeechOutputRequest, startedAt time.Time, chunks <-chan tts.AudioChunk) (bool, error) {
+	playing := false
+	firstChunkLogged := false
+	for {
+		select {
+		case <-ctx.Done():
+			return playing, ctx.Err()
+		case chunk, ok := <-chunks:
+			if !ok {
+				return playing, nil
+			}
+			if !playing {
+				// A created stream becomes externally visible only with its first audio chunk.
+				if err := o.reportRuntime(ctx, request.Turn, session.RuntimePlaying, request.PlaybackID); err != nil {
+					return false, fmt.Errorf("report playing runtime: %w", err)
+				}
+				playing = true
+			}
+			if err := o.audio.Publish(ctx, AudioChunk{
+				SessionID: request.Turn.SessionID, TurnID: request.Turn.ID, PlaybackID: request.PlaybackID,
+				SequenceNo: chunk.SequenceNo, Encoding: chunk.Encoding, Data: append([]byte(nil), chunk.Data...),
+			}); err != nil {
+				return playing, fmt.Errorf("publish audio chunk: %w", err)
+			}
+			if !firstChunkLogged {
+				firstChunkLogged = true
+				o.latency.Checkpoint("tts_first_chunk", request.Turn, startedAt,
+					"playback_id", request.PlaybackID, "encoding", chunk.Encoding, "bytes", len(chunk.Data),
+				)
+			}
+		}
+	}
+}
+
+func (o *SpeechOutput) completePlayback(ctx context.Context, sessionID, playbackID string, played bool) error {
+	lifecycle, ok := o.audio.(AudioPlaybackLifecycle)
+	if !played || !ok {
+		return nil
+	}
+	return lifecycle.Complete(ctx, sessionID, playbackID)
+}
+
+func (o *SpeechOutput) cancelPlayback(ctx context.Context, sessionID, playbackID, reason string, played bool) error {
+	lifecycle, ok := o.audio.(AudioPlaybackLifecycle)
+	if !played || !ok {
+		return nil
+	}
+	// Cleanup must outlive a cancelled provider request but remains time bounded.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	return lifecycle.Cancel(cleanupCtx, sessionID, playbackID, reason)
 }

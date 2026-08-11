@@ -6,6 +6,8 @@ import (
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	asrqwen "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr/qwen"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant"
+	assistantqwen "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant/qwen"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 	translateqwen "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate/qwen"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
@@ -15,6 +17,7 @@ import (
 func TestBuildProvidersUsesExplicitOfflineProviders(t *testing.T) {
 	offline := Providers{
 		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Assistant:   assistant.NewFakeProvider(assistant.FakeProviderConfig{}),
 		Translation: &translate.FakeProvider{},
 		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{}),
 	}
@@ -22,7 +25,7 @@ func TestBuildProvidersUsesExplicitOfflineProviders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildProviders() error = %v", err)
 	}
-	if providers.ASR != offline.ASR || providers.Translation != offline.Translation || providers.TTS != offline.TTS {
+	if providers.ASR != offline.ASR || providers.Assistant != offline.Assistant || providers.Translation != offline.Translation || providers.TTS != offline.TTS {
 		t.Fatal("BuildProviders() did not preserve offline provider instances")
 	}
 }
@@ -42,6 +45,9 @@ func TestBuildProvidersConstructsQwenAdapters(t *testing.T) {
 	}
 	if _, ok := providers.Translation.(*translateqwen.Provider); !ok {
 		t.Fatalf("translation provider type = %T", providers.Translation)
+	}
+	if _, ok := providers.Assistant.(*assistantqwen.Provider); !ok {
+		t.Fatalf("assistant provider type = %T", providers.Assistant)
 	}
 	if _, ok := providers.TTS.(*ttsqwen.Provider); !ok {
 		t.Fatalf("TTS provider type = %T", providers.TTS)

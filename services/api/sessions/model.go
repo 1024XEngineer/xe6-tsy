@@ -49,6 +49,7 @@ const (
 	RuntimeListening     = realtimev1.RuntimeListening
 	RuntimeASRProcessing = realtimev1.RuntimeASRProcessing
 	RuntimeTranslating   = realtimev1.RuntimeTranslating
+	RuntimeThinking      = realtimev1.RuntimeThinking
 	RuntimeTTSProcessing = realtimev1.RuntimeTTSProcessing
 	RuntimePlaying       = realtimev1.RuntimePlaying
 	RuntimeStopping      = realtimev1.RuntimeStopping

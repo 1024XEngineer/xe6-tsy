@@ -35,6 +35,25 @@ func TestLifecycleReportsPipelineRuntimeProgress(t *testing.T) {
 	}
 }
 
+func TestLifecycleReportsAssistantThinkingProgress(t *testing.T) {
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
+	if err := service.deps.Runtimes.Save(t.Context(), RuntimeSnapshot{
+		SessionID: "session-1", StartOperationID: "operation-1", RuntimeState: RuntimeASRProcessing,
+		CurrentTurnID: stringPointer("turn-1"),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	turnID, playbackID := "turn-1", "assistant-playback-1"
+	for _, update := range []ProcessingStateUpdate{
+		{SessionID: "session-1", RuntimeState: RuntimeThinking, CurrentTurnID: &turnID},
+		{SessionID: "session-1", RuntimeState: RuntimeTTSProcessing, CurrentTurnID: &turnID, CurrentPlaybackID: &playbackID},
+	} {
+		if err := service.SetProcessingState(t.Context(), update); err != nil {
+			t.Fatalf("SetProcessingState(%q) error = %v", update.RuntimeState, err)
+		}
+	}
+}
+
 func TestLifecycleRejectsInvalidRuntimeProgress(t *testing.T) {
 	tests := []struct {
 		name    string

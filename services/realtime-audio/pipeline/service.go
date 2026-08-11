@@ -69,18 +69,17 @@ type PipelineDependencies struct {
 	VoiceID    string
 	Now        func() time.Time
 	Latency    LatencyLogger
+	Speech     *SpeechOutput
 }
 
 // PipelineService orchestrates one final ASR result through translation and TTS.
 type PipelineService struct {
 	translator translate.Provider
-	tts        tts.Provider
 	finalTurns recordsv1.FinalTurnSink
 	finalGate  FinalTurnCommitGate
 	usage      UsageFactSink
-	audio      AudioChunkSink
 	runtime    session.RuntimeStateReporter
-	voiceID    string
+	speech     *SpeechOutput
 	now        func() time.Time
 	latency    LatencyLogger
 }
@@ -93,11 +92,19 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
+	speech := deps.Speech
+	if speech == nil {
+		speech = NewSpeechOutput(SpeechOutputDependencies{
+			TTS: deps.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
+			VoiceID: deps.VoiceID, Latency: deps.Latency,
+		})
+	}
 	return &PipelineService{
-		translator: deps.Translator, tts: deps.TTS,
+		translator: deps.Translator,
 		finalTurns: deps.FinalTurns, finalGate: deps.FinalGate,
-		usage: deps.Usage, audio: deps.Audio, runtime: deps.Runtime,
-		voiceID: deps.VoiceID, now: now, latency: deps.Latency,
+		usage: deps.Usage, runtime: deps.Runtime,
+		speech: speech,
+		now:    now, latency: deps.Latency,
 	}
 }
 
@@ -220,7 +227,9 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return nil
 	}
 	playbackID := "playback_" + turn.ID
-	ttsResult, err := s.playTranslatedText(ctx, turn, target, translationResult.Text, playbackID)
+	ttsResult, err := s.speech.Play(ctx, SpeechOutputRequest{
+		Turn: turn, Language: target, Text: translationResult.Text, PlaybackID: playbackID,
+	})
 	if err != nil {
 		return finalTurnAcceptedError("play translated text", err)
 	}
@@ -234,40 +243,6 @@ func finalTurnAcceptedError(operation string, err error) error {
 	return fmt.Errorf("%w: %s: %w", ErrFinalTurnAccepted, operation, err)
 }
 
-func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, ttsStartedAt time.Time, chunks <-chan tts.AudioChunk) (bool, error) {
-	playing := false
-	firstChunkLogged := false
-	for {
-		select {
-		case <-ctx.Done():
-			return playing, ctx.Err()
-		case chunk, ok := <-chunks:
-			if !ok {
-				return playing, nil
-			}
-			if !playing {
-				// A created TTS stream is not playing until its first real audio chunk;
-				// that chunk is the externally observable playback start.
-				if err := s.reportRuntime(ctx, turn, session.RuntimePlaying, playbackID); err != nil {
-					return false, fmt.Errorf("report playing runtime: %w", err)
-				}
-				playing = true
-			}
-			if err := s.audio.Publish(ctx, AudioChunk{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, SequenceNo: chunk.SequenceNo, Encoding: chunk.Encoding, Data: append([]byte(nil), chunk.Data...)}); err != nil {
-				return playing, fmt.Errorf("publish audio chunk: %w", err)
-			}
-			if !firstChunkLogged {
-				firstChunkLogged = true
-				s.logLatencyCheckpoint("tts_first_chunk", turn, ttsStartedAt,
-					"playback_id", playbackID,
-					"encoding", chunk.Encoding,
-					"bytes", len(chunk.Data),
-				)
-			}
-		}
-	}
-}
-
 func (s *PipelineService) logLatencyCheckpoint(stage string, turn TurnContext, since time.Time, attrs ...any) {
 	if s == nil {
 		return
@@ -275,29 +250,8 @@ func (s *PipelineService) logLatencyCheckpoint(stage string, turn TurnContext, s
 	s.latency.Checkpoint(stage, turn, since, attrs...)
 }
 
-func (s *PipelineService) completePlayback(ctx context.Context, sessionID, playbackID string, played bool) error {
-	lifecycle, ok := s.audio.(AudioPlaybackLifecycle)
-	if !played || !ok {
-		return nil
-	}
-	return lifecycle.Complete(ctx, sessionID, playbackID)
-}
-
-func (s *PipelineService) cancelPlayback(ctx context.Context, sessionID, playbackID, reason string, played bool) error {
-	lifecycle, ok := s.audio.(AudioPlaybackLifecycle)
-	if !played || !ok {
-		return nil
-	}
-	// Playback cleanup must continue even when the request or provider context is
-	// cancelled, otherwise a failed TTS stream may keep playing. Use an
-	// independent timeout to bound cleanup.
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-	defer cancel()
-	return lifecycle.Cancel(cleanupCtx, sessionID, playbackID, reason)
-}
-
 func (s *PipelineService) validate() error {
-	if s == nil || s.translator == nil || s.finalTurns == nil || s.finalGate == nil || s.usage == nil || s.audio == nil || s.runtime == nil {
+	if s == nil || s.translator == nil || s.finalTurns == nil || s.finalGate == nil || s.usage == nil || s.runtime == nil || s.speech == nil {
 		return ErrPipelineDependencyRequired
 	}
 	return nil
@@ -324,12 +278,16 @@ func (s *PipelineService) publishTranslationUsageIfPresent(ctx context.Context, 
 }
 
 func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string) (UsageFact, error) {
+	return buildUsageFact(turn, serviceType, provider, model, durationMS, inputTokens, outputTokens, cost, currency, s.now())
+}
+
+func buildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string, occurredAt time.Time) (UsageFact, error) {
 	fact := UsageFact{
 		EventVersion: UsageEventVersion, ID: fmt.Sprintf("usage_%s_%s", turn.ID, serviceType),
 		TraceID: turn.TraceID, IdempotencyKey: fmt.Sprintf("usage:%s:%s", turn.ID, serviceType),
 		AccountID: turn.AccountID, SessionID: turn.SessionID, TurnID: turn.ID, ServiceType: serviceType,
 		Provider: provider, Model: model, InputTokens: inputTokens, OutputTokens: outputTokens,
-		AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: s.now(),
+		AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: occurredAt,
 	}
 	if err := fact.Validate(); err != nil {
 		return UsageFact{}, fmt.Errorf("validate UsageFact: %w", err)

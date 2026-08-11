@@ -64,7 +64,7 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 			return current, ErrRuntimeOperationConflict
 		}
 		processingState := current.RuntimeState == RuntimeListening ||
-			current.RuntimeState == RuntimeASRProcessing || current.RuntimeState == RuntimeTranslating ||
+			current.RuntimeState == RuntimeASRProcessing || current.RuntimeState == RuntimeTranslating || current.RuntimeState == RuntimeThinking ||
 			current.RuntimeState == RuntimeTTSProcessing || current.RuntimeState == RuntimePlaying
 		if !processingState {
 			return current, nil
@@ -88,6 +88,7 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 	// business session state.
 	business.StartOperationID = command.OperationID
 	business.TraceID = command.TraceID
+	business.InitialMode = command.InitialMode
 	if business.TraceID == "" {
 		business.TraceID = command.OperationID
 	}

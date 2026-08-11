@@ -90,7 +90,7 @@ components:
         account_id: { type: string, minLength: 1 }
         session_id: { type: string, minLength: 1 }
         turn_id: { type: string, minLength: 1 }
-        service_type: { type: string, enum: [asr, translation, tts, diarization] }
+        service_type: { type: string, enum: [asr, translation, assistant_llm, tts, diarization] }
         provider: { type: string, minLength: 1 }
         model: { type: string, minLength: 1 }
         input_tokens: { type: integer, format: int64, minimum: 0, description: Translation input usage measured in tokens; zero for non-token services. }

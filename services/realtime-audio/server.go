@@ -12,6 +12,7 @@ import (
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/localruntime"
@@ -247,16 +248,17 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			SourceLanguage: cfg.SourceLanguage,
 			Languages:      languages,
 		},
-		NewSegmenter: newSegmenter,
-		Languages:    languages,
-		FinalTurns:   finalTurns,
-		Usage:        usage,
-		Audio:        audioSink,
-		Runtime:      runtimeBridge,
-		VoiceID:      voiceID,
-		Logger:       slog.Default(),
-		Latency:      slog.Default(),
-		Now:          now,
+		NewSegmenter:     newSegmenter,
+		Languages:        languages,
+		FinalTurns:       finalTurns,
+		AssistantReplies: localruntime.DataChannelAssistantReplySink{Media: connections},
+		Usage:            usage,
+		Audio:            audioSink,
+		Runtime:          runtimeBridge,
+		VoiceID:          voiceID,
+		Logger:           slog.Default(),
+		Latency:          slog.Default(),
+		Now:              now,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure runtime manager: %w", err)
@@ -384,9 +386,11 @@ func mockOfflineProviders(sourceLanguage string) config.Providers {
 	}
 	sourceText := "你好"
 	translated := "Hello"
+	assistantReply := "你好，我是小灵。"
 	if !strings.HasPrefix(strings.ToLower(sourceLanguage), "zh") {
 		sourceText = "Hello"
 		translated = "你好"
+		assistantReply = "Hello, I am Lingow."
 	}
 	return config.Providers{
 		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
@@ -397,6 +401,9 @@ func mockOfflineProviders(sourceLanguage string) config.Providers {
 				Model:          "fake",
 			},
 		}),
+		Assistant: assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{
+			Text: assistantReply, Language: sourceLanguage, Provider: "mock-llm", Model: "fake",
+		}}),
 		Translation: &translate.FakeProvider{
 			Result: translate.Result{Text: translated, Provider: "mock-llm", Model: "fake"},
 		},

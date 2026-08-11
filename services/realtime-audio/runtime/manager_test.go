@@ -14,6 +14,7 @@ import (
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
@@ -23,6 +24,77 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 )
+
+func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) {
+	source := &fakeFrameSource{waitForClose: true}
+	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.AssistantReplies = &recordingAssistantReplySink{}
+	deps.NewRuntimeInstanceID = func() (string, error) { return "runtime-1", nil }
+	manager, err := newManager(config.Providers{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Assistant: assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{
+			Text: "hello", Language: "en-US", Provider: "mock-llm", Model: "v1",
+		}}),
+		Translation: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("newManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "start-1", TraceID: "trace-1",
+	}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background(), snapshot.SessionID) })
+	before, err := manager.GetModeState(t.Context(), snapshot.SessionID)
+	if err != nil || before.ActiveMode != realtimev1.ModeInterpretation || before.Generation != 1 {
+		t.Fatalf("initial mode = %#v, %v", before, err)
+	}
+	result, err := manager.SwitchMode(t.Context(), realtimev1.SwitchModeCommand{
+		SessionID: snapshot.SessionID, RuntimeInstanceID: before.RuntimeInstanceID,
+		OperationID: "switch-1", TraceID: snapshot.TraceID,
+		ExpectedGeneration: before.Generation, TargetMode: realtimev1.ModeAssistant,
+	})
+	if err != nil || result.State.ActiveMode != realtimev1.ModeAssistant || result.State.Generation != 2 {
+		t.Fatalf("SwitchMode() = %#v, %v", result, err)
+	}
+	if source.CloseCalls() != 0 {
+		t.Fatalf("mode switch closed shared audio source %d times", source.CloseCalls())
+	}
+}
+
+func TestManagerStartsInRequestedAssistantMode(t *testing.T) {
+	source := &fakeFrameSource{waitForClose: true}
+	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.AssistantReplies = &recordingAssistantReplySink{}
+	deps.NewRuntimeInstanceID = func() (string, error) { return "runtime-1", nil }
+	manager, err := newManager(config.Providers{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Assistant: assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{
+			Text: "hello", Language: "en-US", Provider: "mock-llm", Model: "v1",
+		}}),
+		Translation: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("newManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "start-1", TraceID: "trace-1",
+		InitialMode: realtimev1.ModeAssistant,
+	}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background(), snapshot.SessionID) })
+	state, err := manager.GetModeState(t.Context(), snapshot.SessionID)
+	if err != nil {
+		t.Fatalf("GetModeState() error = %v", err)
+	}
+	if state.ActiveMode != realtimev1.ModeAssistant || state.Generation != 1 {
+		t.Fatalf("initial mode = %#v, want assistant generation 1", state)
+	}
+}
 
 func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 	base := time.Unix(1700000000, 0).UTC()
@@ -1122,6 +1194,15 @@ func (s *recordingFinalSink) Publish(_ context.Context, event recordsv1.FinalTur
 type recordingUsageSink struct {
 	mu    sync.Mutex
 	facts []pipeline.UsageFact
+}
+
+type recordingAssistantReplySink struct {
+	events []realtimev1.AssistantReplyEvent
+}
+
+func (s *recordingAssistantReplySink) Publish(_ context.Context, event realtimev1.AssistantReplyEvent) error {
+	s.events = append(s.events, event)
+	return nil
 }
 
 func (s *recordingUsageSink) Publish(_ context.Context, fact pipeline.UsageFact) error {

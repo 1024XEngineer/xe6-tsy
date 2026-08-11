@@ -507,6 +507,7 @@ func TestServiceStartRecoversExistingRunningRuntime(t *testing.T) {
 		RuntimeListening,
 		RuntimeASRProcessing,
 		RuntimeTranslating,
+		RuntimeThinking,
 		RuntimeTTSProcessing,
 		RuntimePlaying,
 	} {

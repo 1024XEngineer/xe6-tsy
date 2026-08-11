@@ -94,6 +94,42 @@ func TestAutomaticTurnFallbackWorkerRejectsMissingConfiguration(t *testing.T) {
 	}
 }
 
+func TestAutomaticTurnFallbackWorkerRecoversTotalInitialFailureWithoutRetry(t *testing.T) {
+	run := AutomaticTurnRun{
+		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1",
+		TargetLanguage: "zh-CN", TranslatedText: "译文", LanguageConfigVersion: 3,
+		Status: AutomaticTurnRunFailed, TargetCount: 1, SettledCount: 1, FailedCount: 1,
+		FallbackOperationID: "fallback_turn-1",
+	}
+	message := Message{ID: "message-1", AccountID: "account-1", Status: MessageStatusFailed, Attempts: 1}
+	repository := &atomicScheduleRepository{
+		retryRepositoryStub: retryRepositoryStub{current: map[string]Message{"account-1": message}},
+		existing:            run,
+		settlements: []AutomaticTurnSettlement{{
+			TurnID: "turn-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat",
+			Status: AutomaticTurnSettlementFailed, MessageID: message.ID,
+		}},
+	}
+	fallback := &fallbackPlayerFake{}
+	restorer := &outputRestorerFake{}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	service.ConfigureAutomaticFallback(fallback)
+	service.ConfigureAutomaticOutputRestorer(restorer)
+
+	if err := NewAutomaticTurnFallbackWorker(service, 0).runOnce(t.Context()); err != nil {
+		t.Fatalf("runOnce() error = %v", err)
+	}
+	if len(repository.retried) != 0 {
+		t.Fatalf("retried targets = %#v, want none", repository.retried)
+	}
+	if fallback.calls != 1 || !repository.fallbackPlayed {
+		t.Fatalf("fallback calls=%d played=%t, want one played fallback", fallback.calls, repository.fallbackPlayed)
+	}
+	if !repository.restored || restorer.expectedVersion != 3 {
+		t.Fatalf("restore result=%t input=%#v", repository.restored, restorer)
+	}
+}
+
 type automaticWorkerRepository struct {
 	retryRepositoryStub
 	retryErr      error

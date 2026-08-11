@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ type UseCases struct {
 	emailBindChallenges EmailBindChallengeRepository
 	emailBindSender     EmailBindSender
 	wecomIdentity       WeComIdentityClient
+	outputSessions      AutomaticOutputSessionReader
 	fallback            AutomaticTurnFallbackPlayer
 	restorer            AutomaticTurnOutputRestorer
 }
@@ -244,24 +246,21 @@ func (u *UseCases) Preferences(ctx context.Context, accountID string) ([]Prefere
 	return u.repository.ListPreferences(ctx, accountID)
 }
 
-func (u *UseCases) PutPreference(ctx context.Context, accountID string, channel Channel, enabled bool) (Preference, error) {
-	return u.putPreference(ctx, accountID, channel, enabled, "")
-}
-
-// PutPreferenceForDestination enables a channel and pins its automatic
-// delivery target to one verified account destination.
-func (u *UseCases) PutPreferenceForDestination(ctx context.Context, accountID string, channel Channel, enabled bool, destinationRef string) (Preference, error) {
-	return u.putPreference(ctx, accountID, channel, enabled, destinationRef)
-}
-
-func (u *UseCases) putPreference(ctx context.Context, accountID string, channel Channel, enabled bool, destinationRef string) (Preference, error) {
+// PutPreference changes one destination's automatic-delivery opt-in. Enabling
+// always resolves the target first so a stale or revoked destination cannot be
+// made ready for single-output mode.
+func (u *UseCases) PutPreference(ctx context.Context, accountID string, channel Channel, destinationRef string, enabled bool) (Preference, error) {
 	if u.repository == nil {
 		return Preference{}, domain.ErrNotImplemented
 	}
-	if accountID == "" || !IsSupportedChannel(channel) {
+	destinationRef = strings.TrimSpace(destinationRef)
+	if accountID == "" || !IsSupportedChannel(channel) || destinationRef == "" {
 		return Preference{}, domain.ErrInvalidArgument
 	}
-	if destinationRef != "" && u.destinations != nil {
+	if enabled {
+		if u.destinations == nil {
+			return Preference{}, domain.ErrNotImplemented
+		}
 		if _, err := u.destinations.ResolveVerifiedDestination(ctx, accountID, channel, destinationRef); err != nil {
 			return Preference{}, err
 		}
@@ -272,7 +271,7 @@ func (u *UseCases) putPreference(ctx context.Context, accountID string, channel 
 	return u.repository.PutPreference(ctx, Preference{AccountID: accountID, Channel: channel, DestinationRef: destinationRef, Enabled: enabled, UpdatedAt: time.Now().UTC()})
 }
 
-// ScheduleFinalTurn creates one independent message for each enabled channel
+// ScheduleFinalTurn creates one independent message for each enabled target
 // preference after the record-store consumer has committed the Final Turn.
 // Replays are harmless because Create uses the stable per-turn idempotency key.
 func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, event recordsv1.FinalTurnEvent) error {
@@ -372,6 +371,7 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 	return nil
 }
 
+// RetryAutomaticTurnFailures queues the remaining failed targets for a Final Turn.
 func (u *UseCases) RetryAutomaticTurnFailures(ctx context.Context, accountID, turnID string) error {
 	retryRepository, ok := u.repository.(AutomaticTurnRetryRepository)
 	if !ok {
@@ -385,7 +385,7 @@ func (u *UseCases) RetryAutomaticTurnFailures(ctx context.Context, accountID, tu
 	if err != nil {
 		return err
 	}
-	if run.FailedCount == 0 {
+	if run.Status != AutomaticTurnRunPartiallySucceeded || run.SucceededCount == 0 || run.FailedCount == 0 {
 		return nil
 	}
 	settlements, err := retryRepository.ListAutomaticTurnSettlements(ctx, accountID, turnID)
@@ -411,6 +411,7 @@ func (u *UseCases) RetryAutomaticTurnFailures(ctx context.Context, accountID, tu
 	return nil
 }
 
+// RetryAutomaticTurns processes a bounded batch of automatic retry candidates.
 func (u *UseCases) RetryAutomaticTurns(ctx context.Context, limit int) error {
 	repository, ok := u.repository.(AutomaticTurnRetryRepository)
 	if !ok {
@@ -431,6 +432,7 @@ func (u *UseCases) RetryAutomaticTurns(ctx context.Context, limit int) error {
 	return nil
 }
 
+// RecoverAutomaticTurn plays and durably records one automatic fallback snapshot.
 func (u *UseCases) RecoverAutomaticTurn(ctx context.Context, accountID, turnID string) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
 	if !ok || u.fallback == nil {
@@ -457,6 +459,7 @@ func (u *UseCases) RecoverAutomaticTurn(ctx context.Context, accountID, turnID s
 	return nil
 }
 
+// RecoverAutomaticTurns processes a bounded batch of fallback playback candidates.
 func (u *UseCases) RecoverAutomaticTurns(ctx context.Context, limit int) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
 	if !ok || u.fallback == nil {
@@ -477,6 +480,7 @@ func (u *UseCases) RecoverAutomaticTurns(ctx context.Context, limit int) error {
 	return nil
 }
 
+// RestoreAutomaticTurn restores bidirectional output for one completed fallback.
 func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID string) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
 	if !ok || u.restorer == nil {
@@ -499,6 +503,7 @@ func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID s
 	return repository.MarkAutomaticTurnRestored(ctx, accountID, turnID)
 }
 
+// RestoreAutomaticTurns processes a bounded batch of output-restore candidates.
 func (u *UseCases) RestoreAutomaticTurns(ctx context.Context, limit int) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
 	if !ok || u.restorer == nil {

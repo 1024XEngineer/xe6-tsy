@@ -24,6 +24,32 @@ func (r *PostgresRepository) GetAutomaticTurnRun(ctx context.Context, accountID,
 	return run, mapDeliveryError(err)
 }
 
+func (r *PostgresRepository) ListAutomaticOutputStatus(ctx context.Context, accountID, sessionID string, limit int) ([]AutomaticOutputStatus, error) {
+	if r == nil || r.pool == nil || accountID == "" || sessionID == "" || limit <= 0 {
+		return nil, domain.ErrInvalidArgument
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT turn_id,status,updated_at
+		FROM automatic_turn_runs
+		WHERE account_id IN (SELECT account_id FROM lingow_account_lineage($1))
+		  AND session_id=$2
+		ORDER BY updated_at DESC,turn_id DESC
+		LIMIT $3`, accountID, sessionID, limit)
+	if err != nil {
+		return nil, mapDeliveryError(err)
+	}
+	defer rows.Close()
+	statuses := make([]AutomaticOutputStatus, 0, limit)
+	for rows.Next() {
+		var status AutomaticOutputStatus
+		if err := rows.Scan(&status.TurnID, &status.Status, &status.UpdatedAt); err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, rows.Err()
+}
+
 // ScheduleAutomaticTurn persists the aggregate run and all its target work in
 // one transaction. A committed run makes FinalTurn scheduling replay-safe even
 // when the consumer crashes after the database commit and before Ack.

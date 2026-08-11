@@ -1,6 +1,6 @@
 "use client";
 
-import { CaretDown, Check, X } from "@phosphor-icons/react";
+import { ArrowsLeftRight, CaretDown, Check, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 
@@ -21,6 +21,7 @@ import styles from "../voice.module.css";
 import { HistoryPreview, HistorySettings } from "./history-settings";
 import { OptionWheel } from "./option-wheel";
 import { UsageSettings } from "./usage-settings";
+import { DeliverySettings } from "./delivery-settings";
 
 const SETTINGS_ITEMS = [
   {
@@ -42,6 +43,12 @@ const SETTINGS_ITEMS = [
     description: "查看本月免费用量",
   },
   {
+    id: "delivery",
+    label: "投递管理",
+    value: "自动发送",
+    description: "绑定目标与查看发送状态",
+  },
+  {
     id: "session",
     label: "联调会话",
     value: "调试信息",
@@ -59,7 +66,7 @@ type SettingId = (typeof SETTINGS_ITEMS)[number]["id"];
 const HISTORY_INDEX = SETTINGS_ITEMS.findIndex((item) => item.id === "history");
 
 function outputModeLabel(mode: InterpretationOutputMode): string {
-  return mode === "single" ? "单向输出" : "双向播报";
+  return mode === "single" ? "单向播报" : "双向播报";
 }
 
 function outputModeStatusLabel(status: ConfigSyncStatus): string | null {
@@ -69,7 +76,7 @@ function outputModeStatusLabel(status: ConfigSyncStatus): string | null {
     case "applied":
       return "已应用到当前会话，下一句开始生效。";
     case "failed":
-      return "当前会话应用失败；本地偏好仍已保存。";
+      return "当前会话应用失败，已恢复上一次配置。";
     default:
       return null;
   }
@@ -263,9 +270,32 @@ function SettingsDetail({
                 ? "当前源语言译文播报；反向译文自动投递，并保留 Final Turn。"
                 : "两种语言的译文都播报；翻译、投递记录和 Final Turn 始终保留。"}
             </p>
+            {voiceConfig.outputMode === "single" ? (
+              <div className={styles.outputDirectionRow}>
+                <span>播报方向</span>
+                <strong>
+                  {languageLabel(voiceConfig.sourceLanguage)} → {languageLabel(voiceConfig.targetLanguage)}
+                </strong>
+                <button
+                  aria-label="交换播报方向"
+                  className={styles.outputDirectionSwap}
+                  onClick={() =>
+                    onConfigChange({
+                      ...voiceConfig,
+                      sourceLanguage: voiceConfig.targetLanguage,
+                      targetLanguage: voiceConfig.sourceLanguage,
+                    })
+                  }
+                  title="交换播报方向"
+                  type="button"
+                >
+                  <ArrowsLeftRight aria-hidden="true" size={16} />
+                </button>
+              </div>
+            ) : null}
             {singleOutputReady !== true ? (
               <p className={styles.settingsState}>
-                单向输出需要已启用且已验证的自动投递目标。
+                单向播报需要已启用且已验证的自动投递目标。
               </p>
             ) : null}
             {outputModeStatusLabel(configSyncStatus) ? (
@@ -310,6 +340,8 @@ function SettingsDetail({
       return <HistoryPreview onOpen={onOpenHistory} />;
     case "usage":
       return <UsageSettings />;
+    case "delivery":
+      return <DeliverySettings />;
     case "about":
       return (
         <div className={styles.aboutView}>

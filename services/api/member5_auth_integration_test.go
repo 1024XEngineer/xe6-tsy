@@ -38,6 +38,7 @@ func TestProtectedRoutesRequireBearerToken(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/v1/account/me"},
 		{http.MethodGet, "/api/v1/voice-sessions/session_test/usage"},
+		{http.MethodGet, "/api/v1/voice-sessions/session_test/automatic-output-status"},
 		{http.MethodGet, "/api/v1/usage/summary?period_start=2026-07-01T00:00:00Z&period_end=2026-08-01T00:00:00Z"},
 		{http.MethodPost, "/api/v1/outbound-messages"},
 		{http.MethodGet, "/api/v1/account/message-preferences"},

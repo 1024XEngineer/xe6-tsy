@@ -15,6 +15,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/config"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
@@ -47,6 +48,25 @@ type configuredRuntime struct {
 	finalTurnWorker       finalTurnWorker
 	attributionWorker     backgroundWorker
 	authMaintainer        backgroundWorker
+}
+
+type automaticOutputOwnedSessionReader interface {
+	GetOwned(context.Context, string, string) (sessions.VoiceSession, error)
+}
+
+type automaticOutputSessionReader struct {
+	reader automaticOutputOwnedSessionReader
+}
+
+func (r automaticOutputSessionReader) RequireOwnedSession(ctx context.Context, accountID, sessionID string) error {
+	if r.reader == nil {
+		return domain.ErrNotImplemented
+	}
+	_, err := r.reader.GetOwned(ctx, accountID, sessionID)
+	if errors.Is(err, sessions.ErrVoiceSessionNotFound) {
+		return domain.ErrNotFound
+	}
+	return err
 }
 
 func runConfigured(config config.Config) error {
@@ -193,6 +213,9 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		delivery.NewPostgresTurnReader(pool),
 		destinationReader,
 		queue,
+	)
+	deliveryService.ConfigureAutomaticOutputSessionReader(
+		automaticOutputSessionReader{reader: sessionRepository},
 	)
 	if records.turns != nil {
 		records.turns.SetFinalTurnScheduler(deliveryService)

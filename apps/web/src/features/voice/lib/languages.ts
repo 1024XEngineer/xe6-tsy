@@ -71,6 +71,17 @@ export type LanguageOutputRoute = {
   delivery_enabled: boolean;
 };
 
+type LanguageConfigRouteSnapshot = {
+  target_language: LanguageCode;
+  tts_enabled: boolean;
+  delivery_enabled: boolean;
+};
+
+type LanguageConfigSnapshot = {
+  language_pairs: ReadonlyArray<{ source: LanguageCode; target: LanguageCode }>;
+  output_routes: ReadonlyArray<LanguageConfigRouteSnapshot>;
+};
+
 export const DEFAULT_VOICE_CONFIG: VoiceSessionConfig = {
   sourceLanguage: "zh-CN",
   targetLanguage: "en-US",
@@ -116,6 +127,48 @@ export function outputRoutes(config: VoiceSessionConfig): LanguageOutputRoute[] 
   ];
 }
 
+export function voiceConfigFromLanguageConfig(
+  config: LanguageConfigSnapshot,
+  fallback: VoiceSessionConfig,
+): VoiceSessionConfig {
+  const ttsRoutes = config.output_routes.filter(
+    (route) => route.tts_enabled && !route.delivery_enabled,
+  );
+  const deliveryRoutes = config.output_routes.filter(
+    (route) => route.delivery_enabled && !route.tts_enabled,
+  );
+
+  if (ttsRoutes.length === 1 && deliveryRoutes.length === 1) {
+    const targetLanguage = ttsRoutes[0].target_language;
+    const sourceLanguage = deliveryRoutes[0].target_language;
+    if (sourceLanguage && targetLanguage && sourceLanguage !== targetLanguage) {
+      return { sourceLanguage, targetLanguage, outputMode: "single" };
+    }
+  }
+
+  const [firstPair] = config.language_pairs;
+  const isBidirectional =
+    config.output_routes.length === 2 &&
+    ttsRoutes.length === 2 &&
+    deliveryRoutes.length === 0;
+  if (
+    isBidirectional &&
+    firstPair?.source &&
+    firstPair.target &&
+    firstPair.source !== firstPair.target
+  ) {
+    return {
+      sourceLanguage: firstPair.source,
+      targetLanguage: firstPair.target,
+      outputMode: "bidirectional",
+    };
+  }
+
+  return fallback;
+}
+
 export function formatActivePair(config: VoiceSessionConfig): string {
-  return `${languageLabel(config.sourceLanguage)} ⇄ ${languageLabel(config.targetLanguage)}`;
+  const modeLabel = config.outputMode === "single" ? "单向播报" : "双向播报";
+  const direction = config.outputMode === "single" ? "→" : "⇄";
+  return `${modeLabel} · ${languageLabel(config.sourceLanguage)} ${direction} ${languageLabel(config.targetLanguage)}`;
 }

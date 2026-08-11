@@ -6,11 +6,13 @@ import (
 	"time"
 )
 
+// AutomaticTurnFallbackWorker retries partial delivery failures and coordinates fallback playback.
 type AutomaticTurnFallbackWorker struct {
 	service  *UseCases
 	interval time.Duration
 }
 
+// NewAutomaticTurnFallbackWorker creates a periodic automatic-delivery recovery worker.
 func NewAutomaticTurnFallbackWorker(service *UseCases, interval time.Duration) *AutomaticTurnFallbackWorker {
 	if interval <= 0 {
 		interval = time.Second

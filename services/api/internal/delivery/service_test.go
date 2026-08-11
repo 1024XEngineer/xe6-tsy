@@ -25,6 +25,7 @@ type retryRepositoryStub struct {
 	createErr           error
 	createCalls         int
 	preference          Preference
+	preferences         []Preference
 	listAccountID       string
 	putPreference       Preference
 	putPreferenceCalls  int
@@ -86,6 +87,9 @@ func (r *retryRepositoryStub) SetAttemptStatus(context.Context, string, Delivery
 
 func (r *retryRepositoryStub) ListPreferences(_ context.Context, accountID string) ([]Preference, error) {
 	r.listAccountID = accountID
+	if len(r.preferences) > 0 {
+		return append([]Preference(nil), r.preferences...), nil
+	}
 	if r.preference.AccountID == "" {
 		return nil, nil
 	}
@@ -96,6 +100,13 @@ func (r *retryRepositoryStub) PutPreference(_ context.Context, preference Prefer
 	r.putPreferenceCalls++
 	r.putPreference = preference
 	r.preference = preference
+	for index, existing := range r.preferences {
+		if existing.AccountID == preference.AccountID && existing.Channel == preference.Channel && existing.DestinationRef == preference.DestinationRef {
+			r.preferences[index] = preference
+			return preference, nil
+		}
+	}
+	r.preferences = append(r.preferences, preference)
 	return preference, nil
 }
 
@@ -122,13 +133,16 @@ func (d *preferenceDestinationStub) ResolveVerifiedDestination(_ context.Context
 	return d.result, nil
 }
 
-func TestPutPreferenceDoesNotClaimVerification(t *testing.T) {
+func TestPutPreferenceDisablesOneTargetWithoutClaimingVerification(t *testing.T) {
 	repository := &retryRepositoryStub{}
 	service := NewPersistentUseCases(repository, nil, nil, nil)
 
-	preference, err := service.PutPreference(context.Background(), "account-1", ChannelEmail, true)
+	preference, err := service.PutPreference(context.Background(), "account-1", ChannelEmail, " primary ", false)
 	if err != nil {
 		t.Fatalf("PutPreference() error = %v", err)
+	}
+	if preference.DestinationRef != "primary" || preference.Enabled {
+		t.Fatalf("PutPreference() = %#v", preference)
 	}
 	if preference.Verified || repository.preference.Verified {
 		t.Fatal("PutPreference() must leave destination verification to the repository")
@@ -181,7 +195,7 @@ func TestPreferencesReturnsCurrentAccountSettings(t *testing.T) {
 	}
 }
 
-func TestPutPreferenceForDestinationResolvesAndPersistsOpaqueReference(t *testing.T) {
+func TestPutPreferenceResolvesAndPersistsOpaqueReference(t *testing.T) {
 	repository := &retryRepositoryStub{}
 	destinations := &preferenceDestinationStub{result: VerifiedDestination{
 		AccountID: "account-1", Channel: ChannelEmail, DestinationRef: "primary", ProviderTarget: "opaque",
@@ -189,9 +203,9 @@ func TestPutPreferenceForDestinationResolvesAndPersistsOpaqueReference(t *testin
 	service := NewPersistentUseCases(repository, nil, nil, nil)
 	service.destinations = destinations
 
-	preference, err := service.PutPreferenceForDestination(context.Background(), "account-1", ChannelEmail, true, "primary")
+	preference, err := service.PutPreference(context.Background(), "account-1", ChannelEmail, "primary", true)
 	if err != nil {
-		t.Fatalf("PutPreferenceForDestination() error = %v", err)
+		t.Fatalf("PutPreference() error = %v", err)
 	}
 	if destinations.calls != 1 || destinations.accountID != "account-1" || destinations.channel != ChannelEmail || destinations.reference != "primary" {
 		t.Fatalf("ResolveVerifiedDestination() = %#v", destinations)
@@ -200,23 +214,56 @@ func TestPutPreferenceForDestinationResolvesAndPersistsOpaqueReference(t *testin
 		t.Fatalf("PutPreference() record = %#v", repository.putPreference)
 	}
 	if preference.DestinationRef != "primary" || preference.Verified {
-		t.Fatalf("PutPreferenceForDestination() = %#v", preference)
+		t.Fatalf("PutPreference() = %#v", preference)
 	}
 }
 
-func TestPutPreferenceForDestinationRejectsInvalidChannelAndLookupFailure(t *testing.T) {
+func TestPutPreferenceRejectsInvalidTargetAndLookupFailure(t *testing.T) {
 	repository := &retryRepositoryStub{}
 	service := NewPersistentUseCases(repository, nil, nil, nil)
 	service.destinations = &preferenceDestinationStub{err: domain.ErrNotFound}
 
-	if _, err := service.PutPreferenceForDestination(context.Background(), "account-1", Channel("invalid"), true, "primary"); !errors.Is(err, domain.ErrInvalidArgument) {
-		t.Fatalf("PutPreferenceForDestination() invalid channel error = %v, want invalid argument", err)
+	if _, err := service.PutPreference(context.Background(), "account-1", Channel("invalid"), "primary", true); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("PutPreference() invalid channel error = %v, want invalid argument", err)
 	}
-	if _, err := service.PutPreferenceForDestination(context.Background(), "account-1", ChannelEmail, true, "primary"); !errors.Is(err, domain.ErrNotFound) {
-		t.Fatalf("PutPreferenceForDestination() lookup error = %v, want not found", err)
+	if _, err := service.PutPreference(context.Background(), "account-1", ChannelEmail, " ", true); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("PutPreference() blank target error = %v, want invalid argument", err)
+	}
+	if _, err := service.PutPreference(context.Background(), "account-1", ChannelEmail, "primary", true); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("PutPreference() lookup error = %v, want not found", err)
 	}
 	if repository.putPreferenceCalls != 0 {
 		t.Fatalf("PutPreference() calls = %d, want 0 after lookup failure", repository.putPreferenceCalls)
+	}
+}
+
+func TestPutPreferenceKeepsTargetsIndependent(t *testing.T) {
+	repository := &retryRepositoryStub{}
+	service := NewPersistentUseCases(repository, nil, &preferenceDestinationStub{}, nil)
+
+	for _, reference := range []string{"primary", "backup"} {
+		if _, err := service.PutPreference(context.Background(), "account-1", ChannelEmail, reference, true); err != nil {
+			t.Fatalf("PutPreference(%q) error = %v", reference, err)
+		}
+	}
+	if _, err := service.PutPreference(context.Background(), "account-1", ChannelEmail, "primary", false); err != nil {
+		t.Fatalf("PutPreference(disable primary) error = %v", err)
+	}
+
+	preferences, err := service.Preferences(context.Background(), "account-1")
+	if err != nil {
+		t.Fatalf("Preferences() error = %v", err)
+	}
+	if len(preferences) != 2 {
+		t.Fatalf("Preferences() = %#v, want two targets", preferences)
+	}
+	for _, preference := range preferences {
+		if preference.DestinationRef == "primary" && preference.Enabled {
+			t.Fatalf("primary preference = %#v, want disabled", preference)
+		}
+		if preference.DestinationRef == "backup" && !preference.Enabled {
+			t.Fatalf("backup preference = %#v, want enabled", preference)
+		}
 	}
 }
 
@@ -243,8 +290,12 @@ func TestScheduleFinalTurnCreatesOneIdempotentMessagePerPreference(t *testing.T)
 	}
 }
 
-func TestScheduleFinalTurnUsesAtomicRepositoryWhenAvailable(t *testing.T) {
-	repository := &atomicScheduleRepository{retryRepositoryStub: retryRepositoryStub{preference: Preference{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Enabled: true, Verified: true}}}
+func TestScheduleFinalTurnUsesAtomicRepositoryForEveryEnabledTarget(t *testing.T) {
+	repository := &atomicScheduleRepository{retryRepositoryStub: retryRepositoryStub{preferences: []Preference{
+		{AccountID: "account-1", Channel: ChannelEmail, DestinationRef: "primary-email", Enabled: true, Verified: true},
+		{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Enabled: true, Verified: true},
+		{AccountID: "account-1", Channel: ChannelEmail, DestinationRef: "disabled-email", Enabled: false, Verified: true},
+	}}}
 	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
 	event := recordsv1.FinalTurnEvent{
 		TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1", TargetLanguage: "en-US",
@@ -253,8 +304,11 @@ func TestScheduleFinalTurnUsesAtomicRepositoryWhenAvailable(t *testing.T) {
 	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
 		t.Fatalf("ScheduleFinalTurn() error = %v", err)
 	}
-	if repository.record.Run.TargetCount != 1 || len(repository.record.Targets) != 1 {
-		t.Fatalf("atomic schedule = %#v, want one target", repository.record)
+	if repository.record.Run.TargetCount != 2 || len(repository.record.Targets) != 2 {
+		t.Fatalf("atomic schedule = %#v, want two enabled targets", repository.record)
+	}
+	if repository.record.Targets[0].Message.DestinationRef != "primary-email" || repository.record.Targets[1].Message.DestinationRef != "primary-wechat" {
+		t.Fatalf("scheduled targets = %#v", repository.record.Targets)
 	}
 	if repository.record.Run.FallbackOperationID != "fallback_turn-1" {
 		t.Fatalf("fallback operation = %q", repository.record.Run.FallbackOperationID)
@@ -362,7 +416,7 @@ func TestRetryAutomaticTurnFailuresOnlyRetriesFailedTargetsAfterPartialSuccess(t
 	message := Message{ID: "message-1", AccountID: "account-1", Attempts: 1, Status: MessageStatusFailed}
 	repository := &atomicScheduleRepository{
 		retryRepositoryStub: retryRepositoryStub{current: map[string]Message{"account-1": message}},
-		existing:            AutomaticTurnRun{AccountID: "account-1", TurnID: "turn-1", SucceededCount: 1, FailedCount: 1},
+		existing:            AutomaticTurnRun{AccountID: "account-1", TurnID: "turn-1", Status: AutomaticTurnRunPartiallySucceeded, SucceededCount: 1, FailedCount: 1},
 		settlements:         []AutomaticTurnSettlement{{TurnID: "turn-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Status: AutomaticTurnSettlementFailed, MessageID: message.ID}},
 	}
 	service := NewPersistentUseCases(repository, nil, nil, nil)
@@ -374,7 +428,7 @@ func TestRetryAutomaticTurnFailuresOnlyRetriesFailedTargetsAfterPartialSuccess(t
 	}
 }
 
-func TestRetryAutomaticTurnFailuresRetriesAllTargetsAfterInitialFailure(t *testing.T) {
+func TestRetryAutomaticTurnFailuresSkipsAllInitialFailures(t *testing.T) {
 	message := Message{ID: "message-1", AccountID: "account-1", Attempts: 1, Status: MessageStatusFailed}
 	repository := &atomicScheduleRepository{
 		retryRepositoryStub: retryRepositoryStub{current: map[string]Message{"account-1": message}},
@@ -385,8 +439,8 @@ func TestRetryAutomaticTurnFailuresRetriesAllTargetsAfterInitialFailure(t *testi
 	if err := service.RetryAutomaticTurnFailures(t.Context(), "account-1", "turn-1"); err != nil {
 		t.Fatalf("RetryAutomaticTurnFailures() error = %v", err)
 	}
-	if len(repository.retried) != 1 {
-		t.Fatalf("retried targets = %#v, want one retry", repository.retried)
+	if len(repository.retried) != 0 {
+		t.Fatalf("retried targets = %#v, want no retry after total initial failure", repository.retried)
 	}
 }
 
@@ -603,6 +657,7 @@ func (r *atomicScheduleRepository) MarkAutomaticTurnFallbackPlayed(context.Conte
 		return r.fallbackPlayedErr
 	}
 	r.fallbackPlayed = true
+	r.existing.Status = AutomaticTurnRunFallbackPlayed
 	return nil
 }
 
@@ -615,6 +670,7 @@ func (r *atomicScheduleRepository) MarkAutomaticTurnRestored(context.Context, st
 		return r.restoredErr
 	}
 	r.restored = true
+	r.existing.Status = AutomaticTurnRunRestored
 	return nil
 }
 
@@ -666,11 +722,11 @@ type automaticDestinationReaderStub struct {
 	err error
 }
 
-func (r automaticDestinationReaderStub) ResolveVerifiedDestination(context.Context, string, Channel, string) (VerifiedDestination, error) {
+func (r automaticDestinationReaderStub) ResolveVerifiedDestination(_ context.Context, accountID string, channel Channel, reference string) (VerifiedDestination, error) {
 	if r.err != nil {
 		return VerifiedDestination{}, r.err
 	}
-	return VerifiedDestination{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", ProviderTarget: "opaque"}, nil
+	return VerifiedDestination{AccountID: accountID, Channel: channel, DestinationRef: reference, ProviderTarget: "opaque"}, nil
 }
 
 func (r *retryRepositoryStub) GetMessageByIdempotency(context.Context, string, string) (Message, error) {

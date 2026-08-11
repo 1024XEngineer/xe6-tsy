@@ -1,12 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  bindEmailTarget,
+  bindWeChatTarget,
   createLanguageConfig,
   getAccountUsageSummary,
   hasReadyAutomaticTarget,
   listSessionTurns,
+  listMessagePreferences,
+  listMessageTargets,
+  listAutomaticOutputStatus,
+  listOutboundMessages,
   listSupportedLanguages,
   listVoiceSessions,
+  putMessagePreference,
+  requestEmailBindVerification,
+  revokeMessageTarget,
   startVoiceSession,
 } from "./lingow-api";
 
@@ -220,6 +229,94 @@ describe("hasReadyAutomaticTarget", () => {
     );
 
     await expect(hasReadyAutomaticTarget("access-1")).resolves.toBe(false);
+  });
+});
+
+describe("delivery settings API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses account delivery routes and targets the selected destination", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("verification-codes")) return new Response(null, { status: 202 });
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (url.endsWith("/message-targets?channel=email")) {
+        return jsonResponse({ items: [] });
+      }
+      if (url.endsWith("/message-targets")) return jsonResponse({ items: [] });
+      if (url.endsWith("/message-preferences")) return jsonResponse({ items: [] });
+      if (url.endsWith("/outbound-messages")) return jsonResponse({ items: [] });
+      if (url.includes("message-preferences/email")) {
+        return jsonResponse({
+          account_id: "acc-1",
+          channel: "email",
+          destination_ref: "email-1",
+          enabled: true,
+          verified: true,
+          updated_at: "2026-08-07T00:00:00Z",
+        });
+      }
+      if (url.includes("email/bind")) {
+        return jsonResponse({
+          destination_ref: "email-1",
+          channel: "email",
+          verified: true,
+          revoked_at: null,
+          updated_at: "2026-08-07T00:00:00Z",
+        });
+      }
+      if (url.includes("wechat/bind")) {
+        return jsonResponse({
+          destination_ref: "wechat-1",
+          channel: "wechat",
+          verified: true,
+          revoked_at: null,
+          updated_at: "2026-08-07T00:00:00Z",
+        });
+      }
+      return jsonResponse({}, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listMessageTargets("access-1", "email");
+    await listMessagePreferences("access-1");
+    await listOutboundMessages("access-1");
+    await putMessagePreference("access-1", "email", "email-1", true);
+    await requestEmailBindVerification("access-1", "person@example.com");
+    await bindEmailTarget("access-1", "dev:person@example.com");
+    await bindWeChatTarget("access-1", "oauth-code");
+    await revokeMessageTarget("access-1", "email", "email-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/account/message-targets?channel=email",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+    const preferenceCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).includes("message-preferences/email/email-1"),
+    );
+    expect(JSON.parse(String(preferenceCall?.[1]?.body))).toEqual({ enabled: true });
+    expect(new Headers(preferenceCall?.[1]?.headers).get("Idempotency-Key")).toMatch(
+      /^preference-/,
+    );
+  });
+
+  it("lists automatic output recovery status for a session", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        items: [{ turn_id: "turn-1", status: "restored", updated_at: "2026-08-07T00:00:00Z" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listAutomaticOutputStatus("access-1", "session/1")).resolves.toEqual({
+      items: [{ turn_id: "turn-1", status: "restored", updated_at: "2026-08-07T00:00:00Z" }],
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/voice-sessions/session%2F1/automatic-output-status",
+      expect.objectContaining({ cache: "no-store" }),
+    );
   });
 });
 

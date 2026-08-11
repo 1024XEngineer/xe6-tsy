@@ -273,12 +273,16 @@ func (s *PipelineService) publishTranslationUsageIfPresent(ctx context.Context, 
 }
 
 func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string) (UsageFact, error) {
+	return buildUsageFact(turn, serviceType, provider, model, durationMS, inputTokens, outputTokens, cost, currency, s.now())
+}
+
+func buildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string, occurredAt time.Time) (UsageFact, error) {
 	fact := UsageFact{
 		EventVersion: UsageEventVersion, ID: fmt.Sprintf("usage_%s_%s", turn.ID, serviceType),
 		TraceID: turn.TraceID, IdempotencyKey: fmt.Sprintf("usage:%s:%s", turn.ID, serviceType),
 		AccountID: turn.AccountID, SessionID: turn.SessionID, TurnID: turn.ID, ServiceType: serviceType,
 		Provider: provider, Model: model, InputTokens: inputTokens, OutputTokens: outputTokens,
-		AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: s.now(),
+		AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: occurredAt,
 	}
 	if err := fact.Validate(); err != nil {
 		return UsageFact{}, fmt.Errorf("validate UsageFact: %w", err)

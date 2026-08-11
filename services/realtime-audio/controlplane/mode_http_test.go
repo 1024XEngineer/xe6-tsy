@@ -133,6 +133,7 @@ func (f *modeControlFake) SwitchMode(_ context.Context, command realtimev1.Switc
 	state.ActiveMode = command.TargetMode
 	state.Generation = command.ExpectedGeneration + 1
 	state.LastOperationID = &operationID
+	f.state = state
 	return realtimev1.SwitchModeResult{OperationID: command.OperationID, Status: realtimev1.ModeSwitchApplied, State: state}, nil
 }
 

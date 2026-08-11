@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,8 +26,16 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 	}
 	tickets := &ticketFake{ticket: webrtc.ConnectionTicket{SessionID: "session-1", AccountID: "account-1", ExpiresAt: now.Add(time.Hour)}}
 	signaling := &deliverySignaling{outbox: durable}
+	connections := &connectionFake{snapshot: realtimev1.ConnectionSnapshot{
+		SessionID: "session-1", ConnectionID: "connection-1",
+		State: realtimev1.ConnectionConnected, Version: 1, UpdatedAt: now,
+	}}
+	modes := &modeControlFake{state: realtimev1.ModeStateSnapshot{
+		SessionID: "session-1", RuntimeInstanceID: "runtime-1", ActiveMode: realtimev1.ModeInterpretation,
+		Generation: 1, Phase: realtimev1.ModePhaseActive, UpdatedAt: now,
+	}}
 	handler, err := New(Dependencies{
-		Lifecycle: lifecycle, Modes: &modeControlFake{}, Signaling: signaling, Connections: &connectionFake{},
+		Lifecycle: lifecycle, Modes: modes, Signaling: signaling, Connections: connections,
 		Tickets: tickets,
 		Config:  &configFake{value: WebRTCConfig{SessionID: "session-1", ExpiresAt: now.Add(time.Hour)}},
 		Now:     func() time.Time { return now },
@@ -55,6 +64,32 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/ice-candidates", `{"connection_id":"connection-1","candidates":[],"end_of_candidates":true}`, ""); response.Code != http.StatusOK {
 		t.Fatalf("candidate status = %d, body=%s", response.Code, response.Body.String())
 	}
+	before := do(http.MethodGet, "/realtime/v1/sessions/session-1/connection", "", "")
+	if before.Code != http.StatusOK {
+		t.Fatalf("connection before mode switch status = %d, body=%s", before.Code, before.Body.String())
+	}
+	modeState := do(http.MethodGet, "/realtime/v1/sessions/session-1/mode", "", "")
+	if modeState.Code != http.StatusOK {
+		t.Fatalf("mode state status = %d, body=%s", modeState.Code, modeState.Body.String())
+	}
+	modeBody := `{"session_id":"session-1","runtime_instance_id":"runtime-1","operation_id":"mode-1","trace_id":"trace-1","expected_generation":1,"target_mode":"assistant"}`
+	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/mode", modeBody, "mode:mode-1"); response.Code != http.StatusOK {
+		t.Fatalf("mode switch status = %d, body=%s", response.Code, response.Body.String())
+	}
+	after := do(http.MethodGet, "/realtime/v1/sessions/session-1/connection", "", "")
+	if after.Code != http.StatusOK {
+		t.Fatalf("connection after mode switch status = %d, body=%s", after.Code, after.Body.String())
+	}
+	var beforeConnection, afterConnection realtimev1.ConnectionSnapshot
+	if err := json.NewDecoder(before.Body).Decode(&beforeConnection); err != nil {
+		t.Fatalf("decode connection before switch: %v", err)
+	}
+	if err := json.NewDecoder(after.Body).Decode(&afterConnection); err != nil {
+		t.Fatalf("decode connection after switch: %v", err)
+	}
+	if beforeConnection.ConnectionID != "connection-1" || afterConnection != beforeConnection {
+		t.Fatalf("connection changed across mode switch: before=%#v after=%#v", beforeConnection, afterConnection)
+	}
 	if response := do(http.MethodPost, "/realtime/v1/sessions/session-1/webrtc/offer", `{"sdp":"offer-sdp","type":"offer"}`, "offer-key"); response.Code != http.StatusOK {
 		t.Fatalf("replayed offer status = %d, body=%s", response.Code, response.Body.String())
 	}
@@ -71,6 +106,9 @@ func TestHTTPStartOfferICEDeliveryStop(t *testing.T) {
 	}
 	if signaling.offers != 2 {
 		t.Fatalf("offer calls = %d, want 2 replay attempts", signaling.offers)
+	}
+	if modes.switchCalls != 1 || modes.getCalls != 1 {
+		t.Fatalf("mode calls = switch %d, get %d", modes.switchCalls, modes.getCalls)
 	}
 	if got := len(durable.Entries()); got != 2 {
 		t.Fatalf("durable entries = %d, want one FinalTurn and one UsageFact", got)

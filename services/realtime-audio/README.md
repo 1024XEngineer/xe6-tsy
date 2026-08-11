@@ -85,6 +85,24 @@ WebRTC。真正发生切换时，Coordinator 会先将 `realtime.mode.changed` �
 使用现有 `assistant_reply_done` 检查点，且附带 `mode`、`runtime_instance_id` 和 `generation`。
 这些日志不是独立的 `/metrics` counter，聚合系统应按 `operation_id` 去重重试请求（如需操作级口径）。
 
+## WebRTC 上行控制通道
+
+`GET .../webrtc/config` 通过 `control_data_channel` 公布 v1 控制协议。客户端须在首次 Offer 前创建
+可靠、有序、精确标记为 `lingow-control-v1` 的 DataChannel；服务端忽略其他 label，原有服务端下行
+`translation-events` 保持独立。旧客户端可忽略新字段，Offer、ICE、ticket 和音频 Track 行为不变。
+
+控制消息是最多 8 KiB 的 UTF-8 JSON 文本。v1 接收 `mode.switch`，使用 `request_id` 关联响应，并携带
+`runtime_instance_id`、`operation_id`、`expected_generation` 和 `target_mode`；响应为
+`mode.switch.result` 或 `control.error`。Session 来自 ticket 校验后绑定的 PeerConnection，不来自消息。
+同载荷、同 `operation_id` 的重试返回首次结果；同 ID 不同载荷返回
+`mode_operation_conflict`。二进制、畸形、尾随、未知字段和超限消息返回类型化错误，队列满或依赖
+暂不可用返回 `control_unavailable`。连接关闭会先取消排队和执行中的命令；ACK 丢失时，客户端应
+查询模式快照并以原 operation 重试相同载荷。
+
+RTP 与 SCTP 之间没有跨协议全序，边界以服务端提交切换并返回成功 ACK 为准。已打开 Turn 固定使用
+打开时的 mode/generation；切换后旧 generation 未提交结果由 gate 丢弃，已提交 FinalTurn 不回滚。
+若必须保证下一句话进入新模式，客户端应暂停新语句、等待成功 ACK，再发送下一段音频。
+
 ## Local utterance VAD
 
 The realtime entrypoint segments microphone audio with **Silero VAD** before ASR:

@@ -148,6 +148,45 @@ func TestDispatcherDropsAudioFromPreviousModeGeneration(t *testing.T) {
 	}
 }
 
+func TestDispatcherDropsQueuedInitialTranslationFinalAfterCommandCaptureArmed(t *testing.T) {
+	commands := &recordingCommandSink{}
+	dispatcher, err := NewDispatcher(DispatcherDependencies{
+		Translation: &recordingTranslation{},
+		Commands:    commands,
+	})
+	if err != nil {
+		t.Fatalf("NewDispatcher() error = %v", err)
+	}
+	initialGeneration := dispatcher.Generation()
+	window, err := dispatcher.ArmCommandCapture("capture-queued", 10*time.Second)
+	if err != nil {
+		t.Fatalf("ArmCommandCapture() error = %v", err)
+	}
+	if initialGeneration == window.Generation {
+		t.Fatalf("initial generation = %d, command generation = %d, want distinct generations", initialGeneration, window.Generation)
+	}
+
+	handled, err := dispatcher.HandleFinal(context.Background(), pipeline.TurnProcessRequest{
+		Generation:  initialGeneration,
+		AudioChunks: [][]byte{{1}},
+	})
+	if err != nil {
+		t.Fatalf("HandleFinal() error = %v", err)
+	}
+	if !handled {
+		t.Fatal("HandleFinal() handled = false, want true for stale final")
+	}
+	if len(commands.captures) != 0 {
+		t.Fatalf("command captures = %d, want 0 for pre-window audio", len(commands.captures))
+	}
+	if dispatcher.Mode() != ModeCommandCapture {
+		t.Fatalf("mode after stale final = %s, want %s", dispatcher.Mode(), ModeCommandCapture)
+	}
+	if dispatcher.Generation() != window.Generation {
+		t.Fatalf("generation after stale final = %d, want %d", dispatcher.Generation(), window.Generation)
+	}
+}
+
 func TestDispatcherRejectsInvalidCommandWindow(t *testing.T) {
 	dispatcher, err := NewDispatcher(DispatcherDependencies{Translation: &recordingTranslation{}})
 	if err != nil {

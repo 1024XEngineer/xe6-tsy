@@ -111,7 +111,7 @@ func NewDispatcher(deps DispatcherDependencies) (*Dispatcher, error) {
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Dispatcher{translation: deps.Translation, commands: deps.Commands, context: deps.Context, now: deps.Now, mode: ModeTranslation}, nil
+	return &Dispatcher{translation: deps.Translation, commands: deps.Commands, context: deps.Context, now: deps.Now, mode: ModeTranslation, generation: 1}, nil
 }
 
 func (d *Dispatcher) Generation() uint64 {

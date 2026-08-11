@@ -67,11 +67,15 @@ prevents a production startup from silently constructing fake behavior. Building
 validates credentials and endpoints but does not make a network request. Ordinary unit tests
 continue to use offline fakes and never call a third-party service.
 
-`runtime.ModeRouter` keeps `interpretation` as the initial mode for legacy clients. When an assistant
-provider is configured, it also registers `AssistantHandler`; both handlers reuse one `SpeechOutput`
-and the existing WebRTC connection. Assistant replies are emitted as `assistant.reply` DataChannel
-events and their model usage is recorded under `assistant_llm`. No public mode-switch endpoint is
-enabled in this stage.
+`runtime.ModeRouter` 为旧客户端保留 `interpretation` 初始模式。配置 Assistant Provider 后，
+Router 同时注册 `AssistantHandler`；两个 Handler 复用同一个 `SpeechOutput` 和已有 WebRTC 连接。
+助手回复通过 DataChannel 的 `assistant.reply` 事件发送，模型用量记录为 `assistant_llm`。
+
+`GET /realtime/v1/sessions/{id}/mode` 返回 realtime 持有的权威模式快照；
+`POST /realtime/v1/sessions/{id}/mode` 使用 `runtime_instance_id + expected_generation` 执行
+幂等 CAS 切换。调用方应先读取快照，再提交目标模式；generation 或 runtime 实例不匹配时必须
+重新读取，不能盲目覆盖。模式切换只替换 Router 状态，不执行 Session Stop/Start，也不重新建立
+WebRTC。当前阶段尚未投递持久化 `realtime.mode.changed`，该可靠事件在后续独立阶段接入。
 
 ## Local utterance VAD
 
@@ -128,7 +132,7 @@ Required env:
 
 Provider switch (Phase 3): keep `start-local.bat`, set `ASR_PROVIDER=aliyun` + `LLM_PROVIDER=aliyun` plus Qwen keys in root `.env`, restart. Leave downlink at `none` so TTS stays mock while you validate real subtitles. No control-plane protocol change.
 
-Routes: `/realtime/v1/sessions/{id}/webrtc/config|offer`, `ice-candidates`, `start|stop`, `runtime`, `connection`.
+Routes: `/realtime/v1/sessions/{id}/webrtc/config|offer`, `ice-candidates`, `start|stop`, `runtime`, `mode`, `connection`.
 Local adapters live under `localruntime/` (`TrustSessionReader`, `StaticLanguageConfigReader`, `StaticWebRTCConfig`, WebRTC frame/sink bridges).
 
 `pipeline.NewPostgresFinalTurnSink(pool)` is the production final-turn sink adapter. It writes the

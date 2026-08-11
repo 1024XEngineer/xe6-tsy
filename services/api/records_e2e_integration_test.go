@@ -28,8 +28,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestRecordsPhase4PersistenceAndDelivery(t *testing.T) {
-	fixture := newRecordsPhase4Fixture(t)
+func TestRecordsPersistenceAndDelivery(t *testing.T) {
+	fixture := newRecordsFixture(t)
 	produced := fixture.publishFinalTurns(t)
 
 	var storedTurns int
@@ -45,7 +45,7 @@ func TestRecordsPhase4PersistenceAndDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListHistory() error = %v", err)
 	}
-	assertPhase4TurnIDs(t, history.Items, produced.attributed.ID, produced.pending.ID)
+	assertRecordsTurnIDs(t, history.Items, produced.attributed.ID, produced.pending.ID)
 
 	pendingRecord, err := fixture.records.Turns.Get(t.Context(), ownerID, produced.pending.ID)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestRecordsPhase4PersistenceAndDelivery(t *testing.T) {
 
 	for _, turnIDs := range [][]string{
 		{produced.attributed.ID, produced.foreign.ID},
-		{produced.attributed.ID, "phase4_missing_turn"},
+		{produced.attributed.ID, "records_missing_turn"},
 	} {
 		batch, err := deliveryReader.ReadFinalTurns(t.Context(), ownerID, turnIDs)
 		if !errors.Is(err, turns.ErrTurnNotFound) {
@@ -91,8 +91,8 @@ func TestRecordsPhase4PersistenceAndDelivery(t *testing.T) {
 	}
 }
 
-func TestRecordsPhase4HTTPAndSnapshotConsistency(t *testing.T) {
-	fixture := newRecordsPhase4Fixture(t)
+func TestRecordsHTTPAndSnapshotConsistency(t *testing.T) {
+	fixture := newRecordsFixture(t)
 	produced := fixture.publishFinalTurns(t)
 	ownerID := fixture.owner.ID
 
@@ -112,7 +112,7 @@ func TestRecordsPhase4HTTPAndSnapshotConsistency(t *testing.T) {
 	participantWriter := recordstore.NewParticipantWriter(fixture.pool)
 	correctedParticipant, err := participantWriter.FindOrCreate(t.Context(), recordsv1.SpeakerObservation{
 		SessionID:         fixture.ownerSession,
-		TurnID:            "phase4_correction_turn",
+		TurnID:            "records_correction_turn",
 		ProviderSpeakerID: "speaker_b",
 	})
 	if err != nil {
@@ -136,8 +136,8 @@ func TestRecordsPhase4HTTPAndSnapshotConsistency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CorrectAttribution() error = %v", err)
 	}
-	assertPhase4CorrectedTurn(t, corrected, correctedParticipant.ID, confidence)
-	assertPhase4ImmutableTurn(t, pendingBefore, corrected)
+	assertRecordsCorrectedTurn(t, corrected, correctedParticipant.ID, confidence)
+	assertRecordsImmutableTurn(t, pendingBefore, corrected)
 
 	correctedSnapshots, err := deliveryReader.ReadFinalTurns(t.Context(), ownerID, []string{produced.pending.ID})
 	if err != nil {
@@ -152,15 +152,15 @@ func TestRecordsPhase4HTTPAndSnapshotConsistency(t *testing.T) {
 	if initialSnapshots[0].ParticipantID != nil || initialSnapshots[0].SpeakerLabelSnapshot != nil {
 		t.Fatalf("initial delivery snapshot changed after correction = %#v", initialSnapshots[0])
 	}
-	assertPhase4ImmutableDeliverySnapshot(t, initialSnapshots[0], correctedSnapshots[0])
+	assertRecordsImmutableDeliverySnapshot(t, initialSnapshots[0], correctedSnapshots[0])
 
 	history, err := fixture.records.Turns.ListHistory(t.Context(), ownerID, recordsv1.ListTurnsQuery{Limit: 10})
 	if err != nil {
 		t.Fatalf("ListHistory() after correction error = %v", err)
 	}
-	assertPhase4TurnIDs(t, history.Items, produced.attributed.ID, produced.pending.ID)
-	assertPhase4CorrectedTurn(t, history.Items[1], correctedParticipant.ID, confidence)
-	assertPhase4ImmutableTurn(t, pendingBefore, history.Items[1])
+	assertRecordsTurnIDs(t, history.Items, produced.attributed.ID, produced.pending.ID)
+	assertRecordsCorrectedTurn(t, history.Items[1], correctedParticipant.ID, confidence)
+	assertRecordsImmutableTurn(t, pendingBefore, history.Items[1])
 
 	handler := buildMux(
 		languages.NewHandler(nil, nil),
@@ -169,67 +169,67 @@ func TestRecordsPhase4HTTPAndSnapshotConsistency(t *testing.T) {
 		fixture.dependencies.accounts,
 		fixture.dependencies.tokens,
 	)
-	historyResponse := phase4HTTPRequest(handler, http.MethodGet, "/api/v1/translation-history?limit=20", fixture.ownerAccessToken, "")
+	historyResponse := recordsHTTPRequest(handler, http.MethodGet, "/api/v1/translation-history?limit=20", fixture.ownerAccessToken, "")
 	if historyResponse.Code != http.StatusOK {
 		t.Fatalf("history HTTP status = %d, want %d, body = %s", historyResponse.Code, http.StatusOK, historyResponse.Body.String())
 	}
 	var historyBody recordsv1.VoiceTurnListResponse
-	decodePhase4JSON(t, historyResponse, &historyBody)
-	assertPhase4TurnIDs(t, historyBody.Items, produced.attributed.ID, produced.pending.ID)
-	assertPhase4CorrectedTurn(t, historyBody.Items[1], correctedParticipant.ID, confidence)
-	assertPhase4ImmutableTurn(t, pendingBefore, historyBody.Items[1])
+	decodeRecordsJSON(t, historyResponse, &historyBody)
+	assertRecordsTurnIDs(t, historyBody.Items, produced.attributed.ID, produced.pending.ID)
+	assertRecordsCorrectedTurn(t, historyBody.Items[1], correctedParticipant.ID, confidence)
+	assertRecordsImmutableTurn(t, pendingBefore, historyBody.Items[1])
 
-	turnResponse := phase4HTTPRequest(handler, http.MethodGet, "/api/v1/voice-turns/"+produced.pending.ID, fixture.ownerAccessToken, "")
+	turnResponse := recordsHTTPRequest(handler, http.MethodGet, "/api/v1/voice-turns/"+produced.pending.ID, fixture.ownerAccessToken, "")
 	if turnResponse.Code != http.StatusOK {
 		t.Fatalf("single turn HTTP status = %d, want %d, body = %s", turnResponse.Code, http.StatusOK, turnResponse.Body.String())
 	}
 	var turnBody recordsv1.VoiceTurn
-	decodePhase4JSON(t, turnResponse, &turnBody)
-	assertPhase4CorrectedTurn(t, turnBody, correctedParticipant.ID, confidence)
-	assertPhase4ImmutableTurn(t, pendingBefore, turnBody)
+	decodeRecordsJSON(t, turnResponse, &turnBody)
+	assertRecordsCorrectedTurn(t, turnBody, correctedParticipant.ID, confidence)
+	assertRecordsImmutableTurn(t, pendingBefore, turnBody)
 
-	sessionTurnsResponse := phase4HTTPRequest(handler, http.MethodGet, "/api/v1/voice-sessions/"+fixture.ownerSession+"/turns?limit=20", fixture.ownerAccessToken, "")
+	sessionTurnsResponse := recordsHTTPRequest(handler, http.MethodGet, "/api/v1/voice-sessions/"+fixture.ownerSession+"/turns?limit=20", fixture.ownerAccessToken, "")
 	if sessionTurnsResponse.Code != http.StatusOK {
 		t.Fatalf("session turns HTTP status = %d, want %d, body = %s", sessionTurnsResponse.Code, http.StatusOK, sessionTurnsResponse.Body.String())
 	}
 	var sessionTurnsBody recordsv1.VoiceTurnListResponse
-	decodePhase4JSON(t, sessionTurnsResponse, &sessionTurnsBody)
-	assertPhase4TurnIDs(t, sessionTurnsBody.Items, produced.pending.ID, produced.attributed.ID)
+	decodeRecordsJSON(t, sessionTurnsResponse, &sessionTurnsBody)
+	assertRecordsTurnIDs(t, sessionTurnsBody.Items, produced.pending.ID, produced.attributed.ID)
 
-	participantsResponse := phase4HTTPRequest(handler, http.MethodGet, "/api/v1/voice-sessions/"+fixture.ownerSession+"/participants?limit=20", fixture.ownerAccessToken, "")
+	participantsResponse := recordsHTTPRequest(handler, http.MethodGet, "/api/v1/voice-sessions/"+fixture.ownerSession+"/participants?limit=20", fixture.ownerAccessToken, "")
 	if participantsResponse.Code != http.StatusOK {
 		t.Fatalf("participants HTTP status = %d, want %d, body = %s", participantsResponse.Code, http.StatusOK, participantsResponse.Body.String())
 	}
 	var participantsBody recordsv1.ParticipantListResponse
-	decodePhase4JSON(t, participantsResponse, &participantsBody)
+	decodeRecordsJSON(t, participantsResponse, &participantsBody)
 	if len(participantsBody.Items) != 2 {
 		t.Fatalf("participants HTTP count = %d, want 2: %#v", len(participantsBody.Items), participantsBody.Items)
 	}
 
-	foreignSessionResponse := phase4HTTPRequest(handler, http.MethodGet, "/api/v1/voice-sessions/"+fixture.foreignSession+"/turns?limit=20", fixture.ownerAccessToken, "")
-	assertPhase4Error(t, foreignSessionResponse, http.StatusForbidden, recordsv1.ErrorForbidden)
-	foreignTurnResponse := phase4HTTPRequest(handler, http.MethodGet, "/api/v1/voice-turns/"+produced.foreign.ID, fixture.ownerAccessToken, "")
-	assertPhase4Error(t, foreignTurnResponse, http.StatusNotFound, recordsv1.ErrorVoiceTurnAbsent)
+	foreignSessionResponse := recordsHTTPRequest(handler, http.MethodGet, "/api/v1/voice-sessions/"+fixture.foreignSession+"/turns?limit=20", fixture.ownerAccessToken, "")
+	assertRecordsError(t, foreignSessionResponse, http.StatusForbidden, recordsv1.ErrorForbidden)
+	foreignTurnResponse := recordsHTTPRequest(handler, http.MethodGet, "/api/v1/voice-turns/"+produced.foreign.ID, fixture.ownerAccessToken, "")
+	assertRecordsError(t, foreignTurnResponse, http.StatusNotFound, recordsv1.ErrorVoiceTurnAbsent)
 
-	participantPatchResponse := phase4HTTPRequest(
+	participantPatchResponse := recordsHTTPRequest(
 		handler,
 		http.MethodPatch,
 		"/api/v1/voice-sessions/"+fixture.ownerSession+"/participants/"+correctedParticipant.ID,
 		fixture.ownerAccessToken,
 		`{"display_name":"renamed"}`,
 	)
-	assertPhase4Error(t, participantPatchResponse, http.StatusForbidden, recordsv1.ErrorForbidden)
-	attributionPatchResponse := phase4HTTPRequest(
+	assertRecordsError(t, participantPatchResponse, http.StatusForbidden, recordsv1.ErrorForbidden)
+	attributionPatchResponse := recordsHTTPRequest(
 		handler,
 		http.MethodPatch,
 		"/api/v1/voice-turns/"+produced.pending.ID+"/attribution",
 		fixture.ownerAccessToken,
 		`{"participant_id":"`+correctedParticipant.ID+`","attribution_status":"corrected"}`,
 	)
-	assertPhase4Error(t, attributionPatchResponse, http.StatusForbidden, recordsv1.ErrorForbidden)
+	assertRecordsError(t, attributionPatchResponse, http.StatusForbidden, recordsv1.ErrorForbidden)
 }
 
-type recordsPhase4Fixture struct {
+type recordsFixture struct {
 	pool                  *pgxpool.Pool
 	dependencies          *recordsHTTPDependencies
 	records               *recordstore.ServiceComposition
@@ -244,13 +244,13 @@ type recordsPhase4Fixture struct {
 	producer              *pipeline.PipelineService
 }
 
-type recordsPhase4Turns struct {
+type recordsTurns struct {
 	pending    pipeline.TurnContext
 	attributed pipeline.TurnContext
 	foreign    pipeline.TurnContext
 }
 
-func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
+func newRecordsFixture(t *testing.T) *recordsFixture {
 	t.Helper()
 	databaseURL := recordsHTTPTestDatabaseURL(t)
 	t.Setenv("DATABASE_URL", databaseURL)
@@ -278,8 +278,8 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 		t.Fatalf("create foreign account: %v", err)
 	}
 	const (
-		ownerSession   = "phase4_owner_session"
-		foreignSession = "phase4_foreign_session"
+		ownerSession   = "records_owner_session"
+		foreignSession = "records_foreign_session"
 	)
 	if _, err := pool.Exec(t.Context(), `
 		INSERT INTO voice_sessions (id, account_id, status, audio_config, capabilities) VALUES
@@ -290,7 +290,7 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 		foreignSession,
 		foreign.Account.ID,
 	); err != nil {
-		t.Fatalf("insert phase4 sessions: %v", err)
+		t.Fatalf("insert records sessions: %v", err)
 	}
 
 	sessionScope, err := recordstore.NewPostgresSessionScopeReader(pool)
@@ -299,7 +299,7 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 	}
 	recordsServices, err := recordstore.NewServices(
 		pool,
-		[]byte("phase4-records-cursor-signing-key"),
+		[]byte("records-cursor-signing-key"),
 		recordstore.NewCanonicalSessionOwner(accountRepository),
 		sessionScope,
 	)
@@ -310,7 +310,7 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 	participantWriter := recordstore.NewParticipantWriter(pool)
 	attributedParticipant, err := participantWriter.FindOrCreate(t.Context(), recordsv1.SpeakerObservation{
 		SessionID:         ownerSession,
-		TurnID:            "phase4_attributed_turn",
+		TurnID:            "records_attributed_turn",
 		ProviderSpeakerID: "speaker_a",
 	})
 	if err != nil {
@@ -325,7 +325,7 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 		t.Fatalf("name attributed participant: %v", err)
 	}
 
-	fixture := &recordsPhase4Fixture{
+	fixture := &recordsFixture{
 		pool:                  pool,
 		dependencies:          dependencies,
 		records:               recordsServices,
@@ -349,63 +349,63 @@ func newRecordsPhase4Fixture(t *testing.T) *recordsPhase4Fixture {
 			Model:    "integration-tts-model",
 		}}),
 		FinalTurns: pipeline.NewPostgresFinalTurnSink(pool),
-		FinalGate:  phase4FinalTurnGate{},
-		Usage:      phase4UsageSink{},
-		Audio:      phase4AudioSink{},
-		Runtime:    phase4RuntimeReporter{},
+		FinalGate:  finalTurnGate{},
+		Usage:      recordsUsageSink{},
+		Audio:      recordsAudioSink{},
+		Runtime:    recordsRuntimeReporter{},
 		Now:        func() time.Time { return fixture.currentTime },
 	})
 	return fixture
 }
 
-func (f *recordsPhase4Fixture) publishFinalTurns(t *testing.T) recordsPhase4Turns {
+func (f *recordsFixture) publishFinalTurns(t *testing.T) recordsTurns {
 	t.Helper()
 	workerContext, cancelWorker := context.WithCancel(t.Context())
 	defer cancelWorker()
-	workerSource := newPhase4AckSource(recordstore.NewFinalTurnOutbox(f.pool), 3, cancelWorker)
+	workerSource := newRecordsAckSource(recordstore.NewFinalTurnOutbox(f.pool), 3, cancelWorker)
 	worker := turns.NewFinalTurnWorker(workerSource, turns.NewFinalTurnHandler(f.records.Turns))
 	workerDone := make(chan error, 1)
 	go func() { workerDone <- worker.Run(workerContext) }()
 
-	result := recordsPhase4Turns{
-		pending: phase4Turn(
+	result := recordsTurns{
+		pending: recordsTurn(
 			f.ownerSession,
 			f.owner.ID,
-			"phase4_pending_turn",
+			"records_pending_turn",
 			"trace_pending",
 			1,
 			f.currentTime.Add(-time.Second),
 		),
 	}
-	publishPhase4Turn(t, f.producer, result.pending, asr.FinalResult{
+	publishRecordsTurn(t, f.producer, result.pending, asr.FinalResult{
 		Text: "pending source", SourceLanguage: "zh-CN", Provider: "integration-asr", Model: "integration-asr-model",
 		AudioDuration: time.Second,
 	})
 
 	f.currentTime = f.currentTime.Add(2 * time.Second)
-	result.attributed = phase4Turn(
+	result.attributed = recordsTurn(
 		f.ownerSession,
 		f.owner.ID,
-		"phase4_attributed_turn",
+		"records_attributed_turn",
 		"trace_attributed",
 		2,
 		f.currentTime.Add(-time.Second),
 	)
-	publishPhase4Turn(t, f.producer, result.attributed, asr.FinalResult{
+	publishRecordsTurn(t, f.producer, result.attributed, asr.FinalResult{
 		Text: "attributed source", SourceLanguage: "zh-CN", Provider: "integration-asr", Model: "integration-asr-model",
 		ProviderSpeakerID: "speaker_a", AudioDuration: time.Second,
 	})
 
 	f.currentTime = f.currentTime.Add(2 * time.Second)
-	result.foreign = phase4Turn(
+	result.foreign = recordsTurn(
 		f.foreignSession,
 		f.foreign.ID,
-		"phase4_foreign_turn",
+		"records_foreign_turn",
 		"trace_foreign",
 		1,
 		f.currentTime.Add(-time.Second),
 	)
-	publishPhase4Turn(t, f.producer, result.foreign, asr.FinalResult{
+	publishRecordsTurn(t, f.producer, result.foreign, asr.FinalResult{
 		Text: "foreign source", SourceLanguage: "zh-CN", Provider: "integration-asr", Model: "integration-asr-model",
 		AudioDuration: time.Second,
 	})
@@ -420,7 +420,7 @@ func (f *recordsPhase4Fixture) publishFinalTurns(t *testing.T) recordsPhase4Turn
 	return result
 }
 
-func (f *recordsPhase4Fixture) resolveAttributionTask(t *testing.T) {
+func (f *recordsFixture) resolveAttributionTask(t *testing.T) {
 	t.Helper()
 	var taskCount int
 	if err := f.pool.QueryRow(t.Context(), "SELECT COUNT(*) FROM attribution_tasks").Scan(&taskCount); err != nil {
@@ -440,7 +440,7 @@ func (f *recordsPhase4Fixture) resolveAttributionTask(t *testing.T) {
 	}
 }
 
-func phase4Turn(sessionID, accountID, turnID, traceID string, sequenceNo int64, startedAt time.Time) pipeline.TurnContext {
+func recordsTurn(sessionID, accountID, turnID, traceID string, sequenceNo int64, startedAt time.Time) pipeline.TurnContext {
 	return pipeline.TurnContext{
 		ID: turnID, SessionID: sessionID, AccountID: accountID, TraceID: traceID, SequenceNo: sequenceNo,
 		LanguageConfig: session.LanguageConfigSnapshot{
@@ -451,14 +451,14 @@ func phase4Turn(sessionID, accountID, turnID, traceID string, sequenceNo int64, 
 	}
 }
 
-func publishPhase4Turn(t *testing.T, producer *pipeline.PipelineService, turn pipeline.TurnContext, result asr.FinalResult) {
+func publishRecordsTurn(t *testing.T, producer *pipeline.PipelineService, turn pipeline.TurnContext, result asr.FinalResult) {
 	t.Helper()
 	if err := producer.HandleASRFinal(t.Context(), turn, result); err != nil {
 		t.Fatalf("HandleASRFinal(%q) error = %v", turn.ID, err)
 	}
 }
 
-func assertPhase4TurnIDs(t *testing.T, turns []recordsv1.VoiceTurn, want ...string) {
+func assertRecordsTurnIDs(t *testing.T, turns []recordsv1.VoiceTurn, want ...string) {
 	t.Helper()
 	if len(turns) != len(want) {
 		t.Fatalf("turn count = %d, want %d: %#v", len(turns), len(want), turns)
@@ -470,7 +470,7 @@ func assertPhase4TurnIDs(t *testing.T, turns []recordsv1.VoiceTurn, want ...stri
 	}
 }
 
-func assertPhase4CorrectedTurn(t *testing.T, turn recordsv1.VoiceTurn, participantID string, confidence float64) {
+func assertRecordsCorrectedTurn(t *testing.T, turn recordsv1.VoiceTurn, participantID string, confidence float64) {
 	t.Helper()
 	if turn.ParticipantID == nil || *turn.ParticipantID != participantID {
 		t.Fatalf("corrected participant_id = %#v, want %q", turn.ParticipantID, participantID)
@@ -489,7 +489,7 @@ func assertPhase4CorrectedTurn(t *testing.T, turn recordsv1.VoiceTurn, participa
 	}
 }
 
-func assertPhase4ImmutableTurn(t *testing.T, before, after recordsv1.VoiceTurn) {
+func assertRecordsImmutableTurn(t *testing.T, before, after recordsv1.VoiceTurn) {
 	t.Helper()
 	if before.ID != after.ID || before.SessionID != after.SessionID || before.SequenceNo != after.SequenceNo ||
 		before.SourceLanguage != after.SourceLanguage || before.TargetLanguage != after.TargetLanguage || before.LanguageConfigVersion != after.LanguageConfigVersion ||
@@ -499,14 +499,14 @@ func assertPhase4ImmutableTurn(t *testing.T, before, after recordsv1.VoiceTurn) 
 	}
 }
 
-func equalPhase4StringPointers(left, right *string) bool {
+func equalRecordsStringPointers(left, right *string) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}
 	return *left == *right
 }
 
-func assertPhase4ImmutableDeliverySnapshot(t *testing.T, before, after delivery.FinalTurnSnapshot) {
+func assertRecordsImmutableDeliverySnapshot(t *testing.T, before, after delivery.FinalTurnSnapshot) {
 	t.Helper()
 	if before.TurnID != after.TurnID || before.SessionID != after.SessionID || before.SourceLanguage != after.SourceLanguage || before.TargetLanguage != after.TargetLanguage ||
 		before.LanguageConfigVersion != after.LanguageConfigVersion || before.SourceText != after.SourceText || before.TranslatedText != after.TranslatedText || !before.CreatedAt.Equal(after.CreatedAt) {
@@ -514,7 +514,7 @@ func assertPhase4ImmutableDeliverySnapshot(t *testing.T, before, after delivery.
 	}
 }
 
-func phase4HTTPRequest(handler http.Handler, method, target, accessToken, body string) *httptest.ResponseRecorder {
+func recordsHTTPRequest(handler http.Handler, method, target, accessToken, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, target, strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 	if body != "" {
@@ -525,51 +525,51 @@ func phase4HTTPRequest(handler http.Handler, method, target, accessToken, body s
 	return response
 }
 
-func decodePhase4JSON(t *testing.T, response *httptest.ResponseRecorder, target any) {
+func decodeRecordsJSON(t *testing.T, response *httptest.ResponseRecorder, target any) {
 	t.Helper()
 	if err := json.Unmarshal(response.Body.Bytes(), target); err != nil {
 		t.Fatalf("decode HTTP response %q: %v", response.Body.String(), err)
 	}
 }
 
-func assertPhase4Error(t *testing.T, response *httptest.ResponseRecorder, status int, code recordsv1.ErrorCode) {
+func assertRecordsError(t *testing.T, response *httptest.ResponseRecorder, status int, code recordsv1.ErrorCode) {
 	t.Helper()
 	if response.Code != status {
 		t.Fatalf("HTTP status = %d, want %d, body = %s", response.Code, status, response.Body.String())
 	}
 	var body recordsv1.ErrorResponse
-	decodePhase4JSON(t, response, &body)
+	decodeRecordsJSON(t, response, &body)
 	if body.Error.Code != code {
 		t.Fatalf("HTTP error code = %q, want %q", body.Error.Code, code)
 	}
 }
 
-type phase4AckSource struct {
+type recordsAckSource struct {
 	source    turns.FinalTurnDeliverySource
 	remaining atomic.Int32
 	cancel    context.CancelFunc
 }
 
-func newPhase4AckSource(source turns.FinalTurnDeliverySource, count int, cancel context.CancelFunc) *phase4AckSource {
-	result := &phase4AckSource{source: source, cancel: cancel}
+func newRecordsAckSource(source turns.FinalTurnDeliverySource, count int, cancel context.CancelFunc) *recordsAckSource {
+	result := &recordsAckSource{source: source, cancel: cancel}
 	result.remaining.Store(int32(count))
 	return result
 }
 
-func (s *phase4AckSource) Receive(ctx context.Context) (turns.FinalTurnDelivery, error) {
+func (s *recordsAckSource) Receive(ctx context.Context) (turns.FinalTurnDelivery, error) {
 	delivery, err := s.source.Receive(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &phase4AckDelivery{FinalTurnDelivery: delivery, source: s}, nil
+	return &recordsAckDelivery{FinalTurnDelivery: delivery, source: s}, nil
 }
 
-type phase4AckDelivery struct {
+type recordsAckDelivery struct {
 	turns.FinalTurnDelivery
-	source *phase4AckSource
+	source *recordsAckSource
 }
 
-func (d *phase4AckDelivery) Ack() error {
+func (d *recordsAckDelivery) Ack() error {
 	if err := d.FinalTurnDelivery.Ack(); err != nil {
 		return err
 	}
@@ -579,30 +579,30 @@ func (d *phase4AckDelivery) Ack() error {
 	return nil
 }
 
-type phase4UsageSink struct{}
+type recordsUsageSink struct{}
 
-type phase4FinalTurnGate struct{}
+type finalTurnGate struct{}
 
-func (phase4FinalTurnGate) CommitFinalTurn(ctx context.Context, _ pipeline.TurnContext, commit pipeline.FinalTurnCommit) (bool, error) {
+func (finalTurnGate) CommitFinalTurn(ctx context.Context, _ pipeline.TurnContext, commit pipeline.FinalTurnCommit) (bool, error) {
 	if err := commit(ctx); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (phase4UsageSink) Publish(context.Context, pipeline.UsageFact) error { return nil }
+func (recordsUsageSink) Publish(context.Context, pipeline.UsageFact) error { return nil }
 
-type phase4AudioSink struct{}
+type recordsAudioSink struct{}
 
-func (phase4AudioSink) Publish(context.Context, pipeline.AudioChunk) error { return nil }
+func (recordsAudioSink) Publish(context.Context, pipeline.AudioChunk) error { return nil }
 
-type phase4RuntimeReporter struct{}
+type recordsRuntimeReporter struct{}
 
-func (phase4RuntimeReporter) SetProcessingState(context.Context, session.ProcessingStateUpdate) error {
+func (recordsRuntimeReporter) SetProcessingState(context.Context, session.ProcessingStateUpdate) error {
 	return nil
 }
 
-var _ pipeline.UsageFactSink = phase4UsageSink{}
-var _ pipeline.AudioChunkSink = phase4AudioSink{}
-var _ session.RuntimeStateReporter = phase4RuntimeReporter{}
-var _ turns.FinalTurnDeliverySource = (*phase4AckSource)(nil)
+var _ pipeline.UsageFactSink = recordsUsageSink{}
+var _ pipeline.AudioChunkSink = recordsAudioSink{}
+var _ session.RuntimeStateReporter = recordsRuntimeReporter{}
+var _ turns.FinalTurnDeliverySource = (*recordsAckSource)(nil)

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 func TestServiceStartRunsPrerequisitesBeforeTransition(t *testing.T) {
@@ -59,6 +61,20 @@ func TestServiceStartRunsPrerequisitesBeforeTransition(t *testing.T) {
 		!params.StartedAt.Equal(fixture.clock.now) ||
 		params.StartedAt.Location() != time.UTC {
 		t.Fatalf("StartTransitionParams = %#v", params)
+	}
+}
+
+func TestServiceStartForwardsExplicitInitialMode(t *testing.T) {
+	fixture := newStartFixture(t, StatusCreated)
+	fixture.repository.transitionResult = activeStartSession(fixture.repository.session, fixture.clock.now)
+	input := validStartInput()
+	input.InitialMode = realtimev1.ModeAssistant
+
+	if _, err := fixture.service.Start(t.Context(), input); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got := fixture.realtime.startCommand.InitialMode; got != realtimev1.ModeAssistant {
+		t.Fatalf("StartRealtimeCommand.InitialMode = %q, want %q", got, realtimev1.ModeAssistant)
 	}
 }
 
@@ -266,6 +282,7 @@ func TestServiceStartValidatesBeforeDependencies(t *testing.T) {
 		{name: "oversized idempotency key", ctx: context.Background(), edit: func(input *StartInput) { input.IdempotencyKey = strings.Repeat("k", maxIdempotencyKeyLength+1) }, want: ErrInvalidRequest},
 		{name: "missing request hash", ctx: context.Background(), edit: func(input *StartInput) { input.RequestHash = "" }, want: ErrInvalidRequest},
 		{name: "missing trace ID", ctx: context.Background(), edit: func(input *StartInput) { input.TraceID = "" }, want: ErrInvalidRequest},
+		{name: "unsupported initial mode", ctx: context.Background(), edit: func(input *StartInput) { input.InitialMode = realtimev1.Mode("english_practice") }, want: ErrInvalidRequest},
 	}
 
 	for _, test := range tests {

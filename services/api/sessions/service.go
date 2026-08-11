@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 const (
@@ -104,6 +106,9 @@ type StartInput struct {
 	RequestHash    string
 	TraceID        string
 	StartedBy      string
+	// InitialMode is optional for rolling compatibility; empty preserves the
+	// realtime contract's interpretation default for legacy callers.
+	InitialMode realtimev1.Mode
 }
 
 // EndInput carries authenticated ownership and a durable request identity.

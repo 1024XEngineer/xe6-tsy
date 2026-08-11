@@ -29,6 +29,7 @@ import {
 import { ApiError } from "../lib/http";
 import { parseTranslationFinal } from "../lib/translation-events";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
+import { sendWakeWordDetectedSignal } from "../lib/wake-word-signal";
 import {
   loadVoiceConfig,
   normalizeVoiceConfig,
@@ -657,8 +658,19 @@ export function useVoiceSession() {
           return;
         }
         if (command === "listen") {
-          // Temporary verify hook until command-mode behavior lands.
-          console.log(`[wake] listen recognized: ${keyword}`);
+          const session = webrtcRef.current;
+          if (!runningRef.current || !sessionIdRef.current || !session) return;
+
+          const result = sendWakeWordDetectedSignal(session);
+          if (result.ok) {
+            setHintMessage(`已识别「${keyword}」，请说指令。`);
+            return;
+          }
+          setHintMessage(
+            result.reason === "data_channel_not_open"
+              ? "已识别唤醒词，但实时控制通道尚未就绪，请重试。"
+              : "已识别唤醒词，但发送失败，请重试。",
+          );
         }
       },
       onStatus: (status, detail) => {

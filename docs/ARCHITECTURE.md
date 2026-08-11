@@ -442,3 +442,26 @@ sequenceDiagram
 9. **产品与硬件假设**：最终语言范围、硬件音频格式、弱网标准、说话人绑定方式和是否支持蓝牙配网仍待确认。
 
 这些问题不改变“业务管理和实时语音分开”的总体方向，但会影响最终如何部署、需要多少机器以及什么条件下才能正式上线。
+
+## 11. AI 对话助手与模式编排
+
+AI 对话助手和同声传译继续运行在现有双服务架构内，不增加独立部署服务。一个 `VoiceSession`
+只建立一个 realtime Runtime 和一条 WebRTC PeerConnection；助手与同传之间的模式切换只改变
+后续 Turn 的 Handler，不停止 Runtime，也不重建连接。
+
+`services/realtime-audio` 是实际 `active_mode` 的事实源，并在普通 Turn 开始时固定模式、
+`runtime_instance_id`、`generation` 和语言配置快照。普通音频只执行一次公共 ASR，再由
+Mode Router 分发到 AssistantHandler 或 InterpretationHandler。唤醒词后的命令音频进入独立的
+Command Gate，不能生成普通助手回复或翻译 `FinalTurn`。
+
+`services/api` 继续负责授权、配置、审计和长期投影，不重复维护 realtime 内的模式状态机。
+缺少模式字段的旧调用保持 `interpretation` 行为；英语口语训练仅保留未来 Handler 扩展位，不属于
+当前可执行契约。
+
+详细决策、伪代码、增量提交和验收标准见
+[AI 对话助手与实时模式编排方案](PROPOSAL_AI_ASSISTANT_MODE_ORCHESTRATION.md)。
+
+- [内部架构图](diagrams/ai-assistant-mode-orchestration.drawio)
+- [内部架构图预览](diagrams/ai-assistant-mode-orchestration.preview.png)
+- [模式切换时序图](diagrams/ai-assistant-mode-orchestration-sequence.drawio)
+- [模式切换时序图预览](diagrams/ai-assistant-mode-orchestration-sequence.preview.png)

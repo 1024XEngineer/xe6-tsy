@@ -58,6 +58,7 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{24, "realtime_fallback_playback_claim_tokens"},
 		{25, "realtime_fallback_playback_reclaimable"},
 		{26, "target_level_message_preferences"},
+		{27, "assistant_llm_usage"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))

@@ -149,6 +149,51 @@ func TestValkeyWriterDetectsPayloadConflict(t *testing.T) {
 	}
 }
 
+func TestValkeyWriterDoesNotAcknowledgeWhenStreamAppendFails(t *testing.T) {
+	server, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run() error = %v", err)
+	}
+	t.Cleanup(server.Close)
+
+	const stream = "lingow:realtime:mode:changed"
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	writer, err := NewValkeyWriter(client, "lingow:usage:recorded", stream)
+	if err != nil {
+		t.Fatalf("NewValkeyWriter() error = %v", err)
+	}
+	adapter := NewAdapter(writer)
+	event := validModeChangedEvent()
+	if err := client.Set(context.Background(), stream, "not-a-stream", 0).Err(); err != nil {
+		t.Fatalf("seed wrong stream type: %v", err)
+	}
+
+	if err := adapter.Append(context.Background(), realtimev1.ModeChangedTopic, event.EventID, event); err == nil {
+		t.Fatal("Append() error = nil, want XADD failure")
+	}
+	dedupKey := writer.dedupKey(stream, Entry{
+		Topic:          realtimev1.ModeChangedTopic,
+		IdempotencyKey: event.EventID,
+	})
+	if exists, err := client.Exists(context.Background(), dedupKey).Result(); err != nil || exists != 0 {
+		t.Fatalf("dedup marker after XADD failure = %d, error = %v; want absent", exists, err)
+	}
+	if err := client.Del(context.Background(), stream).Err(); err != nil {
+		t.Fatalf("remove wrong stream key: %v", err)
+	}
+
+	if err := adapter.Append(context.Background(), realtimev1.ModeChangedTopic, event.EventID, event); err != nil {
+		t.Fatalf("retry Append() error = %v", err)
+	}
+	messages, err := client.XRange(context.Background(), stream, "-", "+").Result()
+	if err != nil {
+		t.Fatalf("XRange() error = %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("stream length after retry = %d, want 1", len(messages))
+	}
+}
+
 func validModeChangedEvent() realtimev1.ModeChangedEvent {
 	return realtimev1.ModeChangedEvent{
 		EventVersion: realtimev1.ModeChangedEventVersion,

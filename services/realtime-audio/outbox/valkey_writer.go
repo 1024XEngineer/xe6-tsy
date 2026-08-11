@@ -3,7 +3,6 @@ package outbox
 import (
 	"context"
 	"encoding/hex"
-	"errors"
 	"fmt"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
@@ -11,6 +10,23 @@ import (
 )
 
 const usageRecordedTopic = "usage.recorded"
+
+// appendEntryScript keeps the stream append and dedup marker in one server-side critical
+// section. XADD deliberately runs first: when the stream key has the wrong type or XADD otherwise
+// fails, Redis aborts the script before SET can leave a dedup-only false acknowledgement.
+var appendEntryScript = redis.NewScript(`
+local stored = redis.call("GET", KEYS[1])
+if stored then
+  if stored == ARGV[1] then
+    return 0
+  end
+  return -1
+end
+
+redis.call("XADD", KEYS[2], "*", "payload", ARGV[2])
+redis.call("SET", KEYS[1], ARGV[1])
+return 1
+`)
 
 // ValkeyWriter publishes canonical outbox entries to a Redis/Valkey stream.
 type ValkeyWriter struct {
@@ -54,35 +70,23 @@ func (w *ValkeyWriter) Accept(ctx context.Context, entry Entry) (Ack, error) {
 	}
 	dedupKey := w.dedupKey(stream, entry)
 	hashHex := hex.EncodeToString(entry.PayloadHash[:])
-	for {
-		err := w.client.Watch(ctx, func(tx *redis.Tx) error {
-			stored, err := tx.Get(ctx, dedupKey).Result()
-			switch {
-			case err == nil && stored == hashHex:
-				return nil
-			case err == nil:
-				return ErrConflict
-			case !errors.Is(err, redis.Nil):
-				return err
-			}
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Set(ctx, dedupKey, hashHex, 0)
-				pipe.XAdd(ctx, &redis.XAddArgs{
-					Stream: stream,
-					Values: map[string]any{"payload": entry.Payload},
-				})
-				return nil
-			})
-			return err
-		}, dedupKey)
-		if errors.Is(err, redis.TxFailedErr) {
-			continue
-		}
-		if err != nil {
-			return Ack{}, err
-		}
-		return Ack{Accepted: true}, nil
+	result, err := appendEntryScript.Run(
+		ctx,
+		w.client,
+		[]string{dedupKey, stream},
+		hashHex,
+		entry.Payload,
+	).Int64()
+	if err != nil {
+		return Ack{}, err
 	}
+	if result == -1 {
+		return Ack{}, ErrConflict
+	}
+	if result != 0 && result != 1 {
+		return Ack{}, fmt.Errorf("append valkey outbox entry: unexpected script result %d", result)
+	}
+	return Ack{Accepted: true}, nil
 }
 
 func (w *ValkeyWriter) dedupKey(stream string, entry Entry) string {

@@ -170,6 +170,21 @@ test("an older mode read cannot replace a later observed runtime", async () => {
   assert.equal(client.state.mode?.runtime_instance_id, "r2");
 });
 
+test("an older mode read failure cannot replace a later observed runtime", async () => {
+  let rejectRead!: (error: unknown) => void;
+  const transport = new FakeTransport();
+  transport.getMode = async () => new Promise((_resolve, reject) => { rejectRead = reject; });
+  const client = new RuntimeClient("s1", transport);
+
+  const pending = client.refreshMode();
+  client.observeMode(mode(1, "r2", "assistant"));
+  rejectRead(new RealtimeApiError(503, "service_unavailable"));
+
+  assert.equal((await pending)?.runtime_instance_id, "r2");
+  assert.equal(client.state.status, "idle");
+  assert.equal(client.state.errorCode, null);
+});
+
 test("late successful mode response is discarded after runtime replacement", async () => {
   let resolveSwitch!: (value: Awaited<ReturnType<RealtimeTransport["switchMode"]>>) => void;
   const transport = new FakeTransport();

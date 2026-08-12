@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
@@ -216,7 +217,7 @@ func TestDataChannelTTSAudioSinkPublishCompleteCancel(t *testing.T) {
 	t.Run("cancel drops buffer and surfaces ctx error", func(t *testing.T) {
 		t.Parallel()
 		sink := &DataChannelTTSAudioSink{}
-		_ = sink.Publish(context.Background(), pipeline.AudioChunk{PlaybackID: "p1", Data: []byte{1, 2, 3}})
+		_ = sink.Publish(context.Background(), pipeline.AudioChunk{SessionID: "s1", PlaybackID: "p1", Data: []byte{1, 2, 3}})
 		canceled, cancel := context.WithCancel(context.Background())
 		cancel()
 		if err := sink.Cancel(canceled, "s1", "p1", "interrupt"); !errors.Is(err, context.Canceled) {
@@ -263,7 +264,7 @@ func TestDataChannelTTSAudioSinkInterruptCurrentDropsSessionBuffers(t *testing.T
 	if len(sink.buffers) != 1 {
 		t.Fatalf("buffers after interrupt = %d, want only another session", len(sink.buffers))
 	}
-	if _, ok := sink.buffers["playback-1"]; ok {
+	if _, ok := sink.buffers[ttsPlaybackKey{sessionID: "session-1", playbackID: "playback-1"}]; ok {
 		t.Fatal("session-1 playback buffer was not removed")
 	}
 	if err := sink.Publish(context.Background(), pipeline.AudioChunk{
@@ -271,7 +272,7 @@ func TestDataChannelTTSAudioSinkInterruptCurrentDropsSessionBuffers(t *testing.T
 	}); err != nil {
 		t.Fatalf("Publish(late chunk) error = %v", err)
 	}
-	if _, ok := sink.buffers["playback-1"]; ok {
+	if _, ok := sink.buffers[ttsPlaybackKey{sessionID: "session-1", playbackID: "playback-1"}]; ok {
 		t.Fatal("late chunk recreated an interrupted playback buffer")
 	}
 	if err := sink.Complete(context.Background(), "session-1", "playback-1"); err != nil {
@@ -289,17 +290,104 @@ func TestDataChannelTTSAudioSinkInterruptionIsScopedToSession(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Publish(session-1) error = %v", err)
 	}
-	if err := sink.InterruptCurrent(context.Background(), "session-1", "wake_word_detected"); err != nil {
-		t.Fatalf("InterruptCurrent() error = %v", err)
-	}
 	if err := sink.Publish(context.Background(), pipeline.AudioChunk{
 		SessionID: "session-2", PlaybackID: "shared-playback", Data: []byte{2},
 	}); err != nil {
 		t.Fatalf("Publish(session-2) error = %v", err)
 	}
-	buffer := sink.buffers["shared-playback"]
-	if buffer == nil || buffer.sessionID != "session-2" {
+	if err := sink.InterruptCurrent(context.Background(), "session-1", "wake_word_detected"); err != nil {
+		t.Fatalf("InterruptCurrent() error = %v", err)
+	}
+	buffer := sink.buffers[ttsPlaybackKey{sessionID: "session-2", playbackID: "shared-playback"}]
+	if buffer == nil || string(buffer.pcm) != string([]byte{2}) {
 		t.Fatalf("another session buffer = %#v, want retained session-2 audio", buffer)
+	}
+}
+
+func TestDataChannelTTSAudioSinkSeparatesSamePlaybackIDAcrossSessions(t *testing.T) {
+	type publishedAudio struct {
+		sessionID string
+		data      []byte
+	}
+	var published []publishedAudio
+	sink := &DataChannelTTSAudioSink{
+		publishAudio: func(
+			_ context.Context,
+			sessionID, _, _ string,
+			_ int64,
+			_ bool,
+			_ string,
+			data []byte,
+		) error {
+			published = append(published, publishedAudio{sessionID: sessionID, data: append([]byte(nil), data...)})
+			return nil
+		},
+	}
+
+	chunks := []pipeline.AudioChunk{
+		{SessionID: "session-1", PlaybackID: "shared-playback", Encoding: "pcm_s16le", Data: []byte{1, 2}},
+		{SessionID: "session-2", PlaybackID: "shared-playback", Encoding: "pcm_s16le", Data: []byte{3, 4}},
+	}
+	start := make(chan struct{})
+	errs := make(chan error, len(chunks))
+	var publishers sync.WaitGroup
+	for _, chunk := range chunks {
+		chunk := chunk
+		publishers.Add(1)
+		go func() {
+			defer publishers.Done()
+			<-start
+			errs <- sink.Publish(context.Background(), chunk)
+		}()
+	}
+	close(start)
+	publishers.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Publish() error = %v", err)
+		}
+	}
+	if len(sink.buffers) != 2 {
+		t.Fatalf("buffers = %d, want one per session", len(sink.buffers))
+	}
+	for _, sessionID := range []string{"session-1", "session-2"} {
+		if err := sink.Complete(context.Background(), sessionID, "shared-playback"); err != nil {
+			t.Fatalf("Complete(%s) error = %v", sessionID, err)
+		}
+	}
+
+	if len(published) != 2 {
+		t.Fatalf("published audio count = %d, want 2", len(published))
+	}
+	if published[0].sessionID != "session-1" || string(published[0].data) != string([]byte{1, 2}) {
+		t.Fatalf("first published audio = %#v, want session-1 data only", published[0])
+	}
+	if published[1].sessionID != "session-2" || string(published[1].data) != string([]byte{3, 4}) {
+		t.Fatalf("second published audio = %#v, want session-2 data only", published[1])
+	}
+}
+
+func TestDataChannelTTSAudioSinkCancelIsScopedToSessionWithSharedPlaybackID(t *testing.T) {
+	sink := &DataChannelTTSAudioSink{}
+	for _, chunk := range []pipeline.AudioChunk{
+		{SessionID: "session-1", PlaybackID: "shared-playback", Data: []byte{1}},
+		{SessionID: "session-2", PlaybackID: "shared-playback", Data: []byte{2}},
+	} {
+		if err := sink.Publish(context.Background(), chunk); err != nil {
+			t.Fatalf("Publish(%s) error = %v", chunk.SessionID, err)
+		}
+	}
+	if err := sink.Cancel(context.Background(), "session-1", "shared-playback", "interrupted"); err != nil {
+		t.Fatalf("Cancel(session-1) error = %v", err)
+	}
+
+	if _, ok := sink.buffers[ttsPlaybackKey{sessionID: "session-1", playbackID: "shared-playback"}]; ok {
+		t.Fatal("canceled session buffer was retained")
+	}
+	buffer := sink.buffers[ttsPlaybackKey{sessionID: "session-2", playbackID: "shared-playback"}]
+	if buffer == nil || string(buffer.pcm) != string([]byte{2}) {
+		t.Fatalf("uncanceled session buffer = %#v, want session-2 audio", buffer)
 	}
 }
 

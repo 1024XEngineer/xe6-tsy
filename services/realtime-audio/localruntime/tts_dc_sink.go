@@ -28,7 +28,7 @@ type DataChannelTTSAudioSink struct {
 	Failures   DataChannelFailureObserver
 
 	mu           sync.Mutex
-	buffers      map[string]*ttsBuffer
+	buffers      map[ttsPlaybackKey]*ttsBuffer
 	publishing   map[ttsPlaybackKey]bool
 	settled      map[ttsPlaybackKey]struct{}
 	settledOrder []ttsPlaybackKey
@@ -93,12 +93,12 @@ func (s *DataChannelTTSAudioSink) Publish(ctx context.Context, chunk pipeline.Au
 		return nil
 	}
 	if s.buffers == nil {
-		s.buffers = make(map[string]*ttsBuffer)
+		s.buffers = make(map[ttsPlaybackKey]*ttsBuffer)
 	}
-	buf := s.buffers[chunk.PlaybackID]
+	buf := s.buffers[key]
 	if buf == nil {
 		buf = &ttsBuffer{sessionID: chunk.SessionID, turnID: chunk.TurnID}
-		s.buffers[chunk.PlaybackID] = buf
+		s.buffers[key] = buf
 	}
 	if chunk.TurnID != "" {
 		buf.turnID = chunk.TurnID
@@ -118,18 +118,15 @@ func (s *DataChannelTTSAudioSink) Complete(ctx context.Context, sessionID, playb
 		return err
 	}
 	s.mu.Lock()
-	buf := s.buffers[playbackID]
-	if sessionID == "" && buf != nil {
-		sessionID = buf.sessionID
-	}
-	key := ttsPlaybackKey{sessionID: sessionID, playbackID: playbackID}
+	key, buf := s.bufferLocked(sessionID, playbackID)
+	sessionID = key.sessionID
 	if _, interrupted := s.settled[key]; interrupted {
-		delete(s.buffers, playbackID)
+		delete(s.buffers, key)
 		s.releaseSettledLocked(key)
 		s.mu.Unlock()
 		return nil
 	}
-	delete(s.buffers, playbackID)
+	delete(s.buffers, key)
 	if buf == nil || len(buf.pcm) == 0 {
 		s.mu.Unlock()
 		return nil
@@ -163,13 +160,8 @@ func (s *DataChannelTTSAudioSink) Complete(ctx context.Context, sessionID, playb
 
 func (s *DataChannelTTSAudioSink) Cancel(ctx context.Context, sessionID, playbackID, _ string) error {
 	s.mu.Lock()
-	if sessionID == "" {
-		if buffer := s.buffers[playbackID]; buffer != nil {
-			sessionID = buffer.sessionID
-		}
-	}
-	delete(s.buffers, playbackID)
-	key := ttsPlaybackKey{sessionID: sessionID, playbackID: playbackID}
+	key, _ := s.bufferLocked(sessionID, playbackID)
+	delete(s.buffers, key)
 	s.markSettledLocked(key)
 	if _, publishing := s.publishing[key]; publishing {
 		s.publishing[key] = true
@@ -190,10 +182,10 @@ func (s *DataChannelTTSAudioSink) InterruptCurrent(ctx context.Context, sessionI
 		return nil
 	}
 	s.mu.Lock()
-	for playbackID, buffer := range s.buffers {
-		if buffer != nil && buffer.sessionID == sessionID {
-			delete(s.buffers, playbackID)
-			s.markSettledLocked(ttsPlaybackKey{sessionID: sessionID, playbackID: playbackID})
+	for key := range s.buffers {
+		if key.sessionID == sessionID {
+			delete(s.buffers, key)
+			s.markSettledLocked(key)
 		}
 	}
 	for key := range s.publishing {
@@ -204,6 +196,30 @@ func (s *DataChannelTTSAudioSink) InterruptCurrent(ctx context.Context, sessionI
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+// bufferLocked resolves legacy callers that omit sessionID only when one
+// buffer owns the playback ID. Ambiguous IDs are never guessed across sessions.
+func (s *DataChannelTTSAudioSink) bufferLocked(sessionID, playbackID string) (ttsPlaybackKey, *ttsBuffer) {
+	key := ttsPlaybackKey{sessionID: sessionID, playbackID: playbackID}
+	if buffer := s.buffers[key]; buffer != nil || sessionID != "" {
+		return key, buffer
+	}
+	var match ttsPlaybackKey
+	var buffer *ttsBuffer
+	for candidate, candidateBuffer := range s.buffers {
+		if candidate.playbackID != playbackID {
+			continue
+		}
+		if buffer != nil {
+			return key, nil
+		}
+		match, buffer = candidate, candidateBuffer
+	}
+	if buffer != nil {
+		return match, buffer
+	}
+	return key, nil
 }
 
 func (s *DataChannelTTSAudioSink) playbackSettled(key ttsPlaybackKey) bool {

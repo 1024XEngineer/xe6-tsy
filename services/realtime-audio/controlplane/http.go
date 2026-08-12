@@ -103,13 +103,13 @@ type ConfigReader interface {
 
 // WebRTCConfig is the public, transport-neutral runtime configuration response.
 type WebRTCConfig struct {
-	SessionID          string            `json:"session_id"`
-	ExpiresAt          time.Time         `json:"expires_at"`
-	ICEServers         []ICEServer       `json:"ice_servers"`
-	ICETransportPolicy string            `json:"ice_transport_policy"`
-	DataChannel        DataChannelConfig `json:"data_channel"`
+	SessionID          string                   `json:"session_id"`
+	ExpiresAt          time.Time                `json:"expires_at"`
+	ICEServers         []ICEServer              `json:"ice_servers"`
+	ICETransportPolicy string                   `json:"ice_transport_policy"`
+	DataChannel        DataChannelConfig        `json:"data_channel"`
 	ControlDataChannel ControlDataChannelConfig `json:"control_data_channel"`
-	Audio              AudioConfig       `json:"audio"`
+	Audio              AudioConfig              `json:"audio"`
 }
 
 type ICEServer struct {

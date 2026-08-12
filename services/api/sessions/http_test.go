@@ -698,15 +698,18 @@ func TestHandlerModeRoutesForwardTrustedControlMetadata(t *testing.T) {
 	}
 	want := SwitchModeInput{
 		AccountID: "acct_1", SessionID: "vs_1", RuntimeInstanceID: "runtime-1",
-		OperationID: "mode-op-1", TraceID: "trace-header-1", ExpectedGeneration: 1,
+		OperationID: "mode-op-1", TraceID: modeOperationTraceID("vs_1", "mode-op-1"), ExpectedGeneration: 1,
 		TargetMode: ModeAssistant,
 	}
 	if !reflect.DeepEqual(modes.switchInput, want) {
 		t.Fatalf("SwitchMode input = %#v, want %#v", modes.switchInput, want)
 	}
+	if modes.switchInput.TraceID == post.Header.Get("X-Request-ID") {
+		t.Fatalf("command trace ID = HTTP request ID %q, want independent identities", modes.switchInput.TraceID)
+	}
 }
 
-func TestHandlerModeRouteGeneratesStableTraceWhenRequestIDIsMissing(t *testing.T) {
+func TestHandlerModeRouteKeepsOperationTraceStableAcrossRequestIDs(t *testing.T) {
 	modes := &handlerModeUseCases{switchErr: ErrModeUnavailable}
 	handler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeModes(modes)
 
@@ -716,6 +719,7 @@ func TestHandlerModeRouteGeneratesStableTraceWhenRequestIDIsMissing(t *testing.T
 	request.SetPathValue("id", "vs_1")
 	request.Header.Set("X-Test-Account", "acct_1")
 	request.Header.Set("Idempotency-Key", "mode-op-1")
+	request.Header.Set("X-Request-ID", "http-attempt-1")
 	response := httptest.NewRecorder()
 
 	handler.switchMode(response, request)
@@ -723,17 +727,17 @@ func TestHandlerModeRouteGeneratesStableTraceWhenRequestIDIsMissing(t *testing.T
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; body %s", response.Code, response.Body.String())
 	}
-	if modes.switchInput.TraceID == "" || modes.switchInput.TraceID == "req_missing" {
-		t.Fatalf("SwitchMode trace ID = %q, want generated request ID", modes.switchInput.TraceID)
+	if modes.switchInput.TraceID == "" || modes.switchInput.TraceID == request.Header.Get("X-Request-ID") {
+		t.Fatalf("SwitchMode trace ID = %q, want stable identity independent of HTTP request ID", modes.switchInput.TraceID)
 	}
 	var body httpErrorEnvelope
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatalf("decode error body: %v", err)
 	}
-	if body.Error.RequestID != modes.switchInput.TraceID ||
-		request.Header.Get("X-Request-ID") != modes.switchInput.TraceID {
+	if body.Error.RequestID != "http-attempt-1" ||
+		request.Header.Get("X-Request-ID") != "http-attempt-1" {
 		t.Fatalf(
-			"request IDs = response %q header %q command %q, want one stable value",
+			"HTTP request IDs = response %q header %q, want per-attempt value; command trace %q",
 			body.Error.RequestID,
 			request.Header.Get("X-Request-ID"),
 			modes.switchInput.TraceID,
@@ -748,13 +752,22 @@ func TestHandlerModeRouteGeneratesStableTraceWhenRequestIDIsMissing(t *testing.T
 	retry.SetPathValue("id", "vs_1")
 	retry.Header.Set("X-Test-Account", "acct_1")
 	retry.Header.Set("Idempotency-Key", "mode-op-1")
-	retryHandler.switchMode(httptest.NewRecorder(), retry)
+	retry.Header.Set("X-Request-ID", "http-attempt-2")
+	retryResponse := httptest.NewRecorder()
+	retryHandler.switchMode(retryResponse, retry)
 	if retryModes.switchInput.TraceID != modes.switchInput.TraceID {
 		t.Fatalf(
 			"retry trace ID = %q, want stable operation trace %q",
 			retryModes.switchInput.TraceID,
 			modes.switchInput.TraceID,
 		)
+	}
+	var retryBody httpErrorEnvelope
+	if err := json.NewDecoder(retryResponse.Body).Decode(&retryBody); err != nil {
+		t.Fatalf("decode retry error body: %v", err)
+	}
+	if retryBody.Error.RequestID != "http-attempt-2" {
+		t.Fatalf("retry response request ID = %q, want per-attempt HTTP identity", retryBody.Error.RequestID)
 	}
 }
 

@@ -330,12 +330,13 @@ func (h *Handler) switchMode(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, r, ErrInvalidRequest)
 		return
 	}
-	traceID := modeTraceIDFromHTTP(r, r.PathValue("id"), operationID)
-	if len(traceID) > maxRequestIDLength {
+	requestID := requestIDFromHTTP(r)
+	if len(requestID) > maxRequestIDLength {
 		r.Header.Del("X-Request-ID")
 		writeHTTPError(w, r, ErrInvalidRequest)
 		return
 	}
+	traceID := modeOperationTraceID(r.PathValue("id"), operationID)
 	result, err := h.modes.SwitchMode(r.Context(), SwitchModeInput{
 		AccountID:          accountID,
 		SessionID:          r.PathValue("id"),
@@ -578,14 +579,12 @@ func requestIDFromHTTP(r *http.Request) string {
 	return requestID
 }
 
-func modeTraceIDFromHTTP(r *http.Request, sessionID, operationID string) string {
-	if requestID := r.Header.Get("X-Request-ID"); requestID != "" {
-		return requestID
-	}
+func modeOperationTraceID(sessionID, operationID string) string {
+	// Realtime includes TraceID when comparing an OperationID replay. Derive the
+	// command trace from durable identities so a client's per-attempt HTTP
+	// request ID cannot turn an otherwise identical retry into a conflict.
 	digest := sha256.Sum256([]byte("voice-sessions.switch-mode\x00" + sessionID + "\x00" + operationID))
-	requestID := "req_mode_" + hex.EncodeToString(digest[:12])
-	r.Header.Set("X-Request-ID", requestID)
-	return requestID
+	return "req_mode_" + hex.EncodeToString(digest[:12])
 }
 
 var fallbackHTTPRequestIDSequence atomic.Uint64

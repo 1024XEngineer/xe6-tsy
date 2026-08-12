@@ -24,6 +24,14 @@ import {
 import { RealtimeApiError, type RealtimeTransport } from "./transport.ts";
 
 export type ClientStatus = "idle" | "syncing" | "ready" | "reconnecting" | "error";
+export type ModeCommandStatus = "pending" | "applied" | "unchanged" | "conflict" | "failed";
+
+export interface ModeCommandState {
+  operationId: string;
+  targetMode: Mode;
+  status: ModeCommandStatus;
+  errorCode: string | null;
+}
 
 export interface MobileState {
   sessionId: string;
@@ -35,6 +43,7 @@ export interface MobileState {
   effectiveMode: Mode;
   errorCode: string | null;
   staleOperationIds: readonly string[];
+  lastModeCommand: ModeCommandState | null;
 }
 
 export interface RuntimeClientOptions {
@@ -72,6 +81,7 @@ export class RuntimeClient {
   private readonly retiredConnectionIds = new Set<string>();
   private readonly retiredStartOperationIds = new Set<string>();
   private readonly retiredRuntimeIds = new Set<string>();
+  private modeReadSequence = 0;
   readonly sessionId: string;
   private readonly transport: RealtimeTransport;
 
@@ -96,6 +106,7 @@ export class RuntimeClient {
       effectiveMode: LEGACY_MODE_FALLBACK,
       errorCode: null,
       staleOperationIds: [],
+      lastModeCommand: null,
     });
   }
 
@@ -114,15 +125,21 @@ export class RuntimeClient {
     const [connection, runtime, mode] = await Promise.allSettled([
       this.transport.getConnection(this.sessionId),
       this.transport.getRuntime(this.sessionId),
-      this.transport.getMode(this.sessionId),
+      this.readMode(),
     ]);
-    if (connection.status === "fulfilled") this.observeConnection(connection.value);
-    if (runtime.status === "fulfilled") this.observeRuntime(runtime.value);
-    if (mode.status === "fulfilled") this.observeMode(mode.value);
+    const observationFailures: unknown[] = [];
+    if (connection.status === "fulfilled") {
+      try { this.observeConnection(connection.value); } catch (cause) { observationFailures.push(cause); }
+    }
+    if (runtime.status === "fulfilled") {
+      try { this.observeRuntime(runtime.value); } catch (cause) { observationFailures.push(cause); }
+    }
 
-    const requiredFailure = [connection, runtime].find((result) => result.status === "rejected");
-    if (requiredFailure?.status === "rejected") {
-      this.update({ status: "error", errorCode: errorCode(requiredFailure.reason) });
+    const requestFailure = [connection, runtime, mode].find((result) => result.status === "rejected");
+    const failure = observationFailures[0] ??
+      (requestFailure?.status === "rejected" ? requestFailure.reason : null);
+    if (failure) {
+      this.update({ status: "error", errorCode: errorCode(failure) });
     } else {
       const connectionState = this.current.connection?.state;
       this.update({
@@ -162,7 +179,9 @@ export class RuntimeClient {
       }
     }
     this.update({ connection: snapshot });
-    if (snapshot.state === "disconnected" || snapshot.state === "failed") {
+    if (snapshot.state === "closed") {
+      this.update({ status: "error", errorCode: "connection_closed" });
+    } else if (snapshot.state === "disconnected" || snapshot.state === "failed") {
       this.update({ status: "reconnecting" });
     } else if (snapshot.state === "connected" && this.current.status === "reconnecting") {
       this.update({ status: "ready" });
@@ -198,6 +217,11 @@ export class RuntimeClient {
   }
 
   observeMode(snapshot: ModeStateSnapshot): boolean {
+    this.modeReadSequence += 1;
+    return this.observeModeSnapshot(snapshot);
+  }
+
+  private observeModeSnapshot(snapshot: ModeStateSnapshot): boolean {
     if (
       snapshot.session_id !== this.sessionId ||
       !isMode(snapshot.active_mode) ||
@@ -220,10 +244,7 @@ export class RuntimeClient {
           return false;
         }
       } else {
-        if (
-          this.retiredRuntimeIds.has(snapshot.runtime_instance_id) ||
-          !isNewerTimestamp(previous.updated_at, snapshot.updated_at)
-        ) {
+        if (this.retiredRuntimeIds.has(snapshot.runtime_instance_id)) {
           return false;
         }
         this.retiredRuntimeIds.add(previous.runtime_instance_id);
@@ -252,7 +273,11 @@ export class RuntimeClient {
       target_mode: targetMode,
     };
     this.pendingOperations.add(operationId);
-    this.update({ status: "syncing", errorCode: null });
+    this.update({
+      status: "syncing",
+      errorCode: null,
+      lastModeCommand: { operationId, targetMode, status: "pending", errorCode: null },
+    });
     try {
       const result = await this.transport.switchMode(command);
       if (
@@ -281,10 +306,16 @@ export class RuntimeClient {
       );
       if (this.isOperationStale(operationId) || (!accepted && !responseIsCurrent)) {
         this.markOperationStale(operationId);
-        this.update({ status: "ready" });
+        this.update({
+          status: "ready",
+          lastModeCommand: { operationId, targetMode, status: "conflict", errorCode: "stale_mode_response" },
+        });
         throw new ModeConflictError("stale_mode_response", operationId, observed);
       }
-      this.update({ status: "ready" });
+      this.update({
+        status: "ready",
+        lastModeCommand: { operationId, targetMode, status: result.status, errorCode: null },
+      });
       return result;
     } catch (cause) {
       this.pendingOperations.delete(operationId);
@@ -295,24 +326,29 @@ export class RuntimeClient {
       }
       if (isModeConflict(cause)) {
         this.markOperationStale(operationId);
+        this.update({
+          lastModeCommand: { operationId, targetMode, status: "conflict", errorCode: cause.code },
+        });
         const refreshedMode = await this.refreshMode();
         this.update({ status: "ready" });
         throw new ModeConflictError(cause.code, operationId, refreshedMode);
       }
-      this.update({ status: "error", errorCode: errorCode(cause) });
+      const code = errorCode(cause);
+      this.update({
+        status: "error",
+        errorCode: code,
+        lastModeCommand: { operationId, targetMode, status: "failed", errorCode: code },
+      });
       throw cause;
     }
   }
 
   async refreshMode(): Promise<ModeStateSnapshot | null> {
     try {
-      const mode = await this.transport.getMode(this.sessionId);
-      this.observeMode(mode);
-      return mode;
+      return await this.readMode();
     } catch (cause) {
-      // Keep the last confirmed mode; with no snapshot this remains interpretation.
-      this.update({ mode: this.current.mode, effectiveMode: effectiveMode(this.current.mode) });
-      return null;
+      this.update({ status: "error", errorCode: errorCode(cause) });
+      throw cause;
     }
   }
 
@@ -321,6 +357,10 @@ export class RuntimeClient {
   }
 
   async reconnect(signal?: AbortSignal): Promise<MobileState> {
+    if (this.connectionIsClosed()) {
+      this.update({ status: "error", errorCode: "connection_closed" });
+      return this.current;
+    }
     this.update({ status: "reconnecting", errorCode: null });
     if (!this.reconnectMedia) {
       this.update({ status: "error", errorCode: "media_reconnect_unavailable" });
@@ -338,18 +378,21 @@ export class RuntimeClient {
         await this.reconnectMedia(signal);
         const connection = await this.transport.getConnection(this.sessionId);
         this.observeConnection(connection);
+        if (this.connectionIsClosed()) return this.current;
         if (this.current.connection?.state === "connected") {
-          const [runtime, mode] = await Promise.allSettled([
-            this.transport.getRuntime(this.sessionId),
-            this.transport.getMode(this.sessionId),
-          ]);
-          if (runtime.status === "fulfilled") this.observeRuntime(runtime.value);
-          if (mode.status === "fulfilled") this.observeMode(mode.value);
+          const runtime = await this.transport.getRuntime(this.sessionId);
+          this.observeRuntime(runtime);
+          await this.refreshMode();
           this.update({ status: "ready", errorCode: null });
           return this.current;
         }
       } catch (cause) {
         if (signal?.aborted) throw new DOMException("reconnect aborted", "AbortError");
+        if (this.connectionIsClosed()) return this.current;
+        if (this.current.connection?.state === "connected") {
+          this.update({ status: "error", errorCode: errorCode(cause) });
+          return this.current;
+        }
         this.update({ status: "reconnecting", errorCode: errorCode(cause) });
       }
     }
@@ -358,6 +401,23 @@ export class RuntimeClient {
   private markPendingOperationsStale(): void {
     for (const operationId of this.pendingOperations) this.markOperationStale(operationId);
     this.pendingOperations.clear();
+  }
+
+  private connectionIsClosed(): boolean {
+    return this.current.connection?.state === "closed";
+  }
+
+  private async readMode(): Promise<ModeStateSnapshot | null> {
+    const sequence = ++this.modeReadSequence;
+    try {
+      const snapshot = await this.transport.getMode(this.sessionId);
+      if (sequence !== this.modeReadSequence) return this.current.mode;
+      this.observeModeSnapshot(snapshot);
+      return this.current.mode;
+    } catch (cause) {
+      if (isLegacyModeUnavailable(cause)) return this.current.mode;
+      throw cause;
+    }
   }
 
   private markOperationStale(operationId: string): void {
@@ -408,6 +468,10 @@ function isModeConflict(error: unknown): error is RealtimeApiError {
       error.code === "mode_runtime_instance_mismatch" ||
       error.code === "mode_operation_conflict")
   );
+}
+
+function isLegacyModeUnavailable(error: unknown): boolean {
+  return error instanceof RealtimeApiError && error.status === 501 && error.code === "not_implemented";
 }
 
 function errorCode(error: unknown): string | null {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/redis/go-redis/v9"
@@ -90,7 +91,16 @@ func (w *ValkeyWriter) Accept(ctx context.Context, entry Entry) (Ack, error) {
 }
 
 func (w *ValkeyWriter) dedupKey(stream string, entry Entry) string {
-	return stream + ":dedup:" + entry.Topic + "\x00" + entry.IdempotencyKey
+	// Redis Cluster scripts require every key in one hash slot. A plain Stream hashes its whole
+	// name; wrapping that name as a hash tag gives the dedup key the same slot. If the Stream already
+	// has a hash tag, preserve its tag instead.
+	tag := stream
+	if start := strings.IndexByte(stream, '{'); start >= 0 {
+		if end := strings.IndexByte(stream[start+1:], '}'); end > 0 {
+			tag = stream[start+1 : start+1+end]
+		}
+	}
+	return "{" + tag + "}:dedup:" + entry.Topic + "\x00" + entry.IdempotencyKey
 }
 
 var _ Writer = (*ValkeyWriter)(nil)

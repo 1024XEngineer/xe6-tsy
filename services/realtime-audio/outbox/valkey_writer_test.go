@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -146,6 +147,19 @@ func TestValkeyWriterDetectsPayloadConflict(t *testing.T) {
 	}
 	if err := adapter.Append(context.Background(), "usage.recorded", fact.IdempotencyKey, conflict); !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflicting Append() error = %v, want ErrConflict", err)
+	}
+}
+
+func TestValkeyWriterDedupKeyUsesStreamClusterSlot(t *testing.T) {
+	writer := &ValkeyWriter{}
+	entry := Entry{Topic: realtimev1.ModeChangedTopic, IdempotencyKey: "event-1"}
+	for stream, wantPrefix := range map[string]string{
+		"lingow:mode":           "{lingow:mode}:dedup:",
+		"lingow:{mode}:changed": "{mode}:dedup:",
+	} {
+		if got := writer.dedupKey(stream, entry); !strings.HasPrefix(got, wantPrefix) {
+			t.Fatalf("dedupKey(%q) = %q, want prefix %q", stream, got, wantPrefix)
+		}
 	}
 }
 

@@ -175,6 +175,194 @@ func TestGateQuarantinesPreWakeFrameWithoutStartingASR(t *testing.T) {
 	}
 }
 
+func TestGateExpiresWithoutAnotherAudioFrame(t *testing.T) {
+	classifier := speechSequence{false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier,
+		ASR:        asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Executor:   &recordingExecutor{},
+	}, Options{
+		WindowTTL: 100 * time.Millisecond, NoSpeechTimeout: 20 * time.Millisecond,
+		MaxAudioDuration: 50 * time.Millisecond, EndSilence: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	var timers []*manualTimer
+	gate.afterFunc = func(_ time.Duration, callback func()) commandTimer {
+		timer := &manualTimer{callback: callback}
+		timers = append(timers, timer)
+		return timer
+	}
+	if err := gate.Open(validOpenRequest()); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	timers[1].Fire()
+	if gate.State() != StateDormant {
+		t.Fatal("no-speech timer did not restore dormant state")
+	}
+}
+
+func TestOldCommandTimerCannotCloseReopenedWindow(t *testing.T) {
+	classifier := speechSequence{false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier,
+		ASR:        asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Executor:   &recordingExecutor{},
+	}, Options{
+		WindowTTL: 200 * time.Millisecond, NoSpeechTimeout: 80 * time.Millisecond,
+		MaxAudioDuration: 100 * time.Millisecond, EndSilence: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	var timers []*manualTimer
+	gate.afterFunc = func(_ time.Duration, callback func()) commandTimer {
+		timer := &manualTimer{callback: callback}
+		timers = append(timers, timer)
+		return timer
+	}
+	if err := gate.Open(validOpenRequest()); err != nil {
+		t.Fatalf("Open(first) error = %v", err)
+	}
+	second := validOpenRequest()
+	second.CommandID = "command-2"
+	second.OpenedAt = time.Now()
+	if err := gate.Open(second); err != nil {
+		t.Fatalf("Open(second) error = %v", err)
+	}
+	timers[1].Fire()
+	if gate.State() != StateArmed {
+		t.Fatalf("old timer changed reopened gate state to %q", gate.State())
+	}
+}
+
+func TestLateNoSpeechTimerCannotCloseActiveCapture(t *testing.T) {
+	classifier := speechSequence{true}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier,
+		ASR:        asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Executor:   &recordingExecutor{},
+	}, Options{
+		WindowTTL: 200 * time.Millisecond, NoSpeechTimeout: 80 * time.Millisecond,
+		MaxAudioDuration: 100 * time.Millisecond, EndSilence: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	var timers []*manualTimer
+	gate.afterFunc = func(_ time.Duration, callback func()) commandTimer {
+		timer := &manualTimer{callback: callback}
+		timers = append(timers, timer)
+		return timer
+	}
+	if err := gate.Open(validOpenRequest()); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	result := gate.Consume(t.Context(), testFrame(t, testStart.Add(10*time.Millisecond), 10*time.Millisecond))
+	if result.State != StateCapturing {
+		t.Fatalf("Consume().State = %q, want capturing", result.State)
+	}
+	// time.Timer.Stop cannot prevent a callback that already started and is
+	// waiting for Gate.mu. Simulate that callback reaching expire late.
+	timers[1].Fire()
+	if gate.State() != StateCapturing {
+		t.Fatalf("late no-speech timer changed gate state to %q", gate.State())
+	}
+}
+
+func TestGatePropagatesCallerCancellationToCommandASR(t *testing.T) {
+	provider := &blockingASRProvider{started: make(chan struct{}), canceled: make(chan struct{})}
+	classifier := speechSequence{true}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier, ASR: provider, Executor: &recordingExecutor{},
+	}, Options{
+		WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond,
+		MaxAudioDuration: 800 * time.Millisecond, EndSilence: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	if err := gate.Open(validOpenRequest()); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan Result, 1)
+	frame := testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond)
+	go func() {
+		result <- gate.Consume(ctx, frame)
+	}()
+	<-provider.started
+	cancel()
+	<-provider.canceled
+	got := <-result
+	if got.Failure != FailureCanceled || got.State != StateDormant {
+		t.Fatalf("Consume() after runtime cancel = %#v", got)
+	}
+}
+
+func TestGateDeadlineCancelsBlockedCommandASR(t *testing.T) {
+	provider := &blockingASRProvider{started: make(chan struct{}), canceled: make(chan struct{})}
+	classifier := speechSequence{true}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier, ASR: provider, Executor: &recordingExecutor{},
+	}, Options{
+		WindowTTL: 50 * time.Millisecond, NoSpeechTimeout: 25 * time.Millisecond,
+		MaxAudioDuration: 40 * time.Millisecond, EndSilence: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	if err := gate.Open(validOpenRequest()); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	frame := testFrame(t, testStart.Add(10*time.Millisecond), 10*time.Millisecond)
+	result := make(chan Result, 1)
+	go func() { result <- gate.Consume(context.Background(), frame) }()
+	select {
+	case <-provider.started:
+	case <-time.After(time.Second):
+		t.Fatal("command ASR did not start")
+	}
+	select {
+	case <-provider.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("command ASR was not canceled at window deadline")
+	}
+	if got := <-result; got.Failure != FailureWindowExpired || got.State != StateDormant {
+		t.Fatalf("Consume() after deadline = %#v", got)
+	}
+}
+
+type blockingASRProvider struct {
+	started  chan struct{}
+	canceled chan struct{}
+}
+
+func (p *blockingASRProvider) StartStream(ctx context.Context, _ asr.StreamRequest) (asr.Stream, error) {
+	close(p.started)
+	<-ctx.Done()
+	close(p.canceled)
+	return nil, ctx.Err()
+}
+
+type manualTimer struct {
+	callback func()
+	stopped  bool
+}
+
+func (t *manualTimer) Stop() bool {
+	wasActive := !t.stopped
+	t.stopped = true
+	return wasActive
+}
+
+func (t *manualTimer) Fire() {
+	if t.callback != nil {
+		t.callback()
+	}
+}
+
 func TestParseRejectsNearMatches(t *testing.T) {
 	for _, text := range []string{"", "开始翻译", "停止同声传译", "请停止翻译", "开始同声传译模式"} {
 		if _, err := Parse(text); !errors.Is(err, ErrCommandNotAllowed) {

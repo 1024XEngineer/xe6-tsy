@@ -379,7 +379,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	service, err := segment.NewService(segment.Dependencies{
 		Source: owned, Segmenter: segmenter, Processor: m.processor,
 		Command: newRuntimeCommandGate(commandGate, m.playbackInterrupter()), WakeWords: input.WakeWords,
-		Latency: m.deps.Latency,
+		Latency: m.deps.Latency, Now: m.deps.Now,
 	})
 	if err != nil {
 		closeErr := owned.closeContext(ctx)
@@ -571,6 +571,10 @@ func (g runtimeCommandGate) Open(request command.OpenRequest) error {
 
 func (g runtimeCommandGate) Consume(ctx context.Context, frame audio.Frame) command.Result {
 	return g.gate.Consume(ctx, frame)
+}
+
+func (g runtimeCommandGate) Cancel() {
+	g.gate.Cancel()
 }
 
 // commandExecutor converts an allowlisted command into the existing CAS mode

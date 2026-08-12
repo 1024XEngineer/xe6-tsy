@@ -45,6 +45,7 @@ type WakeWordSource interface {
 type CommandGate interface {
 	Open(command.OpenRequest) error
 	Consume(context.Context, audio.Frame) command.Result
+	Cancel()
 }
 
 // Request carries immutable session metadata used for every utterance read from a source.
@@ -63,6 +64,7 @@ type Dependencies struct {
 	Command   CommandGate
 	WakeWords WakeWordSource
 	Latency   *slog.Logger
+	Now       func() time.Time
 }
 
 // Service reads normalized frames, applies VAD, and sends only finalized utterances downstream.
@@ -73,6 +75,7 @@ type Service struct {
 	command   CommandGate
 	wakeWords WakeWordSource
 	latency   *slog.Logger
+	now       func() time.Time
 }
 
 // finalizedEventQueueCapacity bounds audio-turn backlog while provider calls run.
@@ -82,9 +85,13 @@ func NewService(deps Dependencies) (*Service, error) {
 	if deps.Source == nil || deps.Segmenter == nil || deps.Processor == nil {
 		return nil, ErrDependencyRequired
 	}
+	now := deps.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
 	return &Service{
 		source: deps.Source, segmenter: deps.Segmenter, processor: deps.Processor,
-		command: deps.Command, wakeWords: deps.WakeWords, latency: deps.Latency,
+		command: deps.Command, wakeWords: deps.WakeWords, latency: deps.Latency, now: now,
 	}, nil
 }
 
@@ -134,7 +141,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 			}
 		}
 	}
-	wakeSignals := make(chan realtimev1.WakeWordDetectedSignal, 1)
+	wakeSignals := make(chan receivedWakeWord, 1)
 	wakeDone := make(chan struct{})
 	if s.command != nil && s.wakeWords != nil {
 		go s.receiveWakeWords(runCtx, wakeSignals, wakeDone)
@@ -143,14 +150,17 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	}
 	defer func() {
 		cancel()
+		if s.command != nil {
+			s.command.Cancel()
+		}
 		<-wakeDone
 	}()
 
 	openPendingWake := func() {
 		for {
 			select {
-			case signal := <-wakeSignals:
-				s.openCommandWindow(request, signal)
+			case wake := <-wakeSignals:
+				s.openCommandWindow(request, wake)
 			default:
 				return
 			}
@@ -229,7 +239,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 
 func (s *Service) receiveWakeWords(
 	ctx context.Context,
-	signals chan<- realtimev1.WakeWordDetectedSignal,
+	signals chan<- receivedWakeWord,
 	done chan<- struct{},
 ) {
 	defer close(done)
@@ -241,20 +251,25 @@ func (s *Service) receiveWakeWords(
 			return
 		}
 		select {
-		case signals <- signal:
+		case signals <- receivedWakeWord{signal: signal, receivedAt: s.now()}:
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (s *Service) openCommandWindow(request Request, signal realtimev1.WakeWordDetectedSignal) {
-	if s == nil || s.command == nil || signal.Validate() != nil {
+type receivedWakeWord struct {
+	signal     realtimev1.WakeWordDetectedSignal
+	receivedAt time.Time
+}
+
+func (s *Service) openCommandWindow(request Request, wake receivedWakeWord) {
+	if s == nil || s.command == nil || wake.signal.Validate() != nil || wake.receivedAt.IsZero() {
 		return
 	}
 	if err := s.command.Open(command.OpenRequest{
-		SessionID: request.SessionID, CommandID: signal.SignalID,
-		SourceLanguage: request.SourceLanguage, OpenedAt: signal.DetectedAt,
+		SessionID: request.SessionID, CommandID: wake.signal.SignalID,
+		SourceLanguage: request.SourceLanguage, OpenedAt: wake.receivedAt,
 	}); err != nil {
 		return
 	}

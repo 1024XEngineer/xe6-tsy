@@ -127,7 +127,7 @@ func TestServiceQuarantinesAudioAfterWakeWord(t *testing.T) {
 	base := time.Unix(31, 0)
 	wake := &fakeWakeWords{signal: realtimev1.WakeWordDetectedSignal{
 		Type: realtimev1.WakeWordDetectedType, EventVersion: realtimev1.WakeWordDetectedEventVersion,
-		SignalID: "wake-1", DetectedAt: base,
+		SignalID: "wake-1", DetectedAt: base.Add(24 * time.Hour),
 	}, ready: make(chan struct{})}
 	source := &wakeAwareSource{
 		ready: wake.ready,
@@ -139,13 +139,16 @@ func TestServiceQuarantinesAudioAfterWakeWord(t *testing.T) {
 	}
 	gate := &recordingGate{}
 	processor := &fakeProcessor{}
-	service := newTestServiceWithDeps(t, source, processor, gate, wake)
+	service := newTestServiceWithDeps(t, source, processor, gate, wake, func() time.Time { return base })
 
 	if err := service.Run(context.Background(), Request{SessionID: "session-1", SourceLanguage: "zh-CN"}); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if gate.openRequest.CommandID != "wake-1" {
 		t.Fatalf("gate open request = %#v, want signal ID", gate.openRequest)
+	}
+	if !gate.openRequest.OpenedAt.Equal(base) {
+		t.Fatalf("gate opened at = %s, want server receive time %s", gate.openRequest.OpenedAt, base)
 	}
 	if gate.consumed != 1 {
 		t.Fatalf("command frames consumed = %d, want 1", gate.consumed)
@@ -239,7 +242,14 @@ func newTestService(t *testing.T, source FrameSource, processor TurnProcessor) *
 	return service
 }
 
-func newTestServiceWithDeps(t *testing.T, source FrameSource, processor TurnProcessor, gate CommandGate, wake WakeWordSource) *Service {
+func newTestServiceWithDeps(
+	t *testing.T,
+	source FrameSource,
+	processor TurnProcessor,
+	gate CommandGate,
+	wake WakeWordSource,
+	now func() time.Time,
+) *Service {
 	t.Helper()
 	segmenter, err := vad.NewSegmenter(energyClassifier{}, vad.Options{
 		SilenceAfter: 200 * time.Millisecond,
@@ -250,7 +260,7 @@ func newTestServiceWithDeps(t *testing.T, source FrameSource, processor TurnProc
 	}
 	service, err := NewService(Dependencies{
 		Source: source, Segmenter: segmenter, Processor: processor,
-		Command: gate, WakeWords: wake,
+		Command: gate, WakeWords: wake, Now: now,
 	})
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
@@ -325,6 +335,8 @@ func (g *recordingGate) Consume(context.Context, audio.Frame) command.Result {
 	g.consumed++
 	return command.Result{Consumed: true, State: command.StateDormant}
 }
+
+func (g *recordingGate) Cancel() { g.active = false }
 
 type fakeSource struct {
 	frames     []audio.Frame

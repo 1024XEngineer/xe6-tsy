@@ -97,15 +97,26 @@ type Result struct {
 // Gate owns one command attempt at a time. Open and Consume are synchronized because wake-word
 // signals and WebRTC audio may arrive on different callbacks.
 type Gate struct {
-	mu          sync.Mutex
-	deps        Dependencies
-	options     Options
-	state       State
-	request     OpenRequest
-	lastFrame   time.Time
-	lastSpeech  time.Time
-	audioLength time.Duration
-	stream      asr.Stream
+	mu               sync.Mutex
+	deps             Dependencies
+	options          Options
+	state            State
+	request          OpenRequest
+	lastFrame        time.Time
+	lastSpeech       time.Time
+	audioLength      time.Duration
+	stream           asr.Stream
+	attemptCtx       context.Context
+	attemptCancel    context.CancelFunc
+	stopCallerCancel func() bool
+	attempt          uint64
+	windowTimer      commandTimer
+	silenceTimer     commandTimer
+	afterFunc        func(time.Duration, func()) commandTimer
+}
+
+type commandTimer interface {
+	Stop() bool
 }
 
 // NewGate returns a dormant, immediately usable gate with explicit hard bounds.
@@ -118,7 +129,12 @@ func NewGate(deps Dependencies, options Options) (*Gate, error) {
 		options.MaxAudioDuration > options.WindowTTL || options.EndSilence >= options.MaxAudioDuration {
 		return nil, ErrInvalidOptions
 	}
-	return &Gate{deps: deps, options: options, state: StateDormant}, nil
+	return &Gate{
+		deps: deps, options: options, state: StateDormant,
+		afterFunc: func(delay time.Duration, callback func()) commandTimer {
+			return time.AfterFunc(delay, callback)
+		},
+	}, nil
 }
 
 // State returns the current lifecycle state for diagnostics and tests.
@@ -129,6 +145,17 @@ func (g *Gate) State() State {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.state
+}
+
+// Cancel abandons the active attempt and releases its timers/provider context.
+// It is safe to call during runtime shutdown and when the gate is dormant.
+func (g *Gate) Cancel() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.abandonLocked()
 }
 
 // Open arms a fresh bounded window. Reopening abandons any incomplete command stream, which makes
@@ -144,8 +171,17 @@ func (g *Gate) Open(request OpenRequest) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.abandonLocked()
+	g.attempt++
 	g.request = request
 	g.state = StateArmed
+	g.attemptCtx, g.attemptCancel = context.WithTimeout(context.Background(), g.options.WindowTTL)
+	attempt := g.attempt
+	g.windowTimer = g.afterFunc(g.options.WindowTTL, func() {
+		g.expire(attempt, FailureWindowExpired)
+	})
+	g.silenceTimer = g.afterFunc(g.options.NoSpeechTimeout, func() {
+		g.expire(attempt, FailureNoSpeech)
+	})
 	return nil
 }
 
@@ -190,6 +226,10 @@ func (g *Gate) Consume(ctx context.Context, frame audio.Frame) Result {
 		if failure := g.startCaptureLocked(ctx); failure != FailureNone {
 			return g.failLocked(failure)
 		}
+		if g.silenceTimer != nil {
+			g.silenceTimer.Stop()
+			g.silenceTimer = nil
+		}
 		g.lastSpeech = frame.CapturedAt
 	}
 
@@ -197,8 +237,8 @@ func (g *Gate) Consume(ctx context.Context, frame audio.Frame) Result {
 	if g.audioLength+frameDuration > g.options.MaxAudioDuration {
 		return g.failLocked(FailureAudioTooLong)
 	}
-	if err := g.stream.PushAudio(ctx, frame.PCM); err != nil {
-		return g.failLocked(classifyContextFailure(ctx, FailureASR))
+	if err := g.stream.PushAudio(g.attemptCtx, frame.PCM); err != nil {
+		return g.failLocked(g.classifyFailure(ctx, FailureASR))
 	}
 	g.audioLength += frameDuration
 	if isSpeech {
@@ -212,11 +252,12 @@ func (g *Gate) Consume(ctx context.Context, frame audio.Frame) Result {
 }
 
 func (g *Gate) startCaptureLocked(ctx context.Context) Failure {
-	stream, err := g.deps.ASR.StartStream(ctx, asr.StreamRequest{
+	g.stopCallerCancel = context.AfterFunc(ctx, g.attemptCancel)
+	stream, err := g.deps.ASR.StartStream(g.attemptCtx, asr.StreamRequest{
 		SessionID: g.request.SessionID, TurnID: g.request.CommandID, SourceLanguage: g.request.SourceLanguage,
 	})
 	if err != nil || stream == nil {
-		return classifyContextFailure(ctx, FailureASR)
+		return g.classifyFailure(ctx, FailureASR)
 	}
 	g.stream = stream
 	g.state = StateCapturing
@@ -225,17 +266,17 @@ func (g *Gate) startCaptureLocked(ctx context.Context) Failure {
 
 func (g *Gate) recognizeLocked(ctx context.Context) Result {
 	g.state = StateRecognizing
-	result, err := g.stream.Finish(ctx)
+	result, err := g.stream.Finish(g.attemptCtx)
 	if err != nil {
-		return g.failLocked(classifyContextFailure(ctx, FailureASR))
+		return g.failLocked(g.classifyFailure(ctx, FailureASR))
 	}
 	parsed, err := Parse(result.Text)
 	if err != nil {
 		return g.failLocked(FailureNotAllowed)
 	}
 	request := ExecuteRequest{SessionID: g.request.SessionID, CommandID: g.request.CommandID, Command: parsed}
-	if err := g.deps.Executor.ExecuteCommand(ctx, request); err != nil {
-		return g.failLocked(classifyContextFailure(ctx, FailureExecution))
+	if err := g.deps.Executor.ExecuteCommand(g.attemptCtx, request); err != nil {
+		return g.failLocked(g.classifyFailure(ctx, FailureExecution))
 	}
 	g.abandonLocked()
 	executed := parsed
@@ -247,9 +288,46 @@ func (g *Gate) failLocked(failure Failure) Result {
 	return Result{Consumed: true, State: StateDormant, Failure: failure}
 }
 
+func (g *Gate) classifyFailure(caller context.Context, fallback Failure) Failure {
+	if errors.Is(caller.Err(), context.Canceled) {
+		return FailureCanceled
+	}
+	if g.attemptCtx != nil && errors.Is(g.attemptCtx.Err(), context.DeadlineExceeded) {
+		return FailureWindowExpired
+	}
+	return fallback
+}
+
+func (g *Gate) expire(attempt uint64, failure Failure) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state == StateDormant || g.attempt != attempt {
+		return
+	}
+	// A timer callback may already be waiting for the mutex when the first
+	// speech frame stops the no-speech timer. Once capture has started, only the
+	// overall window deadline may cancel the attempt.
+	if failure == FailureNoSpeech && g.state != StateArmed {
+		return
+	}
+	g.abandonLocked()
+}
+
 func (g *Gate) abandonLocked() {
+	if g.windowTimer != nil {
+		g.windowTimer.Stop()
+	}
+	if g.silenceTimer != nil {
+		g.silenceTimer.Stop()
+	}
 	if g.stream != nil {
 		_ = g.stream.Close()
+	}
+	if g.attemptCancel != nil {
+		g.attemptCancel()
+	}
+	if g.stopCallerCancel != nil {
+		g.stopCallerCancel()
 	}
 	g.state = StateDormant
 	g.request = OpenRequest{}
@@ -257,6 +335,11 @@ func (g *Gate) abandonLocked() {
 	g.lastSpeech = time.Time{}
 	g.audioLength = 0
 	g.stream = nil
+	g.attemptCtx = nil
+	g.attemptCancel = nil
+	g.stopCallerCancel = nil
+	g.windowTimer = nil
+	g.silenceTimer = nil
 }
 
 func validFrame(frame audio.Frame) bool {
@@ -267,11 +350,4 @@ func validFrame(frame audio.Frame) bool {
 func pcmDuration(frame audio.Frame) time.Duration {
 	samples := len(frame.PCM) / 2
 	return time.Duration(samples) * time.Second / time.Duration(frame.SampleRate)
-}
-
-func classifyContextFailure(ctx context.Context, fallback Failure) Failure {
-	if ctx.Err() != nil {
-		return FailureCanceled
-	}
-	return fallback
 }

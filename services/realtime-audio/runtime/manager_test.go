@@ -76,6 +76,9 @@ func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) 
 			t.Fatalf("mode logs = %s, missing %s", output.String(), field)
 		}
 	}
+	if got := modeSwitchErrorClass(ErrModeEventUnavailable); got != "event_unavailable" {
+		t.Fatalf("mode event error class = %q", got)
+	}
 	if source.CloseCalls() != 0 {
 		t.Fatalf("mode switch closed shared audio source %d times", source.CloseCalls())
 	}

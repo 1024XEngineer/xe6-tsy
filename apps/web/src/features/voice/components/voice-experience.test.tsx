@@ -340,6 +340,20 @@ describe("VoiceExperience", () => {
     expect(startInitialModes).toEqual(["assistant"]);
   });
 
+  it("uses interpretation labels and request mode when rollback is configured", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
+    render(<VoiceExperience />);
+
+    expect(screen.getByRole("button", { name: "开始翻译" })).toBeVisible();
+    expect(screen.queryByText(/开启助手/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+    expect(startInitialModes).toEqual(["interpretation"]);
+    expect(screen.getByRole("button", { name: "停止翻译" })).toBeVisible();
+  });
+
   it("opens the curved settings wheel from the header", () => {
     render(<VoiceExperience />);
 

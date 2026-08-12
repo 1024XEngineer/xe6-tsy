@@ -36,10 +36,6 @@ func NewConsumer(stream StreamConsumer, projector Projector) *Consumer {
 // dependency failures use a context-aware delay so an outage neither terminates the component nor
 // turns into a CPU and log hot loop.
 func (c *Consumer) Run(ctx context.Context) error {
-	if c == nil || c.stream == nil || c.projector == nil {
-		<-ctx.Done()
-		return nil
-	}
 	for {
 		processed, err := c.ProcessOnce(ctx)
 		if err != nil {

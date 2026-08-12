@@ -197,16 +197,6 @@ func TestConsumerReturnsSettlementFailures(t *testing.T) {
 	}
 }
 
-func TestConsumerRunReturnsAfterCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	for _, consumer := range []*Consumer{nil, {stream: &consumerStreamStub{}}, {projector: &projectorStub{}}} {
-		if err := consumer.Run(ctx); err != nil {
-			t.Fatalf("Run() error = %v, want nil", err)
-		}
-	}
-}
-
 func TestConsumerRunBacksOffAfterStreamFailure(t *testing.T) {
 	stream := &receiveErrorStream{
 		called: make(chan struct{}, 1),

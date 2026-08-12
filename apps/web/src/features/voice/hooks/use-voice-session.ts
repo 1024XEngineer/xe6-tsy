@@ -36,6 +36,7 @@ import {
 import { ApiError, newIdempotencyKey } from "../lib/http";
 import { parseTranslationFinal } from "../lib/translation-events";
 import { ModeSnapshotTracker } from "../lib/realtime-state";
+import { RealtimeTicketCache, withRealtimeTicket } from "../lib/realtime-ticket-cache";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
 import {
   loadVoiceConfig,
@@ -218,7 +219,7 @@ export function useVoiceSession() {
   const webrtcRef = useRef<WebRTCSessionHandles | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
-  const realtimeTicketRef = useRef<string | null>(null);
+  const realtimeTicketCacheRef = useRef<RealtimeTicketCache | null>(null);
   const modeStateRef = useRef<ModeStateSnapshot | null>(null);
   const modeSnapshotTrackerRef = useRef(new ModeSnapshotTracker());
   const modeOperationRef = useRef<string | null>(null);
@@ -236,6 +237,23 @@ export function useVoiceSession() {
   const commandWindowRef = useRef<LocalCommandWindow | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
+
+  if (!realtimeTicketCacheRef.current) {
+    realtimeTicketCacheRef.current = new RealtimeTicketCache({
+      mint: async () => {
+        const token = accessTokenRef.current;
+        const sessionId = sessionIdRef.current;
+        if (!token || !sessionId || !runningRef.current) {
+          throw new Error("当前会话不能续签 realtime ticket");
+        }
+        const ticket = await mintRealtimeTicket(token, sessionId);
+        if (sessionIdRef.current !== sessionId || !runningRef.current) {
+          throw new Error("realtime ticket 所属会话已结束");
+        }
+        return ticket;
+      },
+    });
+  }
 
   const applyModeSnapshot = useCallback((snapshot: ModeStateSnapshot): boolean => {
     if (!modeSnapshotTrackerRef.current.observe(snapshot)) return false;
@@ -257,11 +275,13 @@ export function useVoiceSession() {
   }, []);
 
   const refreshModeSnapshot = useCallback(async (): Promise<ModeStateSnapshot | null> => {
-    const ticket = realtimeTicketRef.current;
     const sessionId = sessionIdRef.current;
-    if (!ticket || !sessionId || !runningRef.current) return null;
+    const tickets = realtimeTicketCacheRef.current;
+    if (!tickets || !sessionId || !runningRef.current) return null;
     try {
-      const snapshot = await getRealtimeModeState(ticket, sessionId);
+      const snapshot = await withRealtimeTicket(tickets, (ticket) =>
+        getRealtimeModeState(ticket, sessionId),
+      );
       if (sessionIdRef.current !== sessionId) return null;
       applyModeSnapshot(snapshot);
       return modeStateRef.current;
@@ -273,11 +293,13 @@ export function useVoiceSession() {
   }, [applyModeSnapshot]);
 
   const refreshControlSnapshots = useCallback(async () => {
-    const ticket = realtimeTicketRef.current;
     const sessionId = sessionIdRef.current;
-    if (!ticket || !sessionId || !runningRef.current) return;
+    const tickets = realtimeTicketCacheRef.current;
+    if (!tickets || !sessionId || !runningRef.current) return;
 
-    const modeResult = await Promise.resolve(getRealtimeModeState(ticket, sessionId)).then(
+    const modeResult = await withRealtimeTicket(tickets, (ticket) =>
+      getRealtimeModeState(ticket, sessionId),
+    ).then(
       (value) => ({ status: "fulfilled" as const, value }),
       (reason) => ({ status: "rejected" as const, reason }),
     );
@@ -494,7 +516,7 @@ export function useVoiceSession() {
     }
 
     sessionIdRef.current = null;
-    realtimeTicketRef.current = null;
+    realtimeTicketCacheRef.current?.clear();
     modeStateRef.current = null;
     modeSnapshotTrackerRef.current.reset();
     modeOperationRef.current = null;
@@ -523,10 +545,10 @@ export function useVoiceSession() {
 
   const switchMode = useCallback(
     async (targetMode: RealtimeMode) => {
-      const ticket = realtimeTicketRef.current;
       const sessionId = sessionIdRef.current;
       const current = modeStateRef.current;
-      if (!ticket || !sessionId || !current || !runningRef.current) {
+      const tickets = realtimeTicketCacheRef.current;
+      if (!tickets || !sessionId || !current || !runningRef.current) {
         setHintMessage("当前实时模式快照不可用，继续使用传统同传入口。");
         return;
       }
@@ -543,7 +565,10 @@ export function useVoiceSession() {
       modeOperationRef.current = operationId;
       setDebug((prev) => ({ ...prev, modeCommandPending: true }));
       try {
-        const result = await switchRealtimeMode(ticket, sessionId, command);
+        const requestId = newIdempotencyKey("mode-request");
+        const result = await withRealtimeTicket(tickets, (ticket) =>
+          switchRealtimeMode(ticket, sessionId, command, requestId),
+        );
         if (sessionIdRef.current !== sessionId) return;
         if (result.state.runtime_instance_id !== command.runtime_instance_id) {
           await refreshModeSnapshot();
@@ -659,7 +684,7 @@ export function useVoiceSession() {
         session.id,
       );
       const ticket = ticketResponse.ticket;
-      realtimeTicketRef.current = ticket;
+      realtimeTicketCacheRef.current?.seed(ticketResponse);
 
       let sessionStream: MediaStream | null = null;
       let ttsResumeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -783,7 +808,7 @@ export function useVoiceSession() {
       cleanupMedia();
       stopPolling();
       sessionIdRef.current = null;
-      realtimeTicketRef.current = null;
+      realtimeTicketCacheRef.current?.clear();
       modeStateRef.current = null;
       modeSnapshotTrackerRef.current.reset();
       modeOperationRef.current = null;

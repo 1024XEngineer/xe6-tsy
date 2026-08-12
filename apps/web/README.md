@@ -60,6 +60,13 @@ npm run dev
 - 说「小灵，开始翻译」或点击主按钮 → 开启助手入口（WebRTC + `/start`）；回退为 `interpretation` 时继续进入传译
 - 说「小灵，停止翻译」或再次点击 → 结束当前会话，麦克风继续监听唤醒词
 
+阶段 14 的 Web 端会在 realtime 暴露模式快照时展示连接、RuntimeState 和
+ModeState，并通过带 `runtime_instance_id`、`expected_generation` 的类型化请求切换
+`assistant` / `interpretation`。发生 generation 或 runtime instance 冲突时只刷新快照，
+不会自动重放旧命令。Web 的“小灵小灵”会打开 5 秒本地有界确认窗口，窗口只接受下一条
+已有的 start/stop 兼容唤醒结果并自动关闭；它不等同于 realtime 的 Command Gate、Command
+ASR 或服务端模式解析。连接断开也不会自动创建第二条 PeerConnection。
+
 `npm install` / `npm run dev` / `npm run build` 会自动把缺失的 int8 模型与 `.wasm` 拉到 `public/kws/`（已存在则跳过）。首次需要能访问 GitHub Releases 与 jsDelivr；离线时可设 `LINGOW_SKIP_KWS_SYNC=1`，让下载失败不阻断命令。详见 `public/kws/README.md`。
 
 ## 职责边界

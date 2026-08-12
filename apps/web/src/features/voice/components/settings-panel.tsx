@@ -327,6 +327,22 @@ function SettingsDetail({
             <span>{debug.runtimeState ?? "—"}</span>
           </div>
           <div>
+            <strong>Connection</strong>
+            <span>{debug.connectionState ?? "—"}</span>
+          </div>
+          <div>
+            <strong>Mode</strong>
+            <span>
+              {debug.modeState
+                ? `${debug.modeState.active_mode} · gen ${debug.modeState.generation}`
+                : "传统同传 / 未连接模式控制"}
+            </span>
+          </div>
+          <div>
+            <strong>Mode phase</strong>
+            <span>{debug.modeState?.phase ?? "—"}</span>
+          </div>
+          <div>
             <strong>Last error</strong>
             <span>{debug.lastError ?? "—"}</span>
           </div>

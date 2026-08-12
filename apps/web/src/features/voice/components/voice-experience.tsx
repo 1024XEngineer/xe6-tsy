@@ -18,7 +18,7 @@ export function VoiceExperience() {
     state,
     latestTurn,
     latestAssistantReply,
-    initialMode,
+    activeMode,
     statusMessage,
     hintMessage,
     automaticOutputMessage,
@@ -26,10 +26,15 @@ export function VoiceExperience() {
     updateConfig,
     debug,
     configSyncStatus,
+    commandWindow,
+    switchMode,
     toggle,
+    wakeStatus,
   } = useVoiceSession();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const hasVisibleLatest =
+    activeMode === "assistant" ? Boolean(latestAssistantReply) : Boolean(latestTurn);
 
   const handleToggle = () => {
     setSettingsOpen(false);
@@ -69,18 +74,42 @@ export function VoiceExperience() {
 
         <motion.section
           animate={{
-            y:
-              state.phase === "active" && (latestAssistantReply || latestTurn)
-                ? "-9dvh"
-                : 0,
+            y: state.phase === "active" && hasVisibleLatest ? "-9dvh" : 0,
           }}
           className={styles.voiceStage}
           transition={{ type: "spring", stiffness: 110, damping: 21 }}
         >
-          <VoiceControl mode={initialMode} phase={state.phase} onActivate={handleToggle} />
+          <VoiceControl mode={activeMode} phase={state.phase} onActivate={handleToggle} />
           <p aria-live="polite" className={styles.outputModeText}>
             {formatActivePair(voiceConfig)}
           </p>
+          {state.phase !== "idle" ? (
+            <div aria-label="实时状态" className={styles.runtimeStatus}>
+              <span>连接：{debug.connectionState ?? "未知"}</span>
+              <span>Runtime：{debug.runtimeState ?? "未知"}</span>
+              <span>
+                Mode：{debug.modeState?.active_mode ?? "传统同传"}
+              </span>
+            </div>
+          ) : null}
+          {debug.modeState ? (
+            <div aria-label="模式切换" className={styles.modeControls} role="group">
+              {(["assistant", "interpretation"] as const).map((mode) => (
+                <button
+                  aria-pressed={debug.modeState?.active_mode === mode}
+                  disabled={debug.modeCommandPending || debug.modeState?.phase === "switching"}
+                  key={mode}
+                  onClick={() => void switchMode(mode)}
+                  type="button"
+                >
+                  {mode === "assistant" ? "AI 助手" : "同声传译"}
+                </button>
+              ))}
+              {debug.modeCommandPending || debug.modeState?.phase === "switching" ? (
+                <span role="status">模式切换中…</span>
+              ) : null}
+            </div>
+          ) : null}
           {automaticOutputMessage ? (
             <p className={styles.automaticOutputText} role="status">
               {automaticOutputMessage}
@@ -112,13 +141,19 @@ export function VoiceExperience() {
               {hintMessage}
             </motion.p>
           ) : null}
+          {wakeStatus === "listening" && commandWindow.state === "open" ? (
+            <p className={styles.commandWindowNotice} role="status">
+              命令窗口已开启，请在 5 秒内说“小灵，开始翻译”或“小灵，停止翻译”。
+            </p>
+          ) : null}
         </motion.section>
 
-        {latestAssistantReply && initialMode === "assistant" && !historyOpen ? (
+        {!historyOpen && activeMode === "assistant" && latestAssistantReply ? (
           <div className={styles.latestSlot}>
             <LatestAssistantReply reply={latestAssistantReply} />
           </div>
-        ) : latestTurn && !historyOpen ? (
+        ) : null}
+        {!historyOpen && activeMode === "interpretation" && latestTurn ? (
           <div className={styles.latestSlot}>
             <LatestTranslation
               onOpen={() => setHistoryOpen(true)}

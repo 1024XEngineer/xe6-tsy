@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -562,6 +563,7 @@ func TestManagerReportsCleanEOFAsRetryableTermination(t *testing.T) {
 		failureCalled:   make(chan struct{}),
 		failureReturned: make(chan struct{}),
 	}
+	lifecycle := &atomicLifecycleObserver{}
 	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
 		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "x", SourceLanguage: "zh-CN", Provider: "asr", Model: "v1"}}),
 		Translation: &translate.FakeProvider{Result: translate.Result{Text: "y", Provider: "llm", Model: "qwen3.6-flash"}},
@@ -569,6 +571,7 @@ func TestManagerReportsCleanEOFAsRetryableTermination(t *testing.T) {
 	}, func() Dependencies {
 		deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeConfig("session-1")})
 		deps.Runtime = reporter
+		deps.Lifecycle = lifecycle
 		return deps
 	}())
 	if err != nil {
@@ -610,6 +613,9 @@ func TestManagerReportsCleanEOFAsRetryableTermination(t *testing.T) {
 	if manager.PipelineActive(snapshot.SessionID) {
 		t.Fatal("clean EOF left an active pipeline")
 	}
+	if started, stopped := lifecycle.values(); started != 1 || stopped != 1 {
+		t.Fatalf("lifecycle counters = %d/%d, want 1/1", started, stopped)
+	}
 }
 
 func TestManagerRetainsFinishedEntryWhenFailureReportFails(t *testing.T) {
@@ -626,6 +632,8 @@ func TestManagerRetainsFinishedEntryWhenFailureReportFails(t *testing.T) {
 	openCalls := 0
 	deps := testDependencies(first, &fakeLanguageReader{snapshot: activeConfig("session-1")})
 	deps.Runtime = reporter
+	lifecycle := &atomicLifecycleObserver{}
+	deps.Lifecycle = lifecycle
 	deps.FrameSources = FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
 		openCalls++
 		if openCalls == 1 {
@@ -670,11 +678,17 @@ func TestManagerRetainsFinishedEntryWhenFailureReportFails(t *testing.T) {
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("retry Start() error = %v", err)
 	}
+	if started, stopped := lifecycle.values(); started != 2 || stopped != 1 {
+		t.Fatalf("lifecycle counters after restart = %d/%d, want 2/1", started, stopped)
+	}
 	if openCalls != 2 {
 		t.Fatalf("source open calls after retry = %d, want 2", openCalls)
 	}
 	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
 		t.Fatalf("Stop() after retry = %v", err)
+	}
+	if started, stopped := lifecycle.values(); started != 2 || stopped != 2 {
+		t.Fatalf("lifecycle counters after stop = %d/%d, want 2/2", started, stopped)
 	}
 }
 
@@ -1097,6 +1111,17 @@ func testDependencies(source segment.FrameSource, languages session.LanguageConf
 		Languages: languages, FinalTurns: &recordingFinalSink{}, ModeChanges: &recordingModeChangedSink{}, Usage: &recordingUsageSink{},
 		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	}
+}
+
+type atomicLifecycleObserver struct {
+	started atomic.Uint64
+	stopped atomic.Uint64
+}
+
+func (o *atomicLifecycleObserver) RecordRuntimeStarted() { o.started.Add(1) }
+func (o *atomicLifecycleObserver) RecordRuntimeStopped() { o.stopped.Add(1) }
+func (o *atomicLifecycleObserver) values() (uint64, uint64) {
+	return o.started.Load(), o.stopped.Load()
 }
 
 func newOwnershipTestManager(t *testing.T) (*Manager, *int) {

@@ -16,6 +16,7 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 		"/voice-sessions/{id}/start",
 		"/voice-sessions/{id}/end",
 		"/voice-sessions/{id}/state",
+		"/voice-sessions/{id}/mode",
 		"/voice-sessions/{id}/realtime-ticket",
 		"/languages",
 		"/account/automatic-delivery-readiness",
@@ -89,6 +90,18 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 	initialMode := startProperties["initial_mode"].(map[string]any)
 	if initialMode["$ref"] != "#/components/schemas/RealtimeMode" || initialMode["default"] != "interpretation" {
 		t.Fatalf("initial_mode schema = %#v", initialMode)
+	}
+
+	modeRequest := schemas["SwitchVoiceSessionModeRequest"].(map[string]any)
+	if got := modeRequest["required"].([]any); !sameStringSlice(got, []any{"runtime_instance_id", "expected_generation", "target_mode"}) {
+		t.Fatalf("SwitchVoiceSessionModeRequest required = %v", got)
+	}
+	modePath := paths["/voice-sessions/{id}/mode"].(map[string]any)
+	if got := modePath["get"].(map[string]any)["operationId"]; got != "getVoiceSessionMode" {
+		t.Fatalf("GET mode operationId = %v", got)
+	}
+	if got := modePath["post"].(map[string]any)["operationId"]; got != "switchVoiceSessionMode" {
+		t.Fatalf("POST mode operationId = %v", got)
 	}
 
 	outputMode := schemas["InterpretationOutputMode"].(map[string]any)

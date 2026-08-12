@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
 	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	controlplane "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
+	rtruntime "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 	rtsession "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	rtwebrtc "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -399,6 +401,8 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 	}
 	foreignDetail := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID, other.Tokens.AccessToken, "", http.NoBody)
 	assertSessionError(t, foreignDetail, http.StatusNotFound, sessions.CodeVoiceSessionNotFound)
+	foreignMode := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID+"/mode", other.Tokens.AccessToken, "", http.NoBody)
+	assertSessionError(t, foreignMode, http.StatusNotFound, sessions.CodeVoiceSessionNotFound)
 
 	detail := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID, registeredTokens.AccessToken, "", http.NoBody)
 	if detail.Code != http.StatusOK {
@@ -415,6 +419,47 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 	}
 	if realtime.runtimeCalls.Load() != runtimeReads {
 		t.Fatalf("list called realtime: before=%d after=%d", runtimeReads, realtime.runtimeCalls.Load())
+	}
+	mode := serveAPIRequest(t, mux, http.MethodGet, "/api/v1/voice-sessions/"+created.ID+"/mode", registeredTokens.AccessToken, "", http.NoBody)
+	if mode.Code != http.StatusOK {
+		t.Fatalf("mode status = %d, body = %s", mode.Code, mode.Body.String())
+	}
+	var modeState realtimev1.ModeStateSnapshot
+	if err := json.Unmarshal(mode.Body.Bytes(), &modeState); err != nil {
+		t.Fatalf("decode mode state: %v", err)
+	}
+	if modeState.SessionID != created.ID || modeState.RuntimeInstanceID != "integration-runtime" ||
+		modeState.ActiveMode != realtimev1.ModeInterpretation || modeState.Generation != 1 {
+		t.Fatalf("mode state = %#v", modeState)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		switchMode := serveAPIRequest(
+			t,
+			mux,
+			http.MethodPost,
+			"/api/v1/voice-sessions/"+created.ID+"/mode",
+			registeredTokens.AccessToken,
+			"mode-session",
+			strings.NewReader(`{"runtime_instance_id":"integration-runtime","expected_generation":1,"target_mode":"assistant"}`),
+		)
+		if switchMode.Code != http.StatusOK {
+			t.Fatalf("mode switch attempt %d status = %d, body = %s", attempt+1, switchMode.Code, switchMode.Body.String())
+		}
+		var result realtimev1.SwitchModeResult
+		if err := json.Unmarshal(switchMode.Body.Bytes(), &result); err != nil {
+			t.Fatalf("decode mode switch attempt %d: %v", attempt+1, err)
+		}
+		if result.OperationID != "mode-session" || result.Status != realtimev1.ModeSwitchApplied ||
+			result.State.ActiveMode != realtimev1.ModeAssistant || result.State.Generation != 2 {
+			t.Fatalf("mode switch attempt %d result = %#v", attempt+1, result)
+		}
+	}
+	if realtime.startCalls.Load() != 1 || realtime.stopCalls.Load() != 0 {
+		t.Fatalf(
+			"mode control changed lifecycle calls: start=%d stop=%d, want 1/0",
+			realtime.startCalls.Load(),
+			realtime.stopCalls.Load(),
+		)
 	}
 
 	end := serveAPIRequest(
@@ -690,9 +735,13 @@ func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRu
 	realtime.initialMode.Store(realtimev1.ModeInterpretation)
 	realtime.connectionState.Store(realtimev1.ConnectionConnected)
 	realtime.stopState.Store(realtimev1.RuntimeStopped)
+	modes := &sessionRuntimeModeControl{
+		states:     make(map[string]realtimev1.ModeStateSnapshot),
+		operations: make(map[string]modeControlOperation),
+	}
 	handler, err := controlplane.New(controlplane.Dependencies{
 		Lifecycle:   realtime,
-		Modes:       sessionRuntimeModeControl{},
+		Modes:       modes,
 		Signaling:   sessionRuntimeSignaling{},
 		Connections: realtime,
 		Tickets:     ticketValidator,
@@ -706,32 +755,67 @@ func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRu
 	return realtime
 }
 
-type sessionRuntimeModeControl struct{}
+type modeControlOperation struct {
+	command realtimev1.SwitchModeCommand
+	result  realtimev1.SwitchModeResult
+}
 
-func (sessionRuntimeModeControl) GetModeState(
+type sessionRuntimeModeControl struct {
+	mu         sync.Mutex
+	states     map[string]realtimev1.ModeStateSnapshot
+	operations map[string]modeControlOperation
+}
+
+func (control *sessionRuntimeModeControl) GetModeState(
 	ctx context.Context,
 	sessionID string,
 ) (realtimev1.ModeStateSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return realtimev1.ModeStateSnapshot{}, err
 	}
-	return realtimev1.ModeStateSnapshot{
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	return control.modeState(sessionID), nil
+}
+
+func (control *sessionRuntimeModeControl) modeState(sessionID string) realtimev1.ModeStateSnapshot {
+	if state, ok := control.states[sessionID]; ok {
+		return state
+	}
+	state := realtimev1.ModeStateSnapshot{
 		SessionID:         sessionID,
 		RuntimeInstanceID: "integration-runtime",
 		ActiveMode:        realtimev1.ModeInterpretation,
 		Generation:        1,
 		Phase:             realtimev1.ModePhaseActive,
 		UpdatedAt:         time.Now().UTC(),
-	}, nil
+	}
+	control.states[sessionID] = state
+	return state
 }
 
-func (control sessionRuntimeModeControl) SwitchMode(
+func (control *sessionRuntimeModeControl) SwitchMode(
 	ctx context.Context,
 	command realtimev1.SwitchModeCommand,
 ) (realtimev1.SwitchModeResult, error) {
-	state, err := control.GetModeState(ctx, command.SessionID)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return realtimev1.SwitchModeResult{}, err
+	}
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	operationKey := command.SessionID + "\x00" + command.OperationID
+	if previous, ok := control.operations[operationKey]; ok {
+		if previous.command != command {
+			return realtimev1.SwitchModeResult{}, rtruntime.ErrModeOperationConflict
+		}
+		return previous.result, nil
+	}
+	state := control.modeState(command.SessionID)
+	if command.RuntimeInstanceID != state.RuntimeInstanceID {
+		return realtimev1.SwitchModeResult{}, rtruntime.ErrModeRuntimeInstanceMismatch
+	}
+	if command.ExpectedGeneration != state.Generation {
+		return realtimev1.SwitchModeResult{}, rtruntime.ErrModeGenerationConflict
 	}
 	status := realtimev1.ModeSwitchUnchanged
 	if command.TargetMode != state.ActiveMode {
@@ -740,11 +824,14 @@ func (control sessionRuntimeModeControl) SwitchMode(
 		status = realtimev1.ModeSwitchApplied
 	}
 	state.LastOperationID = &command.OperationID
-	return realtimev1.SwitchModeResult{
+	control.states[command.SessionID] = state
+	result := realtimev1.SwitchModeResult{
 		OperationID: command.OperationID,
 		Status:      status,
 		State:       state,
-	}, nil
+	}
+	control.operations[operationKey] = modeControlOperation{command: command, result: result}
+	return result, nil
 }
 
 func (p *sessionRuntimeControlPlane) Start(_ context.Context, command rtsession.StartRealtimeCommand) (rtsession.RuntimeSnapshot, error) {

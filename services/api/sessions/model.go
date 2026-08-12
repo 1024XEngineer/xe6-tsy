@@ -57,6 +57,17 @@ const (
 	RuntimeFailed              = realtimev1.RuntimeFailed
 )
 
+// Mode and its snapshots remain realtime-owned contracts. The API only
+// authorizes access and forwards compare-and-switch commands.
+type Mode = realtimev1.Mode
+type ModeSnapshot = realtimev1.ModeStateSnapshot
+type ModeSwitchResult = realtimev1.SwitchModeResult
+
+const (
+	ModeAssistant      = realtimev1.ModeAssistant
+	ModeInterpretation = realtimev1.ModeInterpretation
+)
+
 // ConnectionState is the WebRTC connection lifecycle owned by the connection
 // manager. It must not be used as a substitute for RuntimeState.
 type ConnectionState string

@@ -14,6 +14,10 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 )
 
+type recordingDataChannelFailures struct{ calls int }
+
+func (r *recordingDataChannelFailures) RecordDataChannelFailure() { r.calls++ }
+
 func TestFrontendTranslationFinalJSONShape(t *testing.T) {
 	event := recordsv1.FinalTurnEvent{
 		EventVersion:          recordsv1.FinalTurnEventVersion,
@@ -134,8 +138,12 @@ func TestDataChannelFinalTurnSinkPublish(t *testing.T) {
 
 	t.Run("nil media is noop", func(t *testing.T) {
 		t.Parallel()
-		if err := (DataChannelFinalTurnSink{}).Publish(context.Background(), event); err != nil {
+		failures := &recordingDataChannelFailures{}
+		if err := (DataChannelFinalTurnSink{Failures: failures}).Publish(context.Background(), event); err != nil {
 			t.Fatalf("Publish: %v", err)
+		}
+		if failures.calls != 1 {
+			t.Fatalf("failures = %d, want 1", failures.calls)
 		}
 	})
 
@@ -172,9 +180,13 @@ func TestDataChannelAssistantReplySinkReportsDeliveryFailures(t *testing.T) {
 	event := realtimev1.AssistantReplyEvent{SessionID: "vs_1", EventID: "reply-1"}
 
 	t.Run("missing media", func(t *testing.T) {
-		err := (DataChannelAssistantReplySink{}).Publish(context.Background(), event)
+		failures := &recordingDataChannelFailures{}
+		err := (DataChannelAssistantReplySink{Failures: failures}).Publish(context.Background(), event)
 		if !errors.Is(err, ErrAssistantReplyMediaUnavailable) {
 			t.Fatalf("Publish error = %v, want media unavailable", err)
+		}
+		if failures.calls != 1 {
+			t.Fatalf("failures = %d, want 1", failures.calls)
 		}
 	})
 	t.Run("media lookup failure", func(t *testing.T) {

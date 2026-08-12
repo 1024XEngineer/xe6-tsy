@@ -9,7 +9,7 @@ import {
 import { ModeConflictError, RuntimeClient } from "../src/runtime-client.ts";
 import { RealtimeApiError, type RealtimeTransport } from "../src/transport.ts";
 
-const connection = (state: "connected" | "disconnected" = "connected") => ({
+const connection = (state: import("../src/contracts.ts").ConnectionState = "connected") => ({
   session_id: "s1",
   connection_id: "c1",
   state,
@@ -210,6 +210,30 @@ test("late successful mode response is discarded after runtime replacement", asy
   assert.equal(client.isOperationStale(lastOperationId), true);
   assert.equal(client.state.status, "ready");
   assert.equal(client.state.errorCode, null);
+});
+
+test("a late successful mode response cannot reopen a closed connection", async () => {
+  let resolveSwitch!: (value: SwitchModeResult) => void;
+  const transport = new FakeTransport();
+  transport.switchMode = async () => new Promise((resolve) => { resolveSwitch = resolve; });
+  const client = new RuntimeClient("s1", transport, { createId: () => "operation-1" });
+  await client.sync();
+
+  const pending = client.switchMode("assistant");
+  client.observeConnection({ ...connection("closed"), version: 2 });
+  resolveSwitch({
+    operation_id: "operation-1",
+    status: "applied",
+    state: {
+      ...mode(2, "r1", "assistant"),
+      last_operation_id: "operation-1",
+      updated_at: "2026-01-01T00:00:01.000Z",
+    },
+  });
+
+  await pending;
+  assert.equal(client.state.status, "error");
+  assert.equal(client.state.errorCode, "connection_closed");
 });
 
 test("rejects malformed snapshots before they poison client state", () => {

@@ -307,13 +307,13 @@ export class RuntimeClient {
       if (this.isOperationStale(operationId) || (!accepted && !responseIsCurrent)) {
         this.markOperationStale(operationId);
         this.update({
-          status: "ready",
+          ...this.connectionStatusPatch(),
           lastModeCommand: { operationId, targetMode, status: "conflict", errorCode: "stale_mode_response" },
         });
         throw new ModeConflictError("stale_mode_response", operationId, observed);
       }
       this.update({
-        status: "ready",
+        ...this.connectionStatusPatch(),
         lastModeCommand: { operationId, targetMode, status: result.status, errorCode: null },
       });
       return result;
@@ -330,7 +330,7 @@ export class RuntimeClient {
           lastModeCommand: { operationId, targetMode, status: "conflict", errorCode: cause.code },
         });
         const refreshedMode = await this.refreshMode();
-        this.update({ status: "ready" });
+        this.update(this.connectionStatusPatch());
         throw new ModeConflictError(cause.code, operationId, refreshedMode);
       }
       const code = errorCode(cause);
@@ -405,6 +405,14 @@ export class RuntimeClient {
 
   private connectionIsClosed(): boolean {
     return this.current.connection?.state === "closed";
+  }
+
+  private connectionStatusPatch(): Pick<MobileState, "status" | "errorCode"> {
+    const state = this.current.connection?.state;
+    return {
+      status: clientStatusForConnection(state),
+      errorCode: state === "failed" || state === "closed" ? `connection_${state}` : null,
+    };
   }
 
   private async readMode(): Promise<ModeStateSnapshot | null> {

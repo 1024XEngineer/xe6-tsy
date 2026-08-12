@@ -1,7 +1,10 @@
 // Package metrics exposes bounded, process-local realtime operational counters.
 package metrics
 
-import "sync/atomic"
+import (
+	"strings"
+	"sync/atomic"
+)
 
 // Registry owns monotonic counters for one realtime-audio process. Counters
 // reset when the process restarts; monitoring must calculate rates from deltas.
@@ -19,6 +22,13 @@ type Registry struct {
 	modeChangePublicationsAttempted atomic.Uint64
 	modeChangePublicationsAccepted  atomic.Uint64
 	modeChangePublicationsFailed    atomic.Uint64
+	asrFailures                     atomic.Uint64
+	assistantFailures               atomic.Uint64
+	translationFailures             atomic.Uint64
+	ttsFailures                     atomic.Uint64
+	dataChannelFailures             atomic.Uint64
+	runtimesStarted                 atomic.Uint64
+	runtimesStopped                 atomic.Uint64
 }
 
 var defaultRegistry = NewRegistry()
@@ -64,6 +74,52 @@ type ModeChangePublicationSnapshot struct {
 type Snapshot struct {
 	ModeCommands           ModeCommandSnapshot           `json:"mode_commands"`
 	ModeChangePublications ModeChangePublicationSnapshot `json:"mode_change_publications"`
+	ProviderFailures       ProviderFailureSnapshot       `json:"provider_failures"`
+	DataChannelFailures    uint64                        `json:"data_channel_failures"`
+	RuntimesStarted        uint64                        `json:"runtimes_started"`
+	RuntimesStopped        uint64                        `json:"runtimes_stopped"`
+}
+
+type ProviderFailureSnapshot struct {
+	ASR         uint64 `json:"asr"`
+	Assistant   uint64 `json:"assistant"`
+	Translation uint64 `json:"translation"`
+	TTS         uint64 `json:"tts"`
+}
+
+// RecordProviderFailure counts provider boundary failures without labels.
+// Structured logs carry stage/provider details for diagnosis.
+func (r *Registry) RecordProviderFailure(stage, _ string) {
+	if r == nil {
+		return
+	}
+	switch {
+	case strings.HasPrefix(stage, "asr_"):
+		r.asrFailures.Add(1)
+	case strings.HasPrefix(stage, "assistant_"):
+		r.assistantFailures.Add(1)
+	case stage == "translation":
+		r.translationFailures.Add(1)
+	case strings.HasPrefix(stage, "tts_"):
+		r.ttsFailures.Add(1)
+	}
+}
+
+func (r *Registry) RecordDataChannelFailure() {
+	if r != nil {
+		r.dataChannelFailures.Add(1)
+	}
+}
+
+func (r *Registry) RecordRuntimeStarted() {
+	if r != nil {
+		r.runtimesStarted.Add(1)
+	}
+}
+func (r *Registry) RecordRuntimeStopped() {
+	if r != nil {
+		r.runtimesStopped.Add(1)
+	}
 }
 
 // Current returns the latest process-local counter values.
@@ -89,5 +145,12 @@ func (r *Registry) Current() Snapshot {
 			Accepted:  r.modeChangePublicationsAccepted.Load(),
 			Failed:    r.modeChangePublicationsFailed.Load(),
 		},
+		ProviderFailures: ProviderFailureSnapshot{
+			ASR: r.asrFailures.Load(), Assistant: r.assistantFailures.Load(),
+			Translation: r.translationFailures.Load(), TTS: r.ttsFailures.Load(),
+		},
+		DataChannelFailures: r.dataChannelFailures.Load(),
+		RuntimesStarted:     r.runtimesStarted.Load(),
+		RuntimesStopped:     r.runtimesStopped.Load(),
 	}
 }

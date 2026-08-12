@@ -7,7 +7,14 @@ import (
 )
 
 type LatencyLogger struct {
-	Logger *slog.Logger
+	Logger   *slog.Logger
+	Observer ProviderFailureObserver
+}
+
+// ProviderFailureObserver receives bounded provider/stage counters. It must
+// not retain Turn identifiers or other high-cardinality request data.
+type ProviderFailureObserver interface {
+	RecordProviderFailure(stage, provider string)
 }
 
 func (l LatencyLogger) Checkpoint(stage string, turn TurnContext, since time.Time, attrs ...any) {
@@ -35,11 +42,18 @@ func (l LatencyLogger) ProviderCheckpoint(stage string, turn TurnContext, since 
 // Operation IDs are intentionally absent because a Turn does not own the
 // session lifecycle or mode command operation that happened to precede it.
 func (l LatencyLogger) ProviderFailure(stage string, turn TurnContext, provider string, err error) {
-	if l.Logger == nil || err == nil {
+	if err == nil {
+		return
+	}
+	provider = strings.TrimSpace(provider)
+	if l.Observer != nil {
+		l.Observer.RecordProviderFailure(strings.TrimSpace(stage), provider)
+	}
+	if l.Logger == nil {
 		return
 	}
 	fields := turnLogFields(stage, turn)
-	if provider = strings.TrimSpace(provider); provider != "" {
+	if provider != "" {
 		fields = append(fields, "provider", provider)
 	}
 	fields = append(fields, "error", err)

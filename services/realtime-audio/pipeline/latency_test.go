@@ -68,6 +68,23 @@ func TestLatencyLoggerOmitsUnavailableCorrelation(t *testing.T) {
 	}
 }
 
+func TestLatencyLoggerNotifiesFailureObserverWithoutLogger(t *testing.T) {
+	observer := &recordingProviderFailureObserver{}
+	LatencyLogger{Observer: observer}.ProviderFailure("asr_finish", TurnContext{}, "aliyun", errors.New("failed"))
+	if observer.stage != "asr_finish" || observer.provider != "aliyun" || observer.calls != 1 {
+		t.Fatalf("observer = %#v", observer)
+	}
+}
+
+type recordingProviderFailureObserver struct {
+	stage, provider string
+	calls           int
+}
+
+func (o *recordingProviderFailureObserver) RecordProviderFailure(stage, provider string) {
+	o.stage, o.provider, o.calls = stage, provider, o.calls+1
+}
+
 func decodeLogFields(t *testing.T, data []byte) map[string]any {
 	t.Helper()
 	var fields map[string]any

@@ -86,9 +86,10 @@ func TestMetricsHandlerReturnsJSONSnapshot(t *testing.T) {
 	registry := &Registry{}
 	registry.recordModeCommand(realtimev1.SwitchModeResult{Status: realtimev1.ModeSwitchApplied}, nil)
 	mux := http.NewServeMux()
-	Register(mux, registry)
+	Register(mux, registry, "metrics-secret")
 
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request.Header.Set("Authorization", "Bearer metrics-secret")
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -102,6 +103,42 @@ func TestMetricsHandlerReturnsJSONSnapshot(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	if got.ModeCommands.Total != 1 || got.ModeCommands.AppliedResponse != 1 {
+		t.Fatalf("snapshot = %#v", got)
+	}
+}
+
+func TestMetricsHandlerRequiresExplicitToken(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		token string
+		want  int
+	}{
+		{name: "disabled when unset", want: http.StatusNotFound},
+		{name: "rejects missing bearer", token: "metrics-secret", want: http.StatusUnauthorized},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			Register(mux, NewRegistry(), test.token)
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d", response.Code, test.want)
+			}
+		})
+	}
+}
+
+func TestRegistryCountsBoundedFailureAndLifecycleSignals(t *testing.T) {
+	registry := NewRegistry()
+	for _, stage := range []string{"asr_start", "assistant_llm", "translation", "tts_finish"} {
+		registry.RecordProviderFailure(stage, "ignored-provider")
+	}
+	registry.RecordDataChannelFailure()
+	registry.RecordRuntimeStarted()
+	registry.RecordRuntimeStopped()
+	got := registry.Current()
+	if got.ProviderFailures != (ProviderFailureSnapshot{ASR: 1, Assistant: 1, Translation: 1, TTS: 1}) ||
+		got.DataChannelFailures != 1 || got.RuntimesStarted != 1 || got.RuntimesStopped != 1 {
 		t.Fatalf("snapshot = %#v", got)
 	}
 }

@@ -29,6 +29,7 @@ func TestVerticalAcceptanceAssistantInterpretationAssistant(t *testing.T) {
 	modeChanges := &recordingModeChangedSink{}
 	usage := &recordingUsageSink{}
 	audioSink := &recordingAudioSink{}
+	lifecycle := &verticalLifecycleObserver{}
 	opened := make([]*fakeFrameSource, 0, 1)
 	openCalls := 0
 	base := time.Unix(1700000000, 0).UTC()
@@ -44,6 +45,7 @@ func TestVerticalAcceptanceAssistantInterpretationAssistant(t *testing.T) {
 	deps.ModeChanges = modeChanges
 	deps.Usage = usage
 	deps.Audio = audioSink
+	deps.Lifecycle = lifecycle
 	deps.NewRuntimeInstanceID = func() (string, error) { return "runtime-1", nil }
 	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
 		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
@@ -71,6 +73,9 @@ func TestVerticalAcceptanceAssistantInterpretationAssistant(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 	t.Cleanup(func() { _ = manager.Stop(context.Background(), snapshot.SessionID) })
+	if lifecycle.started != 1 || lifecycle.stopped != 0 {
+		t.Fatalf("lifecycle counters after start = %#v", lifecycle)
+	}
 
 	initial, err := manager.GetModeState(t.Context(), snapshot.SessionID)
 	if err != nil {
@@ -153,7 +158,18 @@ func TestVerticalAcceptanceAssistantInterpretationAssistant(t *testing.T) {
 			t.Fatalf("Turn %d runtime identity = %#v", index+1, turn.Mode)
 		}
 	}
+	if err := manager.Stop(t.Context(), snapshot.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if lifecycle.started != 1 || lifecycle.stopped != 1 {
+		t.Fatalf("lifecycle counters after stop = %#v", lifecycle)
+	}
 }
+
+type verticalLifecycleObserver struct{ started, stopped int }
+
+func (o *verticalLifecycleObserver) RecordRuntimeStarted() { o.started++ }
+func (o *verticalLifecycleObserver) RecordRuntimeStopped() { o.stopped++ }
 
 // TestVerticalAcceptanceRejectsStaleCommandsAfterRuntimeRestart proves that generation values
 // are scoped to a runtime instance. A command captured before Stop must not mutate a fresh run,

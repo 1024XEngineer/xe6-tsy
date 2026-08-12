@@ -110,6 +110,7 @@ func setMockProviderEnv(t *testing.T) {
 	t.Setenv("REALTIME_API_DATABASE", "")
 	// Unit tests stay offline: Silero needs ONNX Runtime shared libs.
 	t.Setenv("LOCAL_VAD_PROVIDER", "energy")
+	t.Setenv("REALTIME_METRICS_TOKEN", "")
 }
 
 func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {
@@ -155,13 +156,21 @@ func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {
 	}
 }
 
-func TestNewControlPlaneHandlerServesRealtimeMetrics(t *testing.T) {
+func TestNewControlPlaneHandlerProtectsRealtimeMetrics(t *testing.T) {
 	setMockProviderEnv(t)
+	t.Setenv("REALTIME_METRICS_TOKEN", "metrics-secret")
 	handler, err := newControlPlaneHandler(strings.Repeat("m", 32))
 	if err != nil {
 		t.Fatalf("newControlPlaneHandler() error = %v", err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, request)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized metrics status = %d", unauthorized.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request.Header.Set("Authorization", "Bearer metrics-secret")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -172,6 +181,19 @@ func TestNewControlPlaneHandlerServesRealtimeMetrics(t *testing.T) {
 	}
 	if body := strings.TrimSpace(response.Body.String()); body == "" || !strings.Contains(body, "mode_commands") {
 		t.Fatalf("metrics body = %q, want mode_commands snapshot", body)
+	}
+}
+
+func TestNewControlPlaneHandlerDoesNotExposeMetricsByDefault(t *testing.T) {
+	setMockProviderEnv(t)
+	handler, err := newControlPlaneHandler(strings.Repeat("m", 32))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("metrics status = %d, want 404 while disabled", response.Code)
 	}
 }
 

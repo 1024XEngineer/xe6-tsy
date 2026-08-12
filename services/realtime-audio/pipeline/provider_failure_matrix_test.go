@@ -1,7 +1,10 @@
 package pipeline
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -24,6 +27,7 @@ func TestProviderFailureMatrixASRDoesNotPublishDownstreamFacts(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			latency, assertFailure := failureObservation(t, "asr_"+test.name, "mock-asr")
 			translator := &translate.FakeProvider{}
 			ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
 			finals := &recordingFinalSink{}
@@ -39,9 +43,10 @@ func TestProviderFailureMatrixASRDoesNotPublishDownstreamFacts(t *testing.T) {
 					SessionID: "session-1", Version: 1, Status: "active",
 					LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 				}}),
-				Pipeline: service,
-				Finals:   service,
+				ASRProvider: "mock-asr", Pipeline: service,
+				Finals: service,
 			})
+			service.latency = latency
 
 			_, err := processor.ProcessAudio(t.Context(), TurnProcessRequest{
 				SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1",
@@ -57,11 +62,13 @@ func TestProviderFailureMatrixASRDoesNotPublishDownstreamFacts(t *testing.T) {
 				t.Fatalf("ASR failure side effects: usage=%#v FinalTurns=%#v translation=%#v TTS=%#v",
 					usage.facts, finals.events, translator.Requests(), ttsProvider.Requests())
 			}
+			assertFailure()
 		})
 	}
 }
 
 func TestProviderFailureMatrixLLMDoesNotPublishAssistantFacts(t *testing.T) {
+	latency, assertFailure := failureObservation(t, "assistant_llm", "mock-assistant")
 	providerErr := errors.New("assistant LLM unavailable")
 	replies := &recordingAssistantReplySink{}
 	usage := &recordingUsageSink{}
@@ -71,9 +78,9 @@ func TestProviderFailureMatrixLLMDoesNotPublishAssistantFacts(t *testing.T) {
 		TTS: ttsProvider, Audio: &recordingAudioSink{}, Runtime: runtime,
 	})
 	handler := NewAssistantHandler(AssistantHandlerDependencies{
-		LLM:     assistant.NewFakeProvider(assistant.FakeProviderConfig{Err: providerErr}),
+		LLM: assistant.NewFakeProvider(assistant.FakeProviderConfig{Err: providerErr}), Provider: "mock-assistant",
 		Replies: replies, Gate: acceptingAssistantReplyGate{}, Usage: usage,
-		Speech: speech, Runtime: runtime, Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		Speech: speech, Runtime: runtime, Now: func() time.Time { return time.Unix(1700000000, 0).UTC() }, Latency: latency,
 	})
 
 	err := handler.HandleASRFinal(t.Context(), assistantTurn(), asr.FinalResult{
@@ -88,20 +95,23 @@ func TestProviderFailureMatrixLLMDoesNotPublishAssistantFacts(t *testing.T) {
 		t.Fatalf("LLM failure side effects: replies=%#v usage=%#v TTS=%#v",
 			replies.events, usage.facts, ttsProvider.Requests())
 	}
+	assertFailure()
 }
 
 func TestProviderFailureMatrixTranslationDoesNotPublishFinalTurn(t *testing.T) {
+	latency, assertFailure := failureObservation(t, "translation", "mock-translation")
 	providerErr := errors.New("translation provider unavailable")
 	finals := &recordingFinalSink{}
 	usage := &recordingUsageSink{}
 	runtime := &recordingRuntimeReporter{}
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})
 	service := newTestPipelineService(PipelineDependencies{
-		Translator: &translate.FakeProvider{Err: providerErr}, TTS: ttsProvider,
+		Translator: &translate.FakeProvider{Err: providerErr}, TranslationProvider: "mock-translation", TTS: ttsProvider,
 		FinalTurns: finals, Usage: usage, Audio: &recordingAudioSink{}, Runtime: runtime,
+		Latency: latency,
 	})
 
-	err := service.HandleASRFinal(t.Context(), testTurn(), asr.FinalResult{
+	err := service.HandleASRFinal(t.Context(), observedFailureTurn(), asr.FinalResult{
 		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
 	})
 	if !errors.Is(err, providerErr) {
@@ -113,6 +123,7 @@ func TestProviderFailureMatrixTranslationDoesNotPublishFinalTurn(t *testing.T) {
 		t.Fatalf("translation failure side effects: FinalTurns=%#v usage=%#v TTS=%#v",
 			finals.events, usage.facts, ttsProvider.Requests())
 	}
+	assertFailure()
 }
 
 func TestProviderFailureMatrixTTSKeepsAcceptedFinalTurn(t *testing.T) {
@@ -127,6 +138,7 @@ func TestProviderFailureMatrixTTSKeepsAcceptedFinalTurn(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			latency, assertFailure := failureObservation(t, "tts_"+test.name, "mock-tts")
 			finals := &recordingFinalSink{}
 			usage := &recordingUsageSink{}
 			runtime := &recordingRuntimeReporter{}
@@ -134,11 +146,12 @@ func TestProviderFailureMatrixTTSKeepsAcceptedFinalTurn(t *testing.T) {
 				Translator: &translate.FakeProvider{Result: translate.Result{
 					Text: "hello", Provider: "mock-translate", Model: "v1",
 				}},
-				TTS: tts.NewFakeProvider(test.config), FinalTurns: finals,
+				TTS: tts.NewFakeProvider(test.config), TTSProvider: "mock-tts", FinalTurns: finals,
 				Usage: usage, Audio: &recordingAudioSink{}, Runtime: runtime,
+				Latency: latency,
 			})
 
-			err := service.HandleASRFinal(t.Context(), testTurn(), asr.FinalResult{
+			err := service.HandleASRFinal(t.Context(), observedFailureTurn(), asr.FinalResult{
 				Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
 			})
 			if !errors.Is(err, providerErr) || !errors.Is(err, ErrFinalTurnAccepted) {
@@ -152,8 +165,58 @@ func TestProviderFailureMatrixTTSKeepsAcceptedFinalTurn(t *testing.T) {
 			if len(usage.facts) != 1 || usage.facts[0].ServiceType != "translation" {
 				t.Fatalf("usage facts = %#v, want committed translation usage without fabricated TTS usage", usage.facts)
 			}
+			assertFailure()
 		})
 	}
+}
+
+func failureObservation(t *testing.T, wantStage, wantProvider string) (LatencyLogger, func()) {
+	t.Helper()
+	var output bytes.Buffer
+	observer := &recordingProviderFailureObserver{}
+	latency := LatencyLogger{
+		Logger: slog.New(slog.NewJSONHandler(&output, nil)), Observer: observer,
+	}
+	return latency, func() {
+		t.Helper()
+		decoder := json.NewDecoder(bytes.NewReader(output.Bytes()))
+		var fields map[string]any
+		for decoder.More() {
+			var candidate map[string]any
+			if err := decoder.Decode(&candidate); err != nil {
+				t.Fatalf("decode provider failure log: %v (%s)", err, output.Bytes())
+			}
+			if candidate["msg"] == "realtime provider failed" {
+				fields = candidate
+			}
+		}
+		if fields == nil {
+			t.Fatalf("provider failure log not found: %s", output.Bytes())
+		}
+		for key, want := range map[string]any{
+			"stage": wantStage, "provider": wantProvider, "session_id": "session-1",
+			"runtime_instance_id": "runtime-1",
+		} {
+			if got := fields[key]; got != want {
+				t.Fatalf("provider failure field %s = %#v, want %#v", key, got, want)
+			}
+		}
+		if turnID, ok := fields["turn_id"].(string); !ok || turnID == "" {
+			t.Fatalf("provider failure turn_id = %#v", fields["turn_id"])
+		}
+		if mode, ok := fields["mode"].(string); !ok || mode == "" || fields["generation"] == nil {
+			t.Fatalf("provider failure mode identity = %#v/%#v", fields["mode"], fields["generation"])
+		}
+		if observer.calls != 1 || observer.stage != wantStage || observer.provider != wantProvider {
+			t.Fatalf("provider failure observer = %#v", observer)
+		}
+	}
+}
+
+func observedFailureTurn() TurnContext {
+	turn := testTurn()
+	turn.Mode = TurnModeSnapshot{SessionID: turn.SessionID, RuntimeInstanceID: "runtime-1", Mode: "interpretation", Generation: 1}
+	return turn
 }
 
 func assertProviderFailureRuntimeStates(t *testing.T, reporter *recordingRuntimeReporter, wants ...session.RuntimeState) {

@@ -79,8 +79,17 @@ type Dependencies struct {
 	VoiceID              string
 	Logger               *slog.Logger
 	Latency              *slog.Logger
+	ProviderFailures     pipeline.ProviderFailureObserver
+	Lifecycle            LifecycleObserver
 	Now                  func() time.Time
 	NewRuntimeInstanceID RuntimeInstanceIDFactory
+}
+
+// LifecycleObserver receives process-local lifecycle counters without session
+// identifiers. Calls happen only after a start or stop is committed in memory.
+type LifecycleObserver interface {
+	RecordRuntimeStarted()
+	RecordRuntimeStopped()
 }
 
 // Manager owns one processing context per started realtime session.
@@ -185,9 +194,10 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
 	}
 	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages, managerTurnModeReader{manager: manager})
+	latency := pipeline.LatencyLogger{Logger: deps.Latency, Observer: deps.ProviderFailures}
 	speech := pipeline.NewSpeechOutput(pipeline.SpeechOutputDependencies{
 		TTS: providers.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
-		VoiceID: deps.VoiceID, Provider: labels.tts, Latency: pipeline.LatencyLogger{Logger: deps.Latency},
+		VoiceID: deps.VoiceID, Provider: labels.tts, Latency: latency,
 	})
 	commitGate := managerTurnCommitGate{manager: manager}
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
@@ -198,7 +208,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		Runtime:    deps.Runtime,
 		Now:        deps.Now,
 		Speech:     speech,
-		Latency:    pipeline.LatencyLogger{Logger: deps.Latency},
+		Latency:    latency,
 	})
 	// Router 注册表是模式能力的单一来源：Coordinator 会复用同一份模式列表，
 	// 从而保证“允许切换”的模式一定存在对应 Handler，不会出现状态切换成功但没有业务处理器的半配置状态。
@@ -212,7 +222,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		handlers[realtimev1.ModeAssistant] = pipeline.NewAssistantHandler(pipeline.AssistantHandlerDependencies{
 			LLM: providers.Assistant, Provider: labels.llm, Replies: deps.AssistantReplies, Gate: commitGate,
 			Usage: deps.Usage, Speech: speech, Runtime: deps.Runtime, Now: deps.Now,
-			Latency: pipeline.LatencyLogger{Logger: deps.Latency},
+			Latency: latency,
 		})
 	}
 	router, err := newModeRouter(handlers)
@@ -387,6 +397,9 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		"operation_id", snapshot.StartOperationID,
 		"active_mode", initialMode,
 	)
+	if m.deps.Lifecycle != nil {
+		m.deps.Lifecycle.RecordRuntimeStarted()
+	}
 	return nil
 }
 
@@ -563,6 +576,7 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	select {
 	case <-item.done:
 		m.mu.Lock()
+		stopped := false
 		err := item.err
 		if closeAttempt.err != nil {
 			err = closeAttempt.err
@@ -571,8 +585,12 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 		}
 		if closeAttempt.err == nil && m.entries[sessionID] == item {
 			delete(m.entries, sessionID)
+			stopped = true
 		}
 		m.mu.Unlock()
+		if stopped && m.deps.Lifecycle != nil {
+			m.deps.Lifecycle.RecordRuntimeStopped()
+		}
 		return err
 	case <-ctx.Done():
 		return ctx.Err()

@@ -703,6 +703,41 @@ func TestHandlerModeRoutesForwardTrustedControlMetadata(t *testing.T) {
 	}
 }
 
+func TestHandlerModeRouteGeneratesStableTraceWhenRequestIDIsMissing(t *testing.T) {
+	modes := &handlerModeUseCases{switchErr: ErrModeUnavailable}
+	handler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeModes(modes)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/mode", bytes.NewBufferString(
+		`{"runtime_instance_id":"runtime-1","expected_generation":1,"target_mode":"assistant"}`,
+	))
+	request.SetPathValue("id", "vs_1")
+	request.Header.Set("X-Test-Account", "acct_1")
+	request.Header.Set("Idempotency-Key", "mode-op-1")
+	response := httptest.NewRecorder()
+
+	handler.switchMode(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body %s", response.Code, response.Body.String())
+	}
+	if modes.switchInput.TraceID == "" || modes.switchInput.TraceID == "req_missing" {
+		t.Fatalf("SwitchMode trace ID = %q, want generated request ID", modes.switchInput.TraceID)
+	}
+	var body httpErrorEnvelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Error.RequestID != modes.switchInput.TraceID ||
+		request.Header.Get("X-Request-ID") != modes.switchInput.TraceID {
+		t.Fatalf(
+			"request IDs = response %q header %q command %q, want one stable value",
+			body.Error.RequestID,
+			request.Header.Get("X-Request-ID"),
+			modes.switchInput.TraceID,
+		)
+	}
+}
+
 func TestHandlerModeRoutesRejectUnauthenticatedAndMalformedRequests(t *testing.T) {
 	modes := &handlerModeUseCases{}
 	handler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeModes(modes)

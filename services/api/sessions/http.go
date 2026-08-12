@@ -3,6 +3,7 @@ package sessions
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
@@ -563,5 +565,23 @@ func requestIDFromHTTP(r *http.Request) string {
 	if requestID := r.Header.Get("X-Request-ID"); requestID != "" {
 		return requestID
 	}
-	return "req_missing"
+	requestID := newHTTPRequestID()
+	// Persist the generated value on this request so downstream commands and a
+	// later error response always use the same trace identity.
+	r.Header.Set("X-Request-ID", requestID)
+	return requestID
+}
+
+var fallbackHTTPRequestIDSequence atomic.Uint64
+
+func newHTTPRequestID() string {
+	random := make([]byte, 12)
+	if _, err := rand.Read(random); err == nil {
+		return "req_" + hex.EncodeToString(random)
+	}
+	return fmt.Sprintf(
+		"req_%d_%d",
+		time.Now().UTC().UnixNano(),
+		fallbackHTTPRequestIDSequence.Add(1),
+	)
 }

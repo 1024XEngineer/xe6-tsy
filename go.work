@@ -4,4 +4,5 @@ use (
 	./packages/contracts
 	./services/api
 	./services/realtime-audio
+	./sdks/device
 )

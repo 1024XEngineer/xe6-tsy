@@ -230,6 +230,13 @@ func (s *Service) Cancel(ctx context.Context, sessionID, playbackID, reason stri
 
 // UserSpeaking interrupts the current active playback for a session.
 func (s *Service) UserSpeaking(ctx context.Context, sessionID string) error {
+	return s.InterruptCurrent(ctx, sessionID, "user_speaking")
+}
+
+// InterruptCurrent stops the active playback without closing the shared media track.
+// Callers supply a stable reason so command wake-up and ordinary barge-in remain
+// distinguishable in the ordered playback event stream.
+func (s *Service) InterruptCurrent(ctx context.Context, sessionID, reason string) error {
 	if sessionID == "" {
 		return ErrSessionRequired
 	}
@@ -243,7 +250,7 @@ func (s *Service) UserSpeaking(ctx context.Context, sessionID string) error {
 	if playbackID == "" {
 		return nil
 	}
-	return s.Interrupt(ctx, sessionID, playbackID, "user_speaking")
+	return s.Interrupt(ctx, sessionID, playbackID, reason)
 }
 
 // Snapshot returns the last known playback state for a session.

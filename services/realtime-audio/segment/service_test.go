@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 )
@@ -121,6 +123,41 @@ func TestServiceIgnoresSilenceOnlyInput(t *testing.T) {
 	}
 }
 
+func TestServiceQuarantinesAudioAfterWakeWord(t *testing.T) {
+	base := time.Unix(31, 0)
+	wake := &fakeWakeWords{signal: realtimev1.WakeWordDetectedSignal{
+		Type: realtimev1.WakeWordDetectedType, EventVersion: realtimev1.WakeWordDetectedEventVersion,
+		SignalID: "wake-1", DetectedAt: base.Add(24 * time.Hour),
+	}, ready: make(chan struct{})}
+	source := &wakeAwareSource{
+		ready: wake.ready,
+		frames: []audio.Frame{
+			testFrame(t, 9, base), // command audio: must never reach ordinary VAD
+			testFrame(t, 1, base.Add(100*time.Millisecond)),
+			testFrame(t, 0, base.Add(400*time.Millisecond)),
+		},
+	}
+	gate := &recordingGate{}
+	processor := &fakeProcessor{}
+	service := newTestServiceWithDeps(t, source, processor, gate, wake, func() time.Time { return base })
+
+	if err := service.Run(context.Background(), Request{SessionID: "session-1", SourceLanguage: "zh-CN"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if gate.openRequest.CommandID != "wake-1" {
+		t.Fatalf("gate open request = %#v, want signal ID", gate.openRequest)
+	}
+	if !gate.openRequest.OpenedAt.Equal(base) {
+		t.Fatalf("gate opened at = %s, want server receive time %s", gate.openRequest.OpenedAt, base)
+	}
+	if gate.consumed != 1 {
+		t.Fatalf("command frames consumed = %d, want 1", gate.consumed)
+	}
+	if len(processor.requests) != 1 || len(processor.requests[0].AudioChunks) != 2 {
+		t.Fatalf("ordinary processor requests = %#v, want only post-command turn", processor.requests)
+	}
+}
+
 func TestServiceStopsOnSourceErrorAndClosesSource(t *testing.T) {
 	sourceErr := errors.New("track read failed")
 	source := &fakeSource{readErr: sourceErr}
@@ -205,11 +242,101 @@ func newTestService(t *testing.T, source FrameSource, processor TurnProcessor) *
 	return service
 }
 
+func newTestServiceWithDeps(
+	t *testing.T,
+	source FrameSource,
+	processor TurnProcessor,
+	gate CommandGate,
+	wake WakeWordSource,
+	now func() time.Time,
+) *Service {
+	t.Helper()
+	segmenter, err := vad.NewSegmenter(energyClassifier{}, vad.Options{
+		SilenceAfter: 200 * time.Millisecond,
+		MaxDuration:  time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSegmenter() error = %v", err)
+	}
+	service, err := NewService(Dependencies{
+		Source: source, Segmenter: segmenter, Processor: processor,
+		Command: gate, WakeWords: wake, Now: now,
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	return service
+}
+
 type energyClassifier struct{}
 
 func (energyClassifier) Speech(frame audio.Frame) bool {
 	return len(frame.PCM) > 0 && frame.PCM[0] != 0
 }
+
+type fakeWakeWords struct {
+	signal realtimev1.WakeWordDetectedSignal
+	ready  chan struct{}
+}
+
+func (s *fakeWakeWords) Receive(ctx context.Context) (realtimev1.WakeWordDetectedSignal, error) {
+	if s.ready == nil {
+		s.ready = make(chan struct{})
+	}
+	select {
+	case <-s.ready:
+		return s.signal, io.EOF
+	default:
+		close(s.ready)
+		return s.signal, nil
+	case <-ctx.Done():
+		return realtimev1.WakeWordDetectedSignal{}, ctx.Err()
+	}
+}
+
+type wakeAwareSource struct {
+	ready  <-chan struct{}
+	frames []audio.Frame
+}
+
+func (s *wakeAwareSource) ReadFrame(ctx context.Context) (audio.Frame, error) {
+	select {
+	case <-s.ready:
+	case <-ctx.Done():
+		return audio.Frame{}, ctx.Err()
+	}
+	if len(s.frames) == 0 {
+		return audio.Frame{}, io.EOF
+	}
+	frame := s.frames[0].Clone()
+	s.frames = s.frames[1:]
+	return frame, nil
+}
+
+func (s *wakeAwareSource) Close() error { return nil }
+
+type recordingGate struct {
+	openRequest command.OpenRequest
+	active      bool
+	consumed    int
+}
+
+func (g *recordingGate) Open(request command.OpenRequest) error {
+	g.openRequest = request
+	g.active = true
+	return nil
+}
+
+func (g *recordingGate) Consume(context.Context, audio.Frame) command.Result {
+	if !g.active {
+		return command.Result{State: command.StateDormant}
+	}
+	g.active = false
+	g.consumed++
+	return command.Result{Consumed: true, State: command.StateDormant}
+}
+
+func (g *recordingGate) Cancel() { g.active = false }
 
 type fakeSource struct {
 	frames     []audio.Frame

@@ -147,13 +147,23 @@ func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {
 	}
 
 	var body struct {
-		SessionID string `json:"session_id"`
+		SessionID          string `json:"session_id"`
+		ControlDataChannel struct {
+			Label           string `json:"label"`
+			Ordered         bool   `json:"ordered"`
+			ProtocolVersion int    `json:"protocol_version"`
+		} `json:"control_data_channel"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if body.SessionID != "vs_test" {
 		t.Fatalf("session_id = %q", body.SessionID)
+	}
+	if body.ControlDataChannel.Label != realtimev1.ControlDataChannelLabel ||
+		!body.ControlDataChannel.Ordered ||
+		body.ControlDataChannel.ProtocolVersion != realtimev1.ControlProtocolVersion {
+		t.Fatalf("control_data_channel = %#v", body.ControlDataChannel)
 	}
 }
 

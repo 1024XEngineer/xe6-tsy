@@ -14,6 +14,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlchannel"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/localruntime"
 	realtimemetrics "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/metrics"
@@ -140,6 +141,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		return nil, fmt.Errorf("configure ticket validator: %w", err)
 	}
 
+	controlHandler := controlchannel.NewHandler()
 	factory, err := webrtc.NewPionTransportFactory(webrtc.PionTransportConfig{
 		ICEServers: []webrtc.ICEServerConfig{{
 			URLs: []string{"stun:stun.l.google.com:19302"},
@@ -148,6 +150,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			SkipTTSTrack:  cfg.SkipTTSTrack,
 			DownlinkCodec: cfg.DownlinkCodec,
 		},
+		Control: webrtc.ControlConfig{Handler: controlHandler},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure pion transport factory: %w", err)
@@ -245,6 +248,10 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure local VAD: %w", err)
 	}
+	var playbackInterrupter runtime.PlaybackInterrupter
+	if candidate, ok := audioSink.(runtime.PlaybackInterrupter); ok {
+		playbackInterrupter = candidate
+	}
 
 	manager, err := runtime.NewManager(providerConfig, mockOfflineProviders(cfg.SourceLanguage), runtime.Dependencies{
 		FrameSources: localruntime.WebRTCFrameSources{
@@ -252,24 +259,33 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			SourceLanguage: cfg.SourceLanguage,
 			Languages:      languages,
 		},
-		NewSegmenter:     newSegmenter,
-		Languages:        languages,
-		FinalTurns:       finalTurns,
-		AssistantReplies: localruntime.DataChannelAssistantReplySink{Media: connections, Failures: metricRegistry},
-		ModeChanges:      realtimemetrics.ObserveModeChangedSink(sinks.ModeChanges, metricRegistry),
-		Usage:            usage,
-		Audio:            audioSink,
-		Runtime:          runtimeBridge,
-		VoiceID:          voiceID,
-		Logger:           slog.Default(),
-		Latency:          slog.Default(),
-		ProviderFailures: metricRegistry,
-		Lifecycle:        metricRegistry,
-		ModeCommands:     metricRegistry,
-		Now:              now,
+		NewSegmenter: newSegmenter,
+		// Command recognition uses an isolated lightweight classifier. It is
+		// intentionally separate from the rolling ordinary-VAD classifier.
+		NewCommandClassifier: func() (vad.Classifier, error) {
+			return localruntime.EnergySpeechClassifier{Threshold: 0.01}, nil
+		},
+		Languages:           languages,
+		FinalTurns:          finalTurns,
+		AssistantReplies:    localruntime.DataChannelAssistantReplySink{Media: connections, Failures: metricRegistry},
+		ModeChanges:         realtimemetrics.ObserveModeChangedSink(sinks.ModeChanges, metricRegistry),
+		Usage:               usage,
+		Audio:               audioSink,
+		PlaybackInterrupter: playbackInterrupter,
+		Runtime:             runtimeBridge,
+		VoiceID:             voiceID,
+		Logger:              slog.Default(),
+		Latency:             slog.Default(),
+		ProviderFailures:    metricRegistry,
+		Lifecycle:           metricRegistry,
+		ModeCommands:        metricRegistry,
+		Now:                 now,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure runtime manager: %w", err)
+	}
+	if err := controlHandler.SetModeControl(manager); err != nil {
+		return nil, fmt.Errorf("configure WebRTC control channel: %w", err)
 	}
 
 	lifecycle, err := session.NewLifecycleService(session.Dependencies{

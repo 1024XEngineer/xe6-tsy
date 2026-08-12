@@ -1,6 +1,8 @@
 # apps/mobile
 
-Vue 手机端对话入口、演示和验收工具。
+Mobile 端核心控制面客户端骨架，供 Vue、uni-app、Capacitor 或原生壳接入。
+
+本阶段只提供可编译的 TypeScript 状态和 HTTP 控制面核心，不绑定 UI 框架。
 
 ## 职责
 
@@ -28,3 +30,30 @@ Vue 手机端对话入口、演示和验收工具。
 - TypeScript
 - Vue 3
 - uni-app / Capacitor
+
+## 当前阶段边界
+
+已实现：
+
+- typed `ConnectionSnapshot`、`RuntimeSnapshot` 和 `ModeStateSnapshot`；
+- HTTP `GET` 快照和 `POST /mode` 类型化模式命令；
+- generation/runtime instance/operation conflict 后刷新 ModeState，并废弃旧 operation；刷新失败会进入错误状态；
+- 可订阅的展示状态模型，包含最后一次模式命令的 operation ID 和结果；
+- 连接断开状态和可注入的真实媒体重连适配器；未注入时明确失败，不使用状态 GET 冒充重连；
+- 仅明确返回 `501 not_implemented` 的旧部署按兼容规则使用 `interpretation`；鉴权和依赖错误不会降级为可用状态。
+- `SessionStartClient` 向 API Start 发送类型化 `initial_mode`；新客户端省略时显式使用 `assistant`。
+
+明确未实现：
+
+- WebRTC PeerConnection、DataChannel 上行命令和命令窗口确认；
+- 本地唤醒词模型/原生 KWS；待真实原生依赖确定后再引入对应适配边界。
+
+## 本地验证
+
+```bash
+npm test
+npm run typecheck
+npm run build
+```
+
+`npm test` 使用 Node 内置 `node:test` 和 TypeScript 类型擦除运行，无需连接 API、realtime 或真实设备。

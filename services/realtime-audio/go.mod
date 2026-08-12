@@ -2,7 +2,10 @@ module github.com/1024XEngineer/xe6-tsy/services/realtime-audio
 
 go 1.26
 
-require github.com/1024XEngineer/xe6-tsy/packages/contracts v0.0.0
+require (
+	github.com/1024XEngineer/xe6-tsy/packages/contracts v0.0.0
+	golang.org/x/text v0.38.0
+)
 
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
@@ -46,7 +49,6 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
 

@@ -116,5 +116,6 @@ type openAPISchema struct {
 }
 
 type openAPIProperty struct {
-	Ref string `yaml:"$ref"`
+	Ref  string   `yaml:"$ref"`
+	Enum []string `yaml:"enum"`
 }

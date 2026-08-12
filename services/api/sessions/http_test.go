@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -632,6 +633,8 @@ func TestHandlerMapsSessionErrors(t *testing.T) {
 		{name: "webrtc unavailable", err: ErrWebRTCUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: CodeWebRTCUnavailable},
 		{name: "mode unavailable", err: ErrModeUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: CodeModeUnavailable},
 		{name: "mode generation conflict", err: ErrModeGenerationConflict, wantStatus: http.StatusConflict, wantCode: CodeModeGenerationConflict},
+		{name: "mode runtime mismatch", err: ErrModeRuntimeMismatch, wantStatus: http.StatusConflict, wantCode: CodeModeRuntimeMismatch},
+		{name: "mode operation conflict", err: ErrModeOperationConflict, wantStatus: http.StatusConflict, wantCode: CodeModeOperationConflict},
 		{name: "mode not available", err: ErrModeNotAvailable, wantStatus: http.StatusUnprocessableEntity, wantCode: CodeModeNotAvailable},
 		{name: "not implemented", err: ErrNotImplemented, wantStatus: http.StatusNotImplemented, wantCode: CodeNotImplemented},
 		{name: "unknown", err: errors.New("boom"), wantStatus: http.StatusInternalServerError, wantCode: ErrorCode("internal_error")},
@@ -760,6 +763,26 @@ func TestHandlerModeRoutesRejectUnauthenticatedAndMalformedRequests(t *testing.T
 	handler.switchMode(response, malformed)
 	if response.Code != http.StatusBadRequest || modes.switchCalls != 0 {
 		t.Fatalf("malformed status=%d switchCalls=%d", response.Code, modes.switchCalls)
+	}
+
+	oversizedTrace := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/mode", bytes.NewBufferString(
+		`{"runtime_instance_id":"runtime-1","expected_generation":1,"target_mode":"assistant"}`,
+	))
+	oversizedTrace.SetPathValue("id", "vs_1")
+	oversizedTrace.Header.Set("X-Test-Account", "acct_1")
+	oversizedTrace.Header.Set("Idempotency-Key", "mode-op-1")
+	oversizedTrace.Header.Set("X-Request-ID", strings.Repeat("t", maxRequestIDLength+1))
+	response = httptest.NewRecorder()
+	handler.switchMode(response, oversizedTrace)
+	if response.Code != http.StatusBadRequest || modes.switchCalls != 0 {
+		t.Fatalf("oversized trace status=%d switchCalls=%d", response.Code, modes.switchCalls)
+	}
+	var body httpErrorEnvelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode oversized trace error: %v", err)
+	}
+	if body.Error.RequestID == "" || len(body.Error.RequestID) > maxRequestIDLength {
+		t.Fatalf("error request ID = %q, want bounded generated value", body.Error.RequestID)
 	}
 }
 

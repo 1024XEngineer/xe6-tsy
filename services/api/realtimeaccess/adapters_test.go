@@ -3,6 +3,7 @@ package realtimeaccess
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -333,6 +334,33 @@ func TestRealtimeLifecycleMapsModeCommandsAndSnapshots(t *testing.T) {
 		client.modeRequest.ExpectedGeneration != command.ExpectedGeneration ||
 		client.modeRequest.TargetMode != command.TargetMode {
 		t.Fatalf("mode request = %#v", client.modeRequest)
+	}
+}
+
+func TestRealtimeLifecycleRejectsOversizedModeMetadata(t *testing.T) {
+	lifecycle, err := NewRealtimeLifecycle(&lifecycleClientFake{})
+	if err != nil {
+		t.Fatalf("NewRealtimeLifecycle() error = %v", err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*sessions.SwitchModeCommand)
+	}{
+		{name: "operation", edit: func(command *sessions.SwitchModeCommand) {
+			command.OperationID = strings.Repeat("o", maxModeControlMetadataLength+1)
+		}},
+		{name: "trace", edit: func(command *sessions.SwitchModeCommand) {
+			command.TraceID = strings.Repeat("t", maxModeControlMetadataLength+1)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := validAdapterModeCommand()
+			test.edit(&command)
+			_, err := lifecycle.SwitchMode(t.Context(), command)
+			if !errors.Is(err, sessions.ErrInvalidRequest) {
+				t.Fatalf("SwitchMode() error = %v, want ErrInvalidRequest", err)
+			}
+		})
 	}
 }
 

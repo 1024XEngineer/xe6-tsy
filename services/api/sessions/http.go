@@ -324,9 +324,13 @@ func (h *Handler) switchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	operationID := r.Header.Get("Idempotency-Key")
+	traceID := requestIDFromHTTP(r)
 	if body.RuntimeInstanceID == "" || body.ExpectedGeneration < 1 ||
 		!body.TargetMode.Valid() || operationID == "" ||
-		len(operationID) > maxIdempotencyKeyLength {
+		len(operationID) > maxIdempotencyKeyLength || len(traceID) > maxRequestIDLength {
+		if len(traceID) > maxRequestIDLength {
+			r.Header.Del("X-Request-ID")
+		}
 		writeHTTPError(w, r, ErrInvalidRequest)
 		return
 	}
@@ -335,7 +339,7 @@ func (h *Handler) switchMode(w http.ResponseWriter, r *http.Request) {
 		SessionID:          r.PathValue("id"),
 		RuntimeInstanceID:  body.RuntimeInstanceID,
 		OperationID:        operationID,
-		TraceID:            requestIDFromHTTP(r),
+		TraceID:            traceID,
 		ExpectedGeneration: body.ExpectedGeneration,
 		TargetMode:         body.TargetMode,
 	})

@@ -79,6 +79,7 @@ func validateSwitchModeInput(input SwitchModeInput) error {
 	}
 	if input.RuntimeInstanceID == "" || input.OperationID == "" ||
 		len(input.OperationID) > maxIdempotencyKeyLength || input.TraceID == "" ||
+		len(input.TraceID) > maxRequestIDLength ||
 		input.ExpectedGeneration < 1 || !input.TargetMode.Valid() {
 		return ErrInvalidRequest
 	}

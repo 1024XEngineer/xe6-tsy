@@ -13,6 +13,8 @@ import (
 
 var ErrInvalidDependency = errors.New("invalid realtime access dependency")
 
+const maxModeControlMetadataLength = 200
+
 type languageConfigAdapter struct {
 	reader languages.LanguageConfigReader
 }
@@ -188,6 +190,8 @@ func (a realtimeLifecycleAdapter) SwitchMode(
 ) (sessions.ModeSwitchResult, error) {
 	if command.SessionID == "" || command.RuntimeInstanceID == "" ||
 		command.OperationID == "" || command.TraceID == "" ||
+		len(command.OperationID) > maxModeControlMetadataLength ||
+		len(command.TraceID) > maxModeControlMetadataLength ||
 		command.ExpectedGeneration < 1 || !command.TargetMode.Valid() {
 		return sessions.ModeSwitchResult{}, sessions.ErrInvalidRequest
 	}

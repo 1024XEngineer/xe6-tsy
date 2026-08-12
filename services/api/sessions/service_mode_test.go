@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,6 +128,7 @@ func TestServiceSwitchModeValidatesBeforeDependencies(t *testing.T) {
 		{name: "missing runtime", edit: func(input *SwitchModeInput) { input.RuntimeInstanceID = "" }, want: ErrInvalidRequest},
 		{name: "missing operation", edit: func(input *SwitchModeInput) { input.OperationID = "" }, want: ErrInvalidRequest},
 		{name: "missing trace", edit: func(input *SwitchModeInput) { input.TraceID = "" }, want: ErrInvalidRequest},
+		{name: "oversized trace", edit: func(input *SwitchModeInput) { input.TraceID = strings.Repeat("t", maxRequestIDLength+1) }, want: ErrInvalidRequest},
 		{name: "zero generation", edit: func(input *SwitchModeInput) { input.ExpectedGeneration = 0 }, want: ErrInvalidRequest},
 		{name: "future mode", edit: func(input *SwitchModeInput) { input.TargetMode = "english_practice" }, want: ErrInvalidRequest},
 	}

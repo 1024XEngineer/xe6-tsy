@@ -501,7 +501,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ModeStateSnapshot' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '404': { $ref: '#/components/responses/RuntimeNotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
       operationId: switchRealtimeMode
@@ -523,7 +523,7 @@ paths:
               schema: { $ref: '#/components/schemas/SwitchModeResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '404': { $ref: '#/components/responses/RuntimeNotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
@@ -576,6 +576,7 @@ components:
     ServiceUnavailable: { description: Required downstream service is temporarily unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     TooManyRequests: { description: Phone verification requests are temporarily rate limited, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    RuntimeNotFound: { description: Realtime runtime not found for the requested Session, content: { application/json: { schema: { $ref: '#/components/schemas/RuntimeNotFoundError' } } } }
     NotImplemented: { description: Business implementation is intentionally pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
     RealtimeRuntimeState:
@@ -586,7 +587,20 @@ components:
       enum: [realtime_start_failed, realtime_stop_failed, realtime_pipeline_failed, realtime_translation_rejected]
     ControlPlaneErrorCode:
       type: string
-      enum: [runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict]
+      enum: [runtime_not_found, runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict]
+    RuntimeNotFoundError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/RuntimeNotFoundErrorBody' }
+    RuntimeNotFoundErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { type: string, enum: [runtime_not_found] }
+        message: { type: string }
     RuntimeOperationConflictError:
       type: object
       additionalProperties: false
@@ -598,7 +612,7 @@ components:
       additionalProperties: false
       required: [code, message]
       properties:
-        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        code: { type: string, enum: [runtime_operation_conflict] }
         message: { type: string }
     RealtimeStartRequest:
       type: object

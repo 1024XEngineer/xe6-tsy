@@ -483,6 +483,13 @@ func TestMapErrorTreatsModeEventFailureAsUnavailable(t *testing.T) {
 	}
 }
 
+func TestMapErrorKeepsLegacyRuntimeNotFoundOutsideModeControl(t *testing.T) {
+	status, code := mapError(session.ErrRuntimeNotFound)
+	if status != http.StatusNotFound || code != "not_found" {
+		t.Fatalf("mapError(ErrRuntimeNotFound) = %d %q", status, code)
+	}
+}
+
 func TestHandlerMapsConnectionReaderErrors(t *testing.T) {
 	tests := []struct {
 		name     string

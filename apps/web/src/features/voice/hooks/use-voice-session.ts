@@ -229,11 +229,11 @@ export function useVoiceSession() {
   const pendingConfigUpdatesRef = useRef(0);
   const latestAutomaticOutputStatusRef = useRef<string | null>(null);
   const wakeRef = useRef<WakeWordListener | null>(null);
-  const commandWindowRef = useRef(new LocalCommandWindow());
   const [commandWindow, setCommandWindow] = useState<CommandWindowSnapshot>({
     state: "closed",
     expiresAt: null,
   });
+  const commandWindowRef = useRef<LocalCommandWindow | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
 
@@ -476,8 +476,8 @@ export function useVoiceSession() {
 
   const end = useCallback(async () => {
     runningRef.current = false;
-    commandWindowRef.current.close();
-    setCommandWindow(commandWindowRef.current.snapshot());
+    commandWindowRef.current?.close();
+    setCommandWindow({ state: "closed", expiresAt: null });
     startAbortRef.current?.abort();
     startAbortRef.current = null;
     stopPolling();
@@ -593,8 +593,8 @@ export function useVoiceSession() {
   const start = useCallback(async () => {
     if (runningRef.current) return;
 
-    commandWindowRef.current.close();
-    setCommandWindow(commandWindowRef.current.snapshot());
+    commandWindowRef.current?.close();
+    setCommandWindow({ state: "closed", expiresAt: null });
     runningRef.current = true;
     const startAbort = new AbortController();
     startAbortRef.current = startAbort;
@@ -829,12 +829,15 @@ export function useVoiceSession() {
   }, [end, start]);
 
   useEffect(() => {
-    const localCommandWindow = commandWindowRef.current;
+    const localCommandWindow = new LocalCommandWindow({
+      onExpire: () => setCommandWindow({ state: "closed", expiresAt: null }),
+    });
+    commandWindowRef.current = localCommandWindow;
     const listener = new WakeWordListener({
       onCommand: (command, keyword) => {
-        const acceptedByWindow = commandWindowRef.current.consume(command);
+        const acceptedByWindow = localCommandWindow.consume(command);
         if (acceptedByWindow) {
-          setCommandWindow(commandWindowRef.current.snapshot());
+          setCommandWindow(localCommandWindow.snapshot());
         }
         if (command === "start") {
           if (runningRef.current || sessionIdRef.current) return;
@@ -857,7 +860,7 @@ export function useVoiceSession() {
           return;
         }
         if (command === "listen") {
-          const snapshot = commandWindowRef.current.open();
+          const snapshot = localCommandWindow.open();
           setCommandWindow(snapshot);
           setHintMessage(
             `已识别「${keyword}」，请在 5 秒内说「小灵，开始翻译」或「小灵，停止翻译」。`,
@@ -895,20 +898,10 @@ export function useVoiceSession() {
       wakeRef.current = null;
       listener.stop();
       localCommandWindow.dispose();
+      if (commandWindowRef.current === localCommandWindow) {
+        commandWindowRef.current = null;
+      }
     };
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      const snapshot = commandWindowRef.current.snapshot();
-      setCommandWindow((previous) =>
-        previous.state === snapshot.state &&
-        previous.expiresAt === snapshot.expiresAt
-          ? previous
-          : snapshot,
-      );
-    }, 250);
-    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(

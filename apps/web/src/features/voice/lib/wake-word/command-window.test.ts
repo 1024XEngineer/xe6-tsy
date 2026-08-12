@@ -43,4 +43,46 @@ describe("LocalCommandWindow", () => {
 
     expect(clearTimer).toHaveBeenCalledTimes(2);
   });
+
+  it("notifies the owner when the bounded timer expires", () => {
+    let expire: (() => void) | null = null;
+    const onExpire = vi.fn();
+    const window = new LocalCommandWindow({
+      onExpire,
+      setTimer: (callback) => {
+        expire = callback;
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      },
+    });
+
+    window.open();
+    const fireExpire = expire as (() => void) | null;
+    expect(fireExpire).not.toBeNull();
+    fireExpire?.();
+
+    expect(onExpire).toHaveBeenCalledTimes(1);
+    expect(window.snapshot()).toEqual({ state: "closed", expiresAt: null });
+  });
+
+  it("ignores a queued expiry callback from an older window", () => {
+    const timers: Array<() => void> = [];
+    const onExpire = vi.fn();
+    const window = new LocalCommandWindow({
+      onExpire,
+      setTimer: (callback) => {
+        timers.push(callback);
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      },
+    });
+
+    window.open();
+    window.open();
+    timers[0]?.();
+
+    expect(onExpire).not.toHaveBeenCalled();
+    expect(window.snapshot().state).toBe("open");
+    timers[1]?.();
+    expect(onExpire).toHaveBeenCalledTimes(1);
+    expect(window.snapshot().state).toBe("closed");
+  });
 });

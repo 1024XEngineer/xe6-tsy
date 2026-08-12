@@ -136,7 +136,7 @@ export function VoiceExperience() {
               {hintMessage}
             </motion.p>
           ) : null}
-          {state.phase === "idle" && wakeStatus === "listening" && commandWindow.state === "open" ? (
+          {wakeStatus === "listening" && commandWindow.state === "open" ? (
             <p className={styles.commandWindowNotice} role="status">
               命令窗口已开启，请在 5 秒内说“小灵，开始翻译”或“小灵，停止翻译”。
             </p>

@@ -2,6 +2,7 @@ package modeprojection
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,6 +13,59 @@ import (
 func TestNewValkeyStreamRequiresClient(t *testing.T) {
 	if _, err := NewValkeyStream(t.Context(), nil, "", "", ""); err == nil {
 		t.Fatal("NewValkeyStream() error = nil, want required client error")
+	}
+}
+
+func TestNewValkeyStreamUsesDefaultsAndBusyGroupIsAccepted(t *testing.T) {
+	_, client := newTestValkey(t)
+	first, err := NewValkeyStream(t.Context(), client, "", "", "")
+	if err != nil {
+		t.Fatalf("first NewValkeyStream() error = %v", err)
+	}
+	second, err := NewValkeyStream(t.Context(), client, "", "", "")
+	if err != nil {
+		t.Fatalf("second NewValkeyStream() error = %v", err)
+	}
+	if first.stream != "lingow:realtime:mode:changed" || first.group != "lingow-mode-projection" || first.consumer != "mode-projection-worker" {
+		t.Fatalf("default stream config = %#v", first)
+	}
+	if second.stream != first.stream || second.group != first.group {
+		t.Fatalf("busy group stream config = %#v, want same stream and group", second)
+	}
+}
+
+func TestValkeyStreamHandlesEmptyAndCanceledReceives(t *testing.T) {
+	_, client := newTestValkey(t)
+	queue := newTestStream(t, client, "receive-worker")
+	queue.block = time.Millisecond
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := queue.Receive(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Receive(canceled) error = %v, want context canceled", err)
+	}
+	if _, ok, err := queue.autoclaim(t.Context()); err != nil || ok {
+		t.Fatalf("autoclaim(empty) = (%v, %v), want (false, nil)", ok, err)
+	}
+	if err := queue.Ack(t.Context(), ""); err != nil {
+		t.Fatalf("Ack(empty) error = %v", err)
+	}
+}
+
+func TestStreamHelpersHandleEmptyAndUnexpectedValues(t *testing.T) {
+	if _, ok := streamMessageFromStreams(nil); ok {
+		t.Fatal("streamMessageFromStreams(nil) ok = true, want false")
+	}
+	if _, ok := streamMessageFromStreams([]redis.XStream{{}}); ok {
+		t.Fatal("streamMessageFromStreams(empty) ok = true, want false")
+	}
+	if got := bytesField(map[string]any{"payload": 42}, "payload"); got != nil {
+		t.Fatalf("bytesField(unexpected) = %q, want nil", got)
+	}
+	if !isBusyGroup(errors.New("BUSYGROUP Consumer Group name already exists")) {
+		t.Fatal("isBusyGroup() = false, want true")
+	}
+	if isBusyGroup(errors.New("different error")) {
+		t.Fatal("isBusyGroup(non-busy) = true, want false")
 	}
 }
 

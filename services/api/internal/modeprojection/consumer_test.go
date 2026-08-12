@@ -67,6 +67,25 @@ func (canceledReceiveStream) Receive(context.Context) (StreamMessage, error) {
 func (canceledReceiveStream) Ack(context.Context, string) error  { return nil }
 func (canceledReceiveStream) Nack(context.Context, string) error { return nil }
 
+type sequenceReceiveStream struct {
+	mu      sync.Mutex
+	results []error
+}
+
+func (s *sequenceReceiveStream) Receive(context.Context) (StreamMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.results) == 0 {
+		return StreamMessage{}, context.Canceled
+	}
+	err := s.results[0]
+	s.results = s.results[1:]
+	return StreamMessage{}, err
+}
+
+func (*sequenceReceiveStream) Ack(context.Context, string) error  { return nil }
+func (*sequenceReceiveStream) Nack(context.Context, string) error { return nil }
+
 func (s *receiveErrorStream) Receive(context.Context) (StreamMessage, error) {
 	s.mu.Lock()
 	s.calls++
@@ -173,6 +192,37 @@ func TestConsumerSettlesProjectionFailuresByPermanence(t *testing.T) {
 	}
 }
 
+func TestConsumerHandlesEmptyPayloadAndSettlementErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+		ackErr  error
+		wantErr error
+	}{
+		{name: "empty payload", payload: nil},
+		{name: "empty payload ack failure", payload: nil, ackErr: errors.New("ack unavailable")},
+		{name: "valid payload ack failure", payload: marshalConsumerEvent(t, consumerEvent()), ackErr: errors.New("ack unavailable")},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stream := &consumerStreamStub{ackErr: test.ackErr}
+			stream.messages = []StreamMessage{{Payload: test.payload, Receipt: "receipt"}}
+			consumer := NewConsumer(stream, &projectorStub{})
+			_, err := consumer.ProcessOnce(t.Context())
+			if test.ackErr != nil {
+				if !errors.Is(err, test.ackErr) {
+					t.Fatalf("ProcessOnce() error = %v, want %v", err, test.ackErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ProcessOnce() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
 func TestConsumerReturnsSettlementFailures(t *testing.T) {
 	ackErr := errors.New("ack unavailable")
 	nackErr := errors.New("nack unavailable")
@@ -232,6 +282,13 @@ func TestConsumerRunStopsWhenReceiveIsCanceled(t *testing.T) {
 
 	if err := consumer.Run(t.Context()); err != nil {
 		t.Fatalf("Run() error = %v, want nil", err)
+	}
+}
+
+func TestConsumerRunRetriesAfterFailure(t *testing.T) {
+	stream := &sequenceReceiveStream{results: []error{errors.New("temporary failure"), context.Canceled}}
+	if err := NewConsumer(stream, &projectorStub{}).Run(t.Context()); err != nil {
+		t.Fatalf("Run() error = %v, want nil after retry cancellation", err)
 	}
 }
 

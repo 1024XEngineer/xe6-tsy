@@ -1,6 +1,7 @@
 package modeprojection
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -29,6 +30,31 @@ func TestMemoryRepositoryProjectsModeChangesIdempotently(t *testing.T) {
 	}
 	if projection.LastEventID != first.EventID || projection.Generation != first.ResultingGeneration || projection.ActiveMode != first.ToMode {
 		t.Fatalf("projection = %#v, want first event", projection)
+	}
+}
+
+func TestMemoryRepositoryRejectsCanceledAndInvalidProjects(t *testing.T) {
+	repository := NewMemoryRepository()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := repository.Project(ctx, modeEvent("event-canceled", "runtime-1", 2, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time.Unix(1, 0))); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Project() error = %v, want context canceled", err)
+	}
+	invalid := realtimev1.ModeChangedEvent{}
+	if err := repository.Project(t.Context(), invalid); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("invalid Project() error = %v, want invalid argument", err)
+	}
+	var nilRepository *MemoryRepository
+	if err := nilRepository.Project(t.Context(), modeEvent("event-nil", "runtime-1", 2, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time.Unix(1, 0))); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("nil Project() error = %v, want not implemented", err)
+	}
+}
+
+func TestMemoryRepositoryLatestStopsOnCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := NewMemoryRepository().Latest(ctx, "session-1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Latest() error = %v, want context canceled", err)
 	}
 }
 

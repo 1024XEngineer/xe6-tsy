@@ -41,14 +41,12 @@ Mobile 端核心控制面客户端骨架，供 Vue、uni-app、Capacitor 或原�
 - 可订阅的展示状态模型；
 - 连接断开状态和可注入的真实媒体重连适配器；未注入时明确失败，不使用状态 GET 冒充重连；
 - 模式快照不可用时按旧客户端兼容规则使用 `interpretation`，不伪造快照。
-- `SessionStartClient` 向 API Start 发送类型化 `initial_mode`；省略时显式使用 `interpretation`。
+- `SessionStartClient` 向 API Start 发送类型化 `initial_mode`；新客户端省略时显式使用 `assistant`。
 
 明确未实现：
 
 - WebRTC PeerConnection、DataChannel 上行命令和命令窗口确认；
-- 本地唤醒词模型/原生 KWS；
-
-`src/wake-adapter.ts` 只定义可插拔的 `WakeWordEngine` 和 `CommandWindow` 适配边界，不能视为已接入唤醒词能力。
+- 本地唤醒词模型/原生 KWS；待真实原生依赖确定后再引入对应适配边界。
 
 ## 本地验证
 

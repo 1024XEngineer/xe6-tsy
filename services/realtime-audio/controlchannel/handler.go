@@ -173,7 +173,6 @@ func controlErrorCode(err error) realtimev1.ControlPlaneErrorCode {
 		return realtimev1.ErrorControlConnectionClosed
 	case errors.Is(err, context.DeadlineExceeded),
 		errors.Is(err, session.ErrRuntimeNotFound),
-		errors.Is(err, runtime.ErrModeTransitionPending),
 		errors.Is(err, runtime.ErrModeEventUnavailable),
 		errors.Is(err, runtime.ErrDependencyRequired):
 		return realtimev1.ErrorControlUnavailable

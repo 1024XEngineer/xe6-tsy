@@ -83,7 +83,6 @@ func TestHandlerMapsModeControlErrors(t *testing.T) {
 		{name: "mode unavailable", err: runtime.ErrModeNotAvailable, code: realtimev1.ErrorModeNotAvailable},
 		{name: "runtime operation conflict", err: session.ErrRuntimeOperationConflict, code: realtimev1.ErrorRuntimeOperationConflict},
 		{name: "runtime missing", err: session.ErrRuntimeNotFound, code: realtimev1.ErrorControlUnavailable},
-		{name: "transition pending", err: runtime.ErrModeTransitionPending, code: realtimev1.ErrorControlUnavailable},
 		{name: "event unavailable", err: runtime.ErrModeEventUnavailable, code: realtimev1.ErrorControlUnavailable},
 		{name: "invalid runtime command", err: runtime.ErrModeCommandInvalid, code: realtimev1.ErrorControlInvalidMessage},
 		{name: "unknown dependency", err: errors.New("provider failed"), code: realtimev1.ErrorControlUnavailable},

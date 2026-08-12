@@ -15,6 +15,7 @@ var controlMessageTypes = []ControlMessageType{
 }
 
 var controlPlaneErrorCodes = []ControlPlaneErrorCode{
+	ErrorRuntimeNotFound,
 	ErrorRuntimeOperationConflict,
 	ErrorModeNotAvailable,
 	ErrorModeGenerationConflict,

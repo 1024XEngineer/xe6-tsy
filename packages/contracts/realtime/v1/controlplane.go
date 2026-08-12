@@ -24,7 +24,8 @@ const (
 // Valid reports whether the code is stable in the public realtime control contract.
 func (code ControlPlaneErrorCode) Valid() bool {
 	switch code {
-	case ErrorRuntimeOperationConflict,
+	case ErrorRuntimeNotFound,
+		ErrorRuntimeOperationConflict,
 		ErrorModeNotAvailable,
 		ErrorModeGenerationConflict,
 		ErrorModeRuntimeInstanceMismatch,

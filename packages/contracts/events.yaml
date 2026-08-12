@@ -133,7 +133,7 @@ components:
       enum: [assistant, interpretation]
     ControlPlaneErrorCode:
       type: string
-      enum: [runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict, control_invalid_message, control_unsupported_version, control_unsupported_type, control_unauthorized_session, control_connection_closed, control_unavailable]
+      enum: [runtime_not_found, runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict, control_invalid_message, control_unsupported_version, control_unsupported_type, control_unauthorized_session, control_connection_closed, control_unavailable]
     ControlModeSwitchCommand:
       type: object
       additionalProperties: false

@@ -39,6 +39,8 @@ type WakeCommandController struct {
 
 	mu      sync.Mutex
 	enabled bool
+	started bool
+	epoch   uint64
 	lastErr error
 }
 
@@ -50,7 +52,12 @@ func (c *WakeCommandController) Start(ctx context.Context) error {
 	if c == nil || !c.Enabled() {
 		return nil
 	}
-	if err := c.Engine.Start(ctx, c.handleWake); err != nil {
+	c.mu.Lock()
+	c.started = true
+	c.epoch++
+	epoch := c.epoch
+	c.mu.Unlock()
+	if err := c.Engine.Start(ctx, func(event WakeWordEvent) { c.handleWake(epoch, event) }); err != nil {
 		c.disable(err)
 		return nil
 	}
@@ -58,12 +65,25 @@ func (c *WakeCommandController) Start(ctx context.Context) error {
 }
 
 func (c *WakeCommandController) Stop() error {
-	if c == nil || c.Engine == nil {
+	if c == nil {
 		return nil
 	}
-	if err := c.Engine.Stop(); err != nil {
-		c.disable(err)
-		return nil
+	c.mu.Lock()
+	c.started = false
+	c.epoch++
+	var stopErr error
+	if c.Window != nil && c.Window.Active() {
+		stopErr = c.Window.Close(context.Background())
+	}
+	c.mu.Unlock()
+
+	// Engine shutdown stays outside the lifecycle lock because platform engines
+	// may wait for an in-flight callback. The callback has already been fenced.
+	if c.Engine != nil {
+		stopErr = errors.Join(stopErr, c.Engine.Stop())
+	}
+	if stopErr != nil {
+		c.disable(stopErr)
 	}
 	return nil
 }
@@ -86,21 +106,31 @@ func (c *WakeCommandController) LastError() error {
 	return c.lastErr
 }
 
-func (c *WakeCommandController) handleWake(event WakeWordEvent) {
-	if c == nil || !c.Enabled() {
+func (c *WakeCommandController) handleWake(epoch uint64, event WakeWordEvent) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.enabled || !c.started || c.epoch != epoch {
 		return
 	}
 	if event.DetectedAt.IsZero() {
 		event.DetectedAt = time.Now().UTC()
 	}
 	if err := c.Window.Open(context.Background(), 5*time.Second); err != nil {
-		c.disable(errors.Join(ErrCommandWindowUnavailable, err))
+		c.enabled = false
+		c.started = false
+		c.epoch++
+		c.lastErr = errors.Join(ErrCommandWindowUnavailable, err)
 	}
 }
 
 func (c *WakeCommandController) disable(err error) {
 	c.mu.Lock()
 	c.enabled = false
+	c.started = false
+	c.epoch++
 	c.lastErr = err
 	c.mu.Unlock()
 }

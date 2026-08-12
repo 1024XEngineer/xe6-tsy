@@ -685,11 +685,11 @@ components:
       required: [session_id, runtime_instance_id, active_mode, generation, phase, last_operation_id, updated_at]
       properties:
         session_id: { type: string, minLength: 1 }
-        runtime_instance_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
         active_mode: { $ref: '#/components/schemas/RealtimeMode' }
         generation: { type: integer, format: int64, minimum: 1 }
         phase: { $ref: '#/components/schemas/ModePhase' }
-        last_operation_id: { type: [string, 'null'] }
+        last_operation_id: { type: [string, 'null'], maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$', description: Non-null and equal to result.operation_id in a successful ControlResponse. }
         updated_at: { type: string, format: date-time }
     SwitchModeCommand:
       type: object
@@ -710,7 +710,7 @@ components:
       additionalProperties: false
       required: [operation_id, status, state]
       properties:
-        operation_id: { type: string, minLength: 1 }
+        operation_id: { type: string, minLength: 1, maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
         status: { $ref: '#/components/schemas/ModeSwitchStatus' }
         state: { $ref: '#/components/schemas/ModeStateSnapshot' }
     ControlModeSwitchCommand:

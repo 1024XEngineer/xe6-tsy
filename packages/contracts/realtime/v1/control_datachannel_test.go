@@ -63,6 +63,7 @@ func TestControlModeSwitchRequestValidation(t *testing.T) {
 		{name: "protocol version", mutate: func(request *ControlModeSwitchRequest) { request.ProtocolVersion = 2 }},
 		{name: "message type", mutate: func(request *ControlModeSwitchRequest) { request.Type = ControlMessageError }},
 		{name: "empty request id", mutate: func(request *ControlModeSwitchRequest) { request.RequestID = " " }},
+		{name: "invalid UTF-8 request id", mutate: func(request *ControlModeSwitchRequest) { request.RequestID = string([]byte{0xff}) }},
 		{name: "long request id", mutate: func(request *ControlModeSwitchRequest) {
 			request.RequestID = strings.Repeat("r", maxControlRequestIDLength+1)
 		}},
@@ -156,6 +157,11 @@ func TestControlSchemasMatchGoContract(t *testing.T) {
 			}
 			if got := nestedMap(t, requestProperties, "type")["const"]; got != string(ControlMessageModeSwitch) {
 				t.Fatalf("request type = %v, want %q", got, ControlMessageModeSwitch)
+			}
+			result := nestedMap(t, nestedMap(t, nestedMap(t, schemas, "SwitchModeResult"), "properties"), "operation_id")
+			state := nestedMap(t, nestedMap(t, schemas, "ModeStateSnapshot"), "properties")
+			if result["maxLength"] != maxControlOperationIDLength || result["pattern"] == nil || nestedMap(t, state, "runtime_instance_id")["maxLength"] != maxControlRuntimeIDLength || nestedMap(t, state, "last_operation_id")["description"] == nil {
+				t.Fatalf("response identifier bounds are incomplete")
 			}
 			responseTypes := nestedMap(t, nestedMap(t, schemas, "ControlResponse"), "properties")
 			assertStringList(t, nestedMap(t, responseTypes, "type")["enum"], []string{

@@ -170,7 +170,7 @@ func validControlID(value string, maxLength int) bool {
 }
 
 func validControlText(value string, maxLength int) bool {
-	return strings.TrimSpace(value) != "" && utf8.RuneCountInString(value) <= maxLength
+	return utf8.ValidString(value) && strings.TrimSpace(value) != "" && utf8.RuneCountInString(value) <= maxLength
 }
 
 func invalidControlField(field string) error {

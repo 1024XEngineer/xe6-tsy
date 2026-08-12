@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -75,6 +76,30 @@ func TestPionControlReceiverRejectsInvalidMessagesWithoutClosingAudioTransport(t
 	}
 }
 
+func TestPionControlReceiverInvalidRequestIDDoesNotStopWorker(t *testing.T) {
+	for _, requestID := range []string{"request\ninvalid", strings.Repeat("r", 129)} {
+		handler := &controlHandlerRecorder{}
+		channel, _ := newTestControlReceiver(t, handler)
+		invalid := validControlModeSwitchRequest()
+		invalid.RequestID = requestID
+		channel.Receive(t, invalid, true)
+
+		response := channel.NextResponse(t)
+		if response.RequestID != "" || response.Error == nil || response.Error.Code != realtimev1.ErrorControlInvalidMessage {
+			t.Fatalf("invalid request ID response = %#v", response)
+		}
+		if err := response.Validate(); err != nil {
+			t.Fatalf("error response Validate() error = %v", err)
+		}
+
+		valid := validControlModeSwitchRequest()
+		channel.Receive(t, valid, true)
+		if result := channel.NextResponse(t); result.Result == nil || result.RequestID != valid.RequestID {
+			t.Fatalf("valid response after invalid request ID = %#v", result)
+		}
+	}
+}
+
 func TestPionControlReceiverBoundsQueue(t *testing.T) {
 	handler := &controlHandlerRecorder{block: make(chan struct{}), entered: make(chan struct{}, 1)}
 	channel, receiver := newTestControlReceiver(t, handler)
@@ -95,7 +120,18 @@ func TestPionControlReceiverBoundsQueue(t *testing.T) {
 	overflow := validControlModeSwitchRequest()
 	overflow.RequestID = "overflow-request"
 	overflow.Command.OperationID = "overflow-operation"
-	channel.Receive(t, overflow, true)
+	channel.sendBlock = make(chan struct{})
+	received := make(chan struct{})
+	go func() {
+		channel.Receive(t, overflow, true)
+		close(received)
+	}()
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("queue overflow blocked the Pion message callback")
+	}
+	close(channel.sendBlock)
 	response := channel.NextResponse(t)
 	if response.RequestID != overflow.RequestID || response.Error == nil || response.Error.Code != realtimev1.ErrorControlUnavailable {
 		t.Fatalf("overflow response = %#v", response)
@@ -277,6 +313,7 @@ type controlChannelRecorder struct {
 	onClose           func()
 	onError           func(error)
 	responses         chan realtimev1.ControlResponse
+	sendBlock         chan struct{}
 }
 
 func newControlChannelRecorder(label string, ordered bool) *controlChannelRecorder {
@@ -299,6 +336,9 @@ func (c *controlChannelRecorder) ReadyState() pion.DataChannelState {
 	return c.state
 }
 func (c *controlChannelRecorder) SendText(payload string) error {
+	if c.sendBlock != nil {
+		<-c.sendBlock
+	}
 	var response realtimev1.ControlResponse
 	if err := json.Unmarshal([]byte(payload), &response); err != nil {
 		return err

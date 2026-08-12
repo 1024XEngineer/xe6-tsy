@@ -7,15 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	pion "github.com/pion/webrtc/v4"
 )
 
 const (
-	maxControlMessageBytes = 8 * 1024
-	controlQueueCapacity   = 32
+	maxControlMessageBytes  = 8 * 1024
+	controlQueueCapacity    = 32
+	controlResponseCapacity = controlQueueCapacity * 2
 )
 
 var (
@@ -65,19 +65,20 @@ type pionControlPeerConnection interface {
 	OnDataChannel(func(pionControlDataChannel))
 }
 
-// PionControlReceiver decouples Pion callbacks from durable mode transitions. One bounded worker
-// preserves channel order and prevents a slow outbox from blocking SCTP packet processing.
+// PionControlReceiver decouples Pion callbacks from durable mode transitions. Bounded command and
+// response workers keep slow mode changes and SCTP writes outside the Pion receive callback.
 type PionControlReceiver struct {
 	channel      pionControlDataChannel
 	handler      ControlCommandHandler
 	sessionID    string
 	connectionID string
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	queue  chan controlMessage
-	done   chan struct{}
-	sendMu sync.Mutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+	queue     chan controlMessage
+	responses chan realtimev1.ControlResponse
+	done      chan struct{}
+	sendDone  chan struct{}
 }
 
 func newPionControlReceiver(
@@ -97,11 +98,15 @@ func newPionControlReceiver(
 	ctx, cancel := context.WithCancel(context.Background())
 	receiver := &PionControlReceiver{
 		channel: channel, handler: handler, sessionID: sessionID, connectionID: connectionID,
-		ctx: ctx, cancel: cancel, queue: make(chan controlMessage, controlQueueCapacity), done: make(chan struct{}),
+		ctx: ctx, cancel: cancel,
+		queue:     make(chan controlMessage, controlQueueCapacity),
+		responses: make(chan realtimev1.ControlResponse, controlResponseCapacity),
+		done:      make(chan struct{}), sendDone: make(chan struct{}),
 	}
 	channel.OnMessage(receiver.onMessage)
 	channel.OnClose(cancel)
 	channel.OnError(func(error) { cancel() })
+	go receiver.runSender()
 	go receiver.run()
 	return receiver, nil
 }
@@ -120,7 +125,7 @@ func (r *PionControlReceiver) onMessage(message pion.DataChannelMessage) {
 	case r.queue <- item:
 		return
 	default:
-		_ = r.send(protocolError(requestIDFromJSON(item.data), realtimev1.ErrorControlUnavailable))
+		r.tryQueueResponse(protocolError(requestIDFromJSON(item.data), realtimev1.ErrorControlUnavailable))
 	}
 }
 
@@ -132,11 +137,37 @@ func (r *PionControlReceiver) run() {
 			return
 		case message := <-r.queue:
 			response := r.handle(message)
+			select {
+			case <-r.ctx.Done():
+				return
+			case r.responses <- response:
+			}
+		}
+	}
+}
+
+func (r *PionControlReceiver) runSender() {
+	defer close(r.sendDone)
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case response := <-r.responses:
 			if err := r.send(response); err != nil {
 				r.cancel()
 				return
 			}
 		}
+	}
+}
+
+// tryQueueResponse keeps the Pion receive callback non-blocking when command execution or SCTP
+// output is slow. RequestID correlation lets overload errors arrive before older command results.
+func (r *PionControlReceiver) tryQueueResponse(response realtimev1.ControlResponse) {
+	select {
+	case <-r.ctx.Done():
+	case r.responses <- response:
+	default:
 	}
 }
 
@@ -179,8 +210,6 @@ func (r *PionControlReceiver) send(response realtimev1.ControlResponse) error {
 		return r.ctx.Err()
 	default:
 	}
-	r.sendMu.Lock()
-	defer r.sendMu.Unlock()
 	return sendControlResponse(r.channel, response)
 }
 
@@ -192,12 +221,18 @@ func (r *PionControlReceiver) Close(ctx context.Context) error {
 	}
 	r.cancel()
 	closeErr := r.channel.Close()
-	select {
-	case <-r.done:
-		return closeErr
-	case <-ctx.Done():
-		return errors.Join(closeErr, ctx.Err())
+	workerDone, senderDone := r.done, r.sendDone
+	for workerDone != nil || senderDone != nil {
+		select {
+		case <-workerDone:
+			workerDone = nil
+		case <-senderDone:
+			senderDone = nil
+		case <-ctx.Done():
+			return errors.Join(closeErr, ctx.Err())
+		}
 	}
+	return closeErr
 }
 
 func decodeControlHeader(payload []byte) (struct {
@@ -236,7 +271,7 @@ func requestIDFromJSON(payload []byte) string {
 }
 
 func protocolError(requestID string, code realtimev1.ControlPlaneErrorCode) realtimev1.ControlResponse {
-	return realtimev1.ControlResponse{
+	response := realtimev1.ControlResponse{
 		ProtocolVersion: realtimev1.ControlProtocolVersion,
 		Type:            realtimev1.ControlMessageError,
 		RequestID:       requestID,
@@ -245,6 +280,11 @@ func protocolError(requestID string, code realtimev1.ControlPlaneErrorCode) real
 			Message: string(code),
 		},
 	}
+	// An unsafe correlation value must not turn a recoverable client error into a sender failure.
+	if err := response.Validate(); err != nil {
+		response.RequestID = ""
+	}
+	return response
 }
 
 func sendControlResponse(channel pionControlDataChannel, response realtimev1.ControlResponse) error {

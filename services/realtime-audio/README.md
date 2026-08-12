@@ -99,6 +99,9 @@ WebRTC。真正发生切换时，Coordinator 会先将 `realtime.mode.changed` �
 暂不可用返回 `control_unavailable`。连接关闭会先取消排队和执行中的命令；ACK 丢失时，客户端应
 查询模式快照并以原 operation 重试相同载荷。
 
+正常命令由单 worker 按接收顺序执行；队列过载错误通过独立有界发送队列返回，可能先于较早命令的
+执行结果到达。客户端必须以 `request_id` 关联响应，不能依赖不同请求之间的响应到达顺序。
+
 RTP 与 SCTP 之间没有跨协议全序，边界以服务端提交切换并返回成功 ACK 为准。已打开 Turn 固定使用
 打开时的 mode/generation；切换后旧 generation 未提交结果由 gate 丢弃，已提交 FinalTurn 不回滚。
 若必须保证下一句话进入新模式，客户端应暂停新语句、等待成功 ACK，再发送下一段音频。

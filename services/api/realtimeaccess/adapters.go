@@ -202,9 +202,7 @@ func (a realtimeLifecycleAdapter) SwitchMode(
 	if err != nil {
 		return sessions.ModeSwitchResult{}, mapModeError(err)
 	}
-	if result.OperationID != command.OperationID || !result.Status.Valid() ||
-		!validModeSnapshot(result.State, command.SessionID) ||
-		result.State.RuntimeInstanceID != command.RuntimeInstanceID {
+	if !validModeSwitchResult(result, command) {
 		return sessions.ModeSwitchResult{}, sessions.ErrModeUnavailable
 	}
 	return result, nil
@@ -339,6 +337,29 @@ func validModeSnapshot(snapshot realtimev1.ModeStateSnapshot, sessionID string) 
 	return snapshot.SessionID == sessionID && snapshot.RuntimeInstanceID != "" &&
 		snapshot.ActiveMode.Valid() && snapshot.Generation >= 1 &&
 		snapshot.Phase.Valid() && !snapshot.UpdatedAt.IsZero()
+}
+
+func validModeSwitchResult(
+	result realtimev1.SwitchModeResult,
+	command sessions.SwitchModeCommand,
+) bool {
+	if result.OperationID != command.OperationID || !result.Status.Valid() ||
+		!validModeSnapshot(result.State, command.SessionID) ||
+		result.State.RuntimeInstanceID != command.RuntimeInstanceID ||
+		result.State.ActiveMode != command.TargetMode ||
+		result.State.Phase != realtimev1.ModePhaseActive ||
+		result.State.LastOperationID == nil ||
+		*result.State.LastOperationID != command.OperationID {
+		return false
+	}
+	switch result.Status {
+	case realtimev1.ModeSwitchApplied:
+		return result.State.Generation == command.ExpectedGeneration+1
+	case realtimev1.ModeSwitchUnchanged:
+		return result.State.Generation == command.ExpectedGeneration
+	default:
+		return false
+	}
 }
 
 func mapEndReason(value sessions.EndReason) (string, error) {

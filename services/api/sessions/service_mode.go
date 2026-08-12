@@ -96,7 +96,9 @@ func validModeSwitchResult(result ModeSwitchResult, input SwitchModeInput) bool 
 		!validModeSnapshot(result.State, input.SessionID) ||
 		result.State.RuntimeInstanceID != input.RuntimeInstanceID ||
 		result.State.ActiveMode != input.TargetMode ||
-		result.State.Phase != realtimev1.ModePhaseActive {
+		result.State.Phase != realtimev1.ModePhaseActive ||
+		result.State.LastOperationID == nil ||
+		*result.State.LastOperationID != input.OperationID {
 		return false
 	}
 	switch result.Status {

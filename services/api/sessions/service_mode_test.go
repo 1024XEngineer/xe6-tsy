@@ -221,11 +221,17 @@ func TestServiceSwitchModeRejectsInvalidDependencyResults(t *testing.T) {
 	base.State.ActiveMode = input.TargetMode
 	base.State.Generation = input.ExpectedGeneration + 1
 	base.State.Phase = realtimev1.ModePhaseActive
+	base.State.LastOperationID = &input.OperationID
 	for _, test := range []struct {
 		name string
 		edit func(*ModeSwitchResult)
 	}{
 		{name: "operation mismatch", edit: func(result *ModeSwitchResult) { result.OperationID = "other" }},
+		{name: "last operation missing", edit: func(result *ModeSwitchResult) { result.State.LastOperationID = nil }},
+		{name: "last operation mismatch", edit: func(result *ModeSwitchResult) {
+			other := "other"
+			result.State.LastOperationID = &other
+		}},
 		{name: "runtime mismatch", edit: func(result *ModeSwitchResult) { result.State.RuntimeInstanceID = "other" }},
 		{name: "target mismatch", edit: func(result *ModeSwitchResult) { result.State.ActiveMode = ModeInterpretation }},
 		{name: "generation mismatch", edit: func(result *ModeSwitchResult) { result.State.Generation = input.ExpectedGeneration }},

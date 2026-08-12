@@ -400,6 +400,51 @@ func TestRealtimeLifecycleRejectsInvalidModeResponses(t *testing.T) {
 	}
 }
 
+func TestRealtimeLifecycleRejectsInvalidModeSwitchResponses(t *testing.T) {
+	command := validAdapterModeCommand()
+	base := realtimev1.SwitchModeResult{
+		OperationID: command.OperationID,
+		Status:      realtimev1.ModeSwitchApplied,
+		State: realtimev1.ModeStateSnapshot{
+			SessionID:         command.SessionID,
+			RuntimeInstanceID: command.RuntimeInstanceID,
+			ActiveMode:        command.TargetMode,
+			Generation:        command.ExpectedGeneration + 1,
+			Phase:             realtimev1.ModePhaseActive,
+			LastOperationID:   &command.OperationID,
+			UpdatedAt:         time.Unix(1700000000, 0).UTC(),
+		},
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*realtimev1.SwitchModeResult)
+	}{
+		{name: "operation mismatch", edit: func(result *realtimev1.SwitchModeResult) { result.OperationID = "other" }},
+		{name: "last operation missing", edit: func(result *realtimev1.SwitchModeResult) { result.State.LastOperationID = nil }},
+		{name: "last operation mismatch", edit: func(result *realtimev1.SwitchModeResult) {
+			other := "other"
+			result.State.LastOperationID = &other
+		}},
+		{name: "runtime mismatch", edit: func(result *realtimev1.SwitchModeResult) { result.State.RuntimeInstanceID = "other" }},
+		{name: "target mismatch", edit: func(result *realtimev1.SwitchModeResult) { result.State.ActiveMode = realtimev1.ModeInterpretation }},
+		{name: "generation mismatch", edit: func(result *realtimev1.SwitchModeResult) { result.State.Generation = command.ExpectedGeneration }},
+		{name: "phase switching", edit: func(result *realtimev1.SwitchModeResult) { result.State.Phase = realtimev1.ModePhaseSwitching }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := base
+			test.edit(&result)
+			lifecycle, err := NewRealtimeLifecycle(&lifecycleClientFake{modeResult: result})
+			if err != nil {
+				t.Fatalf("NewRealtimeLifecycle() error = %v", err)
+			}
+			_, err = lifecycle.SwitchMode(t.Context(), command)
+			if !errors.Is(err, sessions.ErrModeUnavailable) {
+				t.Fatalf("SwitchMode() error = %v, want ErrModeUnavailable", err)
+			}
+		})
+	}
+}
+
 func validAdapterModeCommand() sessions.SwitchModeCommand {
 	return sessions.SwitchModeCommand{
 		SessionID: "session-1", RuntimeInstanceID: "runtime-1",

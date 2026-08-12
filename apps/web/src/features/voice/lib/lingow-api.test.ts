@@ -15,6 +15,7 @@ import {
   listVoiceSessions,
   putMessagePreference,
   requestEmailBindVerification,
+  resolveVoiceInitialMode,
   revokeMessageTarget,
   startVoiceSession,
 } from "./lingow-api";
@@ -76,6 +77,32 @@ describe("startVoiceSession", () => {
 
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps legacy callers bodyless", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ id: "vs-1", status: "active" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await startVoiceSession("token-1", "vs-1", "start-fixed");
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      RequestInfo | URL,
+      RequestInit,
+    ];
+    expect(init.body).toBeUndefined();
+  });
+});
+
+describe("resolveVoiceInitialMode", () => {
+  it("defaults the new client to assistant", () => {
+    expect(resolveVoiceInitialMode(undefined)).toBe("assistant");
+  });
+
+  it("supports an interpretation rollback and rejects unknown modes", () => {
+    expect(resolveVoiceInitialMode(" interpretation ")).toBe("interpretation");
+    expect(resolveVoiceInitialMode("english_practice")).toBe("interpretation");
   });
 });
 

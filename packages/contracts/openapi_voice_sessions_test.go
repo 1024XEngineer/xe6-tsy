@@ -82,10 +82,13 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 		t.Fatalf("start request schema = %v", got)
 	}
 	startRequest := schemas["StartVoiceSessionRequest"].(map[string]any)
+	if required, ok := startRequest["required"]; ok && containsString(required.([]any), "initial_mode") {
+		t.Fatal("StartVoiceSessionRequest.initial_mode must remain optional for legacy clients")
+	}
 	startProperties := startRequest["properties"].(map[string]any)
 	initialMode := startProperties["initial_mode"].(map[string]any)
-	if got := initialMode["$ref"]; got != "#/components/schemas/RealtimeMode" {
-		t.Fatalf("initial_mode schema = %v", got)
+	if initialMode["$ref"] != "#/components/schemas/RealtimeMode" || initialMode["default"] != "interpretation" {
+		t.Fatalf("initial_mode schema = %#v", initialMode)
 	}
 
 	outputMode := schemas["InterpretationOutputMode"].(map[string]any)

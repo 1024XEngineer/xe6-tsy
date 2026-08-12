@@ -38,6 +38,7 @@ npm run dev
 
 - `/api/v1/*` → `LINGOW_API_BASE_URL`（默认 `http://127.0.0.1:8080`）
 - `/realtime/v1/*` → `LINGOW_REALTIME_BASE_URL`（默认 `http://127.0.0.1:8090`）
+- `NEXT_PUBLIC_LINGOW_INITIAL_MODE` → 新 Web 会话入口模式，默认 `assistant`；设为 `interpretation` 可快速回退
 
 正式联调走 `POST /api/v1/voice-sessions/{id}/realtime-ticket`。本地 `/api/dev/realtime-ticket` 旁路默认关闭（需 `ENABLE_DEV_REALTIME_TICKET=true` + `next dev`）。
 
@@ -56,10 +57,10 @@ npm run dev
 
 打开页面后会请求麦克风并加载同域 sherpa-onnx KWS。
 
-- 说「小灵，开始翻译」或点击主按钮 → 开启传译（WebRTC + `/start`）
-- 说「小灵，停止翻译」或再次点击 → 结束传译，麦克风继续监听唤醒词
+- 说「小灵，开始翻译」或点击主按钮 → 开启助手入口（WebRTC + `/start`）；回退为 `interpretation` 时继续进入传译
+- 说「小灵，停止翻译」或再次点击 → 结束当前会话，麦克风继续监听唤醒词
 
-`npm install` / `npm run dev` / `npm run build` 会自动把缺失的 int8 模型与 `.wasm` 拉到 `public/kws/`（已存在则跳过）。首次需要能访问 GitHub Releases 与 jsDelivr。离线可设 `LINGOW_SKIP_KWS_SYNC=1`。详见 `public/kws/README.md`。
+`npm install` / `npm run dev` / `npm run build` 会自动把缺失的 int8 模型与 `.wasm` 拉到 `public/kws/`（已存在则跳过）。首次需要能访问 GitHub Releases 与 jsDelivr；离线时可设 `LINGOW_SKIP_KWS_SYNC=1`，让下载失败不阻断命令。详见 `public/kws/README.md`。
 
 ## 职责边界
 

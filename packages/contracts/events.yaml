@@ -24,6 +24,12 @@ channels:
     messages:
       assistantReply:
         $ref: '#/components/messages/AssistantReply'
+  controlDataChannel:
+    address: lingow-control-v1
+    description: Reliable ordered WebRTC DataChannel bound to the authenticated PeerConnection session.
+    messages:
+      modeSwitchRequest: { $ref: '#/components/messages/ControlModeSwitchRequest' }
+      controlResponse: { $ref: '#/components/messages/ControlResponse' }
 operations:
   consumeUsageRecorded:
     action: receive
@@ -49,6 +55,14 @@ operations:
     action: send
     channel:
       $ref: '#/channels/assistantReply'
+  receiveControlModeSwitch:
+    action: receive
+    channel: { $ref: '#/channels/controlDataChannel' }
+    messages: [{ $ref: '#/channels/controlDataChannel/messages/modeSwitchRequest' }]
+  sendControlResponse:
+    action: send
+    channel: { $ref: '#/channels/controlDataChannel' }
+    messages: [{ $ref: '#/channels/controlDataChannel/messages/controlResponse' }]
 components:
   messages:
     UsageRecorded:
@@ -77,6 +91,18 @@ components:
       contentType: application/json
       payload:
         $ref: '#/components/schemas/AssistantReplyEvent'
+    ControlModeSwitchRequest:
+      name: mode.switch
+      summary: Switches the runtime mode without replacing the authenticated PeerConnection.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ControlModeSwitchRequest'
+    ControlResponse:
+      name: realtime.control.response
+      summary: Returns either the mode-switch result or a stable typed control error.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ControlResponse'
   schemas:
     UsageRecordedPayload:
       type: object
@@ -105,6 +131,74 @@ components:
     RealtimeMode:
       type: string
       enum: [assistant, interpretation]
+    ControlPlaneErrorCode:
+      type: string
+      enum: [runtime_not_found, runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict, control_invalid_message, control_unsupported_version, control_unsupported_type, control_unauthorized_session, control_connection_closed, control_unavailable]
+    ControlModeSwitchCommand:
+      type: object
+      additionalProperties: false
+      description: Session identity is bound by the authenticated PeerConnection and is never accepted from this payload.
+      required: [runtime_instance_id, operation_id, expected_generation, target_mode]
+      properties:
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        operation_id: { type: string, minLength: 1, maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        expected_generation: { type: integer, format: int64, minimum: 1 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+    ControlModeSwitchRequest:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, type, request_id, command]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        type: { type: string, const: mode.switch }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        command: { $ref: '#/components/schemas/ControlModeSwitchCommand' }
+    ControlError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        message: { type: string, minLength: 1, maxLength: 512 }
+    ModeSwitchStatus: { type: string, enum: [applied, unchanged] }
+    ModePhase: { type: string, enum: [active, switching] }
+    ModeStateSnapshot:
+      type: object
+      additionalProperties: false
+      required: [session_id, runtime_instance_id, active_mode, generation, phase, last_operation_id, updated_at]
+      properties:
+        session_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        active_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        generation: { type: integer, format: int64, minimum: 1 }
+        phase: { $ref: '#/components/schemas/ModePhase' }
+        last_operation_id: { type: [string, 'null'], maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$', description: Non-null and equal to result.operation_id in a successful ControlResponse. }
+        updated_at: { type: string, format: date-time }
+    SwitchModeResult:
+      type: object
+      additionalProperties: false
+      required: [operation_id, status, state]
+      properties:
+        operation_id: { type: string, minLength: 1, maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        status: { $ref: '#/components/schemas/ModeSwitchStatus' }
+        state: { $ref: '#/components/schemas/ModeStateSnapshot' }
+    ControlResponse:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, type]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        type: { type: string, enum: [mode.switch.result, control.error] }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        result: { $ref: '#/components/schemas/SwitchModeResult' }
+        error: { $ref: '#/components/schemas/ControlError' }
+      oneOf:
+        - properties: { type: { type: string, const: mode.switch.result } }
+          required: [request_id, result]
+          not: { required: [error] }
+        - properties: { type: { type: string, const: control.error } }
+          required: [error]
+          not: { required: [result] }
     ModeChangedEvent:
       type: object
       additionalProperties: false

@@ -13,7 +13,34 @@ const (
 	ErrorModeGenerationConflict      ControlPlaneErrorCode = "mode_generation_conflict"
 	ErrorModeRuntimeInstanceMismatch ControlPlaneErrorCode = "mode_runtime_instance_mismatch"
 	ErrorModeOperationConflict       ControlPlaneErrorCode = "mode_operation_conflict"
+	ErrorControlInvalidMessage       ControlPlaneErrorCode = "control_invalid_message"
+	ErrorControlUnsupportedVersion   ControlPlaneErrorCode = "control_unsupported_version"
+	ErrorControlUnsupportedType      ControlPlaneErrorCode = "control_unsupported_type"
+	ErrorControlUnauthorizedSession  ControlPlaneErrorCode = "control_unauthorized_session"
+	ErrorControlConnectionClosed     ControlPlaneErrorCode = "control_connection_closed"
+	ErrorControlUnavailable          ControlPlaneErrorCode = "control_unavailable"
 )
+
+// Valid reports whether the code is stable in the public realtime control contract.
+func (code ControlPlaneErrorCode) Valid() bool {
+	switch code {
+	case ErrorRuntimeNotFound,
+		ErrorRuntimeOperationConflict,
+		ErrorModeNotAvailable,
+		ErrorModeGenerationConflict,
+		ErrorModeRuntimeInstanceMismatch,
+		ErrorModeOperationConflict,
+		ErrorControlInvalidMessage,
+		ErrorControlUnsupportedVersion,
+		ErrorControlUnsupportedType,
+		ErrorControlUnauthorizedSession,
+		ErrorControlConnectionClosed,
+		ErrorControlUnavailable:
+		return true
+	default:
+		return false
+	}
+}
 
 // FallbackPlaybackReceiptStatus distinguishes a newly accepted command from
 // an idempotent replay of an operation accepted earlier.

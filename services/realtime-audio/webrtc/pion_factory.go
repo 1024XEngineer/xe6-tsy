@@ -26,6 +26,7 @@ type ICEServerConfig struct {
 type PionTransportConfig struct {
 	ICEServers []ICEServerConfig
 	Media      MediaConfig
+	Control    ControlConfig
 }
 
 // PionTransportFactory creates one Pion PeerConnection per connection generation.
@@ -34,6 +35,7 @@ type PionTransportFactory struct {
 	newPeerConnection func(pion.Configuration) (pionPeerConnection, error)
 	now               func() time.Time
 	media             MediaConfig
+	control           ControlConfig
 }
 
 type pionPeerConnection interface {
@@ -74,6 +76,14 @@ func (p *pionPeerConnectionAdapter) OnTrack(handler func(pionRemoteTrack)) {
 	})
 }
 
+func (p *pionPeerConnectionAdapter) OnDataChannel(handler func(pionControlDataChannel)) {
+	p.PeerConnection.OnDataChannel(func(channel *pion.DataChannel) {
+		if handler != nil {
+			handler(channel)
+		}
+	})
+}
+
 type pionRemoteTrackAdapter struct {
 	track *pion.TrackRemote
 }
@@ -106,8 +116,9 @@ func NewPionTransportFactory(config PionTransportConfig) (*PionTransportFactory,
 			}
 			return &pionPeerConnectionAdapter{PeerConnection: connection}, nil
 		},
-		now:   func() time.Time { return time.Now().UTC() },
-		media: mediaConfig,
+		now:     func() time.Time { return time.Now().UTC() },
+		media:   mediaConfig,
+		control: config.Control,
 	}, nil
 }
 
@@ -153,7 +164,25 @@ func (f *PionTransportFactory) Create(
 			return nil, err
 		}
 	}
+	if controlConnection, ok := connection.(pionControlPeerConnection); ok && f.control.Handler != nil {
+		configurePionControl(transport, controlConnection, sessionID, connectionID, f.control.Handler)
+	}
 	return transport, nil
+}
+
+func configurePionControl(
+	transport *PionTransport,
+	connection pionControlPeerConnection,
+	sessionID string,
+	connectionID string,
+	handler ControlCommandHandler,
+) {
+	connection.OnDataChannel(func(channel pionControlDataChannel) {
+		if channel == nil || channel.Label() != realtimev1.ControlDataChannelLabel {
+			return
+		}
+		transport.attachControlChannel(channel, handler, sessionID, connectionID)
+	})
 }
 
 func configurePionMedia(transport *PionTransport, connection pionMediaPeerConnection, config MediaConfig, now func() time.Time) error {

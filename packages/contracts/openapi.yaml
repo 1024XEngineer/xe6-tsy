@@ -586,6 +586,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WebRTCConnectionError' }
+  /realtime/v1/sessions/{session_id}/webrtc/config:
+    servers: [{ url: / }]
+    get:
+      operationId: getRealtimeWebRTCConfig
+      security: [{ realtimeTicket: [] }]
+      parameters: [{ name: session_id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: WebRTC connection configuration, content: { application/json: { schema: { $ref: '#/components/schemas/WebRTCConfig' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
 components:
   securitySchemes:
     accountContext:
@@ -626,7 +633,7 @@ components:
       enum: [realtime_start_failed, realtime_stop_failed, realtime_pipeline_failed, realtime_translation_rejected]
     ControlPlaneErrorCode:
       type: string
-      enum: [runtime_not_found, runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict]
+      enum: [runtime_not_found, runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict, control_invalid_message, control_unsupported_version, control_unsupported_type, control_unauthorized_session, control_connection_closed, control_unavailable]
     RuntimeNotFoundError:
       type: object
       additionalProperties: false
@@ -719,11 +726,11 @@ components:
       required: [session_id, runtime_instance_id, active_mode, generation, phase, last_operation_id, updated_at]
       properties:
         session_id: { type: string, minLength: 1 }
-        runtime_instance_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
         active_mode: { $ref: '#/components/schemas/RealtimeMode' }
         generation: { type: integer, format: int64, minimum: 1 }
         phase: { $ref: '#/components/schemas/ModePhase' }
-        last_operation_id: { type: [string, 'null'] }
+        last_operation_id: { type: [string, 'null'], maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$', description: Non-null and equal to result.operation_id in a successful ControlResponse. }
         updated_at: { type: string, format: date-time }
     SwitchModeCommand:
       type: object
@@ -744,9 +751,52 @@ components:
       additionalProperties: false
       required: [operation_id, status, state]
       properties:
-        operation_id: { type: string, minLength: 1 }
+        operation_id: { type: string, minLength: 1, maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
         status: { $ref: '#/components/schemas/ModeSwitchStatus' }
         state: { $ref: '#/components/schemas/ModeStateSnapshot' }
+    ControlModeSwitchCommand:
+      type: object
+      additionalProperties: false
+      description: Session identity is bound by the authenticated PeerConnection and is never accepted from this payload.
+      required: [runtime_instance_id, operation_id, expected_generation, target_mode]
+      properties:
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        operation_id: { type: string, minLength: 1, maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        expected_generation: { type: integer, format: int64, minimum: 1 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+    ControlModeSwitchRequest:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, type, request_id, command]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        type: { type: string, const: mode.switch }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        command: { $ref: '#/components/schemas/ControlModeSwitchCommand' }
+    ControlError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        message: { type: string, minLength: 1, maxLength: 512 }
+    ControlResponse:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, type]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        type: { type: string, enum: [mode.switch.result, control.error] }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        result: { $ref: '#/components/schemas/SwitchModeResult' }
+        error: { $ref: '#/components/schemas/ControlError' }
+      oneOf:
+        - properties: { type: { type: string, const: mode.switch.result } }
+          required: [request_id, result]
+          not: { required: [error] }
+        - properties: { type: { type: string, const: control.error } }
+          required: [error]
+          not: { required: [result] }
     ModeChangedEvent:
       type: object
       additionalProperties: false
@@ -998,6 +1048,11 @@ components:
         state: { $ref: '#/components/schemas/WebRTCConnectionState' }
         version: { type: integer, format: int64, minimum: 1 }
         updated_at: { type: string, format: date-time }
+    WebRTCConfig: { type: object, additionalProperties: false, required: [session_id, expires_at, ice_servers, ice_transport_policy, data_channel, control_data_channel, audio], properties: { session_id: { type: string }, expires_at: { type: string, format: date-time }, ice_servers: { type: array, items: { $ref: '#/components/schemas/WebRTCICEServer' } }, ice_transport_policy: { type: string, enum: [all] }, data_channel: { $ref: '#/components/schemas/WebRTCDataChannelConfig' }, control_data_channel: { $ref: '#/components/schemas/WebRTCControlDataChannelConfig' }, audio: { $ref: '#/components/schemas/WebRTCAudioConfig' } } }
+    WebRTCICEServer: { type: object, additionalProperties: false, required: [urls], properties: { urls: { type: array, items: { type: string } }, username: { type: string }, credential: { type: string } } }
+    WebRTCDataChannelConfig: { type: object, additionalProperties: false, required: [label, ordered], properties: { label: { type: string }, ordered: { type: boolean } } }
+    WebRTCControlDataChannelConfig: { type: object, additionalProperties: false, required: [label, ordered, protocol_version], properties: { label: { type: string, const: lingow-control-v1 }, ordered: { type: boolean, const: true }, protocol_version: { type: integer, const: 1 } } }
+    WebRTCAudioConfig: { type: object, additionalProperties: false, required: [uplink_codec, downlink_codec, sample_rate_hz, channels], properties: { uplink_codec: { type: string }, downlink_codec: { type: string }, sample_rate_hz: { type: integer, minimum: 1 }, channels: { type: integer, minimum: 1 } } }
     Account:
       type: object
       required: [id, kind, created_at]

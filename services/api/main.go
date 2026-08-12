@@ -113,6 +113,7 @@ func run() error {
 
 	sessionHandler := newSessionHandler(nil)
 	var sessionRecovery backgroundWorker
+	var modeConsumer backgroundWorker
 	if processConfig.SessionRuntimeEnabled {
 		sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
 			Repository:     sessionRepository,
@@ -131,6 +132,20 @@ func run() error {
 		}
 		sessionHandler = sessionDependencies.handler
 		sessionRecovery = sessionDependencies.endRecovery
+
+		startupCtx, cancelStartup := context.WithTimeout(context.Background(), runtimeStartupTimeout)
+		redisClient, err := openValkeyClient(startupCtx, processConfig.RedisURL)
+		if err != nil {
+			cancelStartup()
+			return err
+		}
+		modeConsumer, err = newModeProjectionConsumer(startupCtx, pool, redisClient, processConfig)
+		cancelStartup()
+		if err != nil {
+			_ = redisClient.Close()
+			return err
+		}
+		defer func() { _ = redisClient.Close() }()
 	} else {
 		slog.Warn(
 			"voice session runtime disabled",
@@ -181,6 +196,12 @@ func run() error {
 		workers = append(workers, namedBackgroundWorker{
 			name: "session end recovery worker",
 			run:  sessionRecovery.Run,
+		})
+	}
+	if modeConsumer != nil {
+		workers = append(workers, namedBackgroundWorker{
+			name: "mode projection consumer",
+			run:  modeConsumer.Run,
 		})
 	}
 	return runHTTPAndBackgroundWorkers(ctx, server, workers...)

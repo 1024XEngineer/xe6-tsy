@@ -78,8 +78,9 @@ func (h *Handler) WithRealtimeTickets(tickets RealtimeTicketMinter) *Handler {
 	return h
 }
 
-// WithRealtimeModes enables account-scoped mode query and compare-and-switch
-// routes. It is deliberately separate from the legacy Session use-case port.
+// WithRealtimeModes supplies account-scoped mode query and compare-and-switch
+// behavior. The routes remain mounted without this optional capability so a
+// disabled runtime returns the stable not_implemented contract.
 func (h *Handler) WithRealtimeModes(modes ModeUseCases) *Handler {
 	if h == nil {
 		return nil
@@ -105,10 +106,8 @@ func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) h
 			authenticate(http.HandlerFunc(h.mintRealtimeTicket)),
 		)
 	}
-	if h.modes != nil {
-		mux.Handle("GET /api/v1/voice-sessions/{id}/mode", authenticate(http.HandlerFunc(h.modeState)))
-		mux.Handle("POST /api/v1/voice-sessions/{id}/mode", authenticate(http.HandlerFunc(h.switchMode)))
-	}
+	mux.Handle("GET /api/v1/voice-sessions/{id}/mode", authenticate(http.HandlerFunc(h.modeState)))
+	mux.Handle("POST /api/v1/voice-sessions/{id}/mode", authenticate(http.HandlerFunc(h.switchMode)))
 }
 
 type createRequest struct {

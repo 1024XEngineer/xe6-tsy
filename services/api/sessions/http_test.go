@@ -816,7 +816,7 @@ func TestHandlerModeRoutesRejectUnauthenticatedAndMalformedRequests(t *testing.T
 	}
 }
 
-func TestHandlerRegisterMountsModeRoutesOnlyWhenConfigured(t *testing.T) {
+func TestHandlerRegisterKeepsModeRoutesStableWithoutRuntime(t *testing.T) {
 	withModes := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeModes(&handlerModeUseCases{
 		state: ModeSnapshot{SessionID: "vs_1", RuntimeInstanceID: "runtime-1", ActiveMode: ModeAssistant, Generation: 1, Phase: "active", UpdatedAt: time.Now()},
 	})
@@ -833,10 +833,37 @@ func TestHandlerRegisterMountsModeRoutesOnlyWhenConfigured(t *testing.T) {
 	withoutModes := NewHandler(&handlerUseCases{}, headerAccount)
 	mux = http.NewServeMux()
 	withoutModes.Register(mux, func(next http.Handler) http.Handler { return next })
-	response = httptest.NewRecorder()
-	mux.ServeHTTP(response, request)
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("unconfigured mode route status=%d, want 404", response.Code)
+	requests := []struct {
+		name   string
+		method string
+		body   string
+	}{
+		{name: "get", method: http.MethodGet},
+		{
+			name:   "post",
+			method: http.MethodPost,
+			body:   `{"runtime_instance_id":"runtime-1","expected_generation":1,"target_mode":"assistant"}`,
+		},
+	}
+	for _, test := range requests {
+		t.Run("runtime disabled "+test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, "/api/v1/voice-sessions/vs_1/mode", bytes.NewBufferString(test.body))
+			request.Header.Set("X-Test-Account", "acct_1")
+			response := httptest.NewRecorder()
+
+			mux.ServeHTTP(response, request)
+
+			if response.Code != http.StatusNotImplemented {
+				t.Fatalf("status=%d, want 501; body=%s", response.Code, response.Body.String())
+			}
+			var body httpErrorEnvelope
+			if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+				t.Fatalf("decode error body: %v", err)
+			}
+			if body.Error.Code != string(CodeNotImplemented) {
+				t.Fatalf("error code=%q, want %q", body.Error.Code, CodeNotImplemented)
+			}
+		})
 	}
 }
 

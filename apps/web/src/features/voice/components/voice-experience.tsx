@@ -69,7 +69,10 @@ export function VoiceExperience() {
 
         <motion.section
           animate={{
-            y: state.phase === "active" && latestTurn ? "-9dvh" : 0,
+            y:
+              state.phase === "active" && (latestAssistantReply || latestTurn)
+                ? "-9dvh"
+                : 0,
           }}
           className={styles.voiceStage}
           transition={{ type: "spring", stiffness: 110, damping: 21 }}

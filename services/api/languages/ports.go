@@ -1,6 +1,12 @@
 package languages
 
-import "context"
+import (
+	"context"
+
+	languagesv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/languages/v1"
+)
+
+type SpeechRouteReader = languagesv1.SpeechRouteReader
 
 // LanguageConfigReader is the internal read port for the session-management
 // and realtime-translation modules.
@@ -31,4 +37,11 @@ type LanguageTargetResolver interface {
 // translations to at least one enabled and verified destination.
 type DeliveryReadinessReader interface {
 	HasReadyAutomaticTarget(ctx context.Context, accountID string) (bool, error)
+}
+
+// SpeechRouteValidator verifies that a language configuration has an active
+// route whose profile capabilities can serve its enabled output directions.
+// It remains separate from Store so existing persistence fakes stay compatible.
+type SpeechRouteValidator interface {
+	ValidateSpeechRoute(ctx context.Context, pairs []LanguagePair, routes []OutputRoute) error
 }

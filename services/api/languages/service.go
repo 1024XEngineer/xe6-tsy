@@ -8,14 +8,36 @@ import (
 
 // Service is the language-configuration application service (issue #88).
 type Service struct {
-	store             Store
-	sessions          SessionOwnerReader
-	deliveryReadiness DeliveryReadinessReader
+	store                Store
+	sessions             SessionOwnerReader
+	deliveryReadiness    DeliveryReadinessReader
+	speechRouteValidator SpeechRouteValidator
+	speechRouteReader    SpeechRouteReader
 }
 
 // NewService wires required store and session-ownership dependencies. The
 // optional readiness reader is required before a single-output config can be created.
 func NewService(store Store, sessions SessionOwnerReader, readiness ...DeliveryReadinessReader) *Service {
+	return newService(store, sessions, nil, readiness...)
+}
+
+// NewServiceWithSpeechRouteValidator enables strict control-plane route
+// validation while preserving NewService compatibility for existing callers.
+func NewServiceWithSpeechRouteValidator(
+	store Store,
+	sessions SessionOwnerReader,
+	validator SpeechRouteValidator,
+	readiness ...DeliveryReadinessReader,
+) *Service {
+	return newService(store, sessions, validator, readiness...)
+}
+
+func newService(
+	store Store,
+	sessions SessionOwnerReader,
+	validator SpeechRouteValidator,
+	readiness ...DeliveryReadinessReader,
+) *Service {
 	if sessions == nil {
 		sessions = NotImplementedSessionOwner{}
 	}
@@ -23,12 +45,25 @@ func NewService(store Store, sessions SessionOwnerReader, readiness ...DeliveryR
 	if len(readiness) > 0 {
 		deliveryReadiness = readiness[0]
 	}
-	return &Service{store: store, sessions: sessions, deliveryReadiness: deliveryReadiness}
+	service := &Service{
+		store:                store,
+		sessions:             sessions,
+		deliveryReadiness:    deliveryReadiness,
+		speechRouteValidator: validator,
+	}
+	if reader, ok := store.(SpeechRouteReader); ok {
+		service.speechRouteReader = reader
+	}
+	if reader, ok := validator.(SpeechRouteReader); ok {
+		service.speechRouteReader = reader
+	}
+	return service
 }
 
 var (
 	_ LanguageConfigReader   = (*Service)(nil)
 	_ LanguageTargetResolver = (*Service)(nil)
+	_ SpeechRouteReader      = (*Service)(nil)
 )
 
 // ListSupportedLanguages returns the catalog, optionally filtered to active rows.
@@ -117,6 +152,11 @@ func (s *Service) CreateConfig(
 			return LanguageConfig{}, err
 		}
 	}
+	if s.speechRouteValidator != nil {
+		if err := s.speechRouteValidator.ValidateSpeechRoute(ctx, req.Languages, routes); err != nil {
+			return LanguageConfig{}, fmt.Errorf("%w: speech route validation: %w", ErrInvalidLanguagePair, err)
+		}
+	}
 	if hasDeliveryRoute(routes) {
 		ready, err := s.AutomaticDeliveryReady(ctx, accountID)
 		if err != nil {
@@ -153,6 +193,19 @@ func (s *Service) CreateConfig(
 		return LanguageConfig{}, ErrIdempotencyConflict
 	}
 	return existing, nil
+}
+
+// ResolveSpeechRoute resolves non-secret route metadata for internal consumers.
+// The HTTP language configuration surface intentionally does not expose it.
+func (s *Service) ResolveSpeechRoute(
+	ctx context.Context,
+	languageA string,
+	languageB string,
+) (SpeechRoute, error) {
+	if s.speechRouteReader == nil {
+		return SpeechRoute{}, ErrNotImplemented
+	}
+	return s.speechRouteReader.ResolveSpeechRoute(ctx, languageA, languageB)
 }
 
 func hasDeliveryRoute(routes []OutputRoute) bool {

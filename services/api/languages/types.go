@@ -8,6 +8,10 @@ import (
 
 type InterpretationOutputMode = languagesv1.InterpretationOutputMode
 
+type SpeechRoute = languagesv1.SpeechRoute
+type ASRProfile = languagesv1.ASRProfile
+type TTSProfile = languagesv1.TTSProfile
+
 const (
 	InterpretationOutputModeBidirectional = languagesv1.InterpretationOutputModeBidirectional
 	InterpretationOutputModeSingle        = languagesv1.InterpretationOutputModeSingle

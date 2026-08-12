@@ -33,4 +33,6 @@ var (
 	ErrDeliveryTargetRequired    = errors.New(CodeDeliveryTargetRequired)
 	ErrUnsupportedSourceLanguage = errors.New(CodeUnsupportedSourceLang)
 	ErrNotImplemented            = errors.New(CodeNotImplemented)
+	ErrSpeechRouteNotFound       = errors.New("speech_route_not_found")
+	ErrSpeechRouteInvalid        = errors.New("speech_route_invalid")
 )

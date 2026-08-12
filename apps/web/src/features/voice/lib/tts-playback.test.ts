@@ -222,4 +222,30 @@ describe("parseTTSAudioEvent", () => {
     await vi.waitFor(() => expect(states).toEqual([true, false]));
     expect(states).toEqual([true, false]);
   });
+
+  it("ignores late chunks from a canceled playback until its final chunk", async () => {
+    if (FakeAudioContext.last) FakeAudioContext.last.state = "closed";
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    const states: boolean[] = [];
+    const chunk = (sequence: number, final: boolean) => ({
+      playbackId: "interrupted",
+      sampleRateHz: 24000,
+      channels: 1,
+      encoding: "pcm_s16le",
+      sequence,
+      final,
+      pcm: new Uint8Array([0, 0]).buffer,
+    });
+
+    enqueueTTSAudio(chunk(1, false), (playing) => states.push(playing));
+    cancelAllTTSAudioPlayback();
+    enqueueTTSAudio(chunk(2, false), (playing) => states.push(playing));
+    enqueueTTSAudio(chunk(3, true), (playing) => states.push(playing));
+
+    await new Promise<void>((resolve) => queueMicrotask(() => resolve()));
+    expect(states).toEqual([]);
+
+    enqueueTTSAudio(chunk(1, true), (playing) => states.push(playing));
+    await vi.waitFor(() => expect(states).toEqual([true, false]));
+  });
 });

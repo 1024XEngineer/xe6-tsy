@@ -12,7 +12,10 @@ import (
 )
 
 // Keep each DataChannel JSON well under typical SCTP/message caps.
-const maxTTSPCMChunkBytes = 8 * 1024
+const (
+	maxTTSPCMChunkBytes          = 8 * 1024
+	maxSettledPlaybackTombstones = 128
+)
 
 // DataChannelTTSAudioSink buffers one playback's audio, then ships DC-safe
 // chunks. The browser reassembles by playback_id before decoding/playing so
@@ -23,12 +26,19 @@ type DataChannelTTSAudioSink struct {
 	Media      MediaLookup
 	SampleRate int
 
-	mu      sync.Mutex
-	buffers map[string]*ttsBuffer
+	mu           sync.Mutex
+	buffers      map[string]*ttsBuffer
+	publishing   map[ttsPlaybackKey]bool
+	settled      map[ttsPlaybackKey]struct{}
+	settledOrder []ttsPlaybackKey
+	publishAudio ttsAudioPublisher
 }
 
 var _ pipeline.AudioPlaybackLifecycle = (*DataChannelTTSAudioSink)(nil)
 var _ pipeline.AudioChunkSink = (*DataChannelTTSAudioSink)(nil)
+var _ interface {
+	InterruptCurrent(context.Context, string, string) error
+} = (*DataChannelTTSAudioSink)(nil)
 
 type ttsBuffer struct {
 	sessionID string
@@ -36,6 +46,22 @@ type ttsBuffer struct {
 	encoding  string
 	pcm       []byte
 }
+
+type ttsPlaybackKey struct {
+	sessionID  string
+	playbackID string
+}
+
+type ttsAudioPublisher func(
+	context.Context,
+	string,
+	string,
+	string,
+	int64,
+	bool,
+	string,
+	[]byte,
+) error
 
 // FrontendTTSAudio is consumed by lingow-voice-demo Web Audio playback.
 type FrontendTTSAudio struct {
@@ -61,6 +87,10 @@ func (s *DataChannelTTSAudioSink) Publish(ctx context.Context, chunk pipeline.Au
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	key := ttsPlaybackKey{sessionID: chunk.SessionID, playbackID: chunk.PlaybackID}
+	if _, ok := s.settled[key]; ok {
+		return nil
+	}
 	if s.buffers == nil {
 		s.buffers = make(map[string]*ttsBuffer)
 	}
@@ -88,21 +118,42 @@ func (s *DataChannelTTSAudioSink) Complete(ctx context.Context, sessionID, playb
 	}
 	s.mu.Lock()
 	buf := s.buffers[playbackID]
-	delete(s.buffers, playbackID)
-	s.mu.Unlock()
-	if buf == nil || len(buf.pcm) == 0 {
-		return nil
-	}
-	if sessionID == "" {
+	if sessionID == "" && buf != nil {
 		sessionID = buf.sessionID
 	}
+	key := ttsPlaybackKey{sessionID: sessionID, playbackID: playbackID}
+	if _, interrupted := s.settled[key]; interrupted {
+		delete(s.buffers, playbackID)
+		s.releaseSettledLocked(key)
+		s.mu.Unlock()
+		return nil
+	}
+	delete(s.buffers, playbackID)
+	if buf == nil || len(buf.pcm) == 0 {
+		s.mu.Unlock()
+		return nil
+	}
+	if s.publishing == nil {
+		s.publishing = make(map[ttsPlaybackKey]bool)
+	}
+	s.publishing[key] = false
+	s.mu.Unlock()
+	defer s.finishPublishing(key)
+
 	// Prefer raw PCM when the provider returned a complete WAV; keeps browser
 	// playback on the pcm_s16le path. Containers that are not WAV stay intact
 	// and are reassembled client-side before decodeAudioData.
 	audio := normalizeTTSAudio(buf.pcm, buf.encoding)
 	pieces := splitBytes(audio.data, maxTTSPCMChunkBytes)
 	for i, piece := range pieces {
-		if err := s.publish(ctx, sessionID, playbackID, buf.turnID, int64(i+1), i == len(pieces)-1, audio.encoding, piece); err != nil {
+		if s.playbackSettled(key) {
+			return nil
+		}
+		publish := s.publishAudio
+		if publish == nil {
+			publish = s.publish
+		}
+		if err := publish(ctx, sessionID, playbackID, buf.turnID, int64(i+1), i == len(pieces)-1, audio.encoding, piece); err != nil {
 			return err
 		}
 	}
@@ -111,9 +162,98 @@ func (s *DataChannelTTSAudioSink) Complete(ctx context.Context, sessionID, playb
 
 func (s *DataChannelTTSAudioSink) Cancel(ctx context.Context, sessionID, playbackID, _ string) error {
 	s.mu.Lock()
+	if sessionID == "" {
+		if buffer := s.buffers[playbackID]; buffer != nil {
+			sessionID = buffer.sessionID
+		}
+	}
 	delete(s.buffers, playbackID)
+	key := ttsPlaybackKey{sessionID: sessionID, playbackID: playbackID}
+	s.markSettledLocked(key)
+	if _, publishing := s.publishing[key]; publishing {
+		s.publishing[key] = true
+	}
 	s.mu.Unlock()
 	return ctx.Err()
+}
+
+// InterruptCurrent discards every not-yet-published PCM buffer for a session.
+// Browser playback is stopped by the local wake-word path; clearing these
+// buffers prevents a TTS completion racing with the wake signal from sending
+// stale audio after the command window opens.
+func (s *DataChannelTTSAudioSink) InterruptCurrent(ctx context.Context, sessionID, _ string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || sessionID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	for playbackID, buffer := range s.buffers {
+		if buffer != nil && buffer.sessionID == sessionID {
+			delete(s.buffers, playbackID)
+			s.markSettledLocked(ttsPlaybackKey{sessionID: sessionID, playbackID: playbackID})
+		}
+	}
+	for key := range s.publishing {
+		if key.sessionID == sessionID {
+			s.publishing[key] = true
+			s.markSettledLocked(key)
+		}
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *DataChannelTTSAudioSink) playbackSettled(key ttsPlaybackKey) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	interrupted, publishing := s.publishing[key]
+	if publishing {
+		return interrupted
+	}
+	_, settled := s.settled[key]
+	return settled
+}
+
+func (s *DataChannelTTSAudioSink) finishPublishing(key ttsPlaybackKey) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.publishing, key)
+	s.releaseSettledLocked(key)
+}
+
+func (s *DataChannelTTSAudioSink) markSettledLocked(key ttsPlaybackKey) {
+	if key.playbackID == "" {
+		return
+	}
+	if s.settled == nil {
+		s.settled = make(map[ttsPlaybackKey]struct{})
+	}
+	if _, exists := s.settled[key]; exists {
+		return
+	}
+	s.settled[key] = struct{}{}
+	s.settledOrder = append(s.settledOrder, key)
+	if len(s.settledOrder) <= maxSettledPlaybackTombstones {
+		return
+	}
+	oldest := s.settledOrder[0]
+	s.settledOrder = s.settledOrder[1:]
+	delete(s.settled, oldest)
+}
+
+func (s *DataChannelTTSAudioSink) releaseSettledLocked(key ttsPlaybackKey) {
+	if _, exists := s.settled[key]; !exists {
+		return
+	}
+	delete(s.settled, key)
+	for index, candidate := range s.settledOrder {
+		if candidate == key {
+			s.settledOrder = append(s.settledOrder[:index], s.settledOrder[index+1:]...)
+			return
+		}
+	}
 }
 
 type normalizedTTSAudio struct {

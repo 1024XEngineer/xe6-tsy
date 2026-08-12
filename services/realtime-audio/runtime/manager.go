@@ -70,6 +70,7 @@ type Dependencies struct {
 	Languages            session.LanguageConfigReader
 	FinalTurns           recordsv1.FinalTurnSink
 	AssistantReplies     pipeline.AssistantReplySink
+	ModeChanges          ModeChangedSink
 	Usage                pipeline.UsageFactSink
 	Audio                pipeline.AudioChunkSink
 	Runtime              RuntimeReporter
@@ -132,7 +133,7 @@ func NewManagerFromEnvironment(offline config.Providers, deps Dependencies) (*Ma
 
 func newManager(providers config.Providers, deps Dependencies) (*Manager, error) {
 	if deps.FrameSources == nil || deps.NewSegmenter == nil || deps.Languages == nil ||
-		deps.FinalTurns == nil || deps.Usage == nil || deps.Audio == nil || deps.Runtime == nil {
+		deps.FinalTurns == nil || deps.ModeChanges == nil || deps.Usage == nil || deps.Audio == nil || deps.Runtime == nil {
 		return nil, ErrDependencyRequired
 	}
 	if providers.ASR == nil || providers.Translation == nil || providers.TTS == nil {
@@ -304,6 +305,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		runtimeInstanceID,
 		initialMode,
 		m.router.availableModes(),
+		m.deps.ModeChanges,
 		m.deps.Now,
 	)
 	if err != nil {

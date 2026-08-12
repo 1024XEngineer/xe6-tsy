@@ -147,7 +147,8 @@ func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 		NewSegmenter: func() (*vad.Segmenter, error) {
 			return vad.NewSegmenter(speechClassifier{}, vad.Options{SilenceAfter: 50 * time.Millisecond, MaxDuration: time.Second})
 		},
-		Languages: languages, FinalTurns: finals, Usage: usage, Audio: audioSink, Runtime: reporter,
+		Languages: languages, FinalTurns: finals, ModeChanges: &recordingModeChangedSink{},
+		Usage: usage, Audio: audioSink, Runtime: reporter,
 	})
 	if err != nil {
 		t.Fatalf("NewManager() error = %v", err)
@@ -1016,7 +1017,7 @@ func testDependencies(source segment.FrameSource, languages session.LanguageConf
 		NewSegmenter: func() (*vad.Segmenter, error) {
 			return vad.NewSegmenter(speechClassifier{}, vad.Options{SilenceAfter: 50 * time.Millisecond, MaxDuration: time.Second})
 		},
-		Languages: languages, FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{},
+		Languages: languages, FinalTurns: &recordingFinalSink{}, ModeChanges: &recordingModeChangedSink{}, Usage: &recordingUsageSink{},
 		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	}
 }

@@ -272,6 +272,164 @@ func TestModeCoordinatorAppliesAndReplaysFirstResult(t *testing.T) {
 	}
 }
 
+func TestModeCoordinatorPublishesOneEventForAppliedTransition(t *testing.T) {
+	sink := &recordingModeChangedSink{}
+	coordinator := mustModeCoordinatorWithSink(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+		realtimev1.ModeInterpretation,
+		realtimev1.ModeAssistant,
+	}, sink)
+	command := modeCommand("operation-1", 1, realtimev1.ModeAssistant)
+
+	result, err := coordinator.Switch(t.Context(), command)
+	if err != nil {
+		t.Fatalf("Switch() error = %v", err)
+	}
+	if _, err := coordinator.Switch(t.Context(), command); err != nil {
+		t.Fatalf("replayed Switch() error = %v", err)
+	}
+	events := sink.Events()
+	if len(events) != 1 {
+		t.Fatalf("published events = %d, want 1", len(events))
+	}
+	event := events[0]
+	if err := event.Validate(); err != nil {
+		t.Fatalf("event Validate() error = %v", err)
+	}
+	if event.EventID != modeChangedEventID(command) || event.SessionID != command.SessionID ||
+		event.RuntimeInstanceID != command.RuntimeInstanceID || event.OperationID != command.OperationID ||
+		event.FromMode != realtimev1.ModeInterpretation || event.ToMode != realtimev1.ModeAssistant ||
+		event.ResultingGeneration != result.State.Generation || !event.OccurredAt.Equal(result.State.UpdatedAt) {
+		t.Fatalf("published event = %#v, result = %#v", event, result)
+	}
+}
+
+func TestModeCoordinatorDoesNotPublishUnchangedMode(t *testing.T) {
+	sink := &recordingModeChangedSink{}
+	coordinator := mustModeCoordinatorWithSink(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+		realtimev1.ModeInterpretation,
+	}, sink)
+
+	result, err := coordinator.Switch(t.Context(), modeCommand("operation-1", 1, realtimev1.ModeInterpretation))
+	if err != nil {
+		t.Fatalf("Switch() error = %v", err)
+	}
+	if result.Status != realtimev1.ModeSwitchUnchanged || len(sink.Events()) != 0 {
+		t.Fatalf("unchanged result = %#v, events = %#v", result, sink.Events())
+	}
+}
+
+func TestModeCoordinatorRetriesFrozenEventBeforeStateCommit(t *testing.T) {
+	publishErr := errors.New("outbox unavailable")
+	sink := &recordingModeChangedSink{failNext: publishErr}
+	nowCalls := 0
+	coordinator, err := newModeCoordinator(
+		"session-1", "runtime-1", realtimev1.ModeInterpretation,
+		[]realtimev1.Mode{realtimev1.ModeInterpretation, realtimev1.ModeAssistant}, sink,
+		func() time.Time {
+			nowCalls++
+			return time.Unix(1700000000+int64(nowCalls), 0).UTC()
+		},
+	)
+	if err != nil {
+		t.Fatalf("newModeCoordinator() error = %v", err)
+	}
+	command := modeCommand("operation-1", 1, realtimev1.ModeAssistant)
+
+	if _, err := coordinator.Switch(t.Context(), command); !errors.Is(err, publishErr) {
+		t.Fatalf("first Switch() error = %v, want %v", err, publishErr)
+	}
+	state := coordinator.Snapshot()
+	if state.ActiveMode != realtimev1.ModeInterpretation || state.Generation != 1 || state.LastOperationID != nil {
+		t.Fatalf("failed publication changed state = %#v", state)
+	}
+	result, err := coordinator.Switch(t.Context(), command)
+	if err != nil {
+		t.Fatalf("retry Switch() error = %v", err)
+	}
+	attempts := sink.Attempts()
+	if len(attempts) != 2 || attempts[0] != attempts[1] {
+		t.Fatalf("publication attempts = %#v, want identical frozen payloads", attempts)
+	}
+	if result.State.ActiveMode != realtimev1.ModeAssistant || result.State.Generation != 2 {
+		t.Fatalf("retry result = %#v", result)
+	}
+}
+
+func TestModeCoordinatorLaterCommandRecoversPendingTransition(t *testing.T) {
+	publishErr := errors.New("outbox unavailable")
+	sink := &recordingModeChangedSink{failNext: publishErr}
+	coordinator := mustModeCoordinatorWithSink(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+		realtimev1.ModeInterpretation,
+		realtimev1.ModeAssistant,
+	}, sink)
+	first := modeCommand("operation-1", 1, realtimev1.ModeAssistant)
+
+	if _, err := coordinator.Switch(t.Context(), first); !errors.Is(err, publishErr) {
+		t.Fatalf("first Switch() error = %v, want %v", err, publishErr)
+	}
+	second := modeCommand("operation-2", 1, realtimev1.ModeInterpretation)
+	if _, err := coordinator.Switch(t.Context(), second); !errors.Is(err, ErrModeGenerationConflict) {
+		t.Fatalf("later Switch() error = %v, want ErrModeGenerationConflict", err)
+	}
+	state := coordinator.Snapshot()
+	if state.ActiveMode != realtimev1.ModeAssistant || state.Generation != 2 ||
+		state.LastOperationID == nil || *state.LastOperationID != first.OperationID {
+		t.Fatalf("recovered state = %#v", state)
+	}
+	attempts := sink.Attempts()
+	if len(attempts) != 2 || attempts[0] != attempts[1] || len(sink.Events()) != 1 {
+		t.Fatalf("recovery attempts = %#v, accepted = %#v", attempts, sink.Events())
+	}
+}
+
+func TestManagerModePublicationDoesNotHoldLifecycleLock(t *testing.T) {
+	sink := &blockingModeChangedSink{entered: make(chan struct{})}
+	coordinator := mustModeCoordinatorWithSink(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
+		realtimev1.ModeInterpretation,
+		realtimev1.ModeAssistant,
+	}, sink)
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	manager := &Manager{
+		locks: newKeyedLocker(),
+		entries: map[string]*entry{
+			"session-1": {mode: coordinator, ctx: runCtx},
+		},
+	}
+
+	switchDone := make(chan error, 1)
+	go func() {
+		_, err := manager.SwitchMode(context.Background(), modeCommand("operation-1", 1, realtimev1.ModeAssistant))
+		switchDone <- err
+	}()
+	<-sink.entered
+
+	lockAcquired := make(chan struct{})
+	go func() {
+		unlock := manager.locks.lock("session-1")
+		close(lockAcquired)
+		cancelRun()
+		unlock()
+	}()
+	select {
+	case <-lockAcquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mode publication held the lifecycle lock")
+	}
+	select {
+	case err := <-switchDone:
+		if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrModeEventUnavailable) {
+			t.Fatalf("SwitchMode() error = %v, want canceled mode event publication", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SwitchMode() did not stop after runtime cancellation")
+	}
+	state := coordinator.Snapshot()
+	if state.ActiveMode != realtimev1.ModeInterpretation || state.Generation != 1 {
+		t.Fatalf("canceled publication changed state = %#v", state)
+	}
+}
+
 func TestModeCoordinatorDoesNotExposeMutableState(t *testing.T) {
 	coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
 		realtimev1.ModeInterpretation,
@@ -531,17 +689,70 @@ func mustModeCoordinator(
 	available []realtimev1.Mode,
 ) *modeCoordinator {
 	t.Helper()
+	return mustModeCoordinatorWithSink(t, initial, available, &recordingModeChangedSink{})
+}
+
+func mustModeCoordinatorWithSink(
+	t *testing.T,
+	initial realtimev1.Mode,
+	available []realtimev1.Mode,
+	sink ModeChangedSink,
+) *modeCoordinator {
+	t.Helper()
 	coordinator, err := newModeCoordinator(
 		"session-1",
 		"runtime-1",
 		initial,
 		available,
+		sink,
 		func() time.Time { return time.Unix(1700000000, 0).UTC() },
 	)
 	if err != nil {
 		t.Fatalf("newModeCoordinator() error = %v", err)
 	}
 	return coordinator
+}
+
+type recordingModeChangedSink struct {
+	mu       sync.Mutex
+	attempts []realtimev1.ModeChangedEvent
+	events   []realtimev1.ModeChangedEvent
+	failNext error
+}
+
+type blockingModeChangedSink struct {
+	entered chan struct{}
+}
+
+func (s *blockingModeChangedSink) Publish(ctx context.Context, _ realtimev1.ModeChangedEvent) error {
+	close(s.entered)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *recordingModeChangedSink) Publish(_ context.Context, event realtimev1.ModeChangedEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts = append(s.attempts, event)
+	if s.failNext != nil {
+		err := s.failNext
+		s.failNext = nil
+		return err
+	}
+	s.events = append(s.events, event)
+	return nil
+}
+
+func (s *recordingModeChangedSink) Attempts() []realtimev1.ModeChangedEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]realtimev1.ModeChangedEvent(nil), s.attempts...)
+}
+
+func (s *recordingModeChangedSink) Events() []realtimev1.ModeChangedEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]realtimev1.ModeChangedEvent(nil), s.events...)
 }
 
 func modeCommand(operationID string, generation int64, target realtimev1.Mode) realtimev1.SwitchModeCommand {

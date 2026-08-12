@@ -75,7 +75,9 @@ Router 同时注册 `AssistantHandler`；两个 Handler 复用同一个 `SpeechO
 `POST /realtime/v1/sessions/{id}/mode` 使用 `runtime_instance_id + expected_generation` 执行
 幂等 CAS 切换。调用方应先读取快照，再提交目标模式；generation 或 runtime 实例不匹配时必须
 重新读取，不能盲目覆盖。模式切换只替换 Router 状态，不执行 Session Stop/Start，也不重新建立
-WebRTC。当前阶段尚未投递持久化 `realtime.mode.changed`，该可靠事件在后续独立阶段接入。
+WebRTC。真正发生切换时，Coordinator 会先将 `realtime.mode.changed` 交给 Outbox，收到持久接受
+确认后再提交 ModeState；重复 operation 和未变更模式不会重复产生事件。默认 `memory` 后端只用于
+本地离线运行；生产环境应配置 `REALTIME_OUTBOX=valkey`。API 侧长期投影在后续独立阶段接入。
 
 阶段 16 的模式观测使用结构化日志作为可聚合指标来源：`runtime_started` 只在 runtime entry
 成功登记后记录一次，可按 `active_mode` 统计入口分布；`mode_switch` 按请求记录
@@ -130,6 +132,8 @@ Required env:
 | `REALTIME_TTS_DOWNLINK` | `none` | `none` = subtitles only (forces mock TTS); `pcm` = whole-clip TTS PCM over DataChannel; `opus` = 120ms-buffered, 20ms-paced WebRTC Opus at 32kbps |
 | `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Fallback pair when API DB link is off |
 | `REALTIME_API_DATABASE` | _(off)_ | `enabled` + `DATABASE_URL` → Postgres session/language readers + FinalTurn outbox |
+| `REALTIME_OUTBOX` | `memory` | `memory` 用于本地离线运行；生产设置为 `valkey`，需要 `REDIS_URL` |
+| `LINGOW_MODE_CHANGED_STREAM` | `lingow:realtime:mode:changed` | `realtime.mode.changed` 的 Valkey Stream |
 | `ASR_SERVER_VAD` | _(unset → false in entrypoint)_ | Set `true` to enable Qwen server_vad; the local VAD keeps 500 ms prefix audio and preserves quiet frames inside an utterance |
 | `LOCAL_VAD_PROVIDER` | `silero` | `silero` (default) or `energy` fallback |
 | `LOCAL_VAD_MODEL_PATH` | `vad/silero/silero_vad.onnx` | Silero v5 ONNX model used by the local segmenter |

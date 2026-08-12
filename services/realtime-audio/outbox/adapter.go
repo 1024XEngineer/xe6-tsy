@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 )
@@ -87,6 +88,11 @@ func canonicalEntry(topic, idempotencyKey string, payload any) (Entry, error) {
 			return Entry{}, err
 		}
 		expectedTopic, expectedKey = "usage.recorded", event.IdempotencyKey
+	case realtimev1.ModeChangedEvent:
+		if err := event.Validate(); err != nil {
+			return Entry{}, err
+		}
+		expectedTopic, expectedKey = realtimev1.ModeChangedTopic, event.EventID
 	default:
 		return Entry{}, fmt.Errorf("%w: %T", ErrUnsupportedPayload, payload)
 	}

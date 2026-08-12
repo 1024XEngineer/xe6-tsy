@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 )
@@ -16,6 +17,7 @@ func TestAdapterCanonicalizesFrozenEvents(t *testing.T) {
 	adapter := NewAdapter(writer)
 	final := validFinalTurn()
 	fact := validUsageFact()
+	mode := validModeChangedEvent()
 
 	if err := adapter.Append(context.Background(), recordsv1.FinalTurnTopic, final.EventID, final); err != nil {
 		t.Fatalf("FinalTurn Append() error = %v", err)
@@ -23,14 +25,20 @@ func TestAdapterCanonicalizesFrozenEvents(t *testing.T) {
 	if err := adapter.Append(context.Background(), "usage.recorded", fact.IdempotencyKey, fact); err != nil {
 		t.Fatalf("UsageFact Append() error = %v", err)
 	}
-	if len(writer.entries) != 2 {
-		t.Fatalf("writer entries = %d, want 2", len(writer.entries))
+	if err := adapter.Append(context.Background(), realtimev1.ModeChangedTopic, mode.EventID, mode); err != nil {
+		t.Fatalf("ModeChangedEvent Append() error = %v", err)
+	}
+	if len(writer.entries) != 3 {
+		t.Fatalf("writer entries = %d, want 3", len(writer.entries))
 	}
 	if writer.entries[0].Topic != recordsv1.FinalTurnTopic || writer.entries[0].IdempotencyKey != final.EventID {
 		t.Fatalf("FinalTurn entry = %#v", writer.entries[0])
 	}
 	if writer.entries[1].Topic != "usage.recorded" || writer.entries[1].IdempotencyKey != fact.IdempotencyKey {
 		t.Fatalf("UsageFact entry = %#v", writer.entries[1])
+	}
+	if writer.entries[2].Topic != realtimev1.ModeChangedTopic || writer.entries[2].IdempotencyKey != mode.EventID {
+		t.Fatalf("ModeChangedEvent entry = %#v", writer.entries[2])
 	}
 	if len(writer.entries[0].Payload) == 0 || writer.entries[0].PayloadHash == [32]byte{} {
 		t.Fatal("FinalTurn payload was not canonicalized")

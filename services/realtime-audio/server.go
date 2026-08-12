@@ -200,12 +200,12 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	if durableFinalTurns != nil {
 		finalTurns = localruntime.FanoutFinalTurnSink{Durable: durableFinalTurns, Live: liveFinalTurns}
 	}
+	sinks, err := runtime.OpenSinksFromEnv(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("open realtime outbox: %w", err)
+	}
 	var usage pipeline.UsageFactSink = &localruntime.MemoryUsageSink{}
 	if usageOutboxEnabled(os.Getenv) {
-		sinks, err := runtime.OpenSinksFromEnv(context.Background())
-		if err != nil {
-			return nil, fmt.Errorf("open usage outbox: %w", err)
-		}
 		usage = sinks.Usage
 		slog.Info("realtime-audio usage outbox enabled", "backend", os.Getenv("REALTIME_OUTBOX"))
 	}
@@ -252,6 +252,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		Languages:        languages,
 		FinalTurns:       finalTurns,
 		AssistantReplies: localruntime.DataChannelAssistantReplySink{Media: connections},
+		ModeChanges:      sinks.ModeChanges,
 		Usage:            usage,
 		Audio:            audioSink,
 		Runtime:          runtimeBridge,

@@ -77,7 +77,7 @@ Router 同时注册 `AssistantHandler`；两个 Handler 复用同一个 `SpeechO
 重新读取，不能盲目覆盖。模式切换只替换 Router 状态，不执行 Session Stop/Start，也不重新建立
 WebRTC。真正发生切换时，Coordinator 会先将 `realtime.mode.changed` 交给 Outbox，收到持久接受
 确认后再提交 ModeState；重复 operation 和未变更模式不会重复产生事件。默认 `memory` 后端只用于
-本地离线运行；生产环境应配置 `REALTIME_OUTBOX=valkey`。API 侧长期投影在后续独立阶段接入。
+本地离线运行；生产环境必须配置 `REALTIME_OUTBOX=valkey`，否则启动失败。API 侧长期投影在后续独立阶段接入。
 
 阶段 16 的模式观测使用结构化日志作为可聚合指标来源：`runtime_started` 只在 runtime entry
 成功登记后记录一次，可按 `active_mode` 统计入口分布；`mode_switch` 按请求记录
@@ -132,13 +132,21 @@ Required env:
 | `REALTIME_TTS_DOWNLINK` | `none` | `none` = subtitles only (forces mock TTS); `pcm` = whole-clip TTS PCM over DataChannel; `opus` = 120ms-buffered, 20ms-paced WebRTC Opus at 32kbps |
 | `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Fallback pair when API DB link is off |
 | `REALTIME_API_DATABASE` | _(off)_ | `enabled` + `DATABASE_URL` → Postgres session/language readers + FinalTurn outbox |
-| `REALTIME_OUTBOX` | `memory` | `memory` 用于本地离线运行；生产设置为 `valkey`，需要 `REDIS_URL` |
+| `REALTIME_OUTBOX` | `memory` | `memory` 仅允许 `APP_ENV=local/test/development`；其他环境使用 `valkey`，需要 `REDIS_URL` |
+| `REALTIME_REDIS_MODE` | `standalone` | `standalone` 或 `cluster`；Cluster endpoint 必须显式选择 `cluster`，且 `REDIS_URL` 不带数据库路径 |
 | `LINGOW_MODE_CHANGED_STREAM` | `lingow:realtime:mode:changed` | `realtime.mode.changed` 的 Valkey Stream |
 | `ASR_SERVER_VAD` | _(unset → false in entrypoint)_ | Set `true` to enable Qwen server_vad; the local VAD keeps 500 ms prefix audio and preserves quiet frames inside an utterance |
 | `LOCAL_VAD_PROVIDER` | `silero` | `silero` (default) or `energy` fallback |
 | `LOCAL_VAD_MODEL_PATH` | `vad/silero/silero_vad.onnx` | Silero v5 ONNX model used by the local segmenter |
 | `ONNXRUNTIME_SHARED_LIBRARY_PATH` | auto (`third_party/onnxruntime/lib/...`) | downloaded on first Windows start when missing |
 | `LOCAL_VAD_THRESHOLD` / `LOCAL_VAD_NEG_THRESHOLD` | `0.5` / `threshold-0.15` | Silero speech start/end hysteresis |
+
+真实 Redis Cluster 的 Outbox 路由与幂等验证需显式提供集群地址：
+
+```bash
+REDIS_CLUSTER_URL='redis://user:password@host1:6379?addr=host2:6379&addr=host3:6379' \
+  go test -count=1 -tags=integration ./outbox -run TestValkeyWriterRedisCluster
+```
 
 Provider switch (Phase 3): keep `start-local.bat`, set `ASR_PROVIDER=aliyun` + `LLM_PROVIDER=aliyun` plus Qwen keys in root `.env`, restart. Leave downlink at `none` so TTS stays mock while you validate real subtitles. No control-plane protocol change.
 

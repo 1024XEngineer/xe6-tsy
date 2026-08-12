@@ -21,6 +21,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/speech"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
@@ -123,6 +124,75 @@ func TestManagerStartsInRequestedAssistantMode(t *testing.T) {
 	}
 	if state.ActiveMode != realtimev1.ModeAssistant || state.Generation != 1 {
 		t.Fatalf("initial mode = %#v, want assistant generation 1", state)
+	}
+}
+
+func TestManagerPreparesSpeechBindingBeforeOpeningInput(t *testing.T) {
+	bindings := &recordingSpeechBindings{}
+	opens := 0
+	deps := testDependencies(&fakeFrameSource{waitForClose: true}, &fakeLanguageReader{snapshot: activeSpeechConfig("session-1")})
+	deps.SpeechBindings = bindings
+	deps.FrameSources = FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
+		opens++
+		return AudioInput{Source: &fakeFrameSource{waitForClose: true}}, nil
+	})
+	manager, err := newManager(config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Translation: &translate.FakeProvider{},
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("newManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", StartOperationID: "start-1", TraceID: "trace-1"}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got := bindings.Prepares(); len(got) != 1 || got[0].version != 7 || got[0].languageA != "en-US" || got[0].languageB != "zh-CN" {
+		t.Fatalf("speech prepares = %#v", got)
+	}
+	if opens != 1 {
+		t.Fatalf("audio opens = %d, want 1 after successful prepare", opens)
+	}
+	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if got := bindings.ClosedSessions(); len(got) != 1 || got[0] != snapshot.SessionID {
+		t.Fatalf("closed speech sessions = %#v", got)
+	}
+}
+
+func TestManagerFailsClosedWhenSpeechBindingPreparationFails(t *testing.T) {
+	bindings := &recordingSpeechBindings{prepareErr: errors.New("route unavailable")}
+	opens := 0
+	deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeSpeechConfig("session-1")})
+	deps.SpeechBindings = bindings
+	deps.FrameSources = FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
+		opens++
+		return AudioInput{Source: &fakeFrameSource{}}, nil
+	})
+	manager, err := newManager(config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Translation: &translate.FakeProvider{},
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("newManager() error = %v", err)
+	}
+	err = manager.Start(t.Context(), session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "start-1", TraceID: "trace-1",
+	})
+	if !strings.Contains(err.Error(), "route unavailable") {
+		t.Fatalf("Start() error = %v, want route failure", err)
+	}
+	if opens != 0 {
+		t.Fatalf("audio opens = %d, want 0 when binding preparation fails", opens)
+	}
+	if len(bindings.ClosedSessions()) != 1 {
+		t.Fatalf("closed speech sessions = %#v, want failed start cleanup", bindings.ClosedSessions())
+	}
+	if manager.PipelineActive("session-1") {
+		t.Fatal("failed speech preparation registered an active pipeline")
 	}
 }
 
@@ -1145,6 +1215,64 @@ func newOwnershipTestManager(t *testing.T) (*Manager, *int) {
 
 func activeConfig(sessionID string) session.LanguageConfigSnapshot {
 	return session.LanguageConfigSnapshot{SessionID: sessionID, Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}
+}
+
+func activeSpeechConfig(sessionID string) session.LanguageConfigSnapshot {
+	return session.LanguageConfigSnapshot{
+		SessionID: sessionID, Version: 7, Status: "active",
+		LanguagePairs: []session.LanguagePair{
+			{Source: "zh-CN", Target: "en-US"},
+			{Source: "en-US", Target: "zh-CN"},
+		},
+	}
+}
+
+type speechPrepareCall struct {
+	sessionID string
+	version   int64
+	languageA string
+	languageB string
+}
+
+type recordingSpeechBindings struct {
+	mu         sync.Mutex
+	prepares   []speechPrepareCall
+	closed     []string
+	prepareErr error
+	acquireErr error
+}
+
+func (r *recordingSpeechBindings) Prepare(_ context.Context, sessionID string, version int64, languageA, languageB string) error {
+	r.mu.Lock()
+	r.prepares = append(r.prepares, speechPrepareCall{sessionID: sessionID, version: version, languageA: languageA, languageB: languageB})
+	err := r.prepareErr
+	r.mu.Unlock()
+	return err
+}
+
+func (r *recordingSpeechBindings) CloseSession(sessionID string) {
+	r.mu.Lock()
+	r.closed = append(r.closed, sessionID)
+	r.mu.Unlock()
+}
+
+func (r *recordingSpeechBindings) AcquireForTurn(context.Context, string, int64) (speech.TurnSpeechBinding, speech.Release, error) {
+	r.mu.Lock()
+	err := r.acquireErr
+	r.mu.Unlock()
+	return speech.TurnSpeechBinding{}, nil, err
+}
+
+func (r *recordingSpeechBindings) Prepares() []speechPrepareCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]speechPrepareCall(nil), r.prepares...)
+}
+
+func (r *recordingSpeechBindings) ClosedSessions() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.closed...)
 }
 
 func mustFrame(t *testing.T, pcm []byte, capturedAt time.Time) audio.Frame {

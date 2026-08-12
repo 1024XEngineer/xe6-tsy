@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/text/language"
+
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
@@ -87,6 +89,15 @@ type RuntimeReporter interface {
 	session.RuntimeFailureReporter
 }
 
+// SpeechBindingCoordinator is the runtime-facing lifecycle port for immutable
+// session speech bindings. The pipeline-facing acquisition method is embedded
+// so TurnOpener can lease the same binding without knowing coordinator storage.
+type SpeechBindingCoordinator interface {
+	pipeline.TurnSpeechBindingAcquirer
+	Prepare(context.Context, string, int64, string, string) error
+	CloseSession(string)
+}
+
 // Dependencies contains member-3-owned adapters and downstream sinks.
 type Dependencies struct {
 	FrameSources         FrameSourceFactory
@@ -103,6 +114,7 @@ type Dependencies struct {
 	Runtime              RuntimeReporter
 	Allocator            pipeline.TurnAllocator
 	VoiceID              string
+	SpeechBindings       SpeechBindingCoordinator
 	Logger               *slog.Logger
 	Latency              *slog.Logger
 	ProviderFailures     pipeline.ProviderFailureObserver
@@ -133,6 +145,7 @@ type Manager struct {
 	logger     *slog.Logger
 	deps       Dependencies
 	entries    map[string]*entry
+	bindings   SpeechBindingCoordinator
 }
 
 type entry struct {
@@ -222,7 +235,18 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		failure: deps.Runtime, logger: deps.Logger,
 		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
 	}
-	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages, managerTurnModeReader{manager: manager})
+	manager.bindings = deps.SpeechBindings
+	var opener *pipeline.TurnOpener
+	if manager.bindings != nil {
+		opener = pipeline.NewTurnOpenerWithBinding(
+			deps.Allocator,
+			deps.Languages,
+			managerTurnModeReader{manager: manager},
+			manager.bindings,
+		)
+	} else {
+		opener = pipeline.NewTurnOpener(deps.Allocator, deps.Languages, managerTurnModeReader{manager: manager})
+	}
 	latency := pipeline.LatencyLogger{Logger: deps.Latency, Observer: deps.ProviderFailures}
 	speech := pipeline.NewSpeechOutput(pipeline.SpeechOutputDependencies{
 		TTS: providers.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
@@ -368,6 +392,22 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	if runtimeInstanceID == "" {
 		return ErrRuntimeInstanceIDRequired
 	}
+	if m.bindings != nil {
+		configSnapshot, configErr := m.deps.Languages.GetCurrentConfig(ctx, snapshot.SessionID)
+		if configErr != nil {
+			m.closeSpeechBinding(snapshot.SessionID)
+			return fmt.Errorf("read language configuration for speech binding: %w", configErr)
+		}
+		languageA, languageB, pairErr := speechLanguagePair(configSnapshot)
+		if pairErr != nil {
+			m.closeSpeechBinding(snapshot.SessionID)
+			return fmt.Errorf("prepare speech binding: %w", pairErr)
+		}
+		if prepareErr := m.bindings.Prepare(ctx, snapshot.SessionID, configSnapshot.Version, languageA, languageB); prepareErr != nil {
+			m.closeSpeechBinding(snapshot.SessionID)
+			return fmt.Errorf("prepare speech binding: %w", prepareErr)
+		}
+	}
 	initialMode := snapshot.InitialMode.OrLegacyDefault()
 	mode, err := newModeCoordinator(
 		snapshot.SessionID,
@@ -383,16 +423,19 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	mode.observer = m.deps.ModeCommands
 	input, err := m.deps.FrameSources.Open(ctx, snapshot)
 	if err != nil {
+		m.closeSpeechBinding(snapshot.SessionID)
 		return fmt.Errorf("open audio input: %w", err)
 	}
 	owned := newCloseOnceSource(input.Source)
 	if input.Source == nil {
 		closeErr := owned.closeContext(ctx)
+		m.closeSpeechBinding(snapshot.SessionID)
 		return errors.Join(ErrAudioInputRequired, closeErr)
 	}
 	segmenter, err := m.deps.NewSegmenter()
 	if err != nil {
 		closeErr := owned.closeContext(ctx)
+		m.closeSpeechBinding(snapshot.SessionID)
 		return errors.Join(fmt.Errorf("create VAD segmenter: %w", err), closeErr)
 	}
 	var commandGate *command.Gate
@@ -400,6 +443,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		classifier, classifierErr := m.deps.NewCommandClassifier()
 		if classifierErr != nil {
 			closeErr := owned.closeContext(ctx)
+			m.closeSpeechBinding(snapshot.SessionID)
 			return errors.Join(fmt.Errorf("create command classifier: %w", classifierErr), closeErr)
 		}
 		options := m.deps.CommandOptions
@@ -413,6 +457,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		}, options)
 		if gateErr != nil {
 			closeErr := owned.closeContext(ctx)
+			m.closeSpeechBinding(snapshot.SessionID)
 			return errors.Join(fmt.Errorf("create command gate: %w", gateErr), closeErr)
 		}
 		commandGate = gate
@@ -424,6 +469,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	})
 	if err != nil {
 		closeErr := owned.closeContext(ctx)
+		m.closeSpeechBinding(snapshot.SessionID)
 		return errors.Join(fmt.Errorf("create audio segment service: %w", err), closeErr)
 	}
 	// The session outlives the start request. Use an independent context so
@@ -534,6 +580,7 @@ func (m *Manager) run(item *entry, ctx context.Context) {
 			err = errors.Join(err, fmt.Errorf("report runtime failure: %w", reportErr))
 		}
 	}
+	m.closeSpeechBinding(item.request.SessionID)
 	m.mu.Lock()
 	if ctx.Err() != nil && item.source.closeError() == nil {
 		err = nil
@@ -712,6 +759,7 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 		}
 		m.mu.Unlock()
 		m.recordRuntimeStopped(stopped)
+		m.closeSpeechBinding(sessionID)
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
@@ -732,6 +780,57 @@ func (m *Manager) recordRuntimeStopped(removed bool) {
 	if removed && m.deps.Lifecycle != nil {
 		m.deps.Lifecycle.RecordRuntimeStopped()
 	}
+}
+
+func (m *Manager) closeSpeechBinding(sessionID string) {
+	if m == nil || m.bindings == nil || sessionID == "" {
+		return
+	}
+	m.bindings.CloseSession(sessionID)
+}
+
+func speechLanguagePair(config session.LanguageConfigSnapshot) (string, string, error) {
+	if strings.TrimSpace(config.Status) != "active" || config.Version < 1 || len(config.LanguagePairs) != 2 {
+		return "", "", fmt.Errorf("active language configuration must contain two directions")
+	}
+	firstA, firstB, err := canonicalSpeechPair(config.LanguagePairs[0].Source, config.LanguagePairs[0].Target)
+	if err != nil {
+		return "", "", err
+	}
+	secondA, secondB, err := canonicalSpeechPair(config.LanguagePairs[1].Source, config.LanguagePairs[1].Target)
+	if err != nil || firstA != secondA || firstB != secondB {
+		return "", "", fmt.Errorf("language directions must describe one mutual pair")
+	}
+	return firstA, firstB, nil
+}
+
+func canonicalSpeechPair(languageA, languageB string) (string, string, error) {
+	canonical := func(value string) (string, error) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return "", fmt.Errorf("speech route language is required")
+		}
+		tag, err := language.Parse(strings.ReplaceAll(value, "_", "-"))
+		if err != nil || tag == language.Und {
+			return "", fmt.Errorf("speech route language %q is invalid", value)
+		}
+		return tag.String(), nil
+	}
+	a, err := canonical(languageA)
+	if err != nil {
+		return "", "", err
+	}
+	b, err := canonical(languageB)
+	if err != nil {
+		return "", "", err
+	}
+	if a == b {
+		return "", "", fmt.Errorf("speech route languages must differ")
+	}
+	if a > b {
+		a, b = b, a
+	}
+	return a, b, nil
 }
 
 // closeOnceSource coalesces concurrent attempts, remains closed after success,

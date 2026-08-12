@@ -8,10 +8,10 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
-    "rootDir": "../..",
+    "rootDir": ".",
     "outDir": "dist",
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "../../packages/contracts/typescript/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "../../packages/contracts/typescript/**/*.d.ts"]
 }

@@ -13,7 +13,7 @@
 - TypeScript 类型生成
 - Go 类型生成
 
-当前客户端可直接复用 `typescript/realtime.ts` 导出的实时控制和 VoiceSession 类型；该语言绑定由契约测试与 OpenAPI 必填字段、枚举保持一致。
+当前客户端可直接复用 `typescript/realtime.d.ts` 导出的实时控制和 VoiceSession 类型；该语言绑定由契约测试与 OpenAPI 必填字段、枚举保持一致。
 
 语言配置模块的 HTTP/内部实现仍位于 `services/api/languages`（Issue #88）；本目录的
 OpenAPI 已声明 `/languages` 与 `language-config(s)` 路径及其请求、响应和错误 schema，

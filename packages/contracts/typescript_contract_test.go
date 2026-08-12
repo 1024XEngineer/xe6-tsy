@@ -9,7 +9,7 @@ import (
 func TestTypeScriptRealtimeBindingMatchesOpenAPI(t *testing.T) {
 	spec := loadRootOpenAPI(t)
 	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
-	binding, err := os.ReadFile("typescript/realtime.ts")
+	binding, err := os.ReadFile("typescript/realtime.d.ts")
 	if err != nil {
 		t.Fatalf("read TypeScript contract: %v", err)
 	}

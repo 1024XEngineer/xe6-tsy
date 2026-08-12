@@ -13,7 +13,7 @@ export type {
   VoiceSessionAudioConfig,
   VoiceSessionCapabilities,
   VoiceSessionStatus,
-} from "../../../packages/contracts/typescript/realtime.ts";
+} from "../../../packages/contracts/typescript/realtime.d.ts";
 
 import type {
   ModePhase,
@@ -22,7 +22,7 @@ import type {
   ModeStateSnapshot,
   RealtimeMode as Mode,
   RealtimeRuntimeState as RuntimeState,
-} from "../../../packages/contracts/typescript/realtime.ts";
+} from "../../../packages/contracts/typescript/realtime.d.ts";
 
 /** New assistant-capable clients explicitly request this mode at Start. */
 export const DEFAULT_INITIAL_MODE: Mode = "assistant";

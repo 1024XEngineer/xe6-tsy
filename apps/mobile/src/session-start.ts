@@ -1,20 +1,19 @@
-import { DEFAULT_MODE, isMode, type Mode } from "./contracts.ts";
+import {
+  DEFAULT_INITIAL_MODE,
+  isMode,
+  type Mode,
+  type VoiceSession,
+  type VoiceSessionAudioConfig,
+  type VoiceSessionCapabilities,
+  type VoiceSessionStatus,
+} from "./contracts.ts";
 import {
   InvalidRealtimeResponseError,
   RealtimeApiError,
   type FetchLike,
 } from "./transport.ts";
 
-export type VoiceSessionStatus = "created" | "active" | "ended" | "failed";
-
-export interface VoiceSessionStartResult {
-  id: string;
-  account_id: string;
-  status: VoiceSessionStatus;
-  started_at: string | null;
-  ended_at: string | null;
-  created_at: string;
-}
+export type VoiceSessionStartResult = VoiceSession;
 
 export interface SessionStartClientOptions {
   baseUrl: string;
@@ -42,7 +41,7 @@ export class SessionStartClient {
 
   async start(
     sessionId: string,
-    initialMode: Mode = DEFAULT_MODE,
+    initialMode: Mode = DEFAULT_INITIAL_MODE,
     idempotencyKey = this.createId(),
     signal?: AbortSignal,
   ): Promise<VoiceSessionStartResult> {
@@ -104,9 +103,36 @@ function isStartResult(body: unknown, sessionId: string): body is VoiceSessionSt
     value.id === sessionId &&
     typeof value.account_id === "string" &&
     isVoiceSessionStatus(value.status) &&
+    isAudioConfig(value.audio_config) &&
+    isCapabilities(value.capabilities) &&
     isNullableTimestamp(value.started_at) &&
     isNullableTimestamp(value.ended_at) &&
     isTimestamp(value.created_at)
+  );
+}
+
+function isAudioConfig(value: unknown): value is VoiceSessionAudioConfig {
+  if (typeof value !== "object" || value === null) return false;
+  const config = value as Record<string, unknown>;
+  return (
+    config.codec === "opus" &&
+    config.sample_rate_hz === 48000 &&
+    config.channels === 1 &&
+    typeof config.echo_cancellation === "boolean" &&
+    typeof config.noise_suppression === "boolean" &&
+    typeof config.auto_gain_control === "boolean"
+  );
+}
+
+function isCapabilities(value: unknown): value is VoiceSessionCapabilities {
+  if (typeof value !== "object" || value === null) return false;
+  const capabilities = value as Record<string, unknown>;
+  return (
+    typeof capabilities.webrtc === "boolean" &&
+    typeof capabilities.data_channel === "boolean" &&
+    typeof capabilities.microphone === "boolean" &&
+    typeof capabilities.speaker === "boolean" &&
+    typeof capabilities.speaker_diarization === "boolean"
   );
 }
 

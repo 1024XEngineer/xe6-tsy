@@ -1,5 +1,5 @@
 import {
-  DEFAULT_MODE,
+  LEGACY_MODE_FALLBACK,
   effectiveMode,
   isConnectionState,
   isMode,
@@ -93,7 +93,7 @@ export class RuntimeClient {
       connection: null,
       runtime: null,
       mode: null,
-      effectiveMode: DEFAULT_MODE,
+      effectiveMode: LEGACY_MODE_FALLBACK,
       errorCode: null,
       staleOperationIds: [],
     });

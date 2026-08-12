@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  DEFAULT_MODE,
+  LEGACY_MODE_FALLBACK,
   type ConnectionSnapshot,
   type SwitchModeResult,
 } from "../src/contracts.ts";
@@ -48,8 +48,8 @@ test("sync exposes connection, runtime and mode while preserving interpretation 
   await client.sync();
   assert.equal(client.state.connection?.state, "connected");
   assert.equal(client.state.runtime?.runtime_state, "listening");
-  assert.equal(client.state.mode?.active_mode, DEFAULT_MODE);
-  assert.equal(client.state.effectiveMode, DEFAULT_MODE);
+  assert.equal(client.state.mode?.active_mode, LEGACY_MODE_FALLBACK);
+  assert.equal(client.state.effectiveMode, LEGACY_MODE_FALLBACK);
 });
 
 test("generation conflict refreshes mode and marks the attempted operation stale", async () => {
@@ -85,7 +85,7 @@ test("mode endpoint failure fails open to legacy interpretation", async () => {
   const client = new RuntimeClient("s1", transport);
   await client.sync();
   assert.equal(client.state.mode, null);
-  assert.equal(client.state.effectiveMode, DEFAULT_MODE);
+  assert.equal(client.state.effectiveMode, LEGACY_MODE_FALLBACK);
   assert.equal(client.state.status, "ready");
 });
 

@@ -1,78 +1,33 @@
-/**
- * Type-only projection of packages/contracts/openapi.yaml. The repository does
- * not currently publish a TypeScript generator or generated package, so this
- * boundary must be replaced by generated types before adding new fields.
- */
-export type Mode = "assistant" | "interpretation";
+export type {
+  ModePhase,
+  ModeStateSnapshot,
+  ModeSwitchStatus,
+  RealtimeConnectionSnapshot as ConnectionSnapshot,
+  RealtimeConnectionState as ConnectionState,
+  RealtimeMode as Mode,
+  RealtimeRuntimeSnapshot as RuntimeSnapshot,
+  RealtimeRuntimeState as RuntimeState,
+  SwitchModeCommand,
+  SwitchModeResult,
+  VoiceSession,
+  VoiceSessionAudioConfig,
+  VoiceSessionCapabilities,
+  VoiceSessionStatus,
+} from "../../../packages/contracts/typescript/realtime.ts";
 
-export type ModePhase = "active" | "switching";
+import type {
+  ModePhase,
+  ModeSwitchStatus,
+  RealtimeConnectionState as ConnectionState,
+  ModeStateSnapshot,
+  RealtimeMode as Mode,
+  RealtimeRuntimeState as RuntimeState,
+} from "../../../packages/contracts/typescript/realtime.ts";
 
-export type RuntimeState =
-  | "stopped"
-  | "starting"
-  | "listening"
-  | "asr_processing"
-  | "translating"
-  | "thinking"
-  | "tts_processing"
-  | "playing"
-  | "stopping"
-  | "failed";
-
-export type ConnectionState =
-  | "new"
-  | "connecting"
-  | "connected"
-  | "disconnected"
-  | "failed"
-  | "closed";
-
-export type ModeSwitchStatus = "applied" | "unchanged";
-
-export interface RuntimeSnapshot {
-  session_id: string;
-  start_operation_id: string;
-  runtime_state: RuntimeState;
-  current_turn_id: string | null;
-  current_playback_id: string | null;
-  last_error_code: string | null;
-  updated_at: string;
-}
-
-export interface ModeStateSnapshot {
-  session_id: string;
-  runtime_instance_id: string;
-  active_mode: Mode;
-  generation: number;
-  phase: ModePhase;
-  last_operation_id: string | null;
-  updated_at: string;
-}
-
-export interface ConnectionSnapshot {
-  session_id: string;
-  connection_id: string;
-  state: ConnectionState;
-  version: number;
-  updated_at: string;
-}
-
-export interface SwitchModeCommand {
-  session_id: string;
-  runtime_instance_id: string;
-  operation_id: string;
-  trace_id: string;
-  expected_generation: number;
-  target_mode: Mode;
-}
-
-export interface SwitchModeResult {
-  operation_id: string;
-  status: ModeSwitchStatus;
-  state: ModeStateSnapshot;
-}
-
-export const DEFAULT_MODE: Mode = "interpretation";
+/** New assistant-capable clients explicitly request this mode at Start. */
+export const DEFAULT_INITIAL_MODE: Mode = "assistant";
+/** Only missing mode state from an explicitly recognized legacy server uses this. */
+export const LEGACY_MODE_FALLBACK: Mode = "interpretation";
 
 export function isMode(value: unknown): value is Mode {
   return value === "assistant" || value === "interpretation";
@@ -97,6 +52,7 @@ export function isRuntimeState(value: unknown): value is RuntimeState {
     value === "asr_processing" ||
     value === "translating" ||
     value === "thinking" ||
+    value === "assistant_processing" ||
     value === "tts_processing" ||
     value === "playing" ||
     value === "stopping" ||
@@ -115,5 +71,5 @@ export function isModeSwitchStatus(value: unknown): value is ModeSwitchStatus {
 export function effectiveMode(snapshot: ModeStateSnapshot | null): Mode {
   // A missing mode snapshot is the rolling-compatibility path for old clients.
   // It must not block the existing interpretation flow or invent a mode state.
-  return snapshot?.active_mode ?? DEFAULT_MODE;
+  return snapshot?.active_mode ?? LEGACY_MODE_FALLBACK;
 }

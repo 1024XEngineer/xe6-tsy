@@ -8,6 +8,21 @@ const result = {
   id: "s1",
   account_id: "account-1",
   status: "active",
+  audio_config: {
+    codec: "opus",
+    sample_rate_hz: 48000,
+    channels: 1,
+    echo_cancellation: true,
+    noise_suppression: true,
+    auto_gain_control: true,
+  },
+  capabilities: {
+    webrtc: true,
+    data_channel: true,
+    microphone: true,
+    speaker: true,
+    speaker_diarization: true,
+  },
   started_at: "2026-08-12T00:00:01Z",
   ended_at: null,
   created_at: "2026-08-12T00:00:00Z",
@@ -34,7 +49,7 @@ test("starts a session with an explicit initial mode and idempotency key", async
   assert.deepEqual(JSON.parse(String(requestInit.body)), { initial_mode: "assistant" });
 });
 
-test("defaults old callers to interpretation", async () => {
+test("defaults assistant-capable callers to assistant", async () => {
   let body = "";
   const client = new SessionStartClient({
     baseUrl: "https://api.example.test",
@@ -45,8 +60,8 @@ test("defaults old callers to interpretation", async () => {
     },
   });
 
-  await client.start("s1", undefined, "start-legacy");
-  assert.deepEqual(JSON.parse(body), { initial_mode: "interpretation" });
+  await client.start("s1", undefined, "start-default");
+  assert.deepEqual(JSON.parse(body), { initial_mode: "assistant" });
 });
 
 test("surfaces API errors and rejects a mismatched response", async () => {
@@ -69,4 +84,14 @@ test("surfaces API errors and rejects a mismatched response", async () => {
       new Response(JSON.stringify({ ...result, id: "another-session" }), { status: 200 }),
   });
   await assert.rejects(mismatched.start("s1"), InvalidRealtimeResponseError);
+
+  const incomplete = new SessionStartClient({
+    baseUrl: "https://api.example.test",
+    accessToken: "access-1",
+    fetchImpl: async () => {
+      const { audio_config: _audioConfig, ...body } = result;
+      return new Response(JSON.stringify(body), { status: 200 });
+    },
+  });
+  await assert.rejects(incomplete.start("s1"), InvalidRealtimeResponseError);
 });

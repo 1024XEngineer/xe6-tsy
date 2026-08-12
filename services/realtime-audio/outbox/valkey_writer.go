@@ -31,14 +31,14 @@ return 1
 
 // ValkeyWriter publishes canonical outbox entries to a Redis/Valkey stream.
 type ValkeyWriter struct {
-	client  *redis.Client
+	client  redis.Scripter
 	streams map[string]string
 }
 
 // NewValkeyWriter constructs a writer for usage and mode-change streams. The optional mode stream
 // keeps existing usage-only callers source-compatible while production wiring configures both.
-func NewValkeyWriter(client *redis.Client, usageStream string, modeStreams ...string) (*ValkeyWriter, error) {
-	if client == nil {
+func NewValkeyWriter(client redis.Scripter, usageStream string, modeStreams ...string) (*ValkeyWriter, error) {
+	if nilRedisScripter(client) {
 		return nil, ErrWriterRequired
 	}
 	if len(modeStreams) > 1 {
@@ -55,6 +55,19 @@ func NewValkeyWriter(client *redis.Client, usageStream string, modeStreams ...st
 		usageRecordedTopic:          usageStream,
 		realtimev1.ModeChangedTopic: modeStream,
 	}}, nil
+}
+
+func nilRedisScripter(client redis.Scripter) bool {
+	switch typed := client.(type) {
+	case nil:
+		return true
+	case *redis.Client:
+		return typed == nil
+	case *redis.ClusterClient:
+		return typed == nil
+	default:
+		return false
+	}
 }
 
 // Accept publishes one durable entry to the configured stream.
@@ -100,7 +113,7 @@ func (w *ValkeyWriter) dedupKey(stream string, entry Entry) string {
 			tag = stream[start+1 : start+1+end]
 		}
 	}
-	return "{" + tag + "}:dedup:" + entry.Topic + "\x00" + entry.IdempotencyKey
+	return "{" + tag + "}:dedup:" + stream + "\x00" + entry.Topic + "\x00" + entry.IdempotencyKey
 }
 
 var _ Writer = (*ValkeyWriter)(nil)

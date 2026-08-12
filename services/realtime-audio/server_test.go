@@ -104,6 +104,7 @@ func TestLoadProcessConfigPCMDownlinkKeepsRealTTS(t *testing.T) {
 
 func setMockProviderEnv(t *testing.T) {
 	t.Helper()
+	t.Setenv("APP_ENV", "test")
 	t.Setenv("ASR_PROVIDER", "mock")
 	t.Setenv("LLM_PROVIDER", "mock")
 	t.Setenv("TTS_PROVIDER", "mock")

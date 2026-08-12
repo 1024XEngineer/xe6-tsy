@@ -44,6 +44,16 @@ func TestValkeyWriterPublishesUsageRecordedPayload(t *testing.T) {
 	}
 }
 
+func TestNewValkeyWriterRejectsNilClients(t *testing.T) {
+	var standalone *redis.Client
+	var cluster *redis.ClusterClient
+	for _, client := range []redis.Scripter{nil, standalone, cluster} {
+		if _, err := NewValkeyWriter(client, ""); !errors.Is(err, ErrWriterRequired) {
+			t.Fatalf("NewValkeyWriter(%T) error = %v, want %v", client, err, ErrWriterRequired)
+		}
+	}
+}
+
 func TestValkeyWriterPublishesModeChangedToDedicatedStream(t *testing.T) {
 	server, err := miniredis.Run()
 	if err != nil {
@@ -153,13 +163,18 @@ func TestValkeyWriterDetectsPayloadConflict(t *testing.T) {
 func TestValkeyWriterDedupKeyUsesStreamClusterSlot(t *testing.T) {
 	writer := &ValkeyWriter{}
 	entry := Entry{Topic: realtimev1.ModeChangedTopic, IdempotencyKey: "event-1"}
-	for stream, wantPrefix := range map[string]string{
-		"lingow:mode":           "{lingow:mode}:dedup:",
-		"lingow:{mode}:changed": "{mode}:dedup:",
+	for stream, want := range map[string]string{
+		"lingow:mode":           "{lingow:mode}:dedup:lingow:mode\x00realtime.mode.changed\x00event-1",
+		"lingow:{mode}:changed": "{mode}:dedup:lingow:{mode}:changed\x00realtime.mode.changed\x00event-1",
 	} {
-		if got := writer.dedupKey(stream, entry); !strings.HasPrefix(got, wantPrefix) {
-			t.Fatalf("dedupKey(%q) = %q, want prefix %q", stream, got, wantPrefix)
+		if got := writer.dedupKey(stream, entry); got != want {
+			t.Fatalf("dedupKey(%q) = %q, want %q", stream, got, want)
 		}
+	}
+	first := writer.dedupKey("{mode}:v1", entry)
+	second := writer.dedupKey("{mode}:v2", entry)
+	if first == second || !strings.HasPrefix(first, "{mode}:") || !strings.HasPrefix(second, "{mode}:") {
+		t.Fatalf("same-slot stream keys must remain distinct: %q, %q", first, second)
 	}
 }
 

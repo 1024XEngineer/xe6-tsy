@@ -16,14 +16,12 @@ const (
 	maxWakeWordDataChannelMessageBytes = 4 * 1024
 )
 
-// WakeWordSource exposes validated local hardware detections independently of
-// the normal audio track. Receive never yields malformed or unsupported signals.
+// WakeWordSource exposes validated local detections outside the normal audio track.
 type WakeWordSource interface {
 	Receive(ctx context.Context) (realtimev1.WakeWordDetectedSignal, error)
 }
 
-// WakeWordTransport is an optional signaling-transport capability. Keeping it
-// separate avoids forcing transports without inbound controls to implement it.
+// WakeWordTransport keeps inbound controls optional for signaling-only transports.
 type WakeWordTransport interface {
 	WakeWordSource() WakeWordSource
 }
@@ -40,14 +38,10 @@ func newPionWakeWordSource(capacity int) *pionWakeWordSource {
 	if capacity < 1 {
 		capacity = defaultWakeWordQueueCapacity
 	}
-	return &pionWakeWordSource{
-		signals: make(chan realtimev1.WakeWordDetectedSignal, capacity),
-		done:    make(chan struct{}),
-	}
+	return &pionWakeWordSource{signals: make(chan realtimev1.WakeWordDetectedSignal, capacity), done: make(chan struct{})}
 }
 
-// Receive waits for one accepted signal or the caller/transport lifetime. The
-// source owns no goroutine, so cancellation is sufficient to abandon a waiter.
+// Receive waits for one signal or the caller/transport lifetime; the source owns no goroutine.
 func (s *pionWakeWordSource) Receive(ctx context.Context) (realtimev1.WakeWordDetectedSignal, error) {
 	if s == nil {
 		return realtimev1.WakeWordDetectedSignal{}, ErrMediaUnavailable
@@ -71,8 +65,7 @@ func (s *pionWakeWordSource) Receive(ctx context.Context) (realtimev1.WakeWordDe
 	}
 }
 
-// offer drops on saturation rather than blocking Pion's network callback. Wake
-// signals are edge notifications; a later local wake can open a fresh window.
+// offer drops saturated edge notifications instead of blocking Pion's callback.
 func (s *pionWakeWordSource) offer(signal realtimev1.WakeWordDetectedSignal) bool {
 	if s == nil {
 		return false
@@ -106,30 +99,20 @@ type pionInboundDataChannel interface {
 	OnMessage(func(pion.DataChannelMessage))
 }
 
-// pionInboundDataChannelPeerConnection is deliberately optional because
-// signaling-only transports and their fakes do not need inbound controls.
+// pionInboundDataChannelPeerConnection shares one callback across inbound protocols.
 type pionInboundDataChannelPeerConnection interface {
-	OnInboundDataChannel(func(pionInboundDataChannel))
+	OnDataChannel(func(pionInboundDataChannel))
 }
 
-func configurePionWakeWordIngress(
-	source *pionWakeWordSource,
-	connection pionInboundDataChannelPeerConnection,
-	label string,
-) {
-	if source == nil || connection == nil || label == "" {
+func attachPionWakeWordIngress(source *pionWakeWordSource, channel pionInboundDataChannel) {
+	if source == nil || channel == nil {
 		return
 	}
-	connection.OnInboundDataChannel(func(channel pionInboundDataChannel) {
-		if channel == nil || channel.Label() != label {
-			return
+	channel.OnMessage(func(message pion.DataChannelMessage) {
+		signal, ok := decodeWakeWordDataChannelMessage(message)
+		if ok {
+			source.offer(signal)
 		}
-		channel.OnMessage(func(message pion.DataChannelMessage) {
-			signal, ok := decodeWakeWordDataChannelMessage(message)
-			if ok {
-				source.offer(signal)
-			}
-		})
 	})
 }
 

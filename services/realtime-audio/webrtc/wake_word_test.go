@@ -13,23 +13,27 @@ import (
 )
 
 func TestPionTransportReceivesWakeWordFromClientDataChannel(t *testing.T) {
-	transport, peer := newWakeWordTransportFixture(t)
+	handler := &controlHandlerRecorder{}
+	transport, peer := newWakeWordTransportFixture(t, handler)
 	source := transport.WakeWordSource()
 	if source == nil {
 		t.Fatal("WakeWordSource() = nil")
 	}
 
-	wrongChannel := &inboundDataChannelRecorder{label: "client-control"}
-	peer.deliverChannel(wrongChannel)
-	if wrongChannel.onMessage != nil {
-		t.Fatal("wrong-label DataChannel received a message handler")
+	control := newControlChannelRecorder(realtimev1.ControlDataChannelLabel, true)
+	peer.deliverChannel(control)
+	control.Receive(t, validControlModeSwitchRequest(), true)
+	if response := control.NextResponse(t); response.Result == nil || handler.CallCount() != 1 {
+		t.Fatalf("control response = %#v, calls = %d", response, handler.CallCount())
 	}
 
 	channel := &inboundDataChannelRecorder{label: defaultDataChannelLabel}
 	peer.deliverChannel(channel)
 	channel.deliver(pion.DataChannelMessage{Data: encodeWakeWordSignal(t, "wake-1"), IsString: true})
 
-	signal, err := source.Receive(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	signal, err := source.Receive(ctx)
 	if err != nil {
 		t.Fatalf("Receive() error = %v", err)
 	}
@@ -51,7 +55,7 @@ func TestPionWakeWordIngressIgnoresInvalidMessagesWithoutClosingMedia(t *testing
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			transport, peer := newWakeWordTransportFixture(t)
+			transport, peer := newWakeWordTransportFixture(t, nil)
 			channel := &inboundDataChannelRecorder{label: defaultDataChannelLabel}
 			peer.deliverChannel(channel)
 			channel.deliver(test.message)
@@ -69,7 +73,7 @@ func TestPionWakeWordIngressIgnoresInvalidMessagesWithoutClosingMedia(t *testing
 }
 
 func TestPionWakeWordIngressIgnoresOversizedMessage(t *testing.T) {
-	transport, peer := newWakeWordTransportFixture(t)
+	transport, peer := newWakeWordTransportFixture(t, nil)
 	channel := &inboundDataChannelRecorder{label: defaultDataChannelLabel}
 	peer.deliverChannel(channel)
 	channel.deliver(pion.DataChannelMessage{
@@ -89,10 +93,8 @@ func TestPionWakeWordIngressIgnoresOversizedMessage(t *testing.T) {
 
 func TestPionWakeWordIngressDropsWhenQueueIsFull(t *testing.T) {
 	source := newPionWakeWordSource(1)
-	peer := &inboundPeerRecorder{}
-	configurePionWakeWordIngress(source, peer, defaultDataChannelLabel)
 	channel := &inboundDataChannelRecorder{label: defaultDataChannelLabel}
-	peer.deliverChannel(channel)
+	attachPionWakeWordIngress(source, channel)
 
 	channel.deliver(pion.DataChannelMessage{Data: encodeWakeWordSignal(t, "first"), IsString: true})
 	// The second callback must return immediately even though no consumer has
@@ -120,7 +122,7 @@ func TestPionWakeWordSourceReceiveHonorsCancellation(t *testing.T) {
 }
 
 func TestPionWakeWordSourceClosesWithTransport(t *testing.T) {
-	transport, _ := newWakeWordTransportFixture(t)
+	transport, _ := newWakeWordTransportFixture(t, nil)
 	source := transport.WakeWordSource()
 	if err := transport.Close(context.Background()); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -131,7 +133,7 @@ func TestPionWakeWordSourceClosesWithTransport(t *testing.T) {
 	}
 }
 
-func newWakeWordTransportFixture(t *testing.T) (*PionTransport, *inboundMediaPeerRecorder) {
+func newWakeWordTransportFixture(t *testing.T, handler ControlCommandHandler) (*PionTransport, *inboundMediaPeerRecorder) {
 	t.Helper()
 	peer := &inboundMediaPeerRecorder{
 		mediaPeerRecorder: &mediaPeerRecorder{fakePionPeerConnection: &fakePionPeerConnection{gatherComplete: closedChannel()}},
@@ -139,6 +141,7 @@ func newWakeWordTransportFixture(t *testing.T) (*PionTransport, *inboundMediaPee
 	factory := &PionTransportFactory{
 		newPeerConnection: func(pion.Configuration) (pionPeerConnection, error) { return peer, nil },
 		now:               func() time.Time { return time.Now().UTC() },
+		control:           ControlConfig{Handler: handler},
 	}
 	created, err := factory.Create(context.Background(), "session-1", "rtc-1", nil)
 	if err != nil {
@@ -148,6 +151,7 @@ func newWakeWordTransportFixture(t *testing.T) (*PionTransport, *inboundMediaPee
 	if !ok {
 		t.Fatalf("Create() transport = %T, want *PionTransport", created)
 	}
+	t.Cleanup(func() { _ = transport.Close(context.Background()) })
 	return transport, peer
 }
 
@@ -180,25 +184,12 @@ func (c *inboundDataChannelRecorder) deliver(message pion.DataChannelMessage) {
 	}
 }
 
-type inboundPeerRecorder struct {
-	onInbound func(pionInboundDataChannel)
-}
-
-func (p *inboundPeerRecorder) OnInboundDataChannel(handler func(pionInboundDataChannel)) {
-	p.onInbound = handler
-}
-func (p *inboundPeerRecorder) deliverChannel(channel pionInboundDataChannel) {
-	if p.onInbound != nil {
-		p.onInbound(channel)
-	}
-}
-
 type inboundMediaPeerRecorder struct {
 	*mediaPeerRecorder
 	onInbound func(pionInboundDataChannel)
 }
 
-func (p *inboundMediaPeerRecorder) OnInboundDataChannel(handler func(pionInboundDataChannel)) {
+func (p *inboundMediaPeerRecorder) OnDataChannel(handler func(pionInboundDataChannel)) {
 	p.onInbound = handler
 }
 func (p *inboundMediaPeerRecorder) deliverChannel(channel pionInboundDataChannel) {
@@ -208,6 +199,5 @@ func (p *inboundMediaPeerRecorder) deliverChannel(channel pionInboundDataChannel
 }
 
 var _ pionInboundDataChannel = (*inboundDataChannelRecorder)(nil)
-var _ pionInboundDataChannelPeerConnection = (*inboundPeerRecorder)(nil)
 var _ pionInboundDataChannelPeerConnection = (*inboundMediaPeerRecorder)(nil)
 var _ pionMediaPeerConnection = (*inboundMediaPeerRecorder)(nil)

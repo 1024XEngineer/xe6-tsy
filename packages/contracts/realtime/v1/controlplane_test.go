@@ -147,6 +147,12 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 		"mode_generation_conflict",
 		"mode_runtime_instance_mismatch",
 		"mode_operation_conflict",
+		"control_invalid_message",
+		"control_unsupported_version",
+		"control_unsupported_type",
+		"control_unauthorized_session",
+		"control_connection_closed",
+		"control_unavailable",
 	}; !reflect.DeepEqual(controlPlaneCodes, want) {
 		t.Fatalf("ControlPlaneErrorCode enum = %v, want %v", controlPlaneCodes, want)
 	}

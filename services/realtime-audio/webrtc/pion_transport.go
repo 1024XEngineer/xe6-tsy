@@ -28,6 +28,7 @@ type PionTransport struct {
 	mediaConnection pionMediaPeerConnection
 	mediaConfig     MediaConfig
 	mediaNow        func() time.Time
+	control         *PionControlReceiver
 }
 
 // WakeWordSource returns the bounded hardware-signal source owned by this
@@ -86,6 +87,38 @@ func (t *PionTransport) Playback() *playback.Service {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.playback
+}
+
+func (t *PionTransport) attachControlChannel(
+	channel pionControlDataChannel,
+	handler ControlCommandHandler,
+	sessionID string,
+	connectionID string,
+) {
+	if t == nil || channel == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.closeDone != nil || t.control != nil {
+		t.mu.Unlock()
+		_ = channel.Close()
+		return
+	}
+	receiver, err := newPionControlReceiver(channel, handler, sessionID, connectionID, t.detachControlChannel)
+	if err != nil {
+		t.mu.Unlock()
+		return
+	}
+	t.control = receiver
+	t.mu.Unlock()
+}
+
+func (t *PionTransport) detachControlChannel(receiver *PionControlReceiver) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.control == receiver {
+		t.control = nil
+	}
 }
 
 // Answer applies an offer and returns the fully gathered local answer.
@@ -246,6 +279,7 @@ func (t *PionTransport) Close(ctx context.Context) error {
 	source := t.audioSource
 	wakeWords := t.wakeWords
 	events := t.events
+	control := t.control
 	t.mu.Unlock()
 	if wakeWords != nil {
 		wakeWords.closeSource()
@@ -253,11 +287,15 @@ func (t *PionTransport) Close(ctx context.Context) error {
 	if events != nil {
 		events.close(ErrTransportClosed)
 	}
+	var controlErr error
+	if control != nil {
+		controlErr = control.Close(ctx)
+	}
 	var sourceErr error
 	if source != nil {
 		sourceErr = source.Close()
 	}
-	closeErr := errors.Join(sourceErr, connection.Close())
+	closeErr := errors.Join(controlErr, sourceErr, connection.Close())
 	t.mu.Lock()
 	t.closeErr = closeErr
 	close(done)

@@ -16,6 +16,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/localruntime"
+	realtimemetrics "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/metrics"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
@@ -45,6 +46,7 @@ type processConfig struct {
 	DownlinkCodec  string
 	SourceLanguage string
 	TargetLanguage string
+	MetricsToken   string
 }
 
 func loadProcessConfig(getenv func(string) string) (processConfig, error) {
@@ -85,6 +87,7 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 		Addr: addr, TicketSecret: ticketSecret, SkipTTSTrack: skipTTS, ForceMockTTS: forceMock,
 		DownlinkMode: mode, DownlinkCodec: codec,
 		SourceLanguage: source, TargetLanguage: target,
+		MetricsToken: strings.TrimSpace(getenv("REALTIME_METRICS_TOKEN")),
 	}, nil
 }
 
@@ -195,7 +198,8 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		fallbackReplays = localruntime.PostgresFallbackPlaybackReplayStore{Pool: pool}
 	}
 
-	liveFinalTurns := localruntime.DataChannelFinalTurnSink{Media: connections}
+	metricRegistry := realtimemetrics.Default()
+	liveFinalTurns := localruntime.DataChannelFinalTurnSink{Media: connections, Failures: metricRegistry}
 	var finalTurns recordsv1.FinalTurnSink = liveFinalTurns
 	if durableFinalTurns != nil {
 		finalTurns = localruntime.FanoutFinalTurnSink{Durable: durableFinalTurns, Live: liveFinalTurns}
@@ -229,7 +233,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		if sampleRate <= 0 {
 			sampleRate = 24000
 		}
-		audioSink = &localruntime.DataChannelTTSAudioSink{Media: connections, SampleRate: sampleRate}
+		audioSink = &localruntime.DataChannelTTSAudioSink{Media: connections, SampleRate: sampleRate, Failures: metricRegistry}
 	}
 
 	voiceID := strings.TrimSpace(providerConfig.TTS.Voice)
@@ -251,14 +255,17 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		NewSegmenter:     newSegmenter,
 		Languages:        languages,
 		FinalTurns:       finalTurns,
-		AssistantReplies: localruntime.DataChannelAssistantReplySink{Media: connections},
-		ModeChanges:      sinks.ModeChanges,
+		AssistantReplies: localruntime.DataChannelAssistantReplySink{Media: connections, Failures: metricRegistry},
+		ModeChanges:      realtimemetrics.ObserveModeChangedSink(sinks.ModeChanges, metricRegistry),
 		Usage:            usage,
 		Audio:            audioSink,
 		Runtime:          runtimeBridge,
 		VoiceID:          voiceID,
 		Logger:           slog.Default(),
 		Latency:          slog.Default(),
+		ProviderFailures: metricRegistry,
+		Lifecycle:        metricRegistry,
+		ModeCommands:     metricRegistry,
 		Now:              now,
 	})
 	if err != nil {
@@ -300,7 +307,10 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure control-plane: %w", err)
 	}
-	return handler, nil
+	mux := http.NewServeMux()
+	realtimemetrics.Register(mux, metricRegistry, cfg.MetricsToken)
+	mux.Handle("/", handler)
+	return mux, nil
 }
 
 func apiDatabaseEnabled(getenv func(string) string) bool {

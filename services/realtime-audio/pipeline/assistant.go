@@ -35,26 +35,28 @@ type AssistantReplyCommitGate interface {
 }
 
 type AssistantHandlerDependencies struct {
-	LLM     assistant.Provider
-	Replies AssistantReplySink
-	Gate    AssistantReplyCommitGate
-	Usage   UsageFactSink
-	Speech  *SpeechOutput
-	Runtime session.RuntimeStateReporter
-	Now     func() time.Time
-	Latency LatencyLogger
+	LLM      assistant.Provider
+	Provider string
+	Replies  AssistantReplySink
+	Gate     AssistantReplyCommitGate
+	Usage    UsageFactSink
+	Speech   *SpeechOutput
+	Runtime  session.RuntimeStateReporter
+	Now      func() time.Time
+	Latency  LatencyLogger
 }
 
 // AssistantHandler handles only the business stages after the shared ASR final.
 type AssistantHandler struct {
-	llm     assistant.Provider
-	replies AssistantReplySink
-	gate    AssistantReplyCommitGate
-	usage   UsageFactSink
-	speech  *SpeechOutput
-	runtime session.RuntimeStateReporter
-	now     func() time.Time
-	latency LatencyLogger
+	llm      assistant.Provider
+	provider string
+	replies  AssistantReplySink
+	gate     AssistantReplyCommitGate
+	usage    UsageFactSink
+	speech   *SpeechOutput
+	runtime  session.RuntimeStateReporter
+	now      func() time.Time
+	latency  LatencyLogger
 }
 
 func NewAssistantHandler(deps AssistantHandlerDependencies) *AssistantHandler {
@@ -63,7 +65,7 @@ func NewAssistantHandler(deps AssistantHandlerDependencies) *AssistantHandler {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	return &AssistantHandler{
-		llm: deps.LLM, replies: deps.Replies, gate: deps.Gate, usage: deps.Usage,
+		llm: deps.LLM, provider: deps.Provider, replies: deps.Replies, gate: deps.Gate, usage: deps.Usage,
 		speech: deps.Speech, runtime: deps.Runtime, now: now, latency: deps.Latency,
 	}
 }
@@ -100,6 +102,7 @@ func (h *AssistantHandler) HandleASRFinal(ctx context.Context, turn TurnContext,
 		Language: asr.NormalizeLanguage(result.SourceLanguage),
 	})
 	if err != nil {
+		h.latency.ProviderFailure("assistant_llm", turn, observedProvider(h.provider, reply.Provider), reply.Model, err)
 		usageErr := h.publishLLMUsageIfPresent(ctx, turn, reply)
 		return errors.Join(fmt.Errorf("generate assistant reply: %w", err), usageErr)
 	}
@@ -109,9 +112,10 @@ func (h *AssistantHandler) HandleASRFinal(ctx context.Context, turn TurnContext,
 		reply.Language = asr.NormalizeLanguage(result.SourceLanguage)
 	}
 	if reply.Text == "" || reply.Language == "" {
+		h.latency.ProviderFailure("assistant_result", turn, observedProvider(h.provider, reply.Provider), reply.Model, ErrAssistantReplyInvalid)
 		return ErrAssistantReplyInvalid
 	}
-	h.latency.Checkpoint("assistant_reply_done", turn, startedAt,
+	h.latency.ProviderCheckpoint("assistant_reply_done", turn, startedAt, observedProvider(h.provider, reply.Provider), reply.Model,
 		"language", reply.Language, "provider_latency_ms", reply.LatencyMS,
 		"input_tokens", reply.InputTokens, "output_tokens", reply.OutputTokens,
 	)

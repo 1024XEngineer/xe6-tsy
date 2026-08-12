@@ -612,7 +612,7 @@ components:
       additionalProperties: false
       required: [code, message]
       properties:
-        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        code: { type: string, enum: [runtime_operation_conflict] }
         message: { type: string }
     RealtimeStartRequest:
       type: object

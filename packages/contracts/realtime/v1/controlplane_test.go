@@ -175,8 +175,8 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 		t.Fatalf("RuntimeOperationConflictError.error ref = %q", got)
 	}
 	bodySchema := spec.Components.Schemas["RuntimeOperationConflictErrorBody"]
-	if got := bodySchema.Properties["code"].Ref; got != "#/components/schemas/ControlPlaneErrorCode" {
-		t.Fatalf("RuntimeOperationConflictErrorBody.code ref = %q", got)
+	if got := bodySchema.Properties["code"].Enum; !reflect.DeepEqual(got, []string{"runtime_operation_conflict"}) {
+		t.Fatalf("RuntimeOperationConflictErrorBody.code enum = %v", got)
 	}
 
 	stop := spec.Paths["/realtime/v1/sessions/{session_id}/stop"]

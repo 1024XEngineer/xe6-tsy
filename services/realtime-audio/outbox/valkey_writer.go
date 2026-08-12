@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"strings"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/redis/go-redis/v9"
@@ -30,14 +31,14 @@ return 1
 
 // ValkeyWriter publishes canonical outbox entries to a Redis/Valkey stream.
 type ValkeyWriter struct {
-	client  *redis.Client
+	client  redis.Scripter
 	streams map[string]string
 }
 
 // NewValkeyWriter constructs a writer for usage and mode-change streams. The optional mode stream
 // keeps existing usage-only callers source-compatible while production wiring configures both.
-func NewValkeyWriter(client *redis.Client, usageStream string, modeStreams ...string) (*ValkeyWriter, error) {
-	if client == nil {
+func NewValkeyWriter(client redis.Scripter, usageStream string, modeStreams ...string) (*ValkeyWriter, error) {
+	if nilRedisScripter(client) {
 		return nil, ErrWriterRequired
 	}
 	if len(modeStreams) > 1 {
@@ -54,6 +55,19 @@ func NewValkeyWriter(client *redis.Client, usageStream string, modeStreams ...st
 		usageRecordedTopic:          usageStream,
 		realtimev1.ModeChangedTopic: modeStream,
 	}}, nil
+}
+
+func nilRedisScripter(client redis.Scripter) bool {
+	switch typed := client.(type) {
+	case nil:
+		return true
+	case *redis.Client:
+		return typed == nil
+	case *redis.ClusterClient:
+		return typed == nil
+	default:
+		return false
+	}
 }
 
 // Accept publishes one durable entry to the configured stream.
@@ -90,7 +104,16 @@ func (w *ValkeyWriter) Accept(ctx context.Context, entry Entry) (Ack, error) {
 }
 
 func (w *ValkeyWriter) dedupKey(stream string, entry Entry) string {
-	return stream + ":dedup:" + entry.Topic + "\x00" + entry.IdempotencyKey
+	// Redis Cluster scripts require every key in one hash slot. A plain Stream hashes its whole
+	// name; wrapping that name as a hash tag gives the dedup key the same slot. If the Stream already
+	// has a hash tag, preserve its tag instead.
+	tag := stream
+	if start := strings.IndexByte(stream, '{'); start >= 0 {
+		if end := strings.IndexByte(stream[start+1:], '}'); end > 0 {
+			tag = stream[start+1 : start+1+end]
+		}
+	}
+	return "{" + tag + "}:dedup:" + stream + "\x00" + entry.Topic + "\x00" + entry.IdempotencyKey
 }
 
 var _ Writer = (*ValkeyWriter)(nil)

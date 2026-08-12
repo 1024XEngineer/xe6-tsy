@@ -3,6 +3,8 @@ package sessions
 import (
 	"context"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 // CreateParams carries authenticated ownership and idempotency metadata to the
@@ -248,12 +250,32 @@ type RealtimeLifecycle interface {
 	GetRuntimeState(ctx context.Context, sessionID string) (RuntimeSnapshot, error)
 }
 
+// RealtimeModeControl exposes the runtime-owned mode without making the API a
+// second state authority. Implementations must forward commands to the active
+// runtime and must not emulate a switch through lifecycle Stop/Start calls.
+type RealtimeModeControl interface {
+	GetModeState(ctx context.Context, sessionID string) (ModeSnapshot, error)
+	SwitchMode(ctx context.Context, command SwitchModeCommand) (ModeSwitchResult, error)
+}
+
+// SwitchModeCommand carries only trusted, server-assembled control metadata.
+// Account ownership is checked before this command reaches realtime.
+type SwitchModeCommand struct {
+	SessionID          string
+	RuntimeInstanceID  string
+	OperationID        string
+	TraceID            string
+	ExpectedGeneration int64
+	TargetMode         Mode
+}
+
 // StartRealtimeCommand binds one durable operation to the runtime it creates.
 type StartRealtimeCommand struct {
 	SessionID   string
 	OperationID string
 	TraceID     string
 	StartedBy   string
+	InitialMode realtimev1.Mode
 }
 
 // StopRealtimeCommand carries the requested shutdown reason and timestamp.

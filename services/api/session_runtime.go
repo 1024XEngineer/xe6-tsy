@@ -123,6 +123,7 @@ func newSessionHTTPDependencies(inputs sessionCompositionInputs) (*sessionHTTPDe
 		LanguageConfigs:   languageAdapter,
 		WebRTCConnections: connectionReader,
 		Realtime:          realtimeLifecycle,
+		Modes:             realtimeLifecycle,
 		IDs:               inputs.IDs,
 		Clock:             inputs.Clock,
 		Logger:            inputs.Logger,
@@ -137,7 +138,7 @@ func newSessionHTTPDependencies(inputs sessionCompositionInputs) (*sessionHTTPDe
 	handler := newSessionHandler(service).WithRealtimeTickets(realtimeaccess.SessionTicketMinter{
 		Source:    tickets,
 		Validator: codec,
-	})
+	}).WithRealtimeModes(service)
 	return &sessionHTTPDependencies{
 		service:     service,
 		handler:     handler,

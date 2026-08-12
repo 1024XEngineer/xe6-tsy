@@ -3,6 +3,7 @@ package sessions
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,7 +12,10 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 const maxHTTPBodyBytes = 1 << 20
@@ -29,6 +33,13 @@ type UseCases interface {
 	List(context.Context, ListInput) (ListPage, error)
 }
 
+// ModeUseCases is an optional capability so existing Session handlers can be
+// constructed without a realtime dependency while the runtime is disabled.
+type ModeUseCases interface {
+	GetMode(context.Context, DetailInput) (ModeSnapshot, error)
+	SwitchMode(context.Context, SwitchModeInput) (ModeSwitchResult, error)
+}
+
 // RealtimeTicket is the browser-facing mint response for WebRTC signaling.
 type RealtimeTicket struct {
 	Ticket    string    `json:"ticket"`
@@ -44,6 +55,7 @@ type RealtimeTicketMinter interface {
 // Handler exposes Issue #86's public voice-session HTTP contract.
 type Handler struct {
 	service   UseCases
+	modes     ModeUseCases
 	accountID AccountIDFromRequest
 	tickets   RealtimeTicketMinter
 }
@@ -66,6 +78,17 @@ func (h *Handler) WithRealtimeTickets(tickets RealtimeTicketMinter) *Handler {
 	return h
 }
 
+// WithRealtimeModes supplies account-scoped mode query and compare-and-switch
+// behavior. The routes remain mounted without this optional capability so a
+// disabled runtime returns the stable not_implemented contract.
+func (h *Handler) WithRealtimeModes(modes ModeUseCases) *Handler {
+	if h == nil {
+		return nil
+	}
+	h.modes = modes
+	return h
+}
+
 // Register attaches voice-session lifecycle routes behind authentication.
 func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) http.Handler) {
 	if authenticate == nil {
@@ -83,11 +106,17 @@ func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) h
 			authenticate(http.HandlerFunc(h.mintRealtimeTicket)),
 		)
 	}
+	mux.Handle("GET /api/v1/voice-sessions/{id}/mode", authenticate(http.HandlerFunc(h.modeState)))
+	mux.Handle("POST /api/v1/voice-sessions/{id}/mode", authenticate(http.HandlerFunc(h.switchMode)))
 }
 
 type createRequest struct {
 	AudioConfig  *AudioConfig `json:"audio_config,omitempty"`
 	Capabilities Capabilities `json:"capabilities"`
+}
+
+type startRequest struct {
+	InitialMode realtimev1.Mode `json:"initial_mode,omitempty"`
 }
 
 type endRequest struct {
@@ -134,20 +163,34 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, r, ErrNotImplemented)
 		return
 	}
-	if err := rejectNonEmptyBody(r); err != nil {
+	body := startRequest{}
+	if err := decodeOptionalHTTPJSON(r, &body); err != nil {
 		writeHTTPError(w, r, err)
 		return
 	}
+	body.InitialMode = body.InitialMode.OrLegacyDefault()
+	if !body.InitialMode.Valid() {
+		writeHTTPError(w, r, ErrInvalidRequest)
+		return
+	}
 	sessionID := r.PathValue("id")
+	requestHash := canonicalHash("voice-sessions.start", struct {
+		SessionID string `json:"session_id"`
+	}{SessionID: sessionID})
+	if body.InitialMode != realtimev1.ModeInterpretation {
+		requestHash = canonicalHash("voice-sessions.start", struct {
+			SessionID   string          `json:"session_id"`
+			InitialMode realtimev1.Mode `json:"initial_mode"`
+		}{SessionID: sessionID, InitialMode: body.InitialMode})
+	}
 	input := StartInput{
 		AccountID:      accountID,
 		SessionID:      sessionID,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
-		RequestHash: canonicalHash("voice-sessions.start", struct {
-			SessionID string `json:"session_id"`
-		}{SessionID: sessionID}),
-		TraceID:   requestIDFromHTTP(r),
-		StartedBy: accountID,
+		RequestHash:    requestHash,
+		TraceID:        requestIDFromHTTP(r),
+		StartedBy:      accountID,
+		InitialMode:    body.InitialMode,
 	}
 	session, err := h.service.Start(r.Context(), input)
 	if err != nil {
@@ -235,6 +278,78 @@ func (h *Handler) state(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeHTTPJSON(w, http.StatusOK, state)
+}
+
+func (h *Handler) modeState(w http.ResponseWriter, r *http.Request) {
+	accountID, err := h.requireAccount(r)
+	if err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	if h.modes == nil {
+		writeHTTPError(w, r, ErrNotImplemented)
+		return
+	}
+	state, err := h.modes.GetMode(r.Context(), DetailInput{
+		AccountID: accountID,
+		SessionID: r.PathValue("id"),
+	})
+	if err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	writeHTTPJSON(w, http.StatusOK, state)
+}
+
+type switchModeRequest struct {
+	RuntimeInstanceID  string `json:"runtime_instance_id"`
+	ExpectedGeneration int64  `json:"expected_generation"`
+	TargetMode         Mode   `json:"target_mode"`
+}
+
+func (h *Handler) switchMode(w http.ResponseWriter, r *http.Request) {
+	accountID, err := h.requireAccount(r)
+	if err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	if h.modes == nil {
+		writeHTTPError(w, r, ErrNotImplemented)
+		return
+	}
+	var body switchModeRequest
+	if err := decodeHTTPJSON(r, &body); err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	operationID := r.Header.Get("Idempotency-Key")
+	if body.RuntimeInstanceID == "" || body.ExpectedGeneration < 1 ||
+		!body.TargetMode.Valid() || operationID == "" ||
+		len(operationID) > maxIdempotencyKeyLength {
+		writeHTTPError(w, r, ErrInvalidRequest)
+		return
+	}
+	requestID := requestIDFromHTTP(r)
+	if len(requestID) > maxRequestIDLength {
+		r.Header.Del("X-Request-ID")
+		writeHTTPError(w, r, ErrInvalidRequest)
+		return
+	}
+	traceID := modeOperationTraceID(r.PathValue("id"), operationID)
+	result, err := h.modes.SwitchMode(r.Context(), SwitchModeInput{
+		AccountID:          accountID,
+		SessionID:          r.PathValue("id"),
+		RuntimeInstanceID:  body.RuntimeInstanceID,
+		OperationID:        operationID,
+		TraceID:            traceID,
+		ExpectedGeneration: body.ExpectedGeneration,
+		TargetMode:         body.TargetMode,
+	})
+	if err != nil {
+		writeHTTPError(w, r, err)
+		return
+	}
+	writeHTTPJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) mintRealtimeTicket(w http.ResponseWriter, r *http.Request) {
@@ -435,6 +550,16 @@ func statusCodeForError(err error) (int, ErrorCode, string) {
 		return http.StatusServiceUnavailable, CodeRuntimeUnavailable, "runtime state is unavailable"
 	case errors.Is(err, ErrWebRTCUnavailable):
 		return http.StatusServiceUnavailable, CodeWebRTCUnavailable, "WebRTC state is unavailable"
+	case errors.Is(err, ErrModeNotAvailable):
+		return http.StatusUnprocessableEntity, CodeModeNotAvailable, "requested mode is not available"
+	case errors.Is(err, ErrModeGenerationConflict):
+		return http.StatusConflict, CodeModeGenerationConflict, "mode generation does not match"
+	case errors.Is(err, ErrModeRuntimeMismatch):
+		return http.StatusConflict, CodeModeRuntimeMismatch, "mode runtime instance does not match"
+	case errors.Is(err, ErrModeOperationConflict):
+		return http.StatusConflict, CodeModeOperationConflict, "mode operation conflicts with a previous request"
+	case errors.Is(err, ErrModeUnavailable):
+		return http.StatusServiceUnavailable, CodeModeUnavailable, "mode state is unavailable"
 	case errors.Is(err, ErrNotImplemented):
 		return http.StatusNotImplemented, CodeNotImplemented, "voice session dependency is not implemented yet"
 	default:
@@ -446,5 +571,31 @@ func requestIDFromHTTP(r *http.Request) string {
 	if requestID := r.Header.Get("X-Request-ID"); requestID != "" {
 		return requestID
 	}
-	return "req_missing"
+	requestID := newHTTPRequestID()
+	// Persist the generated value on this request so downstream commands and a
+	// later error response always use the same trace identity.
+	r.Header.Set("X-Request-ID", requestID)
+	return requestID
+}
+
+func modeOperationTraceID(sessionID, operationID string) string {
+	// Realtime includes TraceID when comparing an OperationID replay. Derive the
+	// command trace from durable identities so a client's per-attempt HTTP
+	// request ID cannot turn an otherwise identical retry into a conflict.
+	digest := sha256.Sum256([]byte("voice-sessions.switch-mode\x00" + sessionID + "\x00" + operationID))
+	return "req_mode_" + hex.EncodeToString(digest[:12])
+}
+
+var fallbackHTTPRequestIDSequence atomic.Uint64
+
+func newHTTPRequestID() string {
+	random := make([]byte, 12)
+	if _, err := rand.Read(random); err == nil {
+		return "req_" + hex.EncodeToString(random)
+	}
+	return fmt.Sprintf(
+		"req_%d_%d",
+		time.Now().UTC().UnixNano(),
+		fallbackHTTPRequestIDSequence.Add(1),
+	)
 }

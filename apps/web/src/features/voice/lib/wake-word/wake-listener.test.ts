@@ -45,6 +45,18 @@ describe("WakeWordListener", () => {
     expect(listener.getMediaStream()).toBeNull();
   });
 
+  it("reports the matched assistant phrase instead of the translation label", () => {
+    const onCommand = vi.fn();
+    const listener = new WakeWordListener({ onCommand });
+
+    const emitKeyword = listener as unknown as {
+      emitKeyword(keyword: string): void;
+    };
+    emitKeyword.emitKeyword("小灵，开始对话");
+
+    expect(onCommand).toHaveBeenCalledWith("start", "小灵，开始对话");
+  });
+
   it("clones open mic tracks for WebRTC without stopping the source", async () => {
     const clone = {
       id: "clone",

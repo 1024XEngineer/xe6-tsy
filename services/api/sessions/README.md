@@ -124,6 +124,12 @@ Compensation claim recovery follows one ownership rule:
 
 ## Start flow
 
+`POST /api/v1/voice-sessions/{id}/start` accepts an optional `initial_mode` of
+`assistant` or `interpretation`. An empty body or omitted field preserves the
+existing `interpretation` default. The selected mode is part of the idempotent
+request identity and is forwarded unchanged to the realtime runtime Start
+command; mode changes after startup continue to use the realtime mode API.
+
 ```text
 Repository.GetOwned
 -> if active, replay the matching completed StartOperation and return
@@ -144,7 +150,7 @@ errors, RPC timeouts, and connection loss, receives one runtime-state
 reconciliation. The read and any confirmed activation use a fresh bounded
 context that retains request values but does not inherit request cancellation.
 
-A matching `listening`, `asr_processing`, `translating`, `tts_processing`, or
+A matching `listening`, `asr_processing`, `translating`, `thinking`, `assistant_processing`, `tts_processing`, or
 `playing` runtime completes activation. Matching `starting` or `stopping`
 remains pending and returns the in-progress error. A missing, `stopped`, or
 `failed` runtime remains pending and returns the original Start error, allowing

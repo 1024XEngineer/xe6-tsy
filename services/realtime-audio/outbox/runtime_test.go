@@ -8,9 +8,11 @@ import (
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 func TestOpenRuntimeFromEnvUsesMemoryByDefault(t *testing.T) {
+	t.Setenv("APP_ENV", "local")
 	t.Setenv("REALTIME_OUTBOX", "")
 	runtime, err := OpenRuntimeFromEnv(context.Background())
 	if err != nil {
@@ -23,6 +25,7 @@ func TestOpenRuntimeFromEnvUsesMemoryByDefault(t *testing.T) {
 }
 
 func TestOpenRuntimeFromEnvUsesExplicitMemory(t *testing.T) {
+	t.Setenv("APP_ENV", "local")
 	t.Setenv("REALTIME_OUTBOX", RuntimeMemory)
 	runtime, err := OpenRuntimeFromEnv(context.Background())
 	if err != nil {
@@ -34,6 +37,42 @@ func TestOpenRuntimeFromEnvUsesExplicitMemory(t *testing.T) {
 	}
 	if err := runtime.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestOpenRuntimeFromEnvRestrictsMemoryToDevelopmentEnvironments(t *testing.T) {
+	for _, environment := range []string{"", "production", "prod", "staging", "typo"} {
+		for _, backend := range []string{"", RuntimeMemory} {
+			t.Setenv("APP_ENV", environment)
+			t.Setenv("REALTIME_OUTBOX", backend)
+			if _, err := OpenRuntimeFromEnv(t.Context()); err == nil || !strings.Contains(err.Error(), "requires APP_ENV") {
+				t.Fatalf("OpenRuntimeFromEnv(APP_ENV=%q, REALTIME_OUTBOX=%q) error = %v", environment, backend, err)
+			}
+		}
+	}
+}
+
+func TestOpenRedisClientSelectsConfiguredTopology(t *testing.T) {
+	standalone, err := openRedisClient("redis://localhost:6379/0", RedisModeStandalone)
+	if err != nil {
+		t.Fatalf("open standalone client: %v", err)
+	}
+	t.Cleanup(func() { _ = standalone.Close() })
+	if _, ok := standalone.(*redis.Client); !ok {
+		t.Fatalf("standalone client type = %T", standalone)
+	}
+
+	cluster, err := openRedisClient("redis://user:secret@localhost:6379?addr=localhost:6380", RedisModeCluster)
+	if err != nil {
+		t.Fatalf("open cluster client: %v", err)
+	}
+	t.Cleanup(func() { _ = cluster.Close() })
+	clusterClient, ok := cluster.(*redis.ClusterClient)
+	if !ok || len(clusterClient.Options().Addrs) != 2 {
+		t.Fatalf("cluster client = %T, options = %#v", cluster, clusterClient)
+	}
+	if _, err := openRedisClient("redis://localhost:6379", "sentinel"); err == nil {
+		t.Fatal("unsupported Redis mode error = nil")
 	}
 }
 

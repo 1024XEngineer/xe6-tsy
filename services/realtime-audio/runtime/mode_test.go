@@ -318,6 +318,26 @@ func TestModeCoordinatorDoesNotPublishUnchangedMode(t *testing.T) {
 	}
 }
 
+func TestManagerModeObserverExcludesPreCoordinatorFailures(t *testing.T) {
+	observer := &recordingModeCommandObserver{}
+	manager := &Manager{deps: Dependencies{ModeCommands: observer}, entries: make(map[string]*entry), locks: newKeyedLocker()}
+	if _, err := manager.SwitchMode(t.Context(), realtimev1.SwitchModeCommand{SessionID: "missing"}); !errors.Is(err, session.ErrRuntimeNotFound) {
+		t.Fatalf("SwitchMode() error = %v, want runtime not found", err)
+	}
+	if observer.calls != 0 {
+		t.Fatalf("pre-coordinator observation calls = %d, want 0", observer.calls)
+	}
+
+	coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{realtimev1.ModeInterpretation})
+	coordinator.observer = observer
+	if _, err := coordinator.Switch(t.Context(), modeCommand("operation-1", 1, realtimev1.ModeInterpretation)); err != nil {
+		t.Fatalf("coordinator Switch() error = %v", err)
+	}
+	if observer.calls != 1 || observer.result.Status != realtimev1.ModeSwitchUnchanged || observer.err != nil {
+		t.Fatalf("coordinator observation = %#v", observer)
+	}
+}
+
 func TestModeCoordinatorRetriesFrozenEventBeforeStateCommit(t *testing.T) {
 	publishErr := errors.New("outbox unavailable")
 	sink := &recordingModeChangedSink{failNext: publishErr}
@@ -718,6 +738,16 @@ type recordingModeChangedSink struct {
 	attempts []realtimev1.ModeChangedEvent
 	events   []realtimev1.ModeChangedEvent
 	failNext error
+}
+
+type recordingModeCommandObserver struct {
+	result realtimev1.SwitchModeResult
+	err    error
+	calls  int
+}
+
+func (o *recordingModeCommandObserver) RecordModeCommand(result realtimev1.SwitchModeResult, err error) {
+	o.result, o.err, o.calls = result, err, o.calls+1
 }
 
 type blockingModeChangedSink struct {

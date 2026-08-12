@@ -112,6 +112,7 @@ func (a realtimeLifecycleAdapter) Start(
 		OperationID: command.OperationID,
 		TraceID:     command.TraceID,
 		StartedBy:   command.StartedBy,
+		InitialMode: command.InitialMode,
 	})
 	if err != nil {
 		return sessions.RuntimeSnapshot{}, mapStartError(err)

@@ -124,6 +124,12 @@ Compensation claim recovery follows one ownership rule:
 
 ## Start flow
 
+`POST /api/v1/voice-sessions/{id}/start` accepts an optional `initial_mode` of
+`assistant` or `interpretation`. An empty body or omitted field preserves the
+existing `interpretation` default. The selected mode is part of the idempotent
+request identity and is forwarded unchanged to the realtime runtime Start
+command; mode changes after startup continue to use the realtime mode API.
+
 ```text
 Repository.GetOwned
 -> if active, replay the matching completed StartOperation and return

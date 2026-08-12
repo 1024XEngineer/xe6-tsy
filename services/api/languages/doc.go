@@ -3,11 +3,12 @@
 // Contract source: GitHub issue #88.
 //
 // This package provides:
-//   - Postgres schema migrations for supported_languages and
-//     voice_session_language_configs
+//   - Postgres schema migrations for supported_languages,
+//     voice_session_language_configs, and internal speech-route metadata
 //   - Store persistence with versioned active configs, idempotency keys,
 //     and optimistic expected_version checks
-//   - Service rules plus LanguageConfigReader / LanguageTargetResolver
+//   - Service rules plus LanguageConfigReader / LanguageTargetResolver and
+//     the shared SpeechRouteReader boundary
 //   - HTTP /api/v1 language routes (auth + session ownership)
 //
 // Session ownership is provided by SessionOwnerReader. Production composition

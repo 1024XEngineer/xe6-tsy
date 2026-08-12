@@ -7,7 +7,7 @@
 | 边界 | 行为 |
 | --- | --- |
 | HTTP | 五条 `/api/v1` 路由：目录 / 自动投递 readiness / 当前配置 / 创建切换 / 历史，支持按 target_language 配置输出路由，并返回派生的 `output_mode` |
-| 内部端口 | `LanguageConfigReader`、`LanguageTargetResolver`（由 `Service` 实现） |
+| 内部端口 | `LanguageConfigReader`、`LanguageTargetResolver`、`SpeechRouteReader`（由 `Service` 实现） |
 | 存储 | Postgres（迁移 + `PostgresStore`）；单测用 `MemoryStore` |
 
 ## 运行
@@ -43,3 +43,30 @@ snapshot, err := svc.GetCurrentConfig(ctx, sessionID)
 `GetCurrentConfig` **不接受 turnID**；轮内固定由实时转译模块本地快照完成。
 
 `output_mode` 只有两个值：`bidirectional`（两个方向都播报）和 `single`（当前源语言译文播报，反向译文自动投递）。`single` 只有在 delivery runtime 已启用且目标 channel provider 已配置时才会接受；否则返回 `delivery_target_required`。活动会话切换配置时使用 `expected_version`，新快照从下一 Turn 开始生效；正在处理的 Turn 不被中途改写。
+
+## Speech routing metadata
+
+PostgreSQL also stores internal control-plane metadata in `speech_asr_profiles`,
+`speech_tts_profiles`, their supported-language tables, and
+`speech_language_pair_routes`. Profiles record non-secret `provider_code`,
+`model`, and `voice_id` metadata plus their required ASR input or TTS output
+media specification. Routes are keyed by a canonical unordered BCP-47 pair,
+with the two stored codes in lexicographic order. A route resolves to only the
+ASR/TTS profile IDs; provider credentials, endpoints, and adapter construction
+remain deployment and realtime responsibilities.
+Routes retain a durable `id` and lifecycle state. The active route for a pair
+is unique only while `enabled=true` and `retired_at IS NULL`, allowing an older
+route record to remain auditable after it is retired.
+
+Production language-config creation enables strict route validation. It rejects
+a pair without an active, unretired route, requires ASR support for both possible
+source languages unless auto-detection is declared, and requires TTS support
+only for target languages whose output routes set `tts_enabled=true`. The
+ordinary `NewService` constructor remains non-strict for existing in-memory
+callers and offline tests.
+
+Migration `005_speech_routing.sql` seeds `legacy-default` ASR/TTS profiles and
+the `en-US` / `zh-CN` route only when both active catalog entries retain source
+and target support. The seed intentionally contains no vendor secrets or
+endpoint guesses. Realtime integration consumes the profile IDs through the
+shared contract boundary; it is not implemented by this module.

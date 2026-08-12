@@ -3,6 +3,8 @@ package sessions
 import (
 	"context"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 // CreateParams carries authenticated ownership and idempotency metadata to the
@@ -254,6 +256,7 @@ type StartRealtimeCommand struct {
 	OperationID string
 	TraceID     string
 	StartedBy   string
+	InitialMode realtimev1.Mode
 }
 
 // StopRealtimeCommand carries the requested shutdown reason and timestamp.

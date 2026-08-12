@@ -9,6 +9,7 @@ import (
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
 func TestClientGetsAndSwitchesMode(t *testing.T) {
@@ -79,6 +80,7 @@ func TestClientMapsModeErrors(t *testing.T) {
 		{name: "generation conflict", err: runtime.ErrModeGenerationConflict, want: ErrModeGenerationConflict},
 		{name: "runtime mismatch", err: runtime.ErrModeRuntimeInstanceMismatch, want: ErrModeRuntimeInstanceMismatch},
 		{name: "operation conflict", err: runtime.ErrModeOperationConflict, want: ErrModeOperationConflict},
+		{name: "runtime not found", err: session.ErrRuntimeNotFound, want: ErrRuntimeNotFound},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

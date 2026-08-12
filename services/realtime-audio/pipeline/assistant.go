@@ -14,6 +14,8 @@ import (
 )
 
 var (
+	// ErrAssistantInputRequired rejects an empty ASR final before invoking the LLM.
+	ErrAssistantInputRequired = errors.New("assistant input text is required")
 	// ErrAssistantReplyInvalid rejects an incomplete provider or event result.
 	ErrAssistantReplyInvalid = errors.New("assistant reply is invalid")
 	// ErrAssistantReplyAccepted prevents callers from rerunning an LLM after its reply was published.
@@ -82,11 +84,14 @@ func (h *AssistantHandler) HandleASRFinal(ctx context.Context, turn TurnContext,
 			returnErr = errors.Join(returnErr, restoreErr)
 		}
 	}()
+	if strings.TrimSpace(result.Text) == "" {
+		return ErrAssistantInputRequired
+	}
 	turnID := turn.ID
 	if err := h.runtime.SetProcessingState(ctx, session.ProcessingStateUpdate{
-		SessionID: turn.SessionID, RuntimeState: session.RuntimeThinking, CurrentTurnID: &turnID,
+		SessionID: turn.SessionID, RuntimeState: session.RuntimeAssistantProcessing, CurrentTurnID: &turnID,
 	}); err != nil {
-		return fmt.Errorf("report assistant thinking runtime: %w", err)
+		return fmt.Errorf("report assistant processing runtime: %w", err)
 	}
 
 	startedAt := time.Now()
@@ -132,6 +137,12 @@ func (h *AssistantHandler) HandleASRFinal(ctx context.Context, turn TurnContext,
 		return fmt.Errorf("commit AssistantReply: %w", err)
 	}
 	if !committed {
+		// A mode switch may supersede a reply after the provider has consumed
+		// tokens. The reply is dropped, but that billable usage remains a durable
+		// fact and must be published exactly once.
+		if err := h.usage.Publish(ctx, usage); err != nil {
+			return fmt.Errorf("publish superseded assistant LLM usage: %w", err)
+		}
 		return nil
 	}
 	accepted = true
@@ -178,10 +189,11 @@ func (h *AssistantHandler) publishLLMUsageIfPresent(ctx context.Context, turn Tu
 }
 
 func validateAssistantReplyEvent(event realtimev1.AssistantReplyEvent) error {
-	if event.EventVersion != realtimev1.AssistantReplyEventVersion || event.EventID == "" || event.TraceID == "" ||
-		event.SessionID == "" || event.TurnID == "" || event.RuntimeInstanceID == "" || event.Generation < 1 ||
-		strings.TrimSpace(event.Text) == "" || event.Language == "" || event.OccurredAt.IsZero() {
-		return ErrAssistantReplyInvalid
+	if err := event.Validate(); err != nil {
+		// Keep the pipeline-specific sentinel for callers that classify invalid
+		// assistant output, while the contracts package remains the sole field
+		// validation authority.
+		return errors.Join(ErrAssistantReplyInvalid, err)
 	}
 	return nil
 }

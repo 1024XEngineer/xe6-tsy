@@ -317,6 +317,30 @@
   transform: translateX(2px);
 }
 
+.latestAssistantReply {
+  width: 100%;
+  padding: 1.05rem 0.15rem 0.2rem;
+  border-top: 1px solid var(--hairline);
+}
+
+.assistantReplyLabel {
+  display: block;
+  margin-bottom: 0.45rem;
+  color: var(--faint);
+  font-family: var(--font-geist), sans-serif;
+  font-size: 0.64rem;
+  font-weight: 520;
+  line-height: 1.5;
+}
+
+.assistantReplyText {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.95rem;
+  font-weight: 430;
+  line-height: 1.45;
+}
+
 .overlaySlot {
   position: absolute;
   z-index: 6;

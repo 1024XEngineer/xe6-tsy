@@ -262,6 +262,7 @@ type ModeController struct {
 	state     ModeStateSnapshot
 	hasState  bool
 	discarded map[string]struct{}
+	commands  map[string]SwitchModeCommand
 	retired   map[string]struct{}
 }
 
@@ -269,7 +270,7 @@ func NewModeController(transport ModeTransport, sessionID string) (*ModeControll
 	if transport == nil || strings.TrimSpace(sessionID) == "" {
 		return nil, ErrInvalidConfig
 	}
-	return &ModeController{transport: transport, sessionID: sessionID, discarded: make(map[string]struct{}), retired: make(map[string]struct{})}, nil
+	return &ModeController{transport: transport, sessionID: sessionID, discarded: make(map[string]struct{}), commands: make(map[string]SwitchModeCommand), retired: make(map[string]struct{})}, nil
 }
 
 func (c *ModeController) Refresh(ctx context.Context) (ModeStateSnapshot, error) {
@@ -314,13 +315,25 @@ func (c *ModeController) SwitchOperation(ctx context.Context, operationID, trace
 		c.mu.Unlock()
 		return SwitchModeResult{}, ErrOperationDiscarded
 	}
-	state, ok := c.state, c.hasState
-	c.mu.Unlock()
-	if !ok {
-		return SwitchModeResult{}, fmt.Errorf("%w: refresh mode before switching", ErrInvalidRequest)
+	command, exists := c.commands[operationID]
+	if exists {
+		// An operation is immutable. A caller may retry it after an uncertain
+		// transport error, but may not attach a different intent to the same ID.
+		if command.TraceID != traceID || command.TargetMode != target {
+			c.mu.Unlock()
+			return SwitchModeResult{}, ErrOperationConflict
+		}
+	} else {
+		state, ok := c.state, c.hasState
+		if !ok {
+			c.mu.Unlock()
+			return SwitchModeResult{}, fmt.Errorf("%w: refresh mode before switching", ErrInvalidRequest)
+		}
+		command = SwitchModeCommand{SessionID: c.sessionID, RuntimeInstanceID: state.RuntimeInstanceID,
+			OperationID: operationID, TraceID: traceID, ExpectedGeneration: state.Generation, TargetMode: target}
+		c.commands[operationID] = command
 	}
-	command := SwitchModeCommand{SessionID: c.sessionID, RuntimeInstanceID: state.RuntimeInstanceID,
-		OperationID: operationID, TraceID: traceID, ExpectedGeneration: state.Generation, TargetMode: target}
+	c.mu.Unlock()
 	result, err := c.transport.SwitchMode(ctx, command)
 	if err == nil {
 		c.mu.Lock()

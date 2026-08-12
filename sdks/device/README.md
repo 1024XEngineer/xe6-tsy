@@ -8,7 +8,7 @@
 - `contracts.go` 直接复用 `packages/contracts/realtime/v1` 的 Runtime、Connection、Mode 类型别名。
 - `HTTPModeTransport` 调用 realtime 的 `GET/POST /realtime/v1/sessions/{session_id}/mode`。
 - `ModeController` 保存最新观察快照，发送带 `runtime_instance_id` 和 `expected_generation` 的类型化命令。
-- 发生 generation 或 runtime instance 冲突时，旧 operation 会被废弃并立即 GET 刷新；不会自动重放旧命令。
+- 每个 operation 首次发送时固定完整命令 payload；不确定错误后的显式重试只重放原 payload，不会根据刷新后的 generation/runtime 重新组装。发生 generation 或 runtime instance 冲突时，旧 operation 会被废弃并立即 GET 刷新；不会自动重放旧命令。
 - `StateStore` 按连接版本、Runtime 时间和 Mode generation 过滤迟到快照，允许新 runtime instance 替换旧观察值。
 - `Reconnector` 通过注入的 `ReconnectPolicy` 和 `Connect` 函数执行平台自定义重连。
 - `WakeCommandController` 暴露 `WakeWordEngine`、`CommandWindow` 接口；本地 KWS 或命令窗口失败时自动关闭可选能力，继续传统同传。

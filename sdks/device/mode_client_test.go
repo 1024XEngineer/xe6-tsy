@@ -115,6 +115,42 @@ func TestModeControllerRefreshesAndDiscardsConflictOperation(t *testing.T) {
 	}
 }
 
+func TestModeControllerRetriesImmutableCommandAfterRefresh(t *testing.T) {
+	now := time.Unix(10, 0).UTC()
+	transport := &fakeModeTransport{state: makeModeState("session-1", "runtime-1", 1, ModeInterpretation, now)}
+	var commands []SwitchModeCommand
+	transport.switchFunc = func(command SwitchModeCommand) (SwitchModeResult, error) {
+		commands = append(commands, command)
+		if len(commands) <= 2 {
+			return SwitchModeResult{}, context.DeadlineExceeded
+		}
+		last := command.OperationID
+		state := makeModeState(command.SessionID, command.RuntimeInstanceID, command.ExpectedGeneration+1, command.TargetMode, now.Add(time.Second))
+		state.LastOperationID = &last
+		return SwitchModeResult{OperationID: command.OperationID, Status: ModeSwitchApplied, State: state}, nil
+	}
+	controller, err := NewModeController(transport, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.SwitchOperation(context.Background(), "operation-1", "trace-1", ModeAssistant); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first attempt error = %v", err)
+	}
+	transport.state = makeModeState("session-1", "runtime-2", 1, ModeInterpretation, now.Add(2*time.Second))
+	if _, err := controller.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.SwitchOperation(context.Background(), "operation-1", "trace-1", ModeAssistant); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("retry error = %v", err)
+	}
+	if len(commands) != 2 || commands[0] != commands[1] {
+		t.Fatalf("retry payloads differ: %#v", commands)
+	}
+}
+
 func TestModeControllerIgnoresLateOldRuntimeRefresh(t *testing.T) {
 	transport := &fakeModeTransport{state: makeModeState("session-1", "runtime-1", 1, ModeInterpretation, time.Unix(1, 0).UTC())}
 	controller, err := NewModeController(transport, "session-1")

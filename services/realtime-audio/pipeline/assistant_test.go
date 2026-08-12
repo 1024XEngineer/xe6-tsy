@@ -74,6 +74,26 @@ func TestAssistantHandlerRejectsInvalidReply(t *testing.T) {
 	}
 }
 
+func TestAssistantHandlerRejectsEmptyInputBeforeCallingLLM(t *testing.T) {
+	llm := assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{
+		Text: "should not be used", Provider: "mock-llm", Model: "assistant-v1",
+	}})
+	usage := &recordingUsageSink{}
+	handler, runtime := newTestAssistantHandlerWithRuntime(llm, &recordingAssistantReplySink{}, usage,
+		tts.NewFakeProvider(tts.FakeProviderConfig{}), acceptingAssistantReplyGate{}, time.Now())
+
+	err := handler.HandleASRFinal(t.Context(), assistantTurn(), asr.FinalResult{Text: " \t", SourceLanguage: "zh-CN"})
+	if !errors.Is(err, ErrAssistantInputRequired) {
+		t.Fatalf("HandleASRFinal() error = %v, want ErrAssistantInputRequired", err)
+	}
+	if len(llm.Requests()) != 0 || len(usage.facts) != 0 {
+		t.Fatalf("empty input caused side effects: LLM %d, usage %d", len(llm.Requests()), len(usage.facts))
+	}
+	if len(runtime.updates) != 1 || runtime.updates[0].RuntimeState != session.RuntimeListening {
+		t.Fatalf("runtime updates = %#v, want listening restore", runtime.updates)
+	}
+}
+
 func TestAssistantHandlerRecordsUsageFromFailedLLM(t *testing.T) {
 	wantErr := errors.New("LLM unavailable")
 	llm := assistant.NewFakeProvider(assistant.FakeProviderConfig{
@@ -112,7 +132,11 @@ func TestAssistantHandlerStopsWhenReplyCommitFailsOrIsStale(t *testing.T) {
 			if !errors.Is(err, test.want) {
 				t.Fatalf("HandleASRFinal() error = %v, want %v", err, test.want)
 			}
-			if len(usage.facts) != 0 || len(ttsProvider.Requests()) != 0 {
+			wantUsage := 0
+			if test.name == "stale generation" {
+				wantUsage = 1
+			}
+			if len(usage.facts) != wantUsage || len(ttsProvider.Requests()) != 0 {
 				t.Fatalf("post-commit side effects = usage %d, TTS %d", len(usage.facts), len(ttsProvider.Requests()))
 			}
 		})

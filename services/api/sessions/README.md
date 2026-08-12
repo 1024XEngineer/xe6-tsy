@@ -144,7 +144,7 @@ errors, RPC timeouts, and connection loss, receives one runtime-state
 reconciliation. The read and any confirmed activation use a fresh bounded
 context that retains request values but does not inherit request cancellation.
 
-A matching `listening`, `asr_processing`, `translating`, `tts_processing`, or
+A matching `listening`, `asr_processing`, `translating`, `thinking`, `assistant_processing`, `tts_processing`, or
 `playing` runtime completes activation. Matching `starting` or `stopping`
 remains pending and returns the in-progress error. A missing, `stopped`, or
 `failed` runtime remains pending and returns the original Start error, allowing

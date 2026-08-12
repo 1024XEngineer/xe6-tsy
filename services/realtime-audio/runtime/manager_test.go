@@ -151,14 +151,10 @@ func TestManagerRoutesAssistantReplyOnExistingAudioSession(t *testing.T) {
 		t.Fatalf("Activate() error = %v", err)
 	}
 
-	select {
-	case event := <-replies.events:
-		if event.SessionID != snapshot.SessionID || event.Text != "你好，我可以帮你。" ||
-			event.RuntimeInstanceID != state.RuntimeInstanceID || event.Generation != result.State.Generation {
-			t.Fatalf("AssistantReply event = %#v", event)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for assistant.reply")
+	event := <-replies.events
+	if event.SessionID != snapshot.SessionID || event.Text != "你好，我可以帮你。" ||
+		event.RuntimeInstanceID != state.RuntimeInstanceID || event.Generation != result.State.Generation {
+		t.Fatalf("AssistantReply event = %#v", event)
 	}
 	if len(asrProvider.Requests()) != 1 || len(llmProvider.Requests()) != 1 {
 		t.Fatalf("provider calls = ASR %d, LLM %d", len(asrProvider.Requests()), len(llmProvider.Requests()))

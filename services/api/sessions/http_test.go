@@ -7,8 +7,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 func TestHandlerCreatePassesCanonicalRequest(t *testing.T) {
@@ -74,7 +78,7 @@ func TestHandlerRejectsClientAccountFields(t *testing.T) {
 	}
 }
 
-func TestHandlerStartRequiresEmptyBodyAndAddsTrace(t *testing.T) {
+func TestHandlerStartDefaultsToInterpretationAndAddsTrace(t *testing.T) {
 	useCases := &handlerUseCases{
 		startResult: VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusActive},
 	}
@@ -98,7 +102,8 @@ func TestHandlerStartRequiresEmptyBodyAndAddsTrace(t *testing.T) {
 	if useCases.startInput.AccountID != "acct_1" ||
 		useCases.startInput.SessionID != "vs_1" ||
 		useCases.startInput.TraceID != "req_1" ||
-		useCases.startInput.StartedBy != "acct_1" {
+		useCases.startInput.StartedBy != "acct_1" ||
+		useCases.startInput.InitialMode != realtimev1.ModeInterpretation {
 		t.Fatalf("StartInput = %#v", useCases.startInput)
 	}
 	wantHash := canonicalHash("voice-sessions.start", struct {
@@ -109,13 +114,73 @@ func TestHandlerStartRequiresEmptyBodyAndAddsTrace(t *testing.T) {
 	}
 }
 
-func TestHandlerStartRejectsRequestBody(t *testing.T) {
+func TestHandlerStartAcceptsAssistantMode(t *testing.T) {
+	useCases := &handlerUseCases{
+		startResult: VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusActive},
+	}
+	handler := NewHandler(useCases, headerAccount)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/voice-sessions/vs_1/start",
+		bytes.NewBufferString(`{"initial_mode":"assistant"}`),
+	)
+	request.SetPathValue("id", "vs_1")
+	request.Header.Set("X-Test-Account", "acct_1")
+	request.Header.Set("Idempotency-Key", "start-key")
+	response := httptest.NewRecorder()
+
+	handler.start(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("start status = %d, want 200; body %s", response.Code, response.Body.String())
+	}
+	if useCases.startInput.InitialMode != realtimev1.ModeAssistant {
+		t.Fatalf("InitialMode = %q, want assistant", useCases.startInput.InitialMode)
+	}
+	wantHash := canonicalHash("voice-sessions.start", struct {
+		SessionID   string          `json:"session_id"`
+		InitialMode realtimev1.Mode `json:"initial_mode"`
+	}{SessionID: "vs_1", InitialMode: realtimev1.ModeAssistant})
+	if useCases.startInput.RequestHash != wantHash {
+		t.Fatalf("RequestHash = %q, want %q", useCases.startInput.RequestHash, wantHash)
+	}
+}
+
+func TestHandlerStartExplicitInterpretationKeepsLegacyRequestHash(t *testing.T) {
+	useCases := &handlerUseCases{
+		startResult: VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusActive},
+	}
+	handler := NewHandler(useCases, headerAccount)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/voice-sessions/vs_1/start",
+		bytes.NewBufferString(`{"initial_mode":"interpretation"}`),
+	)
+	request.SetPathValue("id", "vs_1")
+	request.Header.Set("X-Test-Account", "acct_1")
+	request.Header.Set("Idempotency-Key", "start-key")
+	response := httptest.NewRecorder()
+
+	handler.start(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("start status = %d, want 200; body %s", response.Code, response.Body.String())
+	}
+	wantHash := canonicalHash("voice-sessions.start", struct {
+		SessionID string `json:"session_id"`
+	}{SessionID: "vs_1"})
+	if useCases.startInput.RequestHash != wantHash {
+		t.Fatalf("RequestHash = %q, want legacy hash %q", useCases.startInput.RequestHash, wantHash)
+	}
+}
+
+func TestHandlerStartRejectsInvalidBody(t *testing.T) {
 	useCases := &handlerUseCases{}
 	handler := NewHandler(useCases, headerAccount)
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/voice-sessions/vs_1/start",
-		bytes.NewBufferString(`{}`),
+		bytes.NewBufferString(`{"initial_mode":"english_practice"}`),
 	)
 	request.SetPathValue("id", "vs_1")
 	request.Header.Set("X-Test-Account", "acct_1")
@@ -125,7 +190,7 @@ func TestHandlerStartRejectsRequestBody(t *testing.T) {
 	handler.start(response, request)
 
 	if response.Code != http.StatusBadRequest {
-		t.Fatalf("start with body status = %d, want 400", response.Code)
+		t.Fatalf("start with invalid body status = %d, want 400", response.Code)
 	}
 	if useCases.startCalls != 0 {
 		t.Fatalf("Start calls = %d, want 0", useCases.startCalls)
@@ -566,6 +631,11 @@ func TestHandlerMapsSessionErrors(t *testing.T) {
 		{name: "start failed", err: ErrRealtimeStartFailed, wantStatus: http.StatusServiceUnavailable, wantCode: CodeRealtimeStartFailed},
 		{name: "runtime unavailable", err: ErrRuntimeUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: CodeRuntimeUnavailable},
 		{name: "webrtc unavailable", err: ErrWebRTCUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: CodeWebRTCUnavailable},
+		{name: "mode unavailable", err: ErrModeUnavailable, wantStatus: http.StatusServiceUnavailable, wantCode: CodeModeUnavailable},
+		{name: "mode generation conflict", err: ErrModeGenerationConflict, wantStatus: http.StatusConflict, wantCode: CodeModeGenerationConflict},
+		{name: "mode runtime mismatch", err: ErrModeRuntimeMismatch, wantStatus: http.StatusConflict, wantCode: CodeModeRuntimeMismatch},
+		{name: "mode operation conflict", err: ErrModeOperationConflict, wantStatus: http.StatusConflict, wantCode: CodeModeOperationConflict},
+		{name: "mode not available", err: ErrModeNotAvailable, wantStatus: http.StatusUnprocessableEntity, wantCode: CodeModeNotAvailable},
 		{name: "not implemented", err: ErrNotImplemented, wantStatus: http.StatusNotImplemented, wantCode: CodeNotImplemented},
 		{name: "unknown", err: errors.New("boom"), wantStatus: http.StatusInternalServerError, wantCode: ErrorCode("internal_error")},
 		{name: "wrapped stop failed", err: errors.Join(ErrRealtimeStopFailed, errDependency), wantStatus: http.StatusServiceUnavailable, wantCode: CodeRealtimeStopFailed},
@@ -590,6 +660,208 @@ func TestHandlerMapsSessionErrors(t *testing.T) {
 			}
 			if body.Error.Code != string(test.wantCode) {
 				t.Fatalf("error code = %q, want %q", body.Error.Code, test.wantCode)
+			}
+		})
+	}
+}
+
+func TestHandlerModeRoutesForwardTrustedControlMetadata(t *testing.T) {
+	state := ModeSnapshot{
+		SessionID: "vs_1", RuntimeInstanceID: "runtime-1", ActiveMode: ModeInterpretation,
+		Generation: 1, Phase: "active", UpdatedAt: time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC),
+	}
+	modes := &handlerModeUseCases{state: state, result: ModeSwitchResult{
+		OperationID: "mode-op-1", Status: "applied", State: state,
+	}}
+	handler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeModes(modes)
+
+	get := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_1/mode", http.NoBody)
+	get.SetPathValue("id", "vs_1")
+	get.Header.Set("X-Test-Account", "acct_1")
+	getResponse := httptest.NewRecorder()
+	handler.modeState(getResponse, get)
+	if getResponse.Code != http.StatusOK || modes.getInput != (DetailInput{AccountID: "acct_1", SessionID: "vs_1"}) {
+		t.Fatalf("GET status=%d input=%#v body=%s", getResponse.Code, modes.getInput, getResponse.Body.String())
+	}
+
+	post := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/mode", bytes.NewBufferString(
+		`{"runtime_instance_id":"runtime-1","expected_generation":1,"target_mode":"assistant"}`,
+	))
+	post.SetPathValue("id", "vs_1")
+	post.Header.Set("X-Test-Account", "acct_1")
+	post.Header.Set("Idempotency-Key", "mode-op-1")
+	post.Header.Set("X-Request-ID", "trace-header-1")
+	postResponse := httptest.NewRecorder()
+	handler.switchMode(postResponse, post)
+	if postResponse.Code != http.StatusOK {
+		t.Fatalf("POST status=%d body=%s", postResponse.Code, postResponse.Body.String())
+	}
+	want := SwitchModeInput{
+		AccountID: "acct_1", SessionID: "vs_1", RuntimeInstanceID: "runtime-1",
+		OperationID: "mode-op-1", TraceID: modeOperationTraceID("vs_1", "mode-op-1"), ExpectedGeneration: 1,
+		TargetMode: ModeAssistant,
+	}
+	if !reflect.DeepEqual(modes.switchInput, want) {
+		t.Fatalf("SwitchMode input = %#v, want %#v", modes.switchInput, want)
+	}
+	if modes.switchInput.TraceID == post.Header.Get("X-Request-ID") {
+		t.Fatalf("command trace ID = HTTP request ID %q, want independent identities", modes.switchInput.TraceID)
+	}
+}
+
+func TestHandlerModeRouteKeepsOperationTraceStableAcrossRequestIDs(t *testing.T) {
+	modes := &handlerModeUseCases{switchErr: ErrModeUnavailable}
+	handler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeModes(modes)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/mode", bytes.NewBufferString(
+		`{"runtime_instance_id":"runtime-1","expected_generation":1,"target_mode":"assistant"}`,
+	))
+	request.SetPathValue("id", "vs_1")
+	request.Header.Set("X-Test-Account", "acct_1")
+	request.Header.Set("Idempotency-Key", "mode-op-1")
+	request.Header.Set("X-Request-ID", "http-attempt-1")
+	response := httptest.NewRecorder()
+
+	handler.switchMode(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body %s", response.Code, response.Body.String())
+	}
+	if modes.switchInput.TraceID == "" || modes.switchInput.TraceID == request.Header.Get("X-Request-ID") {
+		t.Fatalf("SwitchMode trace ID = %q, want stable identity independent of HTTP request ID", modes.switchInput.TraceID)
+	}
+	var body httpErrorEnvelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Error.RequestID != "http-attempt-1" ||
+		request.Header.Get("X-Request-ID") != "http-attempt-1" {
+		t.Fatalf(
+			"HTTP request IDs = response %q header %q, want per-attempt value; command trace %q",
+			body.Error.RequestID,
+			request.Header.Get("X-Request-ID"),
+			modes.switchInput.TraceID,
+		)
+	}
+
+	retryModes := &handlerModeUseCases{switchErr: ErrModeUnavailable}
+	retryHandler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeModes(retryModes)
+	retry := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/mode", bytes.NewBufferString(
+		`{"runtime_instance_id":"runtime-1","expected_generation":1,"target_mode":"assistant"}`,
+	))
+	retry.SetPathValue("id", "vs_1")
+	retry.Header.Set("X-Test-Account", "acct_1")
+	retry.Header.Set("Idempotency-Key", "mode-op-1")
+	retry.Header.Set("X-Request-ID", "http-attempt-2")
+	retryResponse := httptest.NewRecorder()
+	retryHandler.switchMode(retryResponse, retry)
+	if retryModes.switchInput.TraceID != modes.switchInput.TraceID {
+		t.Fatalf(
+			"retry trace ID = %q, want stable operation trace %q",
+			retryModes.switchInput.TraceID,
+			modes.switchInput.TraceID,
+		)
+	}
+	var retryBody httpErrorEnvelope
+	if err := json.NewDecoder(retryResponse.Body).Decode(&retryBody); err != nil {
+		t.Fatalf("decode retry error body: %v", err)
+	}
+	if retryBody.Error.RequestID != "http-attempt-2" {
+		t.Fatalf("retry response request ID = %q, want per-attempt HTTP identity", retryBody.Error.RequestID)
+	}
+}
+
+func TestHandlerModeRoutesRejectUnauthenticatedAndMalformedRequests(t *testing.T) {
+	modes := &handlerModeUseCases{}
+	handler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeModes(modes)
+
+	unauthenticated := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_1/mode", http.NoBody)
+	unauthenticated.SetPathValue("id", "vs_1")
+	response := httptest.NewRecorder()
+	handler.modeState(response, unauthenticated)
+	if response.Code != http.StatusUnauthorized || modes.getCalls != 0 {
+		t.Fatalf("unauthenticated status=%d getCalls=%d", response.Code, modes.getCalls)
+	}
+
+	malformed := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/mode", bytes.NewBufferString(
+		`{"runtime_instance_id":"runtime-1","expected_generation":1,"target_mode":"english_practice"}`,
+	))
+	malformed.SetPathValue("id", "vs_1")
+	malformed.Header.Set("X-Test-Account", "acct_1")
+	malformed.Header.Set("Idempotency-Key", "mode-op-1")
+	response = httptest.NewRecorder()
+	handler.switchMode(response, malformed)
+	if response.Code != http.StatusBadRequest || modes.switchCalls != 0 {
+		t.Fatalf("malformed status=%d switchCalls=%d", response.Code, modes.switchCalls)
+	}
+
+	oversizedTrace := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/mode", bytes.NewBufferString(
+		`{"runtime_instance_id":"runtime-1","expected_generation":1,"target_mode":"assistant"}`,
+	))
+	oversizedTrace.SetPathValue("id", "vs_1")
+	oversizedTrace.Header.Set("X-Test-Account", "acct_1")
+	oversizedTrace.Header.Set("Idempotency-Key", "mode-op-1")
+	oversizedTrace.Header.Set("X-Request-ID", strings.Repeat("t", maxRequestIDLength+1))
+	response = httptest.NewRecorder()
+	handler.switchMode(response, oversizedTrace)
+	if response.Code != http.StatusBadRequest || modes.switchCalls != 0 {
+		t.Fatalf("oversized trace status=%d switchCalls=%d", response.Code, modes.switchCalls)
+	}
+	var body httpErrorEnvelope
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode oversized trace error: %v", err)
+	}
+	if body.Error.RequestID == "" || len(body.Error.RequestID) > maxRequestIDLength {
+		t.Fatalf("error request ID = %q, want bounded generated value", body.Error.RequestID)
+	}
+}
+
+func TestHandlerRegisterKeepsModeRoutesStableWithoutRuntime(t *testing.T) {
+	withModes := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeModes(&handlerModeUseCases{
+		state: ModeSnapshot{SessionID: "vs_1", RuntimeInstanceID: "runtime-1", ActiveMode: ModeAssistant, Generation: 1, Phase: "active", UpdatedAt: time.Now()},
+	})
+	mux := http.NewServeMux()
+	withModes.Register(mux, func(next http.Handler) http.Handler { return next })
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/vs_1/mode", http.NoBody)
+	request.Header.Set("X-Test-Account", "acct_1")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("configured mode route status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	withoutModes := NewHandler(&handlerUseCases{}, headerAccount)
+	mux = http.NewServeMux()
+	withoutModes.Register(mux, func(next http.Handler) http.Handler { return next })
+	requests := []struct {
+		name   string
+		method string
+		body   string
+	}{
+		{name: "get", method: http.MethodGet},
+		{
+			name:   "post",
+			method: http.MethodPost,
+			body:   `{"runtime_instance_id":"runtime-1","expected_generation":1,"target_mode":"assistant"}`,
+		},
+	}
+	for _, test := range requests {
+		t.Run("runtime disabled "+test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, "/api/v1/voice-sessions/vs_1/mode", bytes.NewBufferString(test.body))
+			request.Header.Set("X-Test-Account", "acct_1")
+			response := httptest.NewRecorder()
+
+			mux.ServeHTTP(response, request)
+
+			if response.Code != http.StatusNotImplemented {
+				t.Fatalf("status=%d, want 501; body=%s", response.Code, response.Body.String())
+			}
+			var body httpErrorEnvelope
+			if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+				t.Fatalf("decode error body: %v", err)
+			}
+			if body.Error.Code != string(CodeNotImplemented) {
+				t.Fatalf("error code=%q, want %q", body.Error.Code, CodeNotImplemented)
 			}
 		})
 	}
@@ -737,6 +1009,29 @@ type handlerUseCases struct {
 	listResult ListPage
 	listErr    error
 	listCalls  int
+}
+
+type handlerModeUseCases struct {
+	state       ModeSnapshot
+	result      ModeSwitchResult
+	getErr      error
+	switchErr   error
+	getInput    DetailInput
+	switchInput SwitchModeInput
+	getCalls    int
+	switchCalls int
+}
+
+func (m *handlerModeUseCases) GetMode(_ context.Context, input DetailInput) (ModeSnapshot, error) {
+	m.getCalls++
+	m.getInput = input
+	return m.state, m.getErr
+}
+
+func (m *handlerModeUseCases) SwitchMode(_ context.Context, input SwitchModeInput) (ModeSwitchResult, error) {
+	m.switchCalls++
+	m.switchInput = input
+	return m.result, m.switchErr
 }
 
 func (h *handlerUseCases) Create(_ context.Context, input CreateInput) (VoiceSession, error) {

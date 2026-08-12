@@ -9,6 +9,7 @@ import (
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 )
 
@@ -24,7 +25,7 @@ func TestAssistantHandlerPublishesReplyUsageAndSpeech(t *testing.T) {
 		Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
 		Result: tts.Result{Provider: "mock-tts", Model: "tts-v1", AudioDuration: time.Second},
 	})
-	handler := newTestAssistantHandler(llm, replies, usage, ttsProvider, acceptingAssistantReplyGate{}, base)
+	handler, runtime := newTestAssistantHandlerWithRuntime(llm, replies, usage, ttsProvider, acceptingAssistantReplyGate{}, base)
 
 	if err := handler.HandleASRFinal(t.Context(), assistantTurn(), asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN"}); err != nil {
 		t.Fatalf("HandleASRFinal() error = %v", err)
@@ -49,6 +50,10 @@ func TestAssistantHandlerPublishesReplyUsageAndSpeech(t *testing.T) {
 	if len(ttsRequests) != 1 || ttsRequests[0].PlaybackID != "assistant_playback_turn-1" || ttsRequests[0].Text != event.Text {
 		t.Fatalf("TTS requests = %#v", ttsRequests)
 	}
+	if len(runtime.updates) < 2 || runtime.updates[0].RuntimeState != session.RuntimeAssistantProcessing ||
+		runtime.updates[len(runtime.updates)-1].RuntimeState != session.RuntimeListening {
+		t.Fatalf("runtime updates = %#v, want assistant processing then listening", runtime.updates)
+	}
 }
 
 func TestAssistantHandlerRejectsInvalidReply(t *testing.T) {
@@ -66,6 +71,26 @@ func TestAssistantHandlerRejectsInvalidReply(t *testing.T) {
 	}
 	if len(replies.events) != 0 || len(usage.facts) != 0 || len(ttsProvider.Requests()) != 0 {
 		t.Fatalf("side effects = replies %d, usage %d, TTS %d", len(replies.events), len(usage.facts), len(ttsProvider.Requests()))
+	}
+}
+
+func TestAssistantHandlerRejectsEmptyInputBeforeCallingLLM(t *testing.T) {
+	llm := assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{
+		Text: "should not be used", Provider: "mock-llm", Model: "assistant-v1",
+	}})
+	usage := &recordingUsageSink{}
+	handler, runtime := newTestAssistantHandlerWithRuntime(llm, &recordingAssistantReplySink{}, usage,
+		tts.NewFakeProvider(tts.FakeProviderConfig{}), acceptingAssistantReplyGate{}, time.Now())
+
+	err := handler.HandleASRFinal(t.Context(), assistantTurn(), asr.FinalResult{Text: " \t", SourceLanguage: "zh-CN"})
+	if !errors.Is(err, ErrAssistantInputRequired) {
+		t.Fatalf("HandleASRFinal() error = %v, want ErrAssistantInputRequired", err)
+	}
+	if len(llm.Requests()) != 0 || len(usage.facts) != 0 {
+		t.Fatalf("empty input caused side effects: LLM %d, usage %d", len(llm.Requests()), len(usage.facts))
+	}
+	if len(runtime.updates) != 1 || runtime.updates[0].RuntimeState != session.RuntimeListening {
+		t.Fatalf("runtime updates = %#v, want listening restore", runtime.updates)
 	}
 }
 
@@ -107,7 +132,11 @@ func TestAssistantHandlerStopsWhenReplyCommitFailsOrIsStale(t *testing.T) {
 			if !errors.Is(err, test.want) {
 				t.Fatalf("HandleASRFinal() error = %v, want %v", err, test.want)
 			}
-			if len(usage.facts) != 0 || len(ttsProvider.Requests()) != 0 {
+			wantUsage := 0
+			if test.name == "stale generation" {
+				wantUsage = 1
+			}
+			if len(usage.facts) != wantUsage || len(ttsProvider.Requests()) != 0 {
 				t.Fatalf("post-commit side effects = usage %d, TTS %d", len(usage.facts), len(ttsProvider.Requests()))
 			}
 		})
@@ -133,6 +162,13 @@ func TestAssistantHandlerMarksTTSFailureAfterReplyAccepted(t *testing.T) {
 func newTestAssistantHandler(llm assistant.Provider, replies AssistantReplySink, usage UsageFactSink,
 	ttsProvider tts.Provider, gate AssistantReplyCommitGate, now time.Time,
 ) *AssistantHandler {
+	handler, _ := newTestAssistantHandlerWithRuntime(llm, replies, usage, ttsProvider, gate, now)
+	return handler
+}
+
+func newTestAssistantHandlerWithRuntime(llm assistant.Provider, replies AssistantReplySink, usage UsageFactSink,
+	ttsProvider tts.Provider, gate AssistantReplyCommitGate, now time.Time,
+) (*AssistantHandler, *recordingRuntimeReporter) {
 	runtime := &recordingRuntimeReporter{}
 	speech := NewSpeechOutput(SpeechOutputDependencies{
 		TTS: ttsProvider, Audio: &recordingAudioSink{}, Runtime: runtime,
@@ -140,7 +176,7 @@ func newTestAssistantHandler(llm assistant.Provider, replies AssistantReplySink,
 	return NewAssistantHandler(AssistantHandlerDependencies{
 		LLM: llm, Replies: replies, Gate: gate, Usage: usage, Speech: speech, Runtime: runtime,
 		Now: func() time.Time { return now },
-	})
+	}), runtime
 }
 
 func successfulAssistantLLM() assistant.Provider {

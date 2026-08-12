@@ -4,7 +4,7 @@
  */
 
 import {
-  resolveWakeTrigger,
+  resolveWakePhrase,
   type WakeCommand,
 } from "./keywords";
 import {
@@ -25,7 +25,7 @@ export type WakeListenerStatus =
   | "error";
 
 export type WakeListenerHandlers = {
-  /** Second arg is the canonical catalog label (never a 小林 alias). */
+  /** Second arg is the exact catalog phrase matched in the KWS result. */
   onCommand: (command: WakeCommand, keyword: string) => void;
   onStatus?: (status: WakeListenerStatus, detail?: string) => void;
 };
@@ -72,6 +72,7 @@ export class WakeWordListener {
   private kwsStream: SherpaKwsStream | null = null;
   private running = false;
   private lastFireAt = 0;
+  private lastCommand: WakeCommand | null = null;
   private status: WakeListenerStatus = "idle";
 
   constructor(handlers: WakeListenerHandlers) {
@@ -99,6 +100,8 @@ export class WakeWordListener {
       return;
     }
     this.running = true;
+    this.lastFireAt = 0;
+    this.lastCommand = null;
 
     try {
       this.setStatus("requesting_mic");
@@ -168,11 +171,19 @@ export class WakeWordListener {
 
   private emitKeyword(keyword: string): void {
     const now = Date.now();
-    if (now - this.lastFireAt < COOLDOWN_MS) return;
-    const trigger = resolveWakeTrigger(keyword);
-    if (!trigger) return;
+    const match = resolveWakePhrase(keyword);
+    if (!match) return;
+    // Keep duplicate detections quiet, while allowing a different command to
+    // follow the attention phrase inside the local command window.
+    if (
+      this.lastCommand === match.trigger.command &&
+      now - this.lastFireAt < COOLDOWN_MS
+    ) {
+      return;
+    }
     this.lastFireAt = now;
-    this.handlers.onCommand(trigger.command, trigger.label);
+    this.lastCommand = match.trigger.command;
+    this.handlers.onCommand(match.trigger.command, match.phrase);
   }
 
   /** Clone mic tracks for WebRTC so TTS mute / session close won't stop KWS. */

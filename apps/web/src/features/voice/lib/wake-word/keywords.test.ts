@@ -25,7 +25,9 @@ describe("WAKE_TRIGGERS catalog", () => {
 describe("classifyWakeKeyword", () => {
   it("maps catalog display names to commands", () => {
     expect(classifyWakeKeyword("小灵，开始翻译")).toBe("start");
+    expect(classifyWakeKeyword("小灵，开始对话")).toBe("start");
     expect(classifyWakeKeyword("小灵，停止翻译")).toBe("stop");
+    expect(classifyWakeKeyword("小灵，停止对话")).toBe("stop");
     expect(classifyWakeKeyword("小灵小灵")).toBe("listen");
   });
 

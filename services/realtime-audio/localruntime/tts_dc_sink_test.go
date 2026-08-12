@@ -267,6 +267,17 @@ func TestDataChannelTTSAudioSinkInterruptCurrentDropsSessionBuffers(t *testing.T
 	}
 }
 
+func TestDataChannelTTSAudioSinkCountsUnavailableChannel(t *testing.T) {
+	failures := &recordingDataChannelFailures{}
+	sink := &DataChannelTTSAudioSink{Failures: failures}
+	if err := sink.publish(t.Context(), "session-1", "playback-1", "turn-1", 1, true, "pcm_s16le", []byte{1, 2}); err != nil {
+		t.Fatalf("publish() error = %v", err)
+	}
+	if failures.calls != 1 {
+		t.Fatalf("data channel failures = %d, want 1", failures.calls)
+	}
+}
+
 func makeWAV(pcm []byte) []byte {
 	buf := make([]byte, 44+len(pcm))
 	copy(buf[0:], []byte("RIFF"))

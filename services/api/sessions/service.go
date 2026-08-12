@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 const (
@@ -24,6 +26,7 @@ type Dependencies struct {
 	LanguageConfigs            LanguageConfigReader
 	WebRTCConnections          WebRTCConnectionReader
 	Realtime                   RealtimeLifecycle
+	Modes                      RealtimeModeControl
 	IDs                        IDGenerator
 	Clock                      Clock
 	Logger                     *slog.Logger
@@ -104,6 +107,7 @@ type StartInput struct {
 	RequestHash    string
 	TraceID        string
 	StartedBy      string
+	InitialMode    realtimev1.Mode
 }
 
 // EndInput carries authenticated ownership and a durable request identity.
@@ -120,6 +124,18 @@ type EndInput struct {
 type DetailInput struct {
 	AccountID string
 	SessionID string
+}
+
+// SwitchModeInput combines authenticated ownership with the runtime identity
+// and generation supplied by the latest ModeSnapshot.
+type SwitchModeInput struct {
+	AccountID          string
+	SessionID          string
+	RuntimeInstanceID  string
+	OperationID        string
+	TraceID            string
+	ExpectedGeneration int64
+	TargetMode         Mode
 }
 
 // ListInput carries account-scoped persistent filters only.
@@ -140,7 +156,10 @@ func validateIdentity(accountID string, sessionID string) error {
 	return nil
 }
 
-const maxIdempotencyKeyLength = 200
+const (
+	maxIdempotencyKeyLength = 200
+	maxRequestIDLength      = 200
+)
 
 func validateIdempotency(key string, requestHash string) error {
 	if key == "" || len(key) > maxIdempotencyKeyLength || requestHash == "" {

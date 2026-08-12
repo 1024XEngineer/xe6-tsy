@@ -231,6 +231,17 @@
   text-align: center;
 }
 
+.commandWindowNotice {
+  position: relative;
+  z-index: 3;
+  max-width: 25rem;
+  margin: 0.3rem 0 0;
+  color: #d8c79d;
+  font-size: 0.62rem;
+  line-height: 1.45;
+  text-align: center;
+}
+
 .outputModeText {
   position: relative;
   z-index: 3;
@@ -240,6 +251,60 @@
   font-weight: 520;
   line-height: 1.45;
   text-align: center;
+}
+
+.runtimeStatus {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.35rem 0.7rem;
+  margin: 0.55rem 0 0;
+  color: var(--faint);
+  font-family: var(--font-geist), sans-serif;
+  font-size: 0.64rem;
+  line-height: 1.45;
+}
+
+.modeControls {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  margin: 0.65rem 0 0;
+}
+
+.modeControls button {
+  min-height: 2rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--hairline);
+  border-radius: 0.35rem;
+  color: var(--muted);
+  background: rgb(255 255 255 / 3%);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.68rem;
+  line-height: 1.2;
+}
+
+.modeControls button[aria-pressed="true"] {
+  border-color: rgb(255 255 255 / 52%);
+  color: var(--foreground);
+  background: rgb(255 255 255 / 10%);
+}
+
+.modeControls button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.modeControls span {
+  color: var(--faint);
+  font-size: 0.64rem;
 }
 
 .automaticOutputText {
@@ -315,6 +380,30 @@
 .latestTranslation:hover .historyCaret {
   color: var(--text);
   transform: translateX(2px);
+}
+
+.latestAssistantReply {
+  width: 100%;
+  padding: 1.05rem 0.15rem 0.2rem;
+  border-top: 1px solid var(--hairline);
+}
+
+.assistantReplyLabel {
+  display: block;
+  margin-bottom: 0.45rem;
+  color: var(--faint);
+  font-family: var(--font-geist), sans-serif;
+  font-size: 0.64rem;
+  font-weight: 520;
+  line-height: 1.5;
+}
+
+.assistantReplyText {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.95rem;
+  font-weight: 430;
+  line-height: 1.45;
 }
 
 .overlaySlot {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,10 +27,12 @@ import (
 )
 
 func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) {
+	var output bytes.Buffer
 	source := &fakeFrameSource{waitForClose: true}
 	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
 	deps.AssistantReplies = &recordingAssistantReplySink{}
 	deps.NewRuntimeInstanceID = func() (string, error) { return "runtime-1", nil }
+	deps.Logger = slog.New(slog.NewJSONHandler(&output, nil))
 	manager, err := newManager(config.Providers{
 		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
 		Assistant: assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{
@@ -51,13 +54,18 @@ func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) 
 	if err != nil || before.ActiveMode != realtimev1.ModeInterpretation || before.Generation != 1 {
 		t.Fatalf("initial mode = %#v, %v", before, err)
 	}
-	result, err := manager.SwitchMode(t.Context(), realtimev1.SwitchModeCommand{
+	command := realtimev1.SwitchModeCommand{
 		SessionID: snapshot.SessionID, RuntimeInstanceID: before.RuntimeInstanceID,
 		OperationID: "switch-1", TraceID: snapshot.TraceID,
 		ExpectedGeneration: before.Generation, TargetMode: realtimev1.ModeAssistant,
-	})
+	}
+	result, err := manager.SwitchMode(t.Context(), command)
 	if err != nil || result.State.ActiveMode != realtimev1.ModeAssistant || result.State.Generation != 2 {
 		t.Fatalf("SwitchMode() = %#v, %v", result, err)
+	}
+	command.OperationID = "switch-stale"
+	if _, err := manager.SwitchMode(t.Context(), command); !errors.Is(err, ErrModeGenerationConflict) {
+		t.Fatalf("stale SwitchMode() error = %v, want generation conflict", err)
 	}
 	result, err = manager.SwitchMode(t.Context(), realtimev1.SwitchModeCommand{
 		SessionID: snapshot.SessionID, RuntimeInstanceID: before.RuntimeInstanceID,
@@ -67,6 +75,19 @@ func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) 
 	if err != nil || result.State.ActiveMode != realtimev1.ModeInterpretation || result.State.Generation != 3 ||
 		result.State.RuntimeInstanceID != before.RuntimeInstanceID {
 		t.Fatalf("reverse SwitchMode() = %#v, %v", result, err)
+	}
+	for _, field := range []string{
+		`"event":"runtime_started"`, `"trace_id":"trace-1"`, `"active_mode":"interpretation"`,
+		`"event":"mode_switch"`, `"status":"applied"`,
+		`"expected_generation":1`,
+		`"status":"failed"`, `"error_class":"generation_conflict"`,
+	} {
+		if !strings.Contains(output.String(), field) {
+			t.Fatalf("mode logs = %s, missing %s", output.String(), field)
+		}
+	}
+	if got := modeSwitchErrorClass(ErrModeEventUnavailable); got != "event_unavailable" {
+		t.Fatalf("mode event error class = %q", got)
 	}
 	if source.CloseCalls() != 0 {
 		t.Fatalf("mode switch closed shared audio source %d times", source.CloseCalls())
@@ -102,6 +123,71 @@ func TestManagerStartsInRequestedAssistantMode(t *testing.T) {
 	}
 	if state.ActiveMode != realtimev1.ModeAssistant || state.Generation != 1 {
 		t.Fatalf("initial mode = %#v, want assistant generation 1", state)
+	}
+}
+
+func TestManagerRoutesAssistantReplyOnExistingAudioSession(t *testing.T) {
+	base := time.Unix(1700000000, 0).UTC()
+	source := &fakeFrameSource{frames: []audio.Frame{
+		mustFrame(t, []byte{1, 0}, base),
+		mustFrame(t, []byte{1, 0}, base.Add(20*time.Millisecond)),
+		mustFrame(t, []byte{0, 0}, base.Add(100*time.Millisecond)),
+	}, waitForClose: true}
+	replies := &assistantReplySignalSink{events: make(chan realtimev1.AssistantReplyEvent, 1)}
+	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.AssistantReplies = replies
+	deps.NewRuntimeInstanceID = func() (string, error) { return "runtime-1", nil }
+
+	asrProvider := asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "asr-v1",
+	}})
+	llmProvider := assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{
+		Text: "你好，我可以帮你。", Language: "zh-CN", Provider: "mock-llm", Model: "assistant-v1",
+	}})
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR: asrProvider, Assistant: llmProvider, Translation: &translate.FakeProvider{},
+		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "start-1", TraceID: "trace-1",
+	}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background(), snapshot.SessionID) })
+
+	state, err := manager.GetModeState(t.Context(), snapshot.SessionID)
+	if err != nil {
+		t.Fatalf("GetModeState() error = %v", err)
+	}
+	if state.ActiveMode != realtimev1.ModeInterpretation {
+		t.Fatalf("default mode = %q, want interpretation", state.ActiveMode)
+	}
+	result, err := manager.SwitchMode(t.Context(), realtimev1.SwitchModeCommand{
+		SessionID: snapshot.SessionID, RuntimeInstanceID: state.RuntimeInstanceID,
+		OperationID: "switch-assistant", TraceID: snapshot.TraceID,
+		ExpectedGeneration: state.Generation, TargetMode: realtimev1.ModeAssistant,
+	})
+	if err != nil || result.State.ActiveMode != realtimev1.ModeAssistant {
+		t.Fatalf("SwitchMode() = %#v, %v", result, err)
+	}
+	if source.CloseCalls() != 0 {
+		t.Fatalf("mode switch closed the shared audio source %d times", source.CloseCalls())
+	}
+	if err := manager.Activate(t.Context(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+
+	event := <-replies.events
+	if event.SessionID != snapshot.SessionID || event.Text != "你好，我可以帮你。" ||
+		event.RuntimeInstanceID != state.RuntimeInstanceID || event.Generation != result.State.Generation {
+		t.Fatalf("AssistantReply event = %#v", event)
+	}
+	if len(asrProvider.Requests()) != 1 || len(llmProvider.Requests()) != 1 {
+		t.Fatalf("provider calls = ASR %d, LLM %d", len(asrProvider.Requests()), len(llmProvider.Requests()))
 	}
 }
 
@@ -477,6 +563,7 @@ func TestManagerReportsCleanEOFAsRetryableTermination(t *testing.T) {
 		failureCalled:   make(chan struct{}),
 		failureReturned: make(chan struct{}),
 	}
+	lifecycle := &atomicLifecycleObserver{}
 	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
 		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "x", SourceLanguage: "zh-CN", Provider: "asr", Model: "v1"}}),
 		Translation: &translate.FakeProvider{Result: translate.Result{Text: "y", Provider: "llm", Model: "qwen3.6-flash"}},
@@ -484,6 +571,7 @@ func TestManagerReportsCleanEOFAsRetryableTermination(t *testing.T) {
 	}, func() Dependencies {
 		deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeConfig("session-1")})
 		deps.Runtime = reporter
+		deps.Lifecycle = lifecycle
 		return deps
 	}())
 	if err != nil {
@@ -525,6 +613,9 @@ func TestManagerReportsCleanEOFAsRetryableTermination(t *testing.T) {
 	if manager.PipelineActive(snapshot.SessionID) {
 		t.Fatal("clean EOF left an active pipeline")
 	}
+	if started, stopped := lifecycle.values(); started != 1 || stopped != 1 {
+		t.Fatalf("lifecycle counters = %d/%d, want 1/1", started, stopped)
+	}
 }
 
 func TestManagerRetainsFinishedEntryWhenFailureReportFails(t *testing.T) {
@@ -541,6 +632,8 @@ func TestManagerRetainsFinishedEntryWhenFailureReportFails(t *testing.T) {
 	openCalls := 0
 	deps := testDependencies(first, &fakeLanguageReader{snapshot: activeConfig("session-1")})
 	deps.Runtime = reporter
+	lifecycle := &atomicLifecycleObserver{}
+	deps.Lifecycle = lifecycle
 	deps.FrameSources = FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
 		openCalls++
 		if openCalls == 1 {
@@ -585,11 +678,17 @@ func TestManagerRetainsFinishedEntryWhenFailureReportFails(t *testing.T) {
 	if err := manager.Start(context.Background(), snapshot); err != nil {
 		t.Fatalf("retry Start() error = %v", err)
 	}
+	if started, stopped := lifecycle.values(); started != 2 || stopped != 1 {
+		t.Fatalf("lifecycle counters after restart = %d/%d, want 2/1", started, stopped)
+	}
 	if openCalls != 2 {
 		t.Fatalf("source open calls after retry = %d, want 2", openCalls)
 	}
 	if err := manager.Stop(context.Background(), snapshot.SessionID); err != nil {
 		t.Fatalf("Stop() after retry = %v", err)
+	}
+	if started, stopped := lifecycle.values(); started != 2 || stopped != 2 {
+		t.Fatalf("lifecycle counters after stop = %d/%d, want 2/2", started, stopped)
 	}
 }
 
@@ -1014,6 +1113,17 @@ func testDependencies(source segment.FrameSource, languages session.LanguageConf
 	}
 }
 
+type atomicLifecycleObserver struct {
+	started atomic.Uint64
+	stopped atomic.Uint64
+}
+
+func (o *atomicLifecycleObserver) RecordRuntimeStarted() { o.started.Add(1) }
+func (o *atomicLifecycleObserver) RecordRuntimeStopped() { o.stopped.Add(1) }
+func (o *atomicLifecycleObserver) values() (uint64, uint64) {
+	return o.started.Load(), o.stopped.Load()
+}
+
 func newOwnershipTestManager(t *testing.T) (*Manager, *int) {
 	t.Helper()
 	opens := 0
@@ -1212,6 +1322,15 @@ type recordingAssistantReplySink struct {
 
 func (s *recordingAssistantReplySink) Publish(_ context.Context, event realtimev1.AssistantReplyEvent) error {
 	s.events = append(s.events, event)
+	return nil
+}
+
+type assistantReplySignalSink struct {
+	events chan realtimev1.AssistantReplyEvent
+}
+
+func (s *assistantReplySignalSink) Publish(_ context.Context, event realtimev1.AssistantReplyEvent) error {
+	s.events <- event
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,8 +105,18 @@ type Dependencies struct {
 	VoiceID              string
 	Logger               *slog.Logger
 	Latency              *slog.Logger
+	ProviderFailures     pipeline.ProviderFailureObserver
+	Lifecycle            LifecycleObserver
+	ModeCommands         ModeCommandObserver
 	Now                  func() time.Time
 	NewRuntimeInstanceID RuntimeInstanceIDFactory
+}
+
+// LifecycleObserver receives process-local lifecycle counters without session
+// identifiers. Calls happen only after a start or stop is committed in memory.
+type LifecycleObserver interface {
+	RecordRuntimeStarted()
+	RecordRuntimeStopped()
 }
 
 // Manager owns one processing context per started realtime session.
@@ -147,19 +158,47 @@ func NewManager(providerConfig config.ProviderConfig, offline config.Providers, 
 	if err != nil {
 		return nil, err
 	}
-	return newManager(providers, deps)
+	return newManagerWithLabels(providers, labelsFromConfig(providerConfig), deps)
 }
 
 // NewManagerFromEnvironment loads provider selection without loading .env files.
 func NewManagerFromEnvironment(offline config.Providers, deps Dependencies) (*Manager, error) {
-	providers, err := config.BuildProvidersFromEnvironment(offline)
+	providerConfig, err := config.LoadProviderConfigFromEnvironment()
 	if err != nil {
 		return nil, err
 	}
-	return newManager(providers, deps)
+	return NewManager(providerConfig, offline, deps)
 }
 
 func newManager(providers config.Providers, deps Dependencies) (*Manager, error) {
+	return newManagerWithLabels(providers, providerLabels{}, deps)
+}
+
+type providerLabels struct {
+	asr         string
+	llm         string
+	translation string
+	tts         string
+}
+
+func labelsFromConfig(providerConfig config.ProviderConfig) providerLabels {
+	return providerLabels{
+		asr:         normalizedProviderLabel(providerConfig.ASR.Provider),
+		llm:         normalizedProviderLabel(providerConfig.Translation.Provider),
+		translation: normalizedProviderLabel(providerConfig.Translation.Provider),
+		tts:         normalizedProviderLabel(providerConfig.TTS.Provider),
+	}
+}
+
+func normalizedProviderLabel(provider config.ProviderName) string {
+	label := strings.ToLower(strings.TrimSpace(string(provider)))
+	if label == "" {
+		return string(config.ProviderMock)
+	}
+	return label
+}
+
+func newManagerWithLabels(providers config.Providers, labels providerLabels, deps Dependencies) (*Manager, error) {
 	if deps.FrameSources == nil || deps.NewSegmenter == nil || deps.Languages == nil ||
 		deps.FinalTurns == nil || deps.ModeChanges == nil || deps.Usage == nil || deps.Audio == nil || deps.Runtime == nil {
 		return nil, ErrDependencyRequired
@@ -184,19 +223,21 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
 	}
 	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages, managerTurnModeReader{manager: manager})
+	latency := pipeline.LatencyLogger{Logger: deps.Latency, Observer: deps.ProviderFailures}
 	speech := pipeline.NewSpeechOutput(pipeline.SpeechOutputDependencies{
 		TTS: providers.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
-		VoiceID: deps.VoiceID, Latency: pipeline.LatencyLogger{Logger: deps.Latency},
+		VoiceID: deps.VoiceID, Provider: labels.tts, Latency: latency,
 	})
 	commitGate := managerTurnCommitGate{manager: manager}
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
-		Translator: providers.Translation,
+		Translator: providers.Translation, TranslationProvider: labels.translation,
 		FinalTurns: deps.FinalTurns,
 		FinalGate:  commitGate,
 		Usage:      deps.Usage,
 		Runtime:    deps.Runtime,
 		Now:        deps.Now,
 		Speech:     speech,
+		Latency:    latency,
 	})
 	// Router 注册表是模式能力的单一来源：Coordinator 会复用同一份模式列表，
 	// 从而保证“允许切换”的模式一定存在对应 Handler，不会出现状态切换成功但没有业务处理器的半配置状态。
@@ -208,9 +249,9 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 			return nil, fmt.Errorf("%w: assistant reply sink", ErrDependencyRequired)
 		}
 		handlers[realtimev1.ModeAssistant] = pipeline.NewAssistantHandler(pipeline.AssistantHandlerDependencies{
-			LLM: providers.Assistant, Replies: deps.AssistantReplies, Gate: commitGate,
+			LLM: providers.Assistant, Provider: labels.llm, Replies: deps.AssistantReplies, Gate: commitGate,
 			Usage: deps.Usage, Speech: speech, Runtime: deps.Runtime, Now: deps.Now,
-			Latency: pipeline.LatencyLogger{Logger: deps.Latency},
+			Latency: latency,
 		})
 	}
 	router, err := newModeRouter(handlers)
@@ -218,7 +259,7 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 		return nil, fmt.Errorf("create mode router: %w", err)
 	}
 	manager.processor = pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
-		ASR: providers.ASR, Opener: opener, Pipeline: service, Finals: router,
+		ASR: providers.ASR, ASRProvider: labels.asr, Opener: opener, Pipeline: service, Finals: router,
 	})
 	manager.commandASR = providers.ASR
 	manager.playback = service
@@ -316,10 +357,9 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			return fmt.Errorf("close previous audio input: %w", err)
 		}
 		m.mu.Lock()
-		if m.entries[snapshot.SessionID] == item {
-			delete(m.entries, snapshot.SessionID)
-		}
+		removed := m.removeEntryLocked(snapshot.SessionID, item)
 		m.mu.Unlock()
+		m.recordRuntimeStopped(removed)
 	}
 	runtimeInstanceID, err := m.deps.NewRuntimeInstanceID()
 	if err != nil {
@@ -340,6 +380,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	if err != nil {
 		return fmt.Errorf("create mode coordinator: %w", err)
 	}
+	mode.observer = m.deps.ModeCommands
 	input, err := m.deps.FrameSources.Open(ctx, snapshot)
 	if err != nil {
 		return fmt.Errorf("open audio input: %w", err)
@@ -402,6 +443,17 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	m.mu.Lock()
 	m.entries[snapshot.SessionID] = item
 	m.mu.Unlock()
+	m.logger.Info("realtime mode observation",
+		"event", "runtime_started",
+		"session_id", snapshot.SessionID,
+		"trace_id", snapshot.TraceID,
+		"runtime_instance_id", runtimeInstanceID,
+		"operation_id", snapshot.StartOperationID,
+		"active_mode", initialMode,
+	)
+	if m.deps.Lifecycle != nil {
+		m.deps.Lifecycle.RecordRuntimeStarted()
+	}
 	return nil
 }
 
@@ -488,12 +540,13 @@ func (m *Manager) run(item *entry, ctx context.Context) {
 	}
 	item.err = err
 	item.finished = true
-	if reportFailure && reportErr == nil && ctx.Err() == nil && item.source.closeError() == nil &&
-		m.entries[item.request.SessionID] == item {
-		delete(m.entries, item.request.SessionID)
+	removed := false
+	if reportFailure && reportErr == nil && ctx.Err() == nil && item.source.closeError() == nil {
+		removed = m.removeEntryLocked(item.request.SessionID, item)
 	}
 	close(item.done)
 	m.mu.Unlock()
+	m.recordRuntimeStopped(removed)
 }
 
 // PipelineActive reports whether a worker is active or still settling its
@@ -647,19 +700,37 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	select {
 	case <-item.done:
 		m.mu.Lock()
+		stopped := false
 		err := item.err
 		if closeAttempt.err != nil {
 			err = closeAttempt.err
 		} else if finished {
 			err = nil
 		}
-		if closeAttempt.err == nil && m.entries[sessionID] == item {
-			delete(m.entries, sessionID)
+		if closeAttempt.err == nil {
+			stopped = m.removeEntryLocked(sessionID, item)
 		}
 		m.mu.Unlock()
+		m.recordRuntimeStopped(stopped)
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// removeEntryLocked is the single ownership transition from active/retained to
+// absent. The caller holds m.mu and records the lifecycle counter after unlock.
+func (m *Manager) removeEntryLocked(sessionID string, item *entry) bool {
+	if m.entries[sessionID] != item {
+		return false
+	}
+	delete(m.entries, sessionID)
+	return true
+}
+
+func (m *Manager) recordRuntimeStopped(removed bool) {
+	if removed && m.deps.Lifecycle != nil {
+		m.deps.Lifecycle.RecordRuntimeStopped()
 	}
 }
 

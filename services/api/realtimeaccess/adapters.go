@@ -13,6 +13,8 @@ import (
 
 var ErrInvalidDependency = errors.New("invalid realtime access dependency")
 
+const maxModeControlMetadataLength = 200
+
 type languageConfigAdapter struct {
 	reader languages.LanguageConfigReader
 }
@@ -93,11 +95,29 @@ type lifecycleClient interface {
 	GetRuntimeState(context.Context, string) (realtimev1.RuntimeSnapshot, error)
 }
 
-type realtimeLifecycleAdapter struct {
-	client lifecycleClient
+type modeClient interface {
+	GetModeState(context.Context, string) (realtimev1.ModeStateSnapshot, error)
+	SwitchMode(context.Context, string, realtimev1.SwitchModeCommand) (realtimev1.SwitchModeResult, error)
 }
 
-func NewRealtimeLifecycle(client lifecycleClient) (sessions.RealtimeLifecycle, error) {
+type realtimeClient interface {
+	lifecycleClient
+	modeClient
+}
+
+type realtimeLifecycleAdapter struct {
+	client realtimeClient
+}
+
+// RealtimeControl is the complete API-side adapter surface for one realtime
+// client. Lifecycle and mode state remain separate ports despite sharing the
+// same HTTP client and ticket source.
+type RealtimeControl interface {
+	sessions.RealtimeLifecycle
+	sessions.RealtimeModeControl
+}
+
+func NewRealtimeLifecycle(client realtimeClient) (RealtimeControl, error) {
 	if client == nil {
 		return nil, ErrInvalidDependency
 	}
@@ -112,6 +132,7 @@ func (a realtimeLifecycleAdapter) Start(
 		OperationID: command.OperationID,
 		TraceID:     command.TraceID,
 		StartedBy:   command.StartedBy,
+		InitialMode: command.InitialMode,
 	})
 	if err != nil {
 		return sessions.RuntimeSnapshot{}, mapStartError(err)
@@ -147,6 +168,48 @@ func (a realtimeLifecycleAdapter) GetRuntimeState(
 		return sessions.RuntimeSnapshot{}, mapRuntimeError(err)
 	}
 	return mapRuntimeSnapshot(snapshot, sessionID)
+}
+
+func (a realtimeLifecycleAdapter) GetModeState(
+	ctx context.Context,
+	sessionID string,
+) (sessions.ModeSnapshot, error) {
+	snapshot, err := a.client.GetModeState(ctx, sessionID)
+	if err != nil {
+		return sessions.ModeSnapshot{}, mapModeError(err)
+	}
+	if !validModeSnapshot(snapshot, sessionID) {
+		return sessions.ModeSnapshot{}, sessions.ErrModeUnavailable
+	}
+	return snapshot, nil
+}
+
+func (a realtimeLifecycleAdapter) SwitchMode(
+	ctx context.Context,
+	command sessions.SwitchModeCommand,
+) (sessions.ModeSwitchResult, error) {
+	if command.SessionID == "" || command.RuntimeInstanceID == "" ||
+		command.OperationID == "" || command.TraceID == "" ||
+		len(command.OperationID) > maxModeControlMetadataLength ||
+		len(command.TraceID) > maxModeControlMetadataLength ||
+		command.ExpectedGeneration < 1 || !command.TargetMode.Valid() {
+		return sessions.ModeSwitchResult{}, sessions.ErrInvalidRequest
+	}
+	result, err := a.client.SwitchMode(ctx, command.SessionID, realtimev1.SwitchModeCommand{
+		SessionID:          command.SessionID,
+		RuntimeInstanceID:  command.RuntimeInstanceID,
+		OperationID:        command.OperationID,
+		TraceID:            command.TraceID,
+		ExpectedGeneration: command.ExpectedGeneration,
+		TargetMode:         command.TargetMode,
+	})
+	if err != nil {
+		return sessions.ModeSwitchResult{}, mapModeError(err)
+	}
+	if !validModeSwitchResult(result, command) {
+		return sessions.ModeSwitchResult{}, sessions.ErrModeUnavailable
+	}
+	return result, nil
 }
 
 func mapLanguageError(err error) error {
@@ -250,6 +313,59 @@ func mapRuntimeError(err error) error {
 	}
 }
 
+func mapModeError(err error) error {
+	switch {
+	case errors.Is(err, controlplane.ErrClientRequest):
+		return sessions.ErrInvalidRequest
+	case errors.Is(err, controlplane.ErrModeNotAvailable):
+		return sessions.ErrModeNotAvailable
+	case errors.Is(err, controlplane.ErrModeGenerationConflict):
+		return sessions.ErrModeGenerationConflict
+	case errors.Is(err, controlplane.ErrModeRuntimeInstanceMismatch):
+		return sessions.ErrModeRuntimeMismatch
+	case errors.Is(err, controlplane.ErrModeOperationConflict):
+		return sessions.ErrModeOperationConflict
+	case errors.Is(err, controlplane.ErrRuntimeNotFound):
+		return sessions.ErrModeUnavailable
+	case errors.Is(err, controlplane.ErrClientUnauthorized),
+		errors.Is(err, controlplane.ErrClientDependency),
+		errors.Is(err, controlplane.ErrDependencyUnavailable),
+		errors.Is(err, controlplane.ErrInvalidResponse):
+		return preserveBoundaryError(err, sessions.ErrModeUnavailable)
+	default:
+		return preserveBoundaryError(err, sessions.ErrModeUnavailable)
+	}
+}
+
+func validModeSnapshot(snapshot realtimev1.ModeStateSnapshot, sessionID string) bool {
+	return snapshot.SessionID == sessionID && snapshot.RuntimeInstanceID != "" &&
+		snapshot.ActiveMode.Valid() && snapshot.Generation >= 1 &&
+		snapshot.Phase.Valid() && !snapshot.UpdatedAt.IsZero()
+}
+
+func validModeSwitchResult(
+	result realtimev1.SwitchModeResult,
+	command sessions.SwitchModeCommand,
+) bool {
+	if result.OperationID != command.OperationID || !result.Status.Valid() ||
+		!validModeSnapshot(result.State, command.SessionID) ||
+		result.State.RuntimeInstanceID != command.RuntimeInstanceID ||
+		result.State.ActiveMode != command.TargetMode ||
+		result.State.Phase != realtimev1.ModePhaseActive ||
+		result.State.LastOperationID == nil ||
+		*result.State.LastOperationID != command.OperationID {
+		return false
+	}
+	switch result.Status {
+	case realtimev1.ModeSwitchApplied:
+		return result.State.Generation == command.ExpectedGeneration+1
+	case realtimev1.ModeSwitchUnchanged:
+		return result.State.Generation == command.ExpectedGeneration
+	default:
+		return false
+	}
+}
+
 func mapEndReason(value sessions.EndReason) (string, error) {
 	switch value {
 	case sessions.EndReasonUserRequested:
@@ -299,6 +415,8 @@ func mapRuntimeState(value realtimev1.RuntimeState) (sessions.RuntimeState, erro
 		return sessions.RuntimeTranslating, nil
 	case realtimev1.RuntimeThinking:
 		return sessions.RuntimeThinking, nil
+	case realtimev1.RuntimeAssistantProcessing:
+		return sessions.RuntimeAssistantProcessing, nil
 	case realtimev1.RuntimeTTSProcessing:
 		return sessions.RuntimeTTSProcessing, nil
 	case realtimev1.RuntimePlaying:
@@ -326,5 +444,5 @@ func preserveBoundaryError(err error, boundary error) error {
 var (
 	_ sessions.LanguageConfigReader   = languageConfigAdapter{}
 	_ sessions.WebRTCConnectionReader = webRTCConnectionAdapter{}
-	_ sessions.RealtimeLifecycle      = realtimeLifecycleAdapter{}
+	_ RealtimeControl                 = realtimeLifecycleAdapter{}
 )

@@ -24,6 +24,12 @@ OpenAPI 已声明 `/languages` 与 `language-config(s)` 路径及其请求、响
 - 破坏性字段变更必须写迁移说明。
 - 音频媒体流走 WebRTC audio track；contracts 只定义信令、控制事件、状态和错误码。
 
+## 阶段 16：初始模式兼容约定
+
+- `POST /voice-sessions/{id}/start` 的请求体可省略；`initial_mode` 省略时保持旧客户端行为，按 `interpretation` 启动。
+- 新客户端应显式发送 `{"initial_mode":"assistant"}`，以助手模式作为产品入口；需要快速回退时发送 `interpretation`。
+- `initial_mode` 仅接受契约枚举中的 `assistant` 或 `interpretation`。英语口语训练暂不加入枚举，也不在本阶段改变其实现范围。
+
 ## Records P0 decisions
 
 - Every new `FinalTurnEvent` must include `language_config_version` and its value must be at least `1`.

@@ -124,6 +124,7 @@ func TestRuntimeStateValidation(t *testing.T) {
 		RuntimeASRProcessing,
 		RuntimeTranslating,
 		RuntimeThinking,
+		RuntimeAssistantProcessing,
 		RuntimeTTSProcessing,
 		RuntimePlaying,
 		RuntimeStopping,

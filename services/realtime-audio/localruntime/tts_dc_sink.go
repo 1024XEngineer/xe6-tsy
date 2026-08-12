@@ -22,6 +22,7 @@ const maxTTSPCMChunkBytes = 8 * 1024
 type DataChannelTTSAudioSink struct {
 	Media      MediaLookup
 	SampleRate int
+	Failures   DataChannelFailureObserver
 
 	mu      sync.Mutex
 	buffers map[string]*ttsBuffer
@@ -207,14 +208,19 @@ func (s *DataChannelTTSAudioSink) publish(
 	pcm []byte,
 ) error {
 	if s.Media == nil || len(pcm) == 0 {
+		if len(pcm) > 0 {
+			s.recordFailure()
+		}
 		return nil
 	}
 	media, err := s.Media.CurrentMedia(ctx, sessionID)
 	if err != nil || media == nil {
+		s.recordFailure()
 		return nil
 	}
 	sink := media.TranslationEvents()
 	if sink == nil {
+		s.recordFailure()
 		return nil
 	}
 	rate := s.SampleRate
@@ -240,7 +246,14 @@ func (s *DataChannelTTSAudioSink) publish(
 	publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := sink.PublishJSON(publishCtx, payload); err != nil {
+		s.recordFailure()
 		return fmt.Errorf("publish TTS audio chunk seq=%d: %w", sequence, err)
 	}
 	return nil
+}
+
+func (s *DataChannelTTSAudioSink) recordFailure() {
+	if s.Failures != nil {
+		s.Failures.RecordDataChannelFailure()
+	}
 }

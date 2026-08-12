@@ -200,6 +200,47 @@ func TestPionTransportMapsConnectionStateCallback(t *testing.T) {
 	}
 }
 
+func TestPionTransportRecoversConnectionStateWithoutRebuildingPeer(t *testing.T) {
+	fake := &fakePionPeerConnection{gatherComplete: closedChannel()}
+	factory := newFakePionTransportFactory(fake)
+	created := 0
+	factory.newPeerConnection = func(pion.Configuration) (pionPeerConnection, error) {
+		created++
+		return fake, nil
+	}
+	states := make(chan realtimev1.ConnectionState, 3)
+	transport, err := factory.Create(context.Background(), "session-1", "rtc_1", func(state realtimev1.ConnectionState, _ time.Time) {
+		states <- state
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	for _, state := range []pion.PeerConnectionState{
+		pion.PeerConnectionStateConnected,
+		pion.PeerConnectionStateDisconnected,
+		pion.PeerConnectionStateConnected,
+	} {
+		fake.triggerState(state)
+	}
+	for _, want := range []realtimev1.ConnectionState{
+		realtimev1.ConnectionConnected,
+		realtimev1.ConnectionDisconnected,
+		realtimev1.ConnectionConnected,
+	} {
+		select {
+		case got := <-states:
+			if got != want {
+				t.Fatalf("state = %q, want %q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for state %q", want)
+		}
+	}
+	if created != 1 || transport.(*PionTransport).peerConnection != fake || fake.closeCalls != 0 {
+		t.Fatalf("peer rebuilt or closed: creates=%d close_calls=%d", created, fake.closeCalls)
+	}
+}
+
 func newFakePionTransportFactory(fake *fakePionPeerConnection) *PionTransportFactory {
 	return &PionTransportFactory{
 		newPeerConnection: func(pion.Configuration) (pionPeerConnection, error) { return fake, nil },

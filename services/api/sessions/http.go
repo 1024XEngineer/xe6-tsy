@@ -324,13 +324,15 @@ func (h *Handler) switchMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	operationID := r.Header.Get("Idempotency-Key")
-	traceID := requestIDFromHTTP(r)
 	if body.RuntimeInstanceID == "" || body.ExpectedGeneration < 1 ||
 		!body.TargetMode.Valid() || operationID == "" ||
-		len(operationID) > maxIdempotencyKeyLength || len(traceID) > maxRequestIDLength {
-		if len(traceID) > maxRequestIDLength {
-			r.Header.Del("X-Request-ID")
-		}
+		len(operationID) > maxIdempotencyKeyLength {
+		writeHTTPError(w, r, ErrInvalidRequest)
+		return
+	}
+	traceID := modeTraceIDFromHTTP(r, r.PathValue("id"), operationID)
+	if len(traceID) > maxRequestIDLength {
+		r.Header.Del("X-Request-ID")
 		writeHTTPError(w, r, ErrInvalidRequest)
 		return
 	}
@@ -572,6 +574,16 @@ func requestIDFromHTTP(r *http.Request) string {
 	requestID := newHTTPRequestID()
 	// Persist the generated value on this request so downstream commands and a
 	// later error response always use the same trace identity.
+	r.Header.Set("X-Request-ID", requestID)
+	return requestID
+}
+
+func modeTraceIDFromHTTP(r *http.Request, sessionID, operationID string) string {
+	if requestID := r.Header.Get("X-Request-ID"); requestID != "" {
+		return requestID
+	}
+	digest := sha256.Sum256([]byte("voice-sessions.switch-mode\x00" + sessionID + "\x00" + operationID))
+	requestID := "req_mode_" + hex.EncodeToString(digest[:12])
 	r.Header.Set("X-Request-ID", requestID)
 	return requestID
 }

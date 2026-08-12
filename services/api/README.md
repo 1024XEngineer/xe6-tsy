@@ -68,7 +68,7 @@ WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webr
 - `POST /api/v1/voice-sessions/{id}/mode`：在已认证账户拥有且处于 `active` 的 Session 上转发一次模式切换。
 
 切换请求的 JSON 只包含 `runtime_instance_id`、`expected_generation` 和 `target_mode`。操作 ID 必须来自
-`Idempotency-Key`，追踪 ID 优先使用 `X-Request-ID`，缺失时由 API 为当前请求生成；API 会先执行 Session 归属校验，再把这些字段交给 realtime
+`Idempotency-Key`，追踪 ID 优先使用 `X-Request-ID`，缺失时由 API 按 Session 和 operation ID 稳定生成，确保无头重试仍是同一命令；API 会先执行 Session 归属校验，再把这些字段交给 realtime
 的 compare-and-switch 协调器。API 不保存 `active_mode`、不实现本地幂等缓存，也不通过 Stop/Start 模拟切换。
 重复操作、代次冲突和 runtime 实例冲突均由 realtime 返回，API 只做稳定错误映射。旧的 Session state 查询
 仍只读取原有媒体 RuntimeSnapshot，避免模式依赖故障改变旧接口的失败路径。

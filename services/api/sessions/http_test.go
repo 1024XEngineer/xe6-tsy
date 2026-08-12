@@ -739,6 +739,23 @@ func TestHandlerModeRouteGeneratesStableTraceWhenRequestIDIsMissing(t *testing.T
 			modes.switchInput.TraceID,
 		)
 	}
+
+	retryModes := &handlerModeUseCases{switchErr: ErrModeUnavailable}
+	retryHandler := NewHandler(&handlerUseCases{}, headerAccount).WithRealtimeModes(retryModes)
+	retry := httptest.NewRequest(http.MethodPost, "/api/v1/voice-sessions/vs_1/mode", bytes.NewBufferString(
+		`{"runtime_instance_id":"runtime-1","expected_generation":1,"target_mode":"assistant"}`,
+	))
+	retry.SetPathValue("id", "vs_1")
+	retry.Header.Set("X-Test-Account", "acct_1")
+	retry.Header.Set("Idempotency-Key", "mode-op-1")
+	retryHandler.switchMode(httptest.NewRecorder(), retry)
+	if retryModes.switchInput.TraceID != modes.switchInput.TraceID {
+		t.Fatalf(
+			"retry trace ID = %q, want stable operation trace %q",
+			retryModes.switchInput.TraceID,
+			modes.switchInput.TraceID,
+		)
+	}
 }
 
 func TestHandlerModeRoutesRejectUnauthenticatedAndMalformedRequests(t *testing.T) {

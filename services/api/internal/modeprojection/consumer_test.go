@@ -58,6 +58,15 @@ type receiveErrorStream struct {
 	err    error
 }
 
+type canceledReceiveStream struct{}
+
+func (canceledReceiveStream) Receive(context.Context) (StreamMessage, error) {
+	return StreamMessage{}, context.Canceled
+}
+
+func (canceledReceiveStream) Ack(context.Context, string) error  { return nil }
+func (canceledReceiveStream) Nack(context.Context, string) error { return nil }
+
 func (s *receiveErrorStream) Receive(context.Context) (StreamMessage, error) {
 	s.mu.Lock()
 	s.calls++
@@ -215,6 +224,14 @@ func TestConsumerRunBacksOffAfterStreamFailure(t *testing.T) {
 	}
 	if calls := stream.callCount(); calls != 1 {
 		t.Fatalf("Receive() calls = %d, want one call before retry backoff was canceled", calls)
+	}
+}
+
+func TestConsumerRunStopsWhenReceiveIsCanceled(t *testing.T) {
+	consumer := NewConsumer(canceledReceiveStream{}, &projectorStub{})
+
+	if err := consumer.Run(t.Context()); err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
 	}
 }
 

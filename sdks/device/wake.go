@@ -106,7 +106,7 @@ func (c *WakeCommandController) LastError() error {
 	return c.lastErr
 }
 
-func (c *WakeCommandController) handleWake(epoch uint64, event WakeWordEvent) {
+func (c *WakeCommandController) handleWake(epoch uint64, _ WakeWordEvent) {
 	if c == nil {
 		return
 	}
@@ -114,9 +114,6 @@ func (c *WakeCommandController) handleWake(epoch uint64, event WakeWordEvent) {
 	defer c.mu.Unlock()
 	if !c.enabled || !c.started || c.epoch != epoch {
 		return
-	}
-	if event.DetectedAt.IsZero() {
-		event.DetectedAt = time.Now().UTC()
 	}
 	if err := c.Window.Open(context.Background(), 5*time.Second); err != nil {
 		c.enabled = false

@@ -136,7 +136,8 @@ func validateStartInput(ctx context.Context, input *StartInput) error {
 	if input.TraceID == "" {
 		return ErrInvalidRequest
 	}
-	if input.InitialMode != "" && !input.InitialMode.Valid() {
+	input.InitialMode = input.InitialMode.OrLegacyDefault()
+	if !input.InitialMode.Valid() {
 		return ErrInvalidRequest
 	}
 	if input.StartedBy == "" {

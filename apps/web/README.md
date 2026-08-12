@@ -2,7 +2,7 @@
 
 Lingow Web 对话入口（联调/验收前端）。
 
-当前实现来自 realtime mock 联调页：匿名鉴权、voice-sessions、语言配置、API 签发 realtime ticket、WebRTC、字幕与 TTS 播放。
+当前实现来自 realtime mock 联调页：匿名鉴权、voice-sessions、语言配置、API 签发 realtime ticket、WebRTC、字幕、助手回复与 TTS 播放。
 
 ## 技术栈
 

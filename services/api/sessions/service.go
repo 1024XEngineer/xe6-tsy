@@ -106,9 +106,7 @@ type StartInput struct {
 	RequestHash    string
 	TraceID        string
 	StartedBy      string
-	// InitialMode is optional for rolling compatibility; empty preserves the
-	// realtime contract's interpretation default for legacy callers.
-	InitialMode realtimev1.Mode
+	InitialMode    realtimev1.Mode
 }
 
 // EndInput carries authenticated ownership and a durable request identity.

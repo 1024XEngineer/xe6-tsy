@@ -125,6 +125,71 @@ func TestManagerStartsInRequestedAssistantMode(t *testing.T) {
 	}
 }
 
+func TestManagerRoutesAssistantReplyOnExistingAudioSession(t *testing.T) {
+	base := time.Unix(1700000000, 0).UTC()
+	source := &fakeFrameSource{frames: []audio.Frame{
+		mustFrame(t, []byte{1, 0}, base),
+		mustFrame(t, []byte{1, 0}, base.Add(20*time.Millisecond)),
+		mustFrame(t, []byte{0, 0}, base.Add(100*time.Millisecond)),
+	}, waitForClose: true}
+	replies := &assistantReplySignalSink{events: make(chan realtimev1.AssistantReplyEvent, 1)}
+	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.AssistantReplies = replies
+	deps.NewRuntimeInstanceID = func() (string, error) { return "runtime-1", nil }
+
+	asrProvider := asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "asr-v1",
+	}})
+	llmProvider := assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{
+		Text: "你好，我可以帮你。", Language: "zh-CN", Provider: "mock-llm", Model: "assistant-v1",
+	}})
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR: asrProvider, Assistant: llmProvider, Translation: &translate.FakeProvider{},
+		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "start-1", TraceID: "trace-1",
+	}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background(), snapshot.SessionID) })
+
+	state, err := manager.GetModeState(t.Context(), snapshot.SessionID)
+	if err != nil {
+		t.Fatalf("GetModeState() error = %v", err)
+	}
+	if state.ActiveMode != realtimev1.ModeInterpretation {
+		t.Fatalf("default mode = %q, want interpretation", state.ActiveMode)
+	}
+	result, err := manager.SwitchMode(t.Context(), realtimev1.SwitchModeCommand{
+		SessionID: snapshot.SessionID, RuntimeInstanceID: state.RuntimeInstanceID,
+		OperationID: "switch-assistant", TraceID: snapshot.TraceID,
+		ExpectedGeneration: state.Generation, TargetMode: realtimev1.ModeAssistant,
+	})
+	if err != nil || result.State.ActiveMode != realtimev1.ModeAssistant {
+		t.Fatalf("SwitchMode() = %#v, %v", result, err)
+	}
+	if source.CloseCalls() != 0 {
+		t.Fatalf("mode switch closed the shared audio source %d times", source.CloseCalls())
+	}
+	if err := manager.Activate(t.Context(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+
+	event := <-replies.events
+	if event.SessionID != snapshot.SessionID || event.Text != "你好，我可以帮你。" ||
+		event.RuntimeInstanceID != state.RuntimeInstanceID || event.Generation != result.State.Generation {
+		t.Fatalf("AssistantReply event = %#v", event)
+	}
+	if len(asrProvider.Requests()) != 1 || len(llmProvider.Requests()) != 1 {
+		t.Fatalf("provider calls = ASR %d, LLM %d", len(asrProvider.Requests()), len(llmProvider.Requests()))
+	}
+}
+
 func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 	base := time.Unix(1700000000, 0).UTC()
 	source := &fakeFrameSource{frames: []audio.Frame{
@@ -1232,6 +1297,15 @@ type recordingAssistantReplySink struct {
 
 func (s *recordingAssistantReplySink) Publish(_ context.Context, event realtimev1.AssistantReplyEvent) error {
 	s.events = append(s.events, event)
+	return nil
+}
+
+type assistantReplySignalSink struct {
+	events chan realtimev1.AssistantReplyEvent
+}
+
+func (s *assistantReplySignalSink) Publish(_ context.Context, event realtimev1.AssistantReplyEvent) error {
+	s.events <- event
 	return nil
 }
 

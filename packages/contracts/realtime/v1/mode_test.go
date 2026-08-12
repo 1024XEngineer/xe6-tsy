@@ -50,6 +50,64 @@ func TestModeChangedEventValidation(t *testing.T) {
 	}
 }
 
+func TestAssistantReplyEventValidation(t *testing.T) {
+	event := validAssistantReplyEvent()
+	if err := event.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*AssistantReplyEvent)
+	}{
+		{name: "event version", mutate: func(event *AssistantReplyEvent) { event.EventVersion = 2 }},
+		{name: "event id", mutate: func(event *AssistantReplyEvent) { event.EventID = "" }},
+		{name: "trace id", mutate: func(event *AssistantReplyEvent) { event.TraceID = "" }},
+		{name: "session id", mutate: func(event *AssistantReplyEvent) { event.SessionID = "" }},
+		{name: "turn id", mutate: func(event *AssistantReplyEvent) { event.TurnID = "" }},
+		{name: "runtime instance id", mutate: func(event *AssistantReplyEvent) { event.RuntimeInstanceID = "" }},
+		{name: "generation", mutate: func(event *AssistantReplyEvent) { event.Generation = 0 }},
+		{name: "empty text", mutate: func(event *AssistantReplyEvent) { event.Text = "  \t" }},
+		{name: "empty language", mutate: func(event *AssistantReplyEvent) { event.Language = "  " }},
+		{name: "occurred at", mutate: func(event *AssistantReplyEvent) { event.OccurredAt = time.Time{} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := validAssistantReplyEvent()
+			test.mutate(&invalid)
+			if err := invalid.Validate(); !errors.Is(err, ErrInvalidAssistantReplyEvent) {
+				t.Fatalf("Validate() error = %v, want ErrInvalidAssistantReplyEvent", err)
+			}
+		})
+	}
+}
+
+func validAssistantReplyEvent() AssistantReplyEvent {
+	return AssistantReplyEvent{
+		EventVersion: AssistantReplyEventVersion, EventID: "assistant-reply-1", TraceID: "trace-1",
+		SessionID: "session-1", TurnID: "turn-1", RuntimeInstanceID: "runtime-1", Generation: 2,
+		Text: "hello", Language: "zh-CN", OccurredAt: time.Unix(1700000000, 0).UTC(),
+	}
+}
+
+func TestAssistantReplyEventJSONRoundTrip(t *testing.T) {
+	want := validAssistantReplyEvent()
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var got AssistantReplyEvent
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("round-trip event = %#v, want %#v", got, want)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("round-trip Validate() error = %v", err)
+	}
+}
+
 func validModeChangedEvent() ModeChangedEvent {
 	return ModeChangedEvent{
 		EventVersion: ModeChangedEventVersion, EventID: "mode-event-1", TraceID: "trace-1",

@@ -198,35 +198,45 @@ func TestTurnProcessorStopsBeforeHandlerWhenASRUsageFails(t *testing.T) {
 	}
 }
 
-func TestTurnProcessorSkipsUsageAndHandlerForTrivialFinal(t *testing.T) {
-	usageSink := &recordingUsageSink{}
-	runtimeReporter := &recordingRuntimeReporter{}
-	service := newTestPipelineService(PipelineDependencies{
-		Translator: &translate.FakeProvider{},
-		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
-		FinalTurns: &recordingFinalSink{}, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: runtimeReporter,
-	})
-	finalHandler := &recordingASRFinalHandler{}
-	processor := NewTurnProcessor(TurnProcessorDependencies{
-		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
-			Text: "嗯", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
-		}}),
-		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
-			SessionID: "session-1", Version: 1, Status: "active",
-			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
-		}}),
-		Pipeline: service,
-		Finals:   finalHandler,
-	})
+func TestTurnProcessorSkipsUsageAndHandlerForEmptyOrTrivialFinal(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		text string
+	}{
+		{name: "empty", text: "   "},
+		{name: "filler", text: "嗯"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			usageSink := &recordingUsageSink{}
+			runtimeReporter := &recordingRuntimeReporter{}
+			service := newTestPipelineService(PipelineDependencies{
+				Translator: &translate.FakeProvider{},
+				TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}),
+				FinalTurns: &recordingFinalSink{}, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: runtimeReporter,
+			})
+			finalHandler := &recordingASRFinalHandler{}
+			processor := NewTurnProcessor(TurnProcessorDependencies{
+				ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+					Text: test.text, SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+				}}),
+				Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+					SessionID: "session-1", Version: 1, Status: "active",
+					LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+				}}),
+				Pipeline: service,
+				Finals:   finalHandler,
+			})
 
-	if _, err := processor.ProcessAudio(t.Context(), TurnProcessRequest{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}); err != nil {
-		t.Fatalf("ProcessAudio() error = %v", err)
-	}
-	if len(usageSink.facts) != 0 || len(finalHandler.turns) != 0 {
-		t.Fatalf("trivial final produced usage %#v or Handler calls %d", usageSink.facts, len(finalHandler.turns))
-	}
-	if len(runtimeReporter.updates) != 2 || runtimeReporter.updates[1].RuntimeState != session.RuntimeListening {
-		t.Fatalf("runtime updates = %#v, want listening restore", runtimeReporter.updates)
+			if _, err := processor.ProcessAudio(t.Context(), TurnProcessRequest{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}); err != nil {
+				t.Fatalf("ProcessAudio() error = %v", err)
+			}
+			if len(usageSink.facts) != 0 || len(finalHandler.turns) != 0 {
+				t.Fatalf("ignored final produced usage %#v or Handler calls %d", usageSink.facts, len(finalHandler.turns))
+			}
+			if len(runtimeReporter.updates) != 2 || runtimeReporter.updates[1].RuntimeState != session.RuntimeListening {
+				t.Fatalf("runtime updates = %#v, want listening restore", runtimeReporter.updates)
+			}
+		})
 	}
 }
 

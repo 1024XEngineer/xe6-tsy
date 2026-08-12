@@ -72,6 +72,24 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 			t.Fatalf("VoiceSessionStateSnapshot required = %v, missing %s", stateRequired, required)
 		}
 	}
+	startPath := paths["/voice-sessions/{id}/start"].(map[string]any)
+	startPost := startPath["post"].(map[string]any)
+	startBody := startPost["requestBody"].(map[string]any)
+	startContent := startBody["content"].(map[string]any)
+	startMedia := startContent["application/json"].(map[string]any)
+	startSchema := startMedia["schema"].(map[string]any)
+	if got := startSchema["$ref"]; got != "#/components/schemas/StartVoiceSessionRequest" {
+		t.Fatalf("start request schema = %v", got)
+	}
+	startRequest := schemas["StartVoiceSessionRequest"].(map[string]any)
+	if required, ok := startRequest["required"]; ok && containsString(required.([]any), "initial_mode") {
+		t.Fatal("StartVoiceSessionRequest.initial_mode must remain optional for legacy clients")
+	}
+	startProperties := startRequest["properties"].(map[string]any)
+	initialMode := startProperties["initial_mode"].(map[string]any)
+	if initialMode["$ref"] != "#/components/schemas/RealtimeMode" || initialMode["default"] != "interpretation" {
+		t.Fatalf("initial_mode schema = %#v", initialMode)
+	}
 
 	outputMode := schemas["InterpretationOutputMode"].(map[string]any)
 	if got := outputMode["enum"].([]any); !sameStringSlice(got, []any{"bidirectional", "single"}) {
@@ -84,22 +102,6 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 	readiness := schemas["AutomaticDeliveryReadiness"].(map[string]any)
 	if !containsString(readiness["required"].([]any), "ready") {
 		t.Fatalf("AutomaticDeliveryReadiness must require ready")
-	}
-	startPath := paths["/voice-sessions/{id}/start"].(map[string]any)
-	startPost := startPath["post"].(map[string]any)
-	startBody := startPost["requestBody"].(map[string]any)
-	startContent := startBody["content"].(map[string]any)
-	startMedia := startContent["application/json"].(map[string]any)
-	if got := startMedia["schema"].(map[string]any)["$ref"]; got != "#/components/schemas/VoiceSessionStartRequest" {
-		t.Fatalf("voice session start schema = %v", got)
-	}
-	startRequest := schemas["VoiceSessionStartRequest"].(map[string]any)
-	if required, ok := startRequest["required"]; ok && containsString(required.([]any), "initial_mode") {
-		t.Fatal("VoiceSessionStartRequest.initial_mode must remain optional for legacy clients")
-	}
-	initialMode := startRequest["properties"].(map[string]any)["initial_mode"].(map[string]any)
-	if initialMode["$ref"] != "#/components/schemas/RealtimeMode" || initialMode["default"] != "interpretation" {
-		t.Fatalf("VoiceSessionStartRequest.initial_mode = %#v", initialMode)
 	}
 	createPath := paths["/voice-sessions/{id}/language-configs"].(map[string]any)
 	post := createPath["post"].(map[string]any)

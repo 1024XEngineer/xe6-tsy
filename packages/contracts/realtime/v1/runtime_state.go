@@ -11,18 +11,22 @@ const (
 	RuntimeListening     RuntimeState = "listening"
 	RuntimeASRProcessing RuntimeState = "asr_processing"
 	RuntimeTranslating   RuntimeState = "translating"
-	RuntimeThinking      RuntimeState = "thinking"
-	RuntimeTTSProcessing RuntimeState = "tts_processing"
-	RuntimePlaying       RuntimeState = "playing"
-	RuntimeStopping      RuntimeState = "stopping"
-	RuntimeFailed        RuntimeState = "failed"
+	// RuntimeThinking is retained for clients that consumed the pre-assistant
+	// generic LLM progress state. New assistant turns report the more precise
+	// RuntimeAssistantProcessing state below.
+	RuntimeThinking            RuntimeState = "thinking"
+	RuntimeAssistantProcessing RuntimeState = "assistant_processing"
+	RuntimeTTSProcessing       RuntimeState = "tts_processing"
+	RuntimePlaying             RuntimeState = "playing"
+	RuntimeStopping            RuntimeState = "stopping"
+	RuntimeFailed              RuntimeState = "failed"
 )
 
 // Valid reports whether the state belongs to the public media-runtime contract.
 func (s RuntimeState) Valid() bool {
 	switch s {
 	case RuntimeStopped, RuntimeStarting, RuntimeListening, RuntimeASRProcessing,
-		RuntimeTranslating, RuntimeThinking, RuntimeTTSProcessing, RuntimePlaying, RuntimeStopping,
+		RuntimeTranslating, RuntimeThinking, RuntimeAssistantProcessing, RuntimeTTSProcessing, RuntimePlaying, RuntimeStopping,
 		RuntimeFailed:
 		return true
 	default:

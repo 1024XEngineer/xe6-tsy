@@ -29,8 +29,8 @@ import {
   voiceConfigFromLanguageConfig,
 } from "../lib/languages";
 import { ApiError } from "../lib/http";
-import { parseAssistantReply } from "../lib/assistant-events";
 import { parseTranslationFinal } from "../lib/translation-events";
+import { parseAssistantReply } from "../lib/assistant-replies";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
 import {
   loadVoiceConfig,
@@ -88,9 +88,9 @@ function mapRuntimeToStatus(runtime: RuntimeState | null, mode: VoiceInitialMode
     case "asr_processing":
       return "正在识别";
     case "translating":
-      return mode === "assistant" ? "正在思考" : "正在翻译";
-    case "thinking":
-      return "正在思考";
+      return "正在翻译";
+    case "assistant_processing":
+      return "助手正在思考";
     case "tts_processing":
       return mode === "assistant" ? "正在准备回复" : "正在合成语音";
     case "playing":
@@ -109,7 +109,11 @@ function mapRuntimeToStatus(runtime: RuntimeState | null, mode: VoiceInitialMode
 function mapRuntimePhase(
   runtime: RuntimeState | null,
 ): "processing" | "playing" | "active" {
-  if (runtime === "asr_processing" || runtime === "translating" || runtime === "thinking") {
+  if (
+    runtime === "asr_processing" ||
+    runtime === "translating" ||
+    runtime === "assistant_processing"
+  ) {
     return "processing";
   }
   if (runtime === "tts_processing" || runtime === "playing") {
@@ -553,12 +557,13 @@ export function useVoiceSession() {
               dispatch({
                 type: "ADD_ASSISTANT_REPLY",
                 reply: {
-                  replyId: assistantReply.replyId,
+                  replyId: assistantReply.eventId,
                   turnId: assistantReply.turnId,
                   text: assistantReply.text,
                   language: assistantReply.language,
                 },
               });
+              setStatusMessage("助手已回复");
               return;
             }
             const event = parseTranslationFinal(payload);

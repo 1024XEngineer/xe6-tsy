@@ -12,6 +12,9 @@ import (
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
@@ -33,6 +36,13 @@ var (
 
 const failureReportTimeout = 5 * time.Second
 
+var defaultCommandOptions = command.Options{
+	WindowTTL:        4 * time.Second,
+	NoSpeechTimeout:  1200 * time.Millisecond,
+	MaxAudioDuration: 3 * time.Second,
+	EndSilence:       450 * time.Millisecond,
+}
+
 // AudioInput is the typed handoff from a WebRTC media adapter to the audio loop.
 // SourceLanguage is an optional ASR hint for the input track. Empty means the
 // provider should auto-detect (required for bilingual sessions). Language-config
@@ -40,6 +50,9 @@ const failureReportTimeout = 5 * time.Second
 type AudioInput struct {
 	Source         segment.FrameSource
 	SourceLanguage string
+	// WakeWords is optional so transports without local wake-word detection
+	// retain the legacy audio-only path.
+	WakeWords segment.WakeWordSource
 }
 
 // FrameSourceFactory opens one normalized input source for a session.
@@ -57,6 +70,16 @@ func (f FrameSourceFactoryFunc) Open(ctx context.Context, snapshot session.Sessi
 // SegmenterFactory creates isolated VAD state for one session.
 type SegmenterFactory func() (*vad.Segmenter, error)
 
+// CommandClassifierFactory creates isolated speech classification state for a
+// command window. It must not share a rolling classifier with ordinary VAD.
+type CommandClassifierFactory func() (vad.Classifier, error)
+
+// PlaybackInterrupter cancels only the active playback for one session. It
+// deliberately does not close the shared WebRTC track or connection.
+type PlaybackInterrupter interface {
+	InterruptCurrent(context.Context, string, string) error
+}
+
 // RuntimeReporter combines the narrow processing and terminal-failure ports
 // required by a complete manager lifecycle.
 type RuntimeReporter interface {
@@ -68,12 +91,15 @@ type RuntimeReporter interface {
 type Dependencies struct {
 	FrameSources         FrameSourceFactory
 	NewSegmenter         SegmenterFactory
+	NewCommandClassifier CommandClassifierFactory
+	CommandOptions       command.Options
 	Languages            session.LanguageConfigReader
 	FinalTurns           recordsv1.FinalTurnSink
 	AssistantReplies     pipeline.AssistantReplySink
 	ModeChanges          ModeChangedSink
 	Usage                pipeline.UsageFactSink
 	Audio                pipeline.AudioChunkSink
+	PlaybackInterrupter  PlaybackInterrupter
 	Runtime              RuntimeReporter
 	Allocator            pipeline.TurnAllocator
 	VoiceID              string
@@ -97,15 +123,16 @@ type LifecycleObserver interface {
 // Start prepares the graph; Activate is used by LifecycleService after it has
 // persisted RuntimeListening, and Stop is safe to retry after a timeout.
 type Manager struct {
-	mu        sync.Mutex
-	locks     keyedLocker
-	processor *pipeline.TurnProcessor
-	playback  *pipeline.PipelineService
-	router    *modeRouter
-	failure   session.RuntimeFailureReporter
-	logger    *slog.Logger
-	deps      Dependencies
-	entries   map[string]*entry
+	mu         sync.Mutex
+	locks      keyedLocker
+	processor  *pipeline.TurnProcessor
+	commandASR asr.Provider
+	playback   *pipeline.PipelineService
+	router     *modeRouter
+	failure    session.RuntimeFailureReporter
+	logger     *slog.Logger
+	deps       Dependencies
+	entries    map[string]*entry
 }
 
 type entry struct {
@@ -117,6 +144,7 @@ type entry struct {
 	done        chan struct{}
 	operationID string
 	mode        *modeCoordinator
+	command     *command.Gate
 	err         error
 	active      bool
 	stopping    bool
@@ -233,6 +261,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	manager.processor = pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
 		ASR: providers.ASR, ASRProvider: labels.asr, Opener: opener, Pipeline: service, Finals: router,
 	})
+	manager.commandASR = providers.ASR
 	manager.playback = service
 	manager.router = router
 	return manager, nil
@@ -366,8 +395,32 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		closeErr := owned.closeContext(ctx)
 		return errors.Join(fmt.Errorf("create VAD segmenter: %w", err), closeErr)
 	}
+	var commandGate *command.Gate
+	if input.WakeWords != nil && m.deps.NewCommandClassifier != nil {
+		classifier, classifierErr := m.deps.NewCommandClassifier()
+		if classifierErr != nil {
+			closeErr := owned.closeContext(ctx)
+			return errors.Join(fmt.Errorf("create command classifier: %w", classifierErr), closeErr)
+		}
+		options := m.deps.CommandOptions
+		if options == (command.Options{}) {
+			options = defaultCommandOptions
+		}
+		gate, gateErr := command.NewGate(command.Dependencies{
+			Classifier: classifier,
+			ASR:        m.commandASR,
+			Executor:   commandExecutor{manager: m},
+		}, options)
+		if gateErr != nil {
+			closeErr := owned.closeContext(ctx)
+			return errors.Join(fmt.Errorf("create command gate: %w", gateErr), closeErr)
+		}
+		commandGate = gate
+	}
 	service, err := segment.NewService(segment.Dependencies{
-		Source: owned, Segmenter: segmenter, Processor: m.processor, Latency: m.deps.Latency,
+		Source: owned, Segmenter: segmenter, Processor: m.processor,
+		Command: newRuntimeCommandGate(commandGate, m.playbackInterrupter()), WakeWords: input.WakeWords,
+		Latency: m.deps.Latency, Now: m.deps.Now,
 	})
 	if err != nil {
 		closeErr := owned.closeContext(ctx)
@@ -380,7 +433,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		cancel: cancel, source: owned, service: service,
 		ctx:         runCtx,
 		operationID: snapshot.StartOperationID,
-		mode:        mode,
+		mode:        mode, command: commandGate,
 		request: segment.Request{
 			SessionID: snapshot.SessionID, AccountID: snapshot.AccountID,
 			TraceID: snapshot.TraceID, SourceLanguage: input.SourceLanguage,
@@ -531,6 +584,75 @@ func runtimeFailureCode(err error) realtimev1.RuntimeErrorCode {
 		return session.ErrorCodeTranslationRejected
 	}
 	return session.ErrorCodePipelineFailed
+}
+
+// runtimeCommandGate adds runtime-owned wake side effects around the bounded
+// command recognizer. Open itself has no context in the command contract, so
+// playback interruption is deliberately best effort and never prevents the
+// command window from quarantining subsequent audio.
+type runtimeCommandGate struct {
+	gate        *command.Gate
+	interrupter PlaybackInterrupter
+}
+
+func newRuntimeCommandGate(gate *command.Gate, interrupter PlaybackInterrupter) segment.CommandGate {
+	if gate == nil {
+		return nil
+	}
+	return runtimeCommandGate{gate: gate, interrupter: interrupter}
+}
+
+func (m *Manager) playbackInterrupter() PlaybackInterrupter {
+	if m == nil {
+		return nil
+	}
+	if m.deps.PlaybackInterrupter != nil {
+		return m.deps.PlaybackInterrupter
+	}
+	interrupter, _ := m.deps.Audio.(PlaybackInterrupter)
+	return interrupter
+}
+
+func (g runtimeCommandGate) Open(request command.OpenRequest) error {
+	if g.interrupter != nil {
+		interruptCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = g.interrupter.InterruptCurrent(interruptCtx, request.SessionID, "wake_word_detected")
+		cancel()
+	}
+	return g.gate.Open(request)
+}
+
+func (g runtimeCommandGate) Consume(ctx context.Context, frame audio.Frame) command.Result {
+	return g.gate.Consume(ctx, frame)
+}
+
+func (g runtimeCommandGate) Cancel() {
+	g.gate.Cancel()
+}
+
+// commandExecutor converts an allowlisted command into the existing CAS mode
+// transition path. It intentionally does not parse text or maintain a second
+// mode state machine.
+type commandExecutor struct{ manager *Manager }
+
+func (e commandExecutor) ExecuteCommand(ctx context.Context, request command.ExecuteRequest) error {
+	if e.manager == nil || request.SessionID == "" || request.CommandID == "" || !request.Command.TargetMode.Valid() {
+		return ErrModeCommandInvalid
+	}
+	state, err := e.manager.GetModeState(ctx, request.SessionID)
+	if err != nil {
+		return err
+	}
+	modeCommand := realtimev1.SwitchModeCommand{
+		SessionID:          request.SessionID,
+		RuntimeInstanceID:  state.RuntimeInstanceID,
+		OperationID:        "wake_word_" + request.CommandID,
+		TraceID:            "wake_word_" + request.CommandID,
+		ExpectedGeneration: state.Generation,
+		TargetMode:         request.Command.TargetMode,
+	}
+	_, err = e.manager.SwitchMode(ctx, modeCommand)
+	return err
 }
 
 // Stop cancels processing, closes the input source, and waits for the loop.

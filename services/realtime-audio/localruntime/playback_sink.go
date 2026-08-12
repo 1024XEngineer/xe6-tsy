@@ -46,6 +46,19 @@ func (s PlaybackAudioSink) Cancel(ctx context.Context, sessionID, playbackID, re
 	return service.Cancel(ctx, sessionID, playbackID, reason)
 }
 
+// InterruptCurrent stops the active playback while retaining the shared
+// WebRTC track. It is used by a wake-word command before command audio starts.
+func (s PlaybackAudioSink) InterruptCurrent(ctx context.Context, sessionID, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	service := s.currentPlayback(ctx, sessionID)
+	if service == nil {
+		return nil
+	}
+	return service.InterruptCurrent(ctx, sessionID, reason)
+}
+
 func (s PlaybackAudioSink) currentPlayback(ctx context.Context, sessionID string) *playback.Service {
 	if s.Media == nil {
 		return nil

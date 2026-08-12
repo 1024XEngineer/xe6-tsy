@@ -76,7 +76,7 @@ func (p *pionPeerConnectionAdapter) OnTrack(handler func(pionRemoteTrack)) {
 	})
 }
 
-func (p *pionPeerConnectionAdapter) OnDataChannel(handler func(pionControlDataChannel)) {
+func (p *pionPeerConnectionAdapter) OnDataChannel(handler func(pionInboundDataChannel)) {
 	p.PeerConnection.OnDataChannel(func(channel *pion.DataChannel) {
 		if handler != nil {
 			handler(channel)
@@ -157,31 +157,46 @@ func (f *PionTransportFactory) Create(
 		}
 		onState(mapped, now())
 	})
-	transport := &PionTransport{peerConnection: connection}
+	transport := &PionTransport{
+		peerConnection: connection,
+		wakeWords:      newPionWakeWordSource(defaultWakeWordQueueCapacity),
+	}
+	mediaLabel := f.media.DataChannelLabel
 	if mediaConnection, ok := connection.(pionMediaPeerConnection); ok {
 		if err := configurePionMedia(transport, mediaConnection, f.media, now); err != nil {
 			_ = connection.Close()
 			return nil, err
 		}
+		mediaLabel = transport.mediaConfig.DataChannelLabel
 	}
-	if controlConnection, ok := connection.(pionControlPeerConnection); ok && f.control.Handler != nil {
-		configurePionControl(transport, controlConnection, sessionID, connectionID, f.control.Handler)
+	if inboundConnection, ok := connection.(pionInboundDataChannelPeerConnection); ok {
+		configurePionIngress(transport, inboundConnection, mediaLabel, sessionID, connectionID, f.control.Handler)
 	}
 	return transport, nil
 }
 
-func configurePionControl(
+// configurePionIngress owns Pion's one callback so optional protocols cannot replace each other.
+func configurePionIngress(
 	transport *PionTransport,
-	connection pionControlPeerConnection,
+	connection pionInboundDataChannelPeerConnection,
+	mediaLabel string,
 	sessionID string,
 	connectionID string,
 	handler ControlCommandHandler,
 ) {
-	connection.OnDataChannel(func(channel pionControlDataChannel) {
-		if channel == nil || channel.Label() != realtimev1.ControlDataChannelLabel {
+	connection.OnDataChannel(func(channel pionInboundDataChannel) {
+		if channel == nil {
 			return
 		}
-		transport.attachControlChannel(channel, handler, sessionID, connectionID)
+		switch channel.Label() {
+		case realtimev1.ControlDataChannelLabel:
+			control, ok := channel.(pionControlDataChannel)
+			if ok && handler != nil {
+				transport.attachControlChannel(control, handler, sessionID, connectionID)
+			}
+		case mediaLabel:
+			attachPionWakeWordIngress(transport.wakeWords, channel)
+		}
 	})
 }
 

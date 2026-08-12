@@ -61,11 +61,6 @@ type pionControlDataChannel interface {
 	Close() error
 }
 
-// pionControlPeerConnection exposes only remote-created DataChannels.
-type pionControlPeerConnection interface {
-	OnDataChannel(func(pionControlDataChannel))
-}
-
 // PionControlReceiver decouples Pion callbacks from durable mode transitions. Bounded command and
 // response workers keep slow mode changes and SCTP writes outside the Pion receive callback.
 type PionControlReceiver struct {

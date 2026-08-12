@@ -21,6 +21,7 @@ type PionTransport struct {
 	closeDone       chan struct{}
 	closeErr        error
 	audioSource     *PionAudioSource
+	wakeWords       *pionWakeWordSource
 	ttsTrack        *PionAudioTrack
 	events          *PionEventSink
 	playback        *playback.Service
@@ -28,6 +29,24 @@ type PionTransport struct {
 	mediaConfig     MediaConfig
 	mediaNow        func() time.Time
 	control         *PionControlReceiver
+}
+
+// WakeWordSource returns the bounded hardware-signal source owned by this
+// PeerConnection. It is separate from AudioSource so command control cannot be
+// mistaken for microphone media.
+func (t *PionTransport) WakeWordSource() WakeWordSource {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.wakeWords == nil {
+		t.wakeWords = newPionWakeWordSource(defaultWakeWordQueueCapacity)
+		if t.closeDone != nil {
+			t.wakeWords.closeSource()
+		}
+	}
+	return t.wakeWords
 }
 
 // AudioSource returns the normalized inbound source, when media was enabled.
@@ -258,9 +277,13 @@ func (t *PionTransport) Close(ctx context.Context) error {
 
 	t.mu.Lock()
 	source := t.audioSource
+	wakeWords := t.wakeWords
 	events := t.events
 	control := t.control
 	t.mu.Unlock()
+	if wakeWords != nil {
+		wakeWords.closeSource()
+	}
 	if events != nil {
 		events.close(ErrTransportClosed)
 	}
@@ -297,3 +320,4 @@ func (t *PionTransport) openPeerConnection() (pionPeerConnection, error) {
 
 var _ ConnectionTransport = (*PionTransport)(nil)
 var _ MediaTransport = (*PionTransport)(nil)
+var _ WakeWordTransport = (*PionTransport)(nil)

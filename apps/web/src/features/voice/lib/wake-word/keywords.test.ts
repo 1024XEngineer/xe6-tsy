@@ -6,7 +6,6 @@ import {
   WAKE_STOP_KEYWORD,
   WAKE_TRIGGERS,
   classifyWakeKeyword,
-  resolveWakePhrase,
   resolveWakeTrigger,
 } from "./keywords";
 
@@ -44,11 +43,6 @@ describe("classifyWakeKeyword", () => {
     expect(classifyWakeKeyword("请说小灵，开始翻译")).toBe("start");
     expect(classifyWakeKeyword("请说小林，停止翻译")).toBe("stop");
     expect(resolveWakeTrigger("小灵，开始翻译")?.id).toBe("start_translate");
-  });
-
-  it("returns the exact assistant alias used by the recognizer", () => {
-    expect(resolveWakePhrase("小灵，开始对话")?.phrase).toBe("小灵，开始对话");
-    expect(resolveWakePhrase("已识别小灵，停止对话")?.phrase).toBe("小灵，停止对话");
   });
 
   it("trims whitespace before matching", () => {

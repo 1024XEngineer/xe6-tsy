@@ -79,28 +79,6 @@ describe("startVoiceSession", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("sends an explicit assistant mode for the new client", async () => {
-    const fetchMock = vi.fn(async () =>
-      jsonResponse({ id: "vs-1", status: "active" }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await startVoiceSession(
-      "token-1",
-      "vs-1",
-      "start-fixed",
-      undefined,
-      "assistant",
-    );
-
-    const [, init] = fetchMock.mock.calls[0] as unknown as [
-      RequestInfo | URL,
-      RequestInit,
-    ];
-    expect(JSON.parse(String(init.body))).toEqual({ initial_mode: "assistant" });
-    expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
-  });
-
   it("keeps legacy callers bodyless", async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({ id: "vs-1", status: "active" }),

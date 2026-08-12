@@ -553,6 +553,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WebRTCConnectionError' }
+  /realtime/v1/sessions/{session_id}/webrtc/config:
+    servers: [{ url: / }]
+    get:
+      operationId: getRealtimeWebRTCConfig
+      security: [{ realtimeTicket: [] }]
+      parameters: [{ name: session_id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: WebRTC connection configuration, content: { application/json: { schema: { $ref: '#/components/schemas/WebRTCConfig' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
 components:
   securitySchemes:
     accountContext:
@@ -999,6 +1006,11 @@ components:
         state: { $ref: '#/components/schemas/WebRTCConnectionState' }
         version: { type: integer, format: int64, minimum: 1 }
         updated_at: { type: string, format: date-time }
+    WebRTCConfig: { type: object, additionalProperties: false, required: [session_id, expires_at, ice_servers, ice_transport_policy, data_channel, control_data_channel, audio], properties: { session_id: { type: string }, expires_at: { type: string, format: date-time }, ice_servers: { type: array, items: { $ref: '#/components/schemas/WebRTCICEServer' } }, ice_transport_policy: { type: string, enum: [all] }, data_channel: { $ref: '#/components/schemas/WebRTCDataChannelConfig' }, control_data_channel: { $ref: '#/components/schemas/WebRTCControlDataChannelConfig' }, audio: { $ref: '#/components/schemas/WebRTCAudioConfig' } } }
+    WebRTCICEServer: { type: object, additionalProperties: false, required: [urls], properties: { urls: { type: array, items: { type: string } }, username: { type: string }, credential: { type: string } } }
+    WebRTCDataChannelConfig: { type: object, additionalProperties: false, required: [label, ordered], properties: { label: { type: string }, ordered: { type: boolean } } }
+    WebRTCControlDataChannelConfig: { type: object, additionalProperties: false, required: [label, ordered, protocol_version], properties: { label: { type: string, const: lingow-control-v1 }, ordered: { type: boolean, const: true }, protocol_version: { type: integer, const: 1 } } }
+    WebRTCAudioConfig: { type: object, additionalProperties: false, required: [uplink_codec, downlink_codec, sample_rate_hz, channels], properties: { uplink_codec: { type: string }, downlink_codec: { type: string }, sample_rate_hz: { type: integer, minimum: 1 }, channels: { type: integer, minimum: 1 } } }
     Account:
       type: object
       required: [id, kind, created_at]

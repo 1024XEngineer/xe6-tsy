@@ -144,6 +144,20 @@ func TestControlSchemasMatchGoContract(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			spec := readYAMLMap(t, filepath.Join("..", "..", path))
 			schemas := nestedMap(t, nestedMap(t, spec, "components"), "schemas")
+			if path == "openapi.yaml" {
+				configOperation := nestedMap(t, nestedMap(t, nestedMap(t, spec, "paths"), "/realtime/v1/sessions/{session_id}/webrtc/config"), "get")
+				configResponse := nestedMap(t, nestedMap(t, nestedMap(t, nestedMap(t, configOperation, "responses"), "200"), "content"), "application/json")
+				if nestedMap(t, configResponse, "schema")["$ref"] != "#/components/schemas/WebRTCConfig" {
+					t.Fatal("WebRTC config response schema is missing")
+				}
+				assertStringList(t, nestedMap(t, schemas, "WebRTCConfig")["required"], []string{"session_id", "expires_at", "ice_servers", "ice_transport_policy", "data_channel", "control_data_channel", "audio"})
+				controlSchema := nestedMap(t, schemas, "WebRTCControlDataChannelConfig")
+				assertStringList(t, controlSchema["required"], []string{"label", "ordered", "protocol_version"})
+				controlConfig := nestedMap(t, controlSchema, "properties")
+				if nestedMap(t, controlConfig, "label")["const"] != ControlDataChannelLabel || nestedMap(t, controlConfig, "ordered")["const"] != true || nestedMap(t, controlConfig, "protocol_version")["const"] != ControlProtocolVersion {
+					t.Fatal("control DataChannel config does not match Go constants")
+				}
+			}
 			assertStringList(t, nestedMap(t, schemas, "ControlPlaneErrorCode")["enum"], stringValues(controlPlaneErrorCodes))
 			assertStringList(t, nestedMap(t, schemas, "ControlModeSwitchCommand")["required"], []string{"runtime_instance_id", "operation_id", "expected_generation", "target_mode"})
 			assertStringList(t, nestedMap(t, schemas, "ControlModeSwitchRequest")["required"], []string{"protocol_version", "type", "request_id", "command"})

@@ -11,6 +11,7 @@ import (
 )
 
 func TestOpenRuntimeFromEnvUsesMemoryByDefault(t *testing.T) {
+	t.Setenv("APP_ENV", "local")
 	t.Setenv("REALTIME_OUTBOX", "")
 	runtime, err := OpenRuntimeFromEnv(context.Background())
 	if err != nil {
@@ -23,6 +24,7 @@ func TestOpenRuntimeFromEnvUsesMemoryByDefault(t *testing.T) {
 }
 
 func TestOpenRuntimeFromEnvUsesExplicitMemory(t *testing.T) {
+	t.Setenv("APP_ENV", "local")
 	t.Setenv("REALTIME_OUTBOX", RuntimeMemory)
 	runtime, err := OpenRuntimeFromEnv(context.Background())
 	if err != nil {
@@ -34,6 +36,16 @@ func TestOpenRuntimeFromEnvUsesExplicitMemory(t *testing.T) {
 	}
 	if err := runtime.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestOpenRuntimeFromEnvRequiresValkeyInProduction(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	for _, backend := range []string{"", RuntimeMemory} {
+		t.Setenv("REALTIME_OUTBOX", backend)
+		if _, err := OpenRuntimeFromEnv(t.Context()); err == nil || !strings.Contains(err.Error(), "required in production") {
+			t.Fatalf("OpenRuntimeFromEnv(%q) error = %v", backend, err)
+		}
 	}
 }
 

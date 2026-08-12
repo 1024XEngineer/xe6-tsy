@@ -77,7 +77,7 @@ Router 同时注册 `AssistantHandler`；两个 Handler 复用同一个 `SpeechO
 重新读取，不能盲目覆盖。模式切换只替换 Router 状态，不执行 Session Stop/Start，也不重新建立
 WebRTC。真正发生切换时，Coordinator 会先将 `realtime.mode.changed` 交给 Outbox，收到持久接受
 确认后再提交 ModeState；重复 operation 和未变更模式不会重复产生事件。默认 `memory` 后端只用于
-本地离线运行；生产环境应配置 `REALTIME_OUTBOX=valkey`。API 侧长期投影在后续独立阶段接入。
+本地离线运行；生产环境必须配置 `REALTIME_OUTBOX=valkey`，否则启动失败。API 侧长期投影在后续独立阶段接入。
 
 ## Local utterance VAD
 

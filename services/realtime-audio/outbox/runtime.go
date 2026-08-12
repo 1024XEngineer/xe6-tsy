@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/redis/go-redis/v9"
@@ -30,7 +31,12 @@ func (r *Runtime) Close() error {
 
 // OpenRuntimeFromEnv selects an outbox backend from REALTIME_OUTBOX and REDIS_URL.
 func OpenRuntimeFromEnv(ctx context.Context) (*Runtime, error) {
-	switch os.Getenv("REALTIME_OUTBOX") {
+	backend := strings.ToLower(strings.TrimSpace(os.Getenv("REALTIME_OUTBOX")))
+	production := strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production")
+	if production && (backend == "" || backend == RuntimeMemory) {
+		return nil, fmt.Errorf("initialize realtime outbox: REALTIME_OUTBOX=valkey is required in production")
+	}
+	switch backend {
 	case "", RuntimeMemory:
 		memory := NewMemoryOutbox()
 		return &Runtime{Outbox: memory, close: func() error { return nil }}, nil
@@ -66,6 +72,6 @@ func OpenRuntimeFromEnv(ctx context.Context) (*Runtime, error) {
 			close:  client.Close,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unsupported REALTIME_OUTBOX %q (supported: memory, valkey)", os.Getenv("REALTIME_OUTBOX"))
+		return nil, fmt.Errorf("unsupported REALTIME_OUTBOX %q (supported: memory, valkey)", backend)
 	}
 }

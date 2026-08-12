@@ -217,9 +217,16 @@ func decodeHTTPError(status int, body io.Reader, limit int64) error {
 }
 
 func decodeBody(reader io.Reader, value any, limit int64) error {
-	decoder := json.NewDecoder(io.LimitReader(reader, limit+1))
+	limited := &io.LimitedReader{R: reader, N: limit + 1}
+	decoder := json.NewDecoder(limited)
 	if err := decoder.Decode(value); err != nil {
 		return err
+	}
+	if limited.N == 0 {
+		return errors.New("response exceeds configured limit")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("response contains trailing JSON data")
 	}
 	return nil
 }

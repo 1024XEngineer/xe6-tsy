@@ -212,3 +212,32 @@ func TestHTTPModeTransportRejectsInvalidRequest(t *testing.T) {
 		t.Fatal("invalid request should fail before network")
 	}
 }
+
+func TestHTTPModeTransportRejectsInvalidResponseEnvelope(t *testing.T) {
+	valid := `{"session_id":"session-1","runtime_instance_id":"runtime-1","active_mode":"interpretation","generation":1,"phase":"active","last_operation_id":null,"updated_at":"2026-08-11T01:02:03Z"}`
+	for _, test := range []struct {
+		name        string
+		body        string
+		maxResponse int64
+	}{
+		{name: "trailing JSON", body: valid + ` {}`},
+		{name: "over limit", body: valid, maxResponse: int64(len(valid) - 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			transport := &HTTPModeTransport{
+				BaseURL:     server.URL,
+				MaxResponse: test.maxResponse,
+				Ticket: TicketSourceFunc(func(context.Context, string) (string, error) {
+					return "ticket", nil
+				}),
+			}
+			if _, err := transport.GetModeState(context.Background(), "session-1"); !errors.Is(err, ErrInvalidResponse) {
+				t.Fatalf("error = %v, want %v", err, ErrInvalidResponse)
+			}
+		})
+	}
+}

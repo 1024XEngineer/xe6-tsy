@@ -72,7 +72,7 @@ func TestSessionStartClientRejectsErrorsAndMismatchedResponse(t *testing.T) {
 		code int
 		want error
 	}{
-		{name: "API conflict", body: `{"error":{"code":"mode_operation_conflict"}}`, code: http.StatusConflict, want: ErrOperationConflict},
+		{name: "API conflict", body: `{"error":{"code":"runtime_operation_conflict"}}`, code: http.StatusConflict, want: ErrRuntimeOperationConflict},
 		{name: "mismatched session", body: `{"id":"other","account_id":"account-1","status":"active","started_at":null,"ended_at":null,"created_at":"2026-08-12T00:00:00Z"}`, code: http.StatusOK, want: ErrInvalidResponse},
 	} {
 		t.Run(test.name, func(t *testing.T) {

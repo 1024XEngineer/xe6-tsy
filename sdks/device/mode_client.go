@@ -16,15 +16,16 @@ import (
 )
 
 var (
-	ErrInvalidConfig       = errors.New("device client configuration is invalid")
-	ErrInvalidRequest      = errors.New("device mode request is invalid")
-	ErrInvalidResponse     = errors.New("device mode response is invalid")
-	ErrUnauthorized        = errors.New("device realtime ticket was rejected")
-	ErrGenerationConflict  = errors.New("device mode generation conflict")
-	ErrRuntimeInstanceGone = errors.New("device runtime instance changed")
-	ErrModeNotAvailable    = errors.New("device mode is not available")
-	ErrOperationConflict   = errors.New("device mode operation conflicts")
-	ErrOperationDiscarded  = errors.New("device mode operation was discarded")
+	ErrInvalidConfig            = errors.New("device client configuration is invalid")
+	ErrInvalidRequest           = errors.New("device mode request is invalid")
+	ErrInvalidResponse          = errors.New("device mode response is invalid")
+	ErrUnauthorized             = errors.New("device realtime ticket was rejected")
+	ErrGenerationConflict       = errors.New("device mode generation conflict")
+	ErrRuntimeInstanceGone      = errors.New("device runtime instance changed")
+	ErrModeNotAvailable         = errors.New("device mode is not available")
+	ErrOperationConflict        = errors.New("device mode operation conflicts")
+	ErrRuntimeOperationConflict = errors.New("device runtime operation conflicts")
+	ErrOperationDiscarded       = errors.New("device mode operation was discarded")
 
 	// Contract-named aliases make conflict handling easy to share with clients
 	// that already use the realtime error vocabulary.
@@ -199,6 +200,8 @@ func (e *HTTPError) Is(target error) bool {
 		return target == ErrModeNotAvailable
 	case "mode_operation_conflict":
 		return target == ErrOperationConflict
+	case "runtime_operation_conflict":
+		return target == ErrRuntimeOperationConflict
 	default:
 		return false
 	}

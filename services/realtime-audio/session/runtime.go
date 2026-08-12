@@ -102,7 +102,7 @@ func validateRuntimeUpdate(update ProcessingStateUpdate) error {
 		if update.CurrentTurnID == nil && update.CurrentPlaybackID == nil {
 			return nil
 		}
-	case RuntimeASRProcessing, RuntimeTranslating, RuntimeThinking:
+	case RuntimeASRProcessing, RuntimeTranslating, RuntimeThinking, RuntimeAssistantProcessing:
 		if turnRequired() && update.CurrentPlaybackID == nil {
 			return nil
 		}
@@ -120,10 +120,12 @@ func validRuntimeProgressTransition(current, next RuntimeState) bool {
 	}
 	switch current {
 	case RuntimeListening:
-		return next == RuntimeASRProcessing || next == RuntimeTranslating || next == RuntimeThinking || next == RuntimeTTSProcessing
+		return next == RuntimeASRProcessing || next == RuntimeTranslating || next == RuntimeThinking || next == RuntimeAssistantProcessing || next == RuntimeTTSProcessing
 	case RuntimeASRProcessing:
-		return next == RuntimeTranslating || next == RuntimeThinking || next == RuntimeListening
+		return next == RuntimeTranslating || next == RuntimeThinking || next == RuntimeAssistantProcessing || next == RuntimeListening
 	case RuntimeTranslating:
+		return next == RuntimeTTSProcessing || next == RuntimeListening
+	case RuntimeAssistantProcessing:
 		return next == RuntimeTTSProcessing || next == RuntimeListening
 	case RuntimeThinking:
 		return next == RuntimeTTSProcessing || next == RuntimeListening

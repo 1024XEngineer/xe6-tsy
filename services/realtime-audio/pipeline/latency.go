@@ -18,6 +18,9 @@ func (l LatencyLogger) Checkpoint(stage string, turn TurnContext, since time.Tim
 		"session_id", turn.SessionID,
 		"turn_id", turn.ID,
 		"trace_id", turn.TraceID,
+		"mode", turn.Mode.Mode,
+		"runtime_instance_id", turn.Mode.RuntimeInstanceID,
+		"generation", turn.Mode.Generation,
 	}
 	if !since.IsZero() {
 		fields = append(fields, "elapsed_ms", time.Since(since).Milliseconds())

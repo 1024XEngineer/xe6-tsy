@@ -8,6 +8,7 @@ import (
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
 func TestHandlerGetsAuthoritativeModeState(t *testing.T) {
@@ -22,6 +23,17 @@ func TestHandlerGetsAuthoritativeModeState(t *testing.T) {
 	}
 	if state != fixture.modes.state || fixture.modes.getCalls != 1 {
 		t.Fatalf("mode state = %#v, calls = %d", state, fixture.modes.getCalls)
+	}
+}
+
+func TestHandlerMapsMissingRuntimeForModeState(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.modes.getErr = session.ErrRuntimeNotFound
+
+	response := fixture.request(http.MethodGet, "/realtime/v1/sessions/session-1/mode", "", "")
+	if response.Code != http.StatusNotFound ||
+		!stringsContainErrorCode(response.Body.String(), string(realtimev1.ErrorRuntimeNotFound)) {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -108,6 +120,7 @@ func TestHandlerMapsModeErrors(t *testing.T) {
 		{name: "generation conflict", err: runtime.ErrModeGenerationConflict, status: http.StatusConflict, code: realtimev1.ErrorModeGenerationConflict},
 		{name: "runtime mismatch", err: runtime.ErrModeRuntimeInstanceMismatch, status: http.StatusConflict, code: realtimev1.ErrorModeRuntimeInstanceMismatch},
 		{name: "operation conflict", err: runtime.ErrModeOperationConflict, status: http.StatusConflict, code: realtimev1.ErrorModeOperationConflict},
+		{name: "runtime not found", err: session.ErrRuntimeNotFound, status: http.StatusNotFound, code: realtimev1.ErrorRuntimeNotFound},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

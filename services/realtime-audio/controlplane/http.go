@@ -738,6 +738,8 @@ func mapError(err error) (int, string) {
 		errors.Is(err, webrtc.ErrTicketExpired), errors.Is(err, webrtc.ErrTicketSessionMismatch),
 		errors.Is(err, webrtc.ErrTicketAccountRequired):
 		return http.StatusUnauthorized, "unauthorized"
+	case errors.Is(err, errModeRuntimeNotFound):
+		return http.StatusNotFound, string(realtimev1.ErrorRuntimeNotFound)
 	case errors.Is(err, session.ErrRuntimeNotFound):
 		return http.StatusNotFound, "not_found"
 	case errors.Is(err, runtime.ErrModeNotAvailable):

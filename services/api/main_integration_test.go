@@ -339,7 +339,7 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 		"/api/v1/voice-sessions/"+created.ID+"/start",
 		account.Tokens.AccessToken,
 		"start-session",
-		http.NoBody,
+		strings.NewReader(`{"initial_mode":"assistant"}`),
 	)
 	if start.Code != http.StatusOK {
 		t.Fatalf("start status = %d, body = %s", start.Code, start.Body.String())
@@ -348,8 +348,15 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 	if err := json.Unmarshal(start.Body.Bytes(), &started); err != nil {
 		t.Fatalf("decode started session: %v", err)
 	}
-	if started.Status != sessions.StatusActive || realtime.startCalls.Load() != 1 {
-		t.Fatalf("started session = %#v, realtime start calls = %d", started, realtime.startCalls.Load())
+	if started.Status != sessions.StatusActive ||
+		realtime.startCalls.Load() != 1 ||
+		realtime.initialMode.Load() != realtimev1.ModeAssistant {
+		t.Fatalf(
+			"started session = %#v, realtime start calls = %d, initial mode = %q",
+			started,
+			realtime.startCalls.Load(),
+			realtime.initialMode.Load(),
+		)
 	}
 	startReplay := serveAPIRequest(
 		t,
@@ -358,7 +365,7 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 		"/api/v1/voice-sessions/"+created.ID+"/start",
 		account.Tokens.AccessToken,
 		"start-session",
-		http.NoBody,
+		strings.NewReader(`{"initial_mode":"assistant"}`),
 	)
 	if startReplay.Code != http.StatusOK {
 		t.Fatalf("start replay status = %d, body = %s", startReplay.Code, startReplay.Body.String())
@@ -660,6 +667,7 @@ type sessionRuntimeControlPlane struct {
 	stopFailures    atomic.Int32
 	runtimeCalls    atomic.Int32
 	operationID     atomic.Value
+	initialMode     atomic.Value
 	connectionState atomic.Value
 	stopState       atomic.Value
 }
@@ -679,6 +687,7 @@ func newSessionRuntimeControlPlane(t *testing.T, ticketSecret string) *sessionRu
 	}
 	realtime := &sessionRuntimeControlPlane{}
 	realtime.operationID.Store("")
+	realtime.initialMode.Store(realtimev1.ModeInterpretation)
 	realtime.connectionState.Store(realtimev1.ConnectionConnected)
 	realtime.stopState.Store(realtimev1.RuntimeStopped)
 	handler, err := controlplane.New(controlplane.Dependencies{
@@ -742,6 +751,7 @@ func (p *sessionRuntimeControlPlane) Start(_ context.Context, command rtsession.
 	now := time.Now().UTC()
 	p.startCalls.Add(1)
 	p.operationID.Store(command.OperationID)
+	p.initialMode.Store(command.InitialMode)
 	return realtimev1.RuntimeSnapshot{
 		SessionID:        command.SessionID,
 		StartOperationID: command.OperationID,

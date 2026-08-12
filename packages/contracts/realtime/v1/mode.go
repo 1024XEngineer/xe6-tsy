@@ -3,6 +3,7 @@ package realtimev1
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -16,7 +17,10 @@ const (
 	AssistantReplyEventVersion = 1
 )
 
-var ErrInvalidModeChangedEvent = errors.New("invalid mode changed event")
+var (
+	ErrInvalidModeChangedEvent    = errors.New("invalid mode changed event")
+	ErrInvalidAssistantReplyEvent = errors.New("invalid assistant reply event")
+)
 
 // Mode identifies the business handler used after the shared ASR final result.
 type Mode string
@@ -167,4 +171,38 @@ type AssistantReplyEvent struct {
 	Text              string    `json:"text"`
 	Language          string    `json:"language"`
 	OccurredAt        time.Time `json:"occurred_at"`
+}
+
+// Validate enforces the assistant.reply v1 contract before realtime publishes a reply.
+// Assistant replies are independent of translation FinalTurns, but still carry the
+// runtime identity and generation needed to reject stale downstream work.
+func (event AssistantReplyEvent) Validate() error {
+	switch {
+	case event.EventVersion != AssistantReplyEventVersion:
+		return invalidAssistantReplyField("event_version")
+	case event.EventID == "":
+		return invalidAssistantReplyField("event_id")
+	case event.TraceID == "":
+		return invalidAssistantReplyField("trace_id")
+	case event.SessionID == "":
+		return invalidAssistantReplyField("session_id")
+	case event.TurnID == "":
+		return invalidAssistantReplyField("turn_id")
+	case event.RuntimeInstanceID == "":
+		return invalidAssistantReplyField("runtime_instance_id")
+	case event.Generation < 1:
+		return invalidAssistantReplyField("generation")
+	case strings.TrimSpace(event.Text) == "":
+		return invalidAssistantReplyField("text")
+	case strings.TrimSpace(event.Language) == "":
+		return invalidAssistantReplyField("language")
+	case event.OccurredAt.IsZero():
+		return invalidAssistantReplyField("occurred_at")
+	default:
+		return nil
+	}
+}
+
+func invalidAssistantReplyField(field string) error {
+	return fmt.Errorf("%w: %s", ErrInvalidAssistantReplyEvent, field)
 }

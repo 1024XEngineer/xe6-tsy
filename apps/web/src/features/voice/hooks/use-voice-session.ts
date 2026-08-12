@@ -220,6 +220,7 @@ export function useVoiceSession() {
     lastError: null,
     wakeStatus: "idle",
   });
+  const activeMode = debug.modeState?.active_mode ?? initialMode;
 
   const configRef = useRef<VoiceSessionConfig>(voiceConfig);
   const runningRef = useRef(false);
@@ -476,7 +477,12 @@ export function useVoiceSession() {
       else if (phase === "playing") dispatch({ type: "PLAYING" });
       else dispatch({ type: "ACTIVATE" });
 
-      setStatusMessage(mapRuntimeToStatus(snapshot.runtime_state, initialMode));
+      setStatusMessage(
+        mapRuntimeToStatus(
+          snapshot.runtime_state,
+          modeStateRef.current?.active_mode ?? initialMode,
+        ),
+      );
       setDebug((prev) => ({
         ...prev,
         runtimeState: snapshot.runtime_state,
@@ -904,10 +910,11 @@ export function useVoiceSession() {
         }
         if (command === "stop") {
           if (!runningRef.current && !sessionIdRef.current) return;
+          const currentMode = modeStateRef.current?.active_mode ?? initialMode;
           setHintMessage(
             acceptedByWindow
-              ? `已确认「${keyword}」，正在停止${initialMode === "assistant" ? "对话" : "传译"}…`
-              : `已识别「${keyword}」，正在停止${initialMode === "assistant" ? "对话" : "传译"}…`,
+              ? `已确认「${keyword}」，正在停止${currentMode === "assistant" ? "对话" : "传译"}…`
+              : `已识别「${keyword}」，正在停止${currentMode === "assistant" ? "对话" : "传译"}…`,
           );
           void endRef.current();
           return;
@@ -973,7 +980,7 @@ export function useVoiceSession() {
       state,
       latestTurn: state.turns.at(-1),
       latestAssistantReply: state.assistantReplies.at(-1),
-      initialMode,
+      activeMode,
       statusMessage,
       hintMessage: hintMessage ?? state.notice,
       automaticOutputMessage,
@@ -988,10 +995,10 @@ export function useVoiceSession() {
     }),
     [
       debug,
+      activeMode,
       automaticOutputMessage,
       configSyncStatus,
       hintMessage,
-      initialMode,
       state,
       statusMessage,
       switchMode,

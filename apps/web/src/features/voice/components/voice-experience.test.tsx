@@ -585,9 +585,10 @@ describe("VoiceExperience", () => {
   });
 
   it("connects through xe6-tsy APIs and shows the newest bilingual turn", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
     render(<VoiceExperience />);
 
-    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
 
     await waitFor(() => {
       expect(screen.getByText("正在聆听")).toBeInTheDocument();
@@ -614,6 +615,69 @@ describe("VoiceExperience", () => {
     await waitFor(() => {
       expect(modeRequests).toBe(1);
       expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+    });
+  });
+
+  it("uses the runtime mode for controls and output after switching to interpretation", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+    });
+
+    dataMessageHandler?.({
+      type: "assistant.reply",
+      id: "reply-before-interpretation",
+      turn_id: "turn-before-interpretation",
+      text: "这是切换前的助手回复。",
+      language: "zh-CN",
+    });
+    expect(await screen.findByText("这是切换前的助手回复。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "同声传译" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "停止翻译" })).toBeVisible();
+      expect(screen.queryByText("这是切换前的助手回复。")).not.toBeInTheDocument();
+      expect(
+        screen.getByText("Hello, how can I get to the main venue?"),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("uses the runtime mode for controls and output after switching to assistant", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+      expect(
+        screen.getByText("Hello, how can I get to the main venue?"),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "AI 助手" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "停止对话" })).toBeVisible();
+      expect(
+        screen.queryByText("Hello, how can I get to the main venue?"),
+      ).not.toBeInTheDocument();
+    });
+
+    dataMessageHandler?.({
+      type: "assistant.reply",
+      id: "reply-after-assistant",
+      turn_id: "turn-after-assistant",
+      text: "切换到助手后显示这条回复。",
+      language: "zh-CN",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("切换到助手后显示这条回复。")).toBeInTheDocument();
+      expect(
+        screen.queryByText("Hello, how can I get to the main venue?"),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -647,8 +711,9 @@ describe("VoiceExperience", () => {
   });
 
   it("opens the complete history from the newest subtitle", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
 
     await waitFor(() => {
       expect(

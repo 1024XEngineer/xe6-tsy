@@ -18,7 +18,7 @@ export function VoiceExperience() {
     state,
     latestTurn,
     latestAssistantReply,
-    initialMode,
+    activeMode,
     statusMessage,
     hintMessage,
     automaticOutputMessage,
@@ -33,6 +33,8 @@ export function VoiceExperience() {
   } = useVoiceSession();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const hasVisibleLatest =
+    activeMode === "assistant" ? Boolean(latestAssistantReply) : Boolean(latestTurn);
 
   const handleToggle = () => {
     setSettingsOpen(false);
@@ -72,15 +74,12 @@ export function VoiceExperience() {
 
         <motion.section
           animate={{
-            y:
-              state.phase === "active" && (latestAssistantReply || latestTurn)
-                ? "-9dvh"
-                : 0,
+            y: state.phase === "active" && hasVisibleLatest ? "-9dvh" : 0,
           }}
           className={styles.voiceStage}
           transition={{ type: "spring", stiffness: 110, damping: 21 }}
         >
-          <VoiceControl mode={initialMode} phase={state.phase} onActivate={handleToggle} />
+          <VoiceControl mode={activeMode} phase={state.phase} onActivate={handleToggle} />
           <p aria-live="polite" className={styles.outputModeText}>
             {formatActivePair(voiceConfig)}
           </p>
@@ -149,11 +148,12 @@ export function VoiceExperience() {
           ) : null}
         </motion.section>
 
-        {latestAssistantReply && initialMode === "assistant" && !historyOpen ? (
+        {!historyOpen && activeMode === "assistant" && latestAssistantReply ? (
           <div className={styles.latestSlot}>
             <LatestAssistantReply reply={latestAssistantReply} />
           </div>
-        ) : latestTurn && !historyOpen ? (
+        ) : null}
+        {!historyOpen && activeMode === "interpretation" && latestTurn ? (
           <div className={styles.latestSlot}>
             <LatestTranslation
               onOpen={() => setHistoryOpen(true)}

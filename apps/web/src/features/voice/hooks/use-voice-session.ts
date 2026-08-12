@@ -41,6 +41,7 @@ import { ModeSnapshotTracker } from "../lib/realtime-state";
 import { RealtimeTicketCache, withRealtimeTicket } from "../lib/realtime-ticket-cache";
 import { parseAssistantReply } from "../lib/assistant-replies";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
+import { sendWakeWordDetectedSignal } from "../lib/wake-word-signal";
 import {
   loadVoiceConfig,
   normalizeVoiceConfig,
@@ -920,10 +921,22 @@ export function useVoiceSession() {
           return;
         }
         if (command === "listen") {
-          const snapshot = localCommandWindow.open();
-          setCommandWindow(snapshot);
+          const session = webrtcRef.current;
+          if (!runningRef.current || !sessionIdRef.current || !session) return;
+
+          const result = sendWakeWordDetectedSignal(session);
+          if (result.ok) {
+            const snapshot = localCommandWindow.open();
+            setCommandWindow(snapshot);
+            setHintMessage(
+              `已识别「${keyword}」，请在 5 秒内说「小灵，开始翻译」或「小灵，停止翻译」。`,
+            );
+            return;
+          }
           setHintMessage(
-            `已识别「${keyword}」，请在 5 秒内说「小灵，开始翻译」或「小灵，停止翻译」。`,
+            result.reason === "data_channel_not_open"
+              ? "已识别唤醒词，但实时控制通道尚未就绪，请重试。"
+              : "已识别唤醒词，但发送失败，请重试。",
           );
         }
       },

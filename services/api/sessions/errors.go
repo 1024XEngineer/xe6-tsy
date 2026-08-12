@@ -22,6 +22,11 @@ const (
 	CodeRealtimeStopFailed     ErrorCode = "realtime_stop_failed"
 	CodeRuntimeUnavailable     ErrorCode = "runtime_state_unavailable"
 	CodeWebRTCUnavailable      ErrorCode = "webrtc_state_unavailable"
+	CodeModeNotAvailable       ErrorCode = "mode_not_available"
+	CodeModeGenerationConflict ErrorCode = "mode_generation_conflict"
+	CodeModeRuntimeMismatch    ErrorCode = "mode_runtime_instance_mismatch"
+	CodeModeOperationConflict  ErrorCode = "mode_operation_conflict"
+	CodeModeUnavailable        ErrorCode = "mode_unavailable"
 	CodeNotImplemented         ErrorCode = "not_implemented"
 )
 
@@ -43,6 +48,11 @@ var (
 	ErrRealtimeStopFailed     = errors.New(string(CodeRealtimeStopFailed))
 	ErrRuntimeUnavailable     = errors.New(string(CodeRuntimeUnavailable))
 	ErrWebRTCUnavailable      = errors.New(string(CodeWebRTCUnavailable))
+	ErrModeNotAvailable       = errors.New(string(CodeModeNotAvailable))
+	ErrModeGenerationConflict = errors.New(string(CodeModeGenerationConflict))
+	ErrModeRuntimeMismatch    = errors.New(string(CodeModeRuntimeMismatch))
+	ErrModeOperationConflict  = errors.New(string(CodeModeOperationConflict))
+	ErrModeUnavailable        = errors.New(string(CodeModeUnavailable))
 	// ErrRuntimeSnapshotNotFound is an adapter-only signal whose query meaning
 	// depends on the persisted business state.
 	ErrRuntimeSnapshotNotFound = errors.New("sessions: runtime snapshot not found")

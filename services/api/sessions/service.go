@@ -26,6 +26,7 @@ type Dependencies struct {
 	LanguageConfigs            LanguageConfigReader
 	WebRTCConnections          WebRTCConnectionReader
 	Realtime                   RealtimeLifecycle
+	Modes                      RealtimeModeControl
 	IDs                        IDGenerator
 	Clock                      Clock
 	Logger                     *slog.Logger
@@ -125,6 +126,18 @@ type DetailInput struct {
 	SessionID string
 }
 
+// SwitchModeInput combines authenticated ownership with the runtime identity
+// and generation supplied by the latest ModeSnapshot.
+type SwitchModeInput struct {
+	AccountID          string
+	SessionID          string
+	RuntimeInstanceID  string
+	OperationID        string
+	TraceID            string
+	ExpectedGeneration int64
+	TargetMode         Mode
+}
+
 // ListInput carries account-scoped persistent filters only.
 type ListInput struct {
 	AccountID string
@@ -143,7 +156,10 @@ func validateIdentity(accountID string, sessionID string) error {
 	return nil
 }
 
-const maxIdempotencyKeyLength = 200
+const (
+	maxIdempotencyKeyLength = 200
+	maxRequestIDLength      = 200
+)
 
 func validateIdempotency(key string, requestHash string) error {
 	if key == "" || len(key) > maxIdempotencyKeyLength || requestHash == "" {

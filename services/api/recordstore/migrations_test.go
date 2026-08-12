@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 27 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 27", len(migrations))
+	if len(migrations) != 28 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 28", len(migrations))
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -347,5 +347,24 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if assistantLLMUsage.Version != 27 || assistantLLMUsage.Name != "assistant_llm_usage" ||
 		!strings.Contains(assistantLLMUsage.SQL, "'assistant_llm'") {
 		t.Fatalf("migration = %#v, want version 27 assistant LLM usage constraint", assistantLLMUsage)
+	}
+
+	modeProjection := migrations[27]
+	if modeProjection.Version != 28 || modeProjection.Name != "realtime_mode_projection" {
+		t.Fatalf("migration = %#v, want version 28 realtime mode projection", modeProjection)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE realtime_mode_events",
+		"payload_hash BYTEA NOT NULL",
+		"resulting_generation >= 2",
+		"CREATE TRIGGER realtime_mode_events_reject_mutations",
+		"BEFORE UPDATE OR DELETE ON realtime_mode_events",
+		"CREATE TABLE realtime_mode_projections",
+		"latest-observed audit projection",
+		"event_id as a deterministic tie-breaker",
+	} {
+		if !strings.Contains(strings.ToLower(modeProjection.SQL), strings.ToLower(expected)) {
+			t.Fatalf("mode projection migration does not contain %q", expected)
+		}
 	}
 }

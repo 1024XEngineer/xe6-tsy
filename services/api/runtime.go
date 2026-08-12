@@ -16,6 +16,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/modeprojection"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
@@ -36,6 +37,7 @@ type configuredRuntime struct {
 	dispatcher            *delivery.OutboxDispatcher
 	worker                *delivery.Worker
 	usageConsumer         *usage.Consumer
+	modeConsumer          backgroundWorker
 	accountService        accounts.Service
 	usageService          usage.Service
 	deliveryService       delivery.Service
@@ -177,14 +179,9 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		)
 	}
 
-	redisOptions, err := redis.ParseURL(processConfig.RedisURL)
+	redisClient, err := openValkeyClient(startupCtx, processConfig.RedisURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse REDIS_URL: %w", err)
-	}
-	redisClient := redis.NewClient(redisOptions)
-	if err := redisClient.Ping(startupCtx).Err(); err != nil {
-		redisClient.Close()
-		return nil, nil, fmt.Errorf("ping Valkey: %w", err)
+		return nil, nil, err
 	}
 
 	accountRepository := accounts.NewPostgresRepository(pool)
@@ -240,6 +237,14 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		return nil, nil, fmt.Errorf("initialize usage stream: %w", err)
 	}
 	usageConsumer := usage.NewConsumer(usageStream, usageService)
+	var modeConsumer backgroundWorker
+	if processConfig.SessionRuntimeEnabled {
+		modeConsumer, err = newModeProjectionConsumer(startupCtx, pool, redisClient, processConfig)
+		if err != nil {
+			redisClient.Close()
+			return nil, nil, err
+		}
+	}
 
 	runtime := &configuredRuntime{
 		pool:       pool,
@@ -251,6 +256,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 			Provider:     provider,
 		}),
 		usageConsumer:         usageConsumer,
+		modeConsumer:          modeConsumer,
 		accountService:        records.accounts,
 		usageService:          usageService,
 		deliveryService:       deliveryService,
@@ -266,6 +272,38 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	}
 	closeOnError = false
 	return runtime, languageDependencies.handler, nil
+}
+
+func openValkeyClient(ctx context.Context, rawURL string) (*redis.Client, error) {
+	redisOptions, err := redis.ParseURL(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse REDIS_URL: %w", err)
+	}
+	client := redis.NewClient(redisOptions)
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("ping Valkey: %w", err)
+	}
+	return client, nil
+}
+
+func newModeProjectionConsumer(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	client *redis.Client,
+	processConfig config.Config,
+) (*modeprojection.Consumer, error) {
+	stream, err := modeprojection.NewValkeyStream(
+		ctx,
+		client,
+		processConfig.ModeChangedStream,
+		processConfig.ModeChangedGroup,
+		processConfig.ModeChangedConsumer,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initialize mode changed stream: %w", err)
+	}
+	return modeprojection.NewConsumer(stream, modeprojection.NewPostgresRepository(pool)), nil
 }
 
 func configuredProvider(processConfig config.Config, smtpMailer *delivery.SMTPMailer, wecomClient *delivery.WeComClient) (delivery.Provider, error) {
@@ -347,6 +385,9 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	if r.sessionRuntimeEnabled && r.sessionRecovery == nil {
 		return errors.New("configured runtime is incomplete")
 	}
+	if r.sessionRuntimeEnabled && r.modeConsumer == nil {
+		return errors.New("configured runtime is incomplete")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	componentCtx, cancelComponents := context.WithCancel(ctx)
@@ -368,6 +409,10 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	if r.usageConsumer != nil {
 		components.Add(1)
 		go runDeliveryComponent(componentCtx, "usage consumer", r.usageConsumer.Run, errs, &components)
+	}
+	if r.modeConsumer != nil {
+		components.Add(1)
+		go runDeliveryComponent(componentCtx, "mode projection consumer", r.modeConsumer.Run, errs, &components)
 	}
 	if r.authMaintainer != nil {
 		components.Add(1)

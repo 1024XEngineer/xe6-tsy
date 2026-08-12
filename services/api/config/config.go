@@ -49,6 +49,9 @@ type Config struct {
 	UsageStream           string
 	UsageGroup            string
 	UsageConsumer         string
+	ModeChangedStream     string
+	ModeChangedGroup      string
+	ModeChangedConsumer   string
 	SMTPHost              string
 	SMTPPort              string
 	SMTPUser              string
@@ -102,6 +105,9 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 		UsageStream:           value("LINGOW_USAGE_STREAM", ""),
 		UsageGroup:            value("LINGOW_USAGE_GROUP", ""),
 		UsageConsumer:         value("LINGOW_USAGE_CONSUMER", ""),
+		ModeChangedStream:     value("LINGOW_MODE_CHANGED_STREAM", ""),
+		ModeChangedGroup:      value("LINGOW_MODE_CHANGED_GROUP", ""),
+		ModeChangedConsumer:   value("LINGOW_MODE_CHANGED_CONSUMER", ""),
 		SMTPHost:              value("LINGOW_SMTP_HOST", ""),
 		SMTPPort:              value("LINGOW_SMTP_PORT", "587"),
 		SMTPUser:              value("LINGOW_SMTP_USER", ""),
@@ -183,6 +189,7 @@ func validateSessionRuntime(config Config) error {
 	}{
 		{key: "REALTIME_BASE_URL", value: config.RealtimeBaseURL},
 		{key: "REALTIME_TICKET_SECRET", value: config.RealtimeTicketSecret},
+		{key: "REDIS_URL", value: config.RedisURL},
 	} {
 		if required.value == "" {
 			return fmt.Errorf("%w: %s is required when session runtime is enabled", domain.ErrInvalidArgument, required.key)
@@ -196,6 +203,9 @@ func validateSessionRuntime(config Config) error {
 	}
 	if config.RealtimeHTTPTimeout <= 0 || config.RealtimeHTTPTimeout > maxRealtimeHTTPTimeout {
 		return fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be between 1ns and %s", domain.ErrInvalidArgument, maxRealtimeHTTPTimeout)
+	}
+	if strings.EqualFold(config.AppEnv, "production") && config.ModeChangedConsumer == "" {
+		return fmt.Errorf("%w: LINGOW_MODE_CHANGED_CONSUMER is required in production when session runtime is enabled", domain.ErrInvalidArgument)
 	}
 	return nil
 }

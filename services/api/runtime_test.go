@@ -350,10 +350,26 @@ func TestConfiguredRuntimeServeRejectsEnabledSessionRuntimeWithoutRecovery(t *te
 	}
 }
 
+func TestConfiguredRuntimeServeRejectsEnabledSessionRuntimeWithoutModeConsumer(t *testing.T) {
+	runtime := newRuntimeServeFixture(t)
+	runtime.sessionRuntimeEnabled = true
+	runtime.sessionRecovery = stubFinalTurnWorker{}
+	runtime.modeConsumer = nil
+
+	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	if err == nil {
+		t.Fatal("Serve() succeeded with enabled session runtime and nil mode consumer")
+	}
+	if errors.Is(err, delivery.ErrWorkerNotConfigured) {
+		t.Fatalf("Serve() error = %v, want incomplete runtime before delivery worker starts", err)
+	}
+}
+
 func TestConfiguredRuntimeServeSupervisesSessionRecoveryWorker(t *testing.T) {
 	runtime := newRuntimeBlockingServeFixture(t)
 	runtime.sessionRuntimeEnabled = true
 	runtime.sessionRecovery = failFastFinalTurnWorker{err: sessions.ErrInvalidDependency}
+	runtime.modeConsumer = stubFinalTurnWorker{}
 
 	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
 	if err == nil || !errors.Is(err, sessions.ErrInvalidDependency) {

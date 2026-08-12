@@ -16,7 +16,6 @@ type Registry struct {
 	modeCommandsRuntimeMismatch     atomic.Uint64
 	modeCommandsOperationConflict   atomic.Uint64
 	modeCommandsModeUnavailable     atomic.Uint64
-	modeCommandsTransitionPending   atomic.Uint64
 	modeCommandsEventUnavailable    atomic.Uint64
 	modeCommandsOtherFailure        atomic.Uint64
 	modeChangePublicationsAttempted atomic.Uint64
@@ -55,7 +54,6 @@ type ModeCommandSnapshot struct {
 	RuntimeMismatch    uint64 `json:"runtime_mismatch"`
 	OperationConflict  uint64 `json:"operation_conflict"`
 	ModeUnavailable    uint64 `json:"mode_unavailable"`
-	TransitionPending  uint64 `json:"transition_pending"`
 	EventUnavailable   uint64 `json:"event_unavailable"`
 	OtherFailure       uint64 `json:"other_failure"`
 }
@@ -136,7 +134,6 @@ func (r *Registry) Current() Snapshot {
 			RuntimeMismatch:    r.modeCommandsRuntimeMismatch.Load(),
 			OperationConflict:  r.modeCommandsOperationConflict.Load(),
 			ModeUnavailable:    r.modeCommandsModeUnavailable.Load(),
-			TransitionPending:  r.modeCommandsTransitionPending.Load(),
 			EventUnavailable:   r.modeCommandsEventUnavailable.Load(),
 			OtherFailure:       r.modeCommandsOtherFailure.Load(),
 		},

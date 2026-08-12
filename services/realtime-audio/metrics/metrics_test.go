@@ -26,7 +26,6 @@ func TestObservedModeControlClassifiesEveryCommandOnce(t *testing.T) {
 		{name: "runtime mismatch", err: runtime.ErrModeRuntimeInstanceMismatch, assert: func(t testing.TB, got ModeCommandSnapshot) { assertCounter(t, got.RuntimeMismatch) }},
 		{name: "operation conflict", err: runtime.ErrModeOperationConflict, assert: func(t testing.TB, got ModeCommandSnapshot) { assertCounter(t, got.OperationConflict) }},
 		{name: "mode unavailable", err: runtime.ErrModeNotAvailable, assert: func(t testing.TB, got ModeCommandSnapshot) { assertCounter(t, got.ModeUnavailable) }},
-		{name: "transition pending", err: runtime.ErrModeTransitionPending, assert: func(t testing.TB, got ModeCommandSnapshot) { assertCounter(t, got.TransitionPending) }},
 		{name: "wrapped event unavailable", err: fmt.Errorf("publish: %w", runtime.ErrModeEventUnavailable), assert: func(t testing.TB, got ModeCommandSnapshot) { assertCounter(t, got.EventUnavailable) }},
 		{name: "unexpected failure", err: errors.New("unexpected"), assert: func(t testing.TB, got ModeCommandSnapshot) { assertCounter(t, got.OtherFailure) }},
 		{name: "unknown success status", result: realtimev1.SwitchModeResult{}, assert: func(t testing.TB, got ModeCommandSnapshot) { assertCounter(t, got.OtherFailure) }},
@@ -146,7 +145,7 @@ func TestRegistryCountsBoundedFailureAndLifecycleSignals(t *testing.T) {
 func modeCommandOutcomeSum(snapshot ModeCommandSnapshot) uint64 {
 	return snapshot.AppliedResponse + snapshot.UnchangedResponse + snapshot.GenerationConflict +
 		snapshot.RuntimeMismatch + snapshot.OperationConflict + snapshot.ModeUnavailable +
-		snapshot.TransitionPending + snapshot.EventUnavailable + snapshot.OtherFailure
+		snapshot.EventUnavailable + snapshot.OtherFailure
 }
 
 func assertCounter(t testing.TB, got uint64) {

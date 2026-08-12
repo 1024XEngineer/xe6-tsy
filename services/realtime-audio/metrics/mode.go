@@ -68,8 +68,6 @@ func (r *Registry) recordModeCommand(result realtimev1.SwitchModeResult, err err
 		r.modeCommandsOperationConflict.Add(1)
 	case errors.Is(err, runtime.ErrModeNotAvailable):
 		r.modeCommandsModeUnavailable.Add(1)
-	case errors.Is(err, runtime.ErrModeTransitionPending):
-		r.modeCommandsTransitionPending.Add(1)
 	case errors.Is(err, runtime.ErrModeEventUnavailable):
 		r.modeCommandsEventUnavailable.Add(1)
 	default:

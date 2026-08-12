@@ -199,7 +199,7 @@ DataChannel、Track 和 PeerConnection。连接租约或空闲超时负责兜底
 - `applied_response` / `unchanged_response`：Coordinator 返回成功；精确重放仍属于响应结果，不代表再次发生状态切换。
 - `generation_conflict` / `runtime_mismatch`：调用方持有的快照已过期或属于旧 runtime；这是客户端一致性信号，不是服务故障。
 - `operation_conflict`：同一 operation 使用了不同 payload；通常表示调用方幂等键复用错误。
-- `mode_unavailable` / `transition_pending`：模式未注册或前一个事件仍等待持久接受。
+- `mode_unavailable`：目标模式没有在当前 runtime 注册。
 - `event_unavailable` / `other_failure`：模式事件无法持久化或发生未分类错误。
 
 `mode_change_publications.attempted` 只统计真实状态变更的事件发布尝试；在一个已完成的采集窗口内应满足

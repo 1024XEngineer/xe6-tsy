@@ -193,3 +193,36 @@ func TestOpenAPISpeakerPendingBelongsToVoiceTurns(t *testing.T) {
 		t.Fatalf("VoiceTurn speaker_code description = %q", turnDescription)
 	}
 }
+
+func TestPublicRecordSchemasExcludeInternalSpeechProfileIDs(t *testing.T) {
+	voiceRecordsData, err := os.ReadFile(filepath.Join("..", "..", "openapi", "voice-records.v1.yaml"))
+	if err != nil {
+		t.Fatalf("read voice-records OpenAPI spec: %v", err)
+	}
+	var voiceRecords map[string]any
+	if err := yaml.Unmarshal(voiceRecordsData, &voiceRecords); err != nil {
+		t.Fatalf("parse voice-records OpenAPI spec: %v", err)
+	}
+	voiceTurnProperties := mapValue(t, mapValue(t, mapValue(t, voiceRecords, "components"), "schemas"), "VoiceTurn")
+	properties := mapValue(t, voiceTurnProperties, "properties")
+	for _, field := range []string{"asr_profile_id", "tts_profile_id"} {
+		if _, exists := properties[field]; exists {
+			t.Fatalf("public VoiceTurn must not expose %q", field)
+		}
+	}
+
+	rootData, err := os.ReadFile(filepath.Join("..", "..", "openapi.yaml"))
+	if err != nil {
+		t.Fatalf("read root OpenAPI spec: %v", err)
+	}
+	var root map[string]any
+	if err := yaml.Unmarshal(rootData, &root); err != nil {
+		t.Fatalf("parse root OpenAPI spec: %v", err)
+	}
+	finalTurnSnapshot := mapValue(t, mapValue(t, mapValue(t, root, "components"), "schemas"), "FinalTurnSnapshot")
+	for _, field := range []string{"asr_profile_id", "tts_profile_id"} {
+		if _, exists := mapValue(t, finalTurnSnapshot, "properties")[field]; exists {
+			t.Fatalf("public FinalTurnSnapshot must not expose %q", field)
+		}
+	}
+}

@@ -66,10 +66,14 @@ func TestFinalTurnEventJSONPreservesNullableAttribution(t *testing.T) {
 	}
 }
 
-func TestFinalTurnEventCarriesProviderSpeakerID(t *testing.T) {
+func TestFinalTurnEventCarriesOptionalInternalIDs(t *testing.T) {
 	event := validFinalTurnEvent()
 	providerID := "diar_01"
+	asrProfileID := "asr_profile_01"
+	ttsProfileID := "tts_profile_01"
 	event.ProviderSpeakerID = &providerID
+	event.ASRProfileID = &asrProfileID
+	event.TTSProfileID = &ttsProfileID
 
 	body, err := json.Marshal(event)
 	if err != nil {
@@ -83,8 +87,16 @@ func TestFinalTurnEventCarriesProviderSpeakerID(t *testing.T) {
 	if got, want := actual["provider_speaker_id"], providerID; got != want {
 		t.Fatalf("provider_speaker_id = %v, want %q", got, want)
 	}
+	if got, want := actual["asr_profile_id"], asrProfileID; got != want {
+		t.Fatalf("asr_profile_id = %v, want %q", got, want)
+	}
+	if got, want := actual["tts_profile_id"], ttsProfileID; got != want {
+		t.Fatalf("tts_profile_id = %v, want %q", got, want)
+	}
 
 	event.ProviderSpeakerID = nil
+	event.ASRProfileID = nil
+	event.TTSProfileID = nil
 	body, err = json.Marshal(event)
 	if err != nil {
 		t.Fatalf("marshal final turn event without provider id: %v", err)
@@ -95,6 +107,11 @@ func TestFinalTurnEventCarriesProviderSpeakerID(t *testing.T) {
 	}
 	if _, present := withoutProvider["provider_speaker_id"]; present {
 		t.Fatalf("provider_speaker_id should be omitted when nil")
+	}
+	for _, field := range []string{"asr_profile_id", "tts_profile_id"} {
+		if _, present := withoutProvider[field]; present {
+			t.Fatalf("%s should be omitted when nil", field)
+		}
 	}
 }
 
@@ -120,6 +137,8 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 		{name: "translated text", mutate: func(event *FinalTurnEvent) { event.TranslatedText = "" }},
 		{name: "speaker code", mutate: func(event *FinalTurnEvent) { event.SpeakerCode = "" }},
 		{name: "language config version", mutate: func(event *FinalTurnEvent) { event.LanguageConfigVersion = 0 }},
+		{name: "blank ASR profile ID", mutate: func(event *FinalTurnEvent) { value := " \t"; event.ASRProfileID = &value }},
+		{name: "blank TTS profile ID", mutate: func(event *FinalTurnEvent) { value := " \t"; event.TTSProfileID = &value }},
 		{name: "attribution status", mutate: func(event *FinalTurnEvent) { event.AttributionStatus = "unknown" }},
 		{name: "started at", mutate: func(event *FinalTurnEvent) { event.StartedAt = time.Time{} }},
 		{name: "ended before start", mutate: func(event *FinalTurnEvent) { event.EndedAt = event.StartedAt.Add(-time.Second) }},
@@ -154,6 +173,8 @@ func TestFinalTurnEventPayloadHashCoversCompleteEvent(t *testing.T) {
 		func(event *FinalTurnEvent) { event.TraceID = "trace_02" },
 		func(event *FinalTurnEvent) { event.OccurredAt = event.OccurredAt.Add(time.Second) },
 		func(event *FinalTurnEvent) { event.TranslatedText = "different translation" },
+		func(event *FinalTurnEvent) { value := "asr_profile_02"; event.ASRProfileID = &value },
+		func(event *FinalTurnEvent) { value := "tts_profile_02"; event.TTSProfileID = &value },
 	} {
 		changed := event
 		mutate(&changed)
@@ -164,6 +185,27 @@ func TestFinalTurnEventPayloadHashCoversCompleteEvent(t *testing.T) {
 		if changedHash == hash {
 			t.Fatalf("changed event hash = %x, want a different hash", changedHash)
 		}
+	}
+}
+
+func TestFinalTurnPayloadHashRejectsLegacyReplayWithProfileIDs(t *testing.T) {
+	legacy := validFinalTurnEvent()
+	legacyHash, err := FinalTurnEventPayloadHash(legacy)
+	if err != nil {
+		t.Fatalf("FinalTurnEventPayloadHash() legacy error = %v", err)
+	}
+
+	current := legacy
+	asrProfileID := "asr_profile_01"
+	ttsProfileID := "tts_profile_01"
+	current.ASRProfileID = &asrProfileID
+	current.TTSProfileID = &ttsProfileID
+	matched, err := FinalTurnEventPayloadHashMatches(current, legacyHash[:])
+	if err != nil {
+		t.Fatalf("FinalTurnEventPayloadHashMatches() error = %v", err)
+	}
+	if matched {
+		t.Fatal("legacy payload hash unexpectedly accepted profile-added replay")
 	}
 }
 
@@ -284,6 +326,11 @@ func TestVoiceTurnJSONExposesPublicFieldNames(t *testing.T) {
 	} {
 		if _, ok := actual[field]; !ok {
 			t.Fatalf("voice turn JSON does not include %q", field)
+		}
+	}
+	for _, field := range []string{"asr_profile_id", "tts_profile_id"} {
+		if _, present := actual[field]; present {
+			t.Fatalf("voice turn JSON must not include internal %q", field)
 		}
 	}
 }

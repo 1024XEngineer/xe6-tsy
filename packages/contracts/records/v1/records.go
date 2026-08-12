@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -168,6 +169,8 @@ type FinalTurnEvent struct {
 	SourceLanguage        string  `json:"source_language"`
 	TargetLanguage        string  `json:"target_language"`
 	LanguageConfigVersion int64   `json:"language_config_version"`
+	ASRProfileID          *string `json:"asr_profile_id,omitempty"`
+	TTSProfileID          *string `json:"tts_profile_id,omitempty"`
 	SourceText            string  `json:"source_text"`
 	TranslatedText        string  `json:"translated_text"`
 	// omitempty keeps zero-value route flags out of legacy payload hashes while enabled
@@ -215,6 +218,10 @@ func (event FinalTurnEvent) Validate() error {
 		return invalidFinalTurnField("speaker_code")
 	case event.LanguageConfigVersion <= 0:
 		return invalidFinalTurnField("language_config_version")
+	case event.ASRProfileID != nil && strings.TrimSpace(*event.ASRProfileID) == "":
+		return invalidFinalTurnField("asr_profile_id")
+	case event.TTSProfileID != nil && strings.TrimSpace(*event.TTSProfileID) == "":
+		return invalidFinalTurnField("tts_profile_id")
 	case event.StartedAt.IsZero():
 		return invalidFinalTurnField("started_at")
 	case event.EndedAt.IsZero() || event.EndedAt.Before(event.StartedAt):

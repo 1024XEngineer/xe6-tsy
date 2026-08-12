@@ -9,6 +9,7 @@ import (
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/speech"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 )
@@ -106,6 +107,54 @@ func TestTurnProcessorRunsMockASRTranslationTTSFlow(t *testing.T) {
 	listening := runtimeReporter.updates[4]
 	if listening.CurrentTurnID != nil || listening.CurrentPlaybackID != nil {
 		t.Fatalf("listening runtime update retained active IDs: %#v", listening)
+	}
+}
+
+func TestTurnProcessorUsesBoundASRAndTTSProfiles(t *testing.T) {
+	defaultASR := asr.NewFakeProvider(asr.FakeProviderConfig{})
+	boundASR := asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "bound-asr", Model: "bound-asr-model",
+	}})
+	defaultTTS := tts.NewFakeProvider(tts.FakeProviderConfig{})
+	boundTTS := tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "bound-tts", Model: "bound-tts-model"}})
+	finals := &recordingFinalSink{}
+	binding := speech.TurnSpeechBinding{
+		SessionID: "session-1", LanguageConfigVersion: 1,
+		Route:      speech.SpeechRoute{LanguageA: "en-US", LanguageB: "zh-CN", ASRProfileID: "asr-bound", TTSProfileID: "tts-bound"},
+		ASRProfile: speech.Profile{ID: "asr-bound", Provider: "bound-asr", Model: "bound-asr-model"},
+		TTSProfile: speech.Profile{ID: "tts-bound", Provider: "bound-tts", Model: "bound-tts-model", Voice: "voice-bound"},
+		ASR:        boundASR, TTS: boundTTS,
+	}
+	acquirer := &fakeTurnSpeechBindingAcquirer{binding: binding}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "translation", Model: "translation-model"}},
+		TTS:        defaultTTS, FinalTurns: finals, Usage: &recordingUsageSink{},
+		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: defaultASR,
+		Opener: NewTurnOpenerWithBinding(NewMemoryTurnAllocator(), &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}, {Source: "en-US", Target: "zh-CN"}},
+		}}, &fakeTurnModeReader{snapshot: validTurnModeSnapshot("session-1")}, acquirer),
+		Pipeline: service, Finals: service,
+	})
+
+	turn, err := processor.ProcessAudio(t.Context(), TurnProcessRequest{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", AudioChunks: [][]byte{{1}}})
+	if err != nil {
+		t.Fatalf("ProcessAudio() error = %v", err)
+	}
+	if len(defaultASR.Requests()) != 0 || len(boundASR.Requests()) != 1 {
+		t.Fatalf("ASR requests default=%#v bound=%#v", defaultASR.Requests(), boundASR.Requests())
+	}
+	if len(defaultTTS.Requests()) != 0 || len(boundTTS.Requests()) != 1 || boundTTS.Requests()[0].VoiceID != "voice-bound" {
+		t.Fatalf("TTS requests default=%#v bound=%#v", defaultTTS.Requests(), boundTTS.Requests())
+	}
+	if turn.SpeechBinding.ASRProfile.ID != "asr-bound" || turn.SpeechBinding.TTSProfile.ID != "tts-bound" || acquirer.releases != 1 {
+		t.Fatalf("turn binding = %#v, releases=%d", turn.SpeechBinding, acquirer.releases)
+	}
+	if len(finals.events) != 1 || finals.events[0].ASRProfileID == nil || finals.events[0].TTSProfileID == nil ||
+		*finals.events[0].ASRProfileID != "asr-bound" || *finals.events[0].TTSProfileID != "tts-bound" {
+		t.Fatalf("FinalTurn profile ids = %#v", finals.events)
 	}
 }
 

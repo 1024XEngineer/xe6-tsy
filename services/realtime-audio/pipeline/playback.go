@@ -94,6 +94,17 @@ func NewSpeechOutput(deps SpeechOutputDependencies) *SpeechOutput {
 	}
 }
 
+func (o *SpeechOutput) withTTS(provider tts.Provider, voiceID, providerLabel string) *SpeechOutput {
+	if o == nil {
+		return nil
+	}
+	clone := *o
+	clone.tts = provider
+	clone.voiceID = voiceID
+	clone.provider = providerLabel
+	return &clone
+}
+
 // PlayFallback synthesizes one previously persisted translation without
 // translating or publishing another FinalTurn.
 func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayback) (returnErr error) {
@@ -144,33 +155,45 @@ func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (t
 		strings.TrimSpace(request.PlaybackID) == "" {
 		return tts.Result{}, speechOutputNotStartedError{err: ErrSpeechOutputRequestInvalid}
 	}
-	if err := o.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID); err != nil {
+	output := o
+	model := ""
+	if request.Turn.SpeechBinding.TTS != nil {
+		output = o.withTTS(
+			request.Turn.SpeechBinding.TTS,
+			request.Turn.SpeechBinding.TTSProfile.Voice,
+			request.Turn.SpeechBinding.TTSProfile.Provider,
+		)
+		model = request.Turn.SpeechBinding.TTSProfile.Model
+	} else if strings.TrimSpace(request.Turn.SpeechBinding.TTSProfile.ID) != "" {
+		return tts.Result{}, speechOutputNotStartedError{err: ErrTurnSpeechBindingUnavailable}
+	}
+	if err := output.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID); err != nil {
 		return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("report TTS runtime: %w", err)}
 	}
 	ttsStartedAt := time.Now()
-	stream, err := o.tts.StartStream(ctx, tts.Request{
+	stream, err := output.tts.StartStream(ctx, tts.Request{
 		SessionID: request.Turn.SessionID, TurnID: request.Turn.ID, PlaybackID: request.PlaybackID,
-		Text: request.Text, TargetLanguage: request.Language, VoiceID: o.voiceID,
+		Text: request.Text, TargetLanguage: request.Language, VoiceID: output.voiceID,
 	})
 	if err != nil {
-		o.latency.ProviderFailure("tts_start", request.Turn, o.provider, "", err)
+		output.latency.ProviderFailure("tts_start", request.Turn, output.provider, model, err)
 		return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("start TTS: %w", err)}
 	}
-	o.latency.ProviderCheckpoint("tts_stream_started", request.Turn, ttsStartedAt, o.provider, "",
+	output.latency.ProviderCheckpoint("tts_stream_started", request.Turn, ttsStartedAt, output.provider, model,
 		"playback_id", request.PlaybackID,
 		"target_language", request.Language,
 	)
 	defer stream.Close()
-	played, err := o.publishChunks(ctx, request, ttsStartedAt, stream.Chunks())
+	played, err := output.publishChunks(ctx, request, ttsStartedAt, stream.Chunks())
 	if err != nil {
-		return tts.Result{}, errors.Join(err, o.cancelPlayback(ctx, request.Turn.SessionID, request.PlaybackID, "tts_stream_failed", played))
+		return tts.Result{}, errors.Join(err, output.cancelPlayback(ctx, request.Turn.SessionID, request.PlaybackID, "tts_stream_failed", played))
 	}
 	ttsResult, err := stream.Finish(ctx)
 	if err != nil {
-		o.latency.ProviderFailure("tts_finish", request.Turn, observedProvider(o.provider, ttsResult.Provider), ttsResult.Model, err)
-		return tts.Result{}, errors.Join(err, o.cancelPlayback(ctx, request.Turn.SessionID, request.PlaybackID, "tts_finish_failed", played))
+		output.latency.ProviderFailure("tts_finish", request.Turn, observedProvider(output.provider, ttsResult.Provider), observedModel(model, ttsResult.Model), err)
+		return tts.Result{}, errors.Join(err, output.cancelPlayback(ctx, request.Turn.SessionID, request.PlaybackID, "tts_finish_failed", played))
 	}
-	if err := o.completePlayback(ctx, request.Turn.SessionID, request.PlaybackID, played); err != nil {
+	if err := output.completePlayback(ctx, request.Turn.SessionID, request.PlaybackID, played); err != nil {
 		return tts.Result{}, fmt.Errorf("complete playback: %w", err)
 	}
 	return ttsResult, nil
@@ -218,7 +241,7 @@ func (o *SpeechOutput) publishChunks(ctx context.Context, request SpeechOutputRe
 			}
 			if !firstChunkLogged {
 				firstChunkLogged = true
-				o.latency.ProviderCheckpoint("tts_first_chunk", request.Turn, startedAt, o.provider, "",
+				o.latency.ProviderCheckpoint("tts_first_chunk", request.Turn, startedAt, o.provider, request.Turn.SpeechBinding.TTSProfile.Model,
 					"playback_id", request.PlaybackID, "encoding", chunk.Encoding, "bytes", len(chunk.Data),
 				)
 			}

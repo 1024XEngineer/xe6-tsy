@@ -77,7 +77,7 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if err := ctx.Err(); err != nil {
 		return TurnContext{}, err
 	}
-	if p == nil || p.recognizer == nil || p.opener == nil || p.pipeline == nil || p.finals == nil {
+	if p == nil || p.opener == nil || p.pipeline == nil || p.finals == nil {
 		return TurnContext{}, ErrTurnProcessorDependencyRequired
 	}
 	if err := p.pipeline.validate(); err != nil {
@@ -90,22 +90,34 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	if err != nil {
 		return TurnContext{}, fmt.Errorf("open Turn: %w", err)
 	}
+	defer turn.ReleaseSpeechBinding()
+	recognizer := p.recognizer
+	providerLabel := p.asrProvider
+	providerModel := ""
+	if turn.SpeechBinding.ASR != nil {
+		recognizer = turn.SpeechBinding.ASR
+		providerLabel = turn.SpeechBinding.ASRProfile.Provider
+		providerModel = turn.SpeechBinding.ASRProfile.Model
+	}
+	if recognizer == nil {
+		return turn, fmt.Errorf("%w: ASR provider", ErrTurnProcessorDependencyRequired)
+	}
 	if err := p.pipeline.reportRuntime(ctx, turn, session.RuntimeASRProcessing, ""); err != nil {
 		return turn, fmt.Errorf("report ASR runtime: %w", err)
 	}
-	stream, err := p.recognizer.StartStream(ctx, asr.StreamRequest{
+	stream, err := recognizer.StartStream(ctx, asr.StreamRequest{
 		SessionID: turn.SessionID, TurnID: turn.ID, SourceLanguage: request.SourceLanguage,
 	})
 	if err != nil {
-		p.pipeline.latency.ProviderFailure("asr_start", turn, p.asrProvider, "", err)
+		p.pipeline.latency.ProviderFailure("asr_start", turn, providerLabel, providerModel, err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("start ASR stream: %w", err))
 	}
 	if stream == nil {
-		p.pipeline.latency.ProviderFailure("asr_stream", turn, p.asrProvider, "", ErrASRStreamRequired)
+		p.pipeline.latency.ProviderFailure("asr_stream", turn, providerLabel, providerModel, ErrASRStreamRequired)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, ErrASRStreamRequired)
 	}
 	asrStartedAt := time.Now()
-	p.pipeline.latency.ProviderCheckpoint("asr_stream_started", turn, asrStartedAt, p.asrProvider, "")
+	p.pipeline.latency.ProviderCheckpoint("asr_stream_started", turn, asrStartedAt, providerLabel, providerModel)
 	defer stream.Close()
 	streamCtx, stopEvents := context.WithCancel(ctx)
 	defer stopEvents()
@@ -114,18 +126,18 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	go collectFinalASREvent(streamCtx, p.pipeline.latency, turn, asrStartedAt, stream.Events(), finalEvents, eventErrors)
 	for _, chunk := range request.AudioChunks {
 		if err := stream.PushAudio(ctx, append([]byte(nil), chunk...)); err != nil {
-			p.pipeline.latency.ProviderFailure("asr_push_audio", turn, p.asrProvider, "", err)
+			p.pipeline.latency.ProviderFailure("asr_push_audio", turn, providerLabel, providerModel, err)
 			return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("push audio for Turn %s: %w", turn.ID, err))
 		}
 	}
 
 	result, err := stream.Finish(ctx)
 	if err != nil {
-		p.pipeline.latency.ProviderFailure("asr_finish", turn, observedProvider(p.asrProvider, result.Provider), result.Model, err)
+		p.pipeline.latency.ProviderFailure("asr_finish", turn, observedProvider(providerLabel, result.Provider), observedModel(providerModel, result.Model), err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("finish ASR stream: %w", err))
 	}
 	if err := <-eventErrors; err != nil {
-		p.pipeline.latency.ProviderFailure("asr_events", turn, observedProvider(p.asrProvider, result.Provider), result.Model, err)
+		p.pipeline.latency.ProviderFailure("asr_events", turn, observedProvider(providerLabel, result.Provider), observedModel(providerModel, result.Model), err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, err)
 	}
 	select {
@@ -137,7 +149,9 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		result.SourceLanguage = request.SourceLanguage
 	}
 	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
-	p.pipeline.latency.ProviderCheckpoint("asr_final", turn, asrStartedAt, observedProvider(p.asrProvider, result.Provider), result.Model,
+	provider := observedProvider(providerLabel, result.Provider)
+	model := observedModel(providerModel, result.Model)
+	p.pipeline.latency.ProviderCheckpoint("asr_final", turn, asrStartedAt, provider, model,
 		"source_language", result.SourceLanguage,
 		"text_bytes", len(result.Text),
 	)
@@ -155,7 +169,7 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	// Recognition cost belongs to the shared Turn lifecycle, not to an
 	// interpretation or assistant Handler. Publish it exactly once after final
 	// validation and before dispatching any mode-specific side effects.
-	if err := p.pipeline.publishUsage(ctx, turn, "asr", result.Provider, result.Model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
+	if err := p.pipeline.publishUsage(ctx, turn, "asr", provider, model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
 		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("publish ASR usage: %w", err))
 	}
 	if err := p.finals.HandleASRFinal(ctx, turn, result); err != nil {

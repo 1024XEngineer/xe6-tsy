@@ -98,3 +98,10 @@ func observedProvider(configured, observed string) string {
 	}
 	return strings.TrimSpace(configured)
 }
+
+func observedModel(configured, observed string) string {
+	if strings.TrimSpace(observed) != "" {
+		return observed
+	}
+	return configured
+}

@@ -191,6 +191,13 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if id := strings.TrimSpace(result.ProviderSpeakerID); id != "" {
 		providerSpeakerID = &id
 	}
+	var asrProfileID, ttsProfileID *string
+	if id := strings.TrimSpace(turn.SpeechBinding.ASRProfile.ID); id != "" {
+		asrProfileID = &id
+	}
+	if id := strings.TrimSpace(turn.SpeechBinding.TTSProfile.ID); id != "" {
+		ttsProfileID = &id
+	}
 	finalEvent := FinalTurnEvent{
 		EventVersion: recordsv1.FinalTurnEventVersion,
 		EventID:      "final_" + turn.ID, TraceID: turn.TraceID, SessionID: turn.SessionID, TurnID: turn.ID,
@@ -200,6 +207,8 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		AttributionStatus: recordsv1.AttributionPending, LanguageConfigVersion: turn.LanguageConfig.Version,
 		StartedAt: startedAt, EndedAt: endedAt, OccurredAt: s.now(),
 		ProviderSpeakerID: providerSpeakerID,
+		ASRProfileID:      asrProfileID,
+		TTSProfileID:      ttsProfileID,
 	}
 	if err := finalEvent.Validate(); err != nil {
 		return fmt.Errorf("validate FinalTurn: %w", err)

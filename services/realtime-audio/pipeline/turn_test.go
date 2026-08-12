@@ -8,7 +8,10 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/speech"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 )
 
 func TestMemoryTurnAllocatorSequentialPerSession(t *testing.T) {
@@ -220,6 +223,55 @@ func TestTurnOpenerPropagatesModeSnapshotReadFailure(t *testing.T) {
 	}
 }
 
+func TestTurnOpenerAcquiresExactSpeechBinding(t *testing.T) {
+	binding := speech.TurnSpeechBinding{
+		SessionID: "session-1", LanguageConfigVersion: 7,
+		Route:      speech.SpeechRoute{LanguageA: "en-US", LanguageB: "zh-CN", ASRProfileID: "asr-7", TTSProfileID: "tts-7"},
+		ASRProfile: speech.Profile{ID: "asr-7"}, TTSProfile: speech.Profile{ID: "tts-7"},
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}), TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}
+	acquirer := &fakeTurnSpeechBindingAcquirer{binding: binding}
+	opener := NewTurnOpenerWithBinding(
+		NewMemoryTurnAllocator(),
+		&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 7, Status: "active",
+			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}, {Source: "en-US", Target: "zh-CN"}},
+		}},
+		&fakeTurnModeReader{snapshot: validTurnModeSnapshot("session-1")},
+		acquirer,
+	)
+
+	turn, err := opener.OpenTurn(t.Context(), TurnOpenRequest{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("OpenTurn() error = %v", err)
+	}
+	if turn.SpeechBinding.Route.ASRProfileID != "asr-7" || turn.SpeechBinding.Route.TTSProfileID != "tts-7" || acquirer.calls != 1 {
+		t.Fatalf("speech binding = %#v, acquire calls = %d", turn.SpeechBinding, acquirer.calls)
+	}
+	turn.ReleaseSpeechBinding()
+	turn.ReleaseSpeechBinding()
+	if acquirer.releases != 1 {
+		t.Fatalf("binding releases = %d, want 1", acquirer.releases)
+	}
+}
+
+func TestTurnOpenerRejectsUnavailableSpeechBinding(t *testing.T) {
+	wantErr := errors.New("binding still preparing")
+	opener := NewTurnOpenerWithBinding(
+		NewMemoryTurnAllocator(),
+		&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 7, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}},
+		&fakeTurnModeReader{snapshot: validTurnModeSnapshot("session-1")},
+		&fakeTurnSpeechBindingAcquirer{err: wantErr},
+	)
+
+	_, err := opener.OpenTurn(t.Context(), TurnOpenRequest{SessionID: "session-1"})
+	if !errors.Is(err, ErrTurnSpeechBindingUnavailable) || !errors.Is(err, wantErr) {
+		t.Fatalf("OpenTurn() error = %v, want wrapped binding error", err)
+	}
+}
+
 type fakeLanguageConfigReader struct {
 	snapshot session.LanguageConfigSnapshot
 	calls    int
@@ -236,6 +288,21 @@ type fakeTurnModeReader struct {
 	snapshot TurnModeSnapshot
 	err      error
 	calls    int
+}
+
+type fakeTurnSpeechBindingAcquirer struct {
+	binding  speech.TurnSpeechBinding
+	err      error
+	calls    int
+	releases int
+}
+
+func (f *fakeTurnSpeechBindingAcquirer) AcquireForTurn(_ context.Context, _ string, _ int64) (speech.TurnSpeechBinding, speech.Release, error) {
+	f.calls++
+	if f.err != nil {
+		return speech.TurnSpeechBinding{}, nil, f.err
+	}
+	return f.binding, func() { f.releases++ }, nil
 }
 
 func (f *fakeTurnModeReader) GetTurnMode(_ context.Context, _ string) (TurnModeSnapshot, error) {
@@ -255,3 +322,4 @@ func newTestTurnOpener(languages session.LanguageConfigReader) *TurnOpener {
 }
 
 var _ TurnModeReader = (*fakeTurnModeReader)(nil)
+var _ TurnSpeechBindingAcquirer = (*fakeTurnSpeechBindingAcquirer)(nil)

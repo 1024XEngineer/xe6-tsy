@@ -37,6 +37,7 @@ export type RuntimeState =
   | "listening"
   | "asr_processing"
   | "translating"
+  | "assistant_processing"
   | "tts_processing"
   | "playing"
   | "stopping"

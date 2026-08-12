@@ -28,6 +28,7 @@ import {
 } from "../lib/languages";
 import { ApiError } from "../lib/http";
 import { parseTranslationFinal } from "../lib/translation-events";
+import { parseAssistantReply } from "../lib/assistant-replies";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
 import {
   loadVoiceConfig,
@@ -86,6 +87,8 @@ function mapRuntimeToStatus(runtime: RuntimeState | null): string {
       return "正在识别";
     case "translating":
       return "正在翻译";
+    case "assistant_processing":
+      return "助手正在思考";
     case "tts_processing":
       return "正在合成语音";
     case "playing":
@@ -104,7 +107,11 @@ function mapRuntimeToStatus(runtime: RuntimeState | null): string {
 function mapRuntimePhase(
   runtime: RuntimeState | null,
 ): "processing" | "playing" | "active" {
-  if (runtime === "asr_processing" || runtime === "translating") {
+  if (
+    runtime === "asr_processing" ||
+    runtime === "translating" ||
+    runtime === "assistant_processing"
+  ) {
     return "processing";
   }
   if (runtime === "tts_processing" || runtime === "playing") {
@@ -536,6 +543,12 @@ export function useVoiceSession() {
               enqueueTTSAudio(audio, (playing) => {
                 setMicrophoneInputEnabled(!playing);
               });
+              return;
+            }
+            const assistantReply = parseAssistantReply(payload);
+            if (assistantReply) {
+              setStatusMessage("助手已回复");
+              setHintMessage(assistantReply.text);
               return;
             }
             const event = parseTranslationFinal(payload);

@@ -6,13 +6,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 func TestServiceStartRunsPrerequisitesBeforeTransition(t *testing.T) {
 	fixture := newStartFixture(t, StatusCreated)
 	fixture.repository.transitionResult = activeStartSession(fixture.repository.session, fixture.clock.now)
+	input := validStartInput()
+	input.InitialMode = realtimev1.ModeAssistant
 
-	got, err := fixture.service.Start(context.Background(), validStartInput())
+	got, err := fixture.service.Start(context.Background(), input)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -47,7 +51,8 @@ func TestServiceStartRunsPrerequisitesBeforeTransition(t *testing.T) {
 	if command.SessionID != "vs_1" ||
 		command.OperationID != "op_1" ||
 		command.TraceID != "req_1" ||
-		command.StartedBy != "acct_1" {
+		command.StartedBy != "acct_1" ||
+		command.InitialMode != realtimev1.ModeAssistant {
 		t.Fatalf("StartRealtimeCommand = %#v", command)
 	}
 	params := fixture.repository.transitions[0]
@@ -266,6 +271,7 @@ func TestServiceStartValidatesBeforeDependencies(t *testing.T) {
 		{name: "oversized idempotency key", ctx: context.Background(), edit: func(input *StartInput) { input.IdempotencyKey = strings.Repeat("k", maxIdempotencyKeyLength+1) }, want: ErrInvalidRequest},
 		{name: "missing request hash", ctx: context.Background(), edit: func(input *StartInput) { input.RequestHash = "" }, want: ErrInvalidRequest},
 		{name: "missing trace ID", ctx: context.Background(), edit: func(input *StartInput) { input.TraceID = "" }, want: ErrInvalidRequest},
+		{name: "invalid initial mode", ctx: context.Background(), edit: func(input *StartInput) { input.InitialMode = "english_practice" }, want: ErrInvalidRequest},
 	}
 
 	for _, test := range tests {
@@ -508,6 +514,7 @@ func TestServiceStartRecoversExistingRunningRuntime(t *testing.T) {
 		RuntimeASRProcessing,
 		RuntimeTranslating,
 		RuntimeThinking,
+		RuntimeAssistantProcessing,
 		RuntimeTTSProcessing,
 		RuntimePlaying,
 	} {

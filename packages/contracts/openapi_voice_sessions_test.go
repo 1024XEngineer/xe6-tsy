@@ -72,6 +72,21 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 			t.Fatalf("VoiceSessionStateSnapshot required = %v, missing %s", stateRequired, required)
 		}
 	}
+	startPath := paths["/voice-sessions/{id}/start"].(map[string]any)
+	startPost := startPath["post"].(map[string]any)
+	startBody := startPost["requestBody"].(map[string]any)
+	startContent := startBody["content"].(map[string]any)
+	startMedia := startContent["application/json"].(map[string]any)
+	startSchema := startMedia["schema"].(map[string]any)
+	if got := startSchema["$ref"]; got != "#/components/schemas/StartVoiceSessionRequest" {
+		t.Fatalf("start request schema = %v", got)
+	}
+	startRequest := schemas["StartVoiceSessionRequest"].(map[string]any)
+	startProperties := startRequest["properties"].(map[string]any)
+	initialMode := startProperties["initial_mode"].(map[string]any)
+	if got := initialMode["$ref"]; got != "#/components/schemas/RealtimeMode" {
+		t.Fatalf("initial_mode schema = %v", got)
+	}
 
 	outputMode := schemas["InterpretationOutputMode"].(map[string]any)
 	if got := outputMode["enum"].([]any); !sameStringSlice(got, []any{"bidirectional", "single"}) {

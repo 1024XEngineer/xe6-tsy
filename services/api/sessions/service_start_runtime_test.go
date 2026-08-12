@@ -47,6 +47,7 @@ func TestServiceStartPendingReconcilesAlreadyRunningRuntime(t *testing.T) {
 		RuntimeASRProcessing,
 		RuntimeTranslating,
 		RuntimeThinking,
+		RuntimeAssistantProcessing,
 		RuntimeTTSProcessing,
 		RuntimePlaying,
 	} {

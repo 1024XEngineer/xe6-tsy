@@ -94,3 +94,88 @@ func TestBuildProvidersValidatesSelections(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildSpeechProfileAdaptersUseProfileMetadata(t *testing.T) {
+	asrAdapter, err := BuildASRProfileAdapter(
+		"aliyun",
+		"qwen3-asr-flash-realtime",
+		ASRConfig{
+			APIKey: "asr-key", BaseURL: "https://example.com/compatible-mode/v1", SampleRate: 16000,
+		},
+	)
+	if err != nil {
+		t.Fatalf("BuildASRProfileAdapter() error = %v", err)
+	}
+	if _, ok := asrAdapter.(*asrqwen.Provider); !ok {
+		t.Fatalf("ASR adapter type = %T", asrAdapter)
+	}
+
+	ttsAdapter, err := BuildTTSProfileAdapter(
+		"aliyun",
+		"qwen3-tts-flash-realtime",
+		"profile-voice",
+		TTSConfig{APIKey: "tts-key", BaseURL: "https://example.com/api/v1", SampleRate: 24000},
+	)
+	if err != nil {
+		t.Fatalf("BuildTTSProfileAdapter() error = %v", err)
+	}
+	if _, ok := ttsAdapter.(*ttsqwen.Provider); !ok {
+		t.Fatalf("TTS adapter type = %T", ttsAdapter)
+	}
+}
+
+func TestBuildSpeechProfileAdaptersRejectUnconstructableProfiles(t *testing.T) {
+	tests := []struct {
+		name string
+		call func() error
+		want error
+	}{
+		{
+			name: "ASR missing model",
+			call: func() error {
+				_, err := BuildASRProfileAdapter("aliyun", "", ASRConfig{})
+				return err
+			},
+			want: ErrSpeechProfileModelRequired,
+		},
+		{
+			name: "ASR unknown provider",
+			call: func() error {
+				_, err := BuildASRProfileAdapter("legacy", "qwen3-asr-flash-realtime", ASRConfig{})
+				return err
+			},
+			want: ErrUnsupportedProvider,
+		},
+		{
+			name: "ASR unsupported model",
+			call: func() error {
+				_, err := BuildASRProfileAdapter("aliyun", "other", ASRConfig{})
+				return err
+			},
+			want: ErrUnsupportedModel,
+		},
+		{
+			name: "TTS missing voice",
+			call: func() error {
+				_, err := BuildTTSProfileAdapter("aliyun", "qwen3-tts-flash", "", TTSConfig{})
+				return err
+			},
+			want: ErrSpeechProfileVoiceRequired,
+		},
+		{
+			name: "TTS unsupported model",
+			call: func() error {
+				_, err := BuildTTSProfileAdapter("aliyun", "other", "voice", TTSConfig{})
+				return err
+			},
+			want: ErrUnsupportedModel,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.call(); !errors.Is(err, test.want) {
+				t.Fatalf("adapter factory error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}

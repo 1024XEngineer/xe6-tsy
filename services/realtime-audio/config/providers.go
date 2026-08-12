@@ -17,7 +17,11 @@ import (
 	ttsqwen "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts/qwen"
 )
 
-var ErrMockProviderRequired = errors.New("selected mock provider is required")
+var (
+	ErrMockProviderRequired       = errors.New("selected mock provider is required")
+	ErrSpeechProfileModelRequired = errors.New("speech profile model is required")
+	ErrSpeechProfileVoiceRequired = errors.New("speech profile voice is required")
+)
 
 // Providers is the vendor-neutral provider set injected into the Turn processor and pipeline.
 type Providers struct {
@@ -46,6 +50,63 @@ func BuildProviders(config ProviderConfig, offline Providers) (Providers, error)
 		return Providers{}, fmt.Errorf("build TTS provider: %w", err)
 	}
 	return Providers{ASR: recognizer, Assistant: conversation, Translation: translator, TTS: synthesizer}, nil
+}
+
+// BuildASRProfileAdapter combines deployment-owned transport settings with the
+// immutable model selection from one database speech profile. It intentionally
+// accepts only adapters implemented by this process; profile rows never supply
+// credentials or endpoints.
+func BuildASRProfileAdapter(providerCode, model string, deployment ASRConfig) (asr.Provider, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil, ErrSpeechProfileModelRequired
+	}
+	provider := ProviderName(strings.ToLower(strings.TrimSpace(providerCode)))
+	if provider != ProviderAliyun {
+		return nil, fmt.Errorf("%w: ASR speech profile provider %q", ErrUnsupportedProvider, providerCode)
+	}
+	if !supportedASRProfileModel(model) {
+		return nil, fmt.Errorf("%w: ASR speech profile model %q", ErrUnsupportedModel, model)
+	}
+	deployment.Provider = provider
+	deployment.Model = model
+	return buildASR(deployment, nil)
+}
+
+// BuildTTSProfileAdapter combines deployment-owned transport settings with the
+// immutable model and voice selection from one database speech profile. It
+// rejects empty profile values before vendor constructors can apply defaults.
+func BuildTTSProfileAdapter(providerCode, model, voiceID string, deployment TTSConfig) (tts.Provider, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil, ErrSpeechProfileModelRequired
+	}
+	voiceID = strings.TrimSpace(voiceID)
+	if voiceID == "" {
+		return nil, ErrSpeechProfileVoiceRequired
+	}
+	provider := ProviderName(strings.ToLower(strings.TrimSpace(providerCode)))
+	if provider != ProviderAliyun {
+		return nil, fmt.Errorf("%w: TTS speech profile provider %q", ErrUnsupportedProvider, providerCode)
+	}
+	if !supportedTTSProfileModel(model) {
+		return nil, fmt.Errorf("%w: TTS speech profile model %q", ErrUnsupportedModel, model)
+	}
+	deployment.Provider = provider
+	deployment.Model = model
+	deployment.Voice = voiceID
+	return buildTTS(deployment, nil)
+}
+
+func supportedASRProfileModel(model string) bool {
+	return strings.EqualFold(strings.TrimSpace(model), "qwen3-asr-flash-realtime")
+}
+
+func supportedTTSProfileModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return model == "qwen3-tts-flash" ||
+		model == "qwen3-tts-flash-realtime" ||
+		strings.HasPrefix(model, "cosyvoice-v3")
 }
 
 func buildAssistant(config TranslationConfig, offline assistant.Provider) (assistant.Provider, error) {

@@ -170,7 +170,7 @@ paths:
         required: false
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/VoiceSessionStartRequest' }
+            schema: { $ref: '#/components/schemas/StartVoiceSessionRequest' }
       responses:
         '200': { description: Started session, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -506,7 +506,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ModeStateSnapshot' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '404': { $ref: '#/components/responses/RuntimeNotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
       operationId: switchRealtimeMode
@@ -528,7 +528,7 @@ paths:
               schema: { $ref: '#/components/schemas/SwitchModeResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '404': { $ref: '#/components/responses/RuntimeNotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
@@ -581,17 +581,31 @@ components:
     ServiceUnavailable: { description: Required downstream service is temporarily unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     TooManyRequests: { description: Phone verification requests are temporarily rate limited, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    RuntimeNotFound: { description: Realtime runtime not found for the requested Session, content: { application/json: { schema: { $ref: '#/components/schemas/RuntimeNotFoundError' } } } }
     NotImplemented: { description: Business implementation is intentionally pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
     RealtimeRuntimeState:
       type: string
-      enum: [stopped, starting, listening, asr_processing, translating, thinking, tts_processing, playing, stopping, failed]
+      enum: [stopped, starting, listening, asr_processing, translating, thinking, assistant_processing, tts_processing, playing, stopping, failed]
     RealtimeRuntimeErrorCode:
       type: string
       enum: [realtime_start_failed, realtime_stop_failed, realtime_pipeline_failed, realtime_translation_rejected]
     ControlPlaneErrorCode:
       type: string
-      enum: [runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict]
+      enum: [runtime_not_found, runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict]
+    RuntimeNotFoundError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/RuntimeNotFoundErrorBody' }
+    RuntimeNotFoundErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { type: string, enum: [runtime_not_found] }
+        message: { type: string }
     RuntimeOperationConflictError:
       type: object
       additionalProperties: false
@@ -603,7 +617,7 @@ components:
       additionalProperties: false
       required: [code, message]
       properties:
-        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        code: { type: string, enum: [runtime_operation_conflict] }
         message: { type: string }
     RealtimeStartRequest:
       type: object
@@ -617,14 +631,6 @@ components:
           $ref: '#/components/schemas/RealtimeMode'
           default: interpretation
           description: Optional for rolling compatibility. When omitted, realtime uses interpretation.
-    VoiceSessionStartRequest:
-      type: object
-      additionalProperties: false
-      properties:
-        initial_mode:
-          $ref: '#/components/schemas/RealtimeMode'
-          default: interpretation
-          description: Optional for rolling compatibility. Empty request and interpretation are equivalent.
     RealtimeStopRequest:
       type: object
       additionalProperties: false
@@ -772,6 +778,14 @@ components:
       properties:
         audio_config: { $ref: '#/components/schemas/VoiceSessionAudioConfig' }
         capabilities: { $ref: '#/components/schemas/VoiceSessionCapabilities' }
+    StartVoiceSessionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        initial_mode:
+          $ref: '#/components/schemas/RealtimeMode'
+          default: interpretation
+          description: Optional initial runtime mode. When omitted, existing interpretation behavior is preserved.
     EndVoiceSessionRequest:
       type: object
       additionalProperties: false

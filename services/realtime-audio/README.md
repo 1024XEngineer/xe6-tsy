@@ -79,6 +79,12 @@ WebRTC。真正发生切换时，Coordinator 会先将 `realtime.mode.changed` �
 确认后再提交 ModeState；重复 operation 和未变更模式不会重复产生事件。默认 `memory` 后端只用于
 本地离线运行；生产环境应配置 `REALTIME_OUTBOX=valkey`。API 侧长期投影在后续独立阶段接入。
 
+阶段 16 的模式观测使用结构化日志作为可聚合指标来源：`runtime_started` 只在 runtime entry
+成功登记后记录一次，可按 `active_mode` 统计入口分布；`mode_switch` 按请求记录
+`applied`、`unchanged` 或 `failed`，失败率按这些结果统计并用 `error_class` 分组；助手回复延迟
+使用现有 `assistant_reply_done` 检查点，且附带 `mode`、`runtime_instance_id` 和 `generation`。
+这些日志不是独立的 `/metrics` counter，聚合系统应按 `operation_id` 去重重试请求（如需操作级口径）。
+
 ## Local utterance VAD
 
 The realtime entrypoint segments microphone audio with **Silero VAD** before ASR:

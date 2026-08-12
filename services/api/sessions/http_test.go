@@ -76,7 +76,7 @@ func TestHandlerRejectsClientAccountFields(t *testing.T) {
 	}
 }
 
-func TestHandlerStartDefaultsInitialModeAndAddsTrace(t *testing.T) {
+func TestHandlerStartDefaultsToInterpretationAndAddsTrace(t *testing.T) {
 	useCases := &handlerUseCases{
 		startResult: VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusActive},
 	}
@@ -105,21 +105,80 @@ func TestHandlerStartDefaultsInitialModeAndAddsTrace(t *testing.T) {
 		t.Fatalf("StartInput = %#v", useCases.startInput)
 	}
 	wantHash := canonicalHash("voice-sessions.start", struct {
-		SessionID   string          `json:"session_id"`
-		InitialMode realtimev1.Mode `json:"initial_mode"`
-	}{SessionID: "vs_1", InitialMode: realtimev1.ModeInterpretation})
+		SessionID string `json:"session_id"`
+	}{SessionID: "vs_1"})
 	if useCases.startInput.RequestHash != wantHash {
 		t.Fatalf("RequestHash = %q, want %q", useCases.startInput.RequestHash, wantHash)
 	}
 }
 
-func TestHandlerStartRejectsUnknownInitialMode(t *testing.T) {
+func TestHandlerStartAcceptsAssistantMode(t *testing.T) {
+	useCases := &handlerUseCases{
+		startResult: VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusActive},
+	}
+	handler := NewHandler(useCases, headerAccount)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/voice-sessions/vs_1/start",
+		bytes.NewBufferString(`{"initial_mode":"assistant"}`),
+	)
+	request.SetPathValue("id", "vs_1")
+	request.Header.Set("X-Test-Account", "acct_1")
+	request.Header.Set("Idempotency-Key", "start-key")
+	response := httptest.NewRecorder()
+
+	handler.start(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("start status = %d, want 200; body %s", response.Code, response.Body.String())
+	}
+	if useCases.startInput.InitialMode != realtimev1.ModeAssistant {
+		t.Fatalf("InitialMode = %q, want assistant", useCases.startInput.InitialMode)
+	}
+	wantHash := canonicalHash("voice-sessions.start", struct {
+		SessionID   string          `json:"session_id"`
+		InitialMode realtimev1.Mode `json:"initial_mode"`
+	}{SessionID: "vs_1", InitialMode: realtimev1.ModeAssistant})
+	if useCases.startInput.RequestHash != wantHash {
+		t.Fatalf("RequestHash = %q, want %q", useCases.startInput.RequestHash, wantHash)
+	}
+}
+
+func TestHandlerStartExplicitInterpretationKeepsLegacyRequestHash(t *testing.T) {
+	useCases := &handlerUseCases{
+		startResult: VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusActive},
+	}
+	handler := NewHandler(useCases, headerAccount)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/voice-sessions/vs_1/start",
+		bytes.NewBufferString(`{"initial_mode":"interpretation"}`),
+	)
+	request.SetPathValue("id", "vs_1")
+	request.Header.Set("X-Test-Account", "acct_1")
+	request.Header.Set("Idempotency-Key", "start-key")
+	response := httptest.NewRecorder()
+
+	handler.start(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("start status = %d, want 200; body %s", response.Code, response.Body.String())
+	}
+	wantHash := canonicalHash("voice-sessions.start", struct {
+		SessionID string `json:"session_id"`
+	}{SessionID: "vs_1"})
+	if useCases.startInput.RequestHash != wantHash {
+		t.Fatalf("RequestHash = %q, want legacy hash %q", useCases.startInput.RequestHash, wantHash)
+	}
+}
+
+func TestHandlerStartRejectsInvalidBody(t *testing.T) {
 	useCases := &handlerUseCases{}
 	handler := NewHandler(useCases, headerAccount)
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/api/v1/voice-sessions/vs_1/start",
-		bytes.NewBufferString(`{"initial_mode":"unknown"}`),
+		bytes.NewBufferString(`{"initial_mode":"english_practice"}`),
 	)
 	request.SetPathValue("id", "vs_1")
 	request.Header.Set("X-Test-Account", "acct_1")
@@ -129,7 +188,7 @@ func TestHandlerStartRejectsUnknownInitialMode(t *testing.T) {
 	handler.start(response, request)
 
 	if response.Code != http.StatusBadRequest {
-		t.Fatalf("start with body status = %d, want 400", response.Code)
+		t.Fatalf("start with invalid body status = %d, want 400", response.Code)
 	}
 	if useCases.startCalls != 0 {
 		t.Fatalf("Start calls = %d, want 0", useCases.startCalls)

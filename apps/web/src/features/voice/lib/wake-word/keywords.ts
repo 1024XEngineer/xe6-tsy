@@ -15,10 +15,7 @@ export type WakeTrigger = {
   command: WakeCommand;
   /** Canonical display name; also a keywords.txt `@…` suffix. */
   label: string;
-  /**
-   * Extra KWS @display names for nasal-final tolerance (小灵 → 小林).
-   * Not product names — callbacks always surface `label`.
-   */
+  /** Additional KWS display names, including pronunciation and mode aliases. */
   aliases?: readonly string[];
 };
 
@@ -27,13 +24,13 @@ export const WAKE_TRIGGERS: readonly WakeTrigger[] = [
     id: "start_translate",
     command: "start",
     label: "小灵，开始翻译",
-    aliases: ["小林，开始翻译"],
+    aliases: ["小林，开始翻译", "小灵，开始对话", "小林，开始对话"],
   },
   {
     id: "stop_translate",
     command: "stop",
     label: "小灵，停止翻译",
-    aliases: ["小林，停止翻译"],
+    aliases: ["小林，停止翻译", "小灵，停止对话", "小林，停止对话"],
   },
   {
     id: "attention",
@@ -51,10 +48,10 @@ export const WAKE_STOP_KEYWORD =
 export const WAKE_LISTEN_KEYWORD =
   WAKE_TRIGGERS.find((t) => t.id === "attention")!.label;
 
-type PhraseHit = { trigger: WakeTrigger; phrase: string };
+export type WakePhraseMatch = { trigger: WakeTrigger; phrase: string };
 
-function allPhrases(): PhraseHit[] {
-  const hits: PhraseHit[] = [];
+function allPhrases(): WakePhraseMatch[] {
+  const hits: WakePhraseMatch[] = [];
   for (const trigger of WAKE_TRIGGERS) {
     hits.push({ trigger, phrase: trigger.label });
     for (const alias of trigger.aliases ?? []) {
@@ -69,17 +66,21 @@ const PHRASES_BY_LENGTH = allPhrases().sort(
   (a, b) => b.phrase.length - a.phrase.length,
 );
 
-export function resolveWakeTrigger(keyword: string): WakeTrigger | null {
+export function resolveWakePhrase(keyword: string): WakePhraseMatch | null {
   const text = keyword.trim();
   if (!text) return null;
 
   const exact = PHRASES_BY_LENGTH.find((h) => h.phrase === text);
-  if (exact) return exact.trigger;
+  if (exact) return exact;
 
   for (const hit of PHRASES_BY_LENGTH) {
-    if (text.includes(hit.phrase)) return hit.trigger;
+    if (text.includes(hit.phrase)) return hit;
   }
   return null;
+}
+
+export function resolveWakeTrigger(keyword: string): WakeTrigger | null {
+  return resolveWakePhrase(keyword)?.trigger ?? null;
 }
 
 export function classifyWakeKeyword(keyword: string): WakeCommand | null {

@@ -92,12 +92,12 @@ type createRequest struct {
 	Capabilities Capabilities `json:"capabilities"`
 }
 
-type endRequest struct {
-	Reason EndReason `json:"reason,omitempty"`
-}
-
 type startRequest struct {
 	InitialMode realtimev1.Mode `json:"initial_mode,omitempty"`
+}
+
+type endRequest struct {
+	Reason EndReason `json:"reason,omitempty"`
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
@@ -151,17 +151,23 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := r.PathValue("id")
+	requestHash := canonicalHash("voice-sessions.start", struct {
+		SessionID string `json:"session_id"`
+	}{SessionID: sessionID})
+	if body.InitialMode != realtimev1.ModeInterpretation {
+		requestHash = canonicalHash("voice-sessions.start", struct {
+			SessionID   string          `json:"session_id"`
+			InitialMode realtimev1.Mode `json:"initial_mode"`
+		}{SessionID: sessionID, InitialMode: body.InitialMode})
+	}
 	input := StartInput{
 		AccountID:      accountID,
 		SessionID:      sessionID,
-		InitialMode:    body.InitialMode,
 		IdempotencyKey: r.Header.Get("Idempotency-Key"),
-		RequestHash: canonicalHash("voice-sessions.start", struct {
-			SessionID   string          `json:"session_id"`
-			InitialMode realtimev1.Mode `json:"initial_mode"`
-		}{SessionID: sessionID, InitialMode: body.InitialMode}),
-		TraceID:   requestIDFromHTTP(r),
-		StartedBy: accountID,
+		RequestHash:    requestHash,
+		TraceID:        requestIDFromHTTP(r),
+		StartedBy:      accountID,
+		InitialMode:    body.InitialMode,
 	}
 	session, err := h.service.Start(r.Context(), input)
 	if err != nil {

@@ -102,11 +102,11 @@ type CreateInput struct {
 type StartInput struct {
 	AccountID      string
 	SessionID      string
-	InitialMode    realtimev1.Mode
 	IdempotencyKey string
 	RequestHash    string
 	TraceID        string
 	StartedBy      string
+	InitialMode    realtimev1.Mode
 }
 
 // EndInput carries authenticated ownership and a durable request identity.

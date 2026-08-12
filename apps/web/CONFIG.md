@@ -10,6 +10,7 @@ cp .env.example .env.local
 | --- | --- |
 | `LINGOW_API_BASE_URL` | API 地址，默认 `http://127.0.0.1:8080` |
 | `LINGOW_REALTIME_BASE_URL` | Realtime 控制面，默认 `http://127.0.0.1:8090` |
+| `NEXT_PUBLIC_LINGOW_INITIAL_MODE` | 新 Web 会话入口模式，默认 `assistant`；设置为 `interpretation` 后重新构建即可回退 |
 | `ENABLE_DEV_REALTIME_TICKET` | 仅本地 `next dev`：设为 `true` 才开放 `/api/dev/realtime-ticket`（默认关闭） |
 | `REALTIME_TICKET_SECRET` | 仅上述旁路需要；与仓库根 `.env` 一致（≥32 字节） |
 

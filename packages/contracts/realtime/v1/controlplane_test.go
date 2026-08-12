@@ -109,6 +109,7 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 				} `yaml:"requestBody"`
 				Security  []map[string][]string `yaml:"security"`
 				Responses map[string]struct {
+					Ref     string `yaml:"$ref"`
 					Content map[string]struct {
 						Schema openAPIProperty `yaml:"schema"`
 					} `yaml:"content"`
@@ -116,6 +117,7 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 			} `yaml:"post"`
 			Get struct {
 				Responses map[string]struct {
+					Ref     string `yaml:"$ref"`
 					Content map[string]struct {
 						Schema openAPIProperty `yaml:"schema"`
 					} `yaml:"content"`
@@ -126,6 +128,11 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 		Components struct {
 			SecuritySchemes map[string]openAPISchema `yaml:"securitySchemes"`
 			Schemas         map[string]openAPISchema `yaml:"schemas"`
+			Responses       map[string]struct {
+				Content map[string]struct {
+					Schema openAPIProperty `yaml:"schema"`
+				} `yaml:"content"`
+			} `yaml:"responses"`
 		} `yaml:"components"`
 	}
 	if err := yaml.Unmarshal(specData, &spec); err != nil {
@@ -134,6 +141,7 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 
 	controlPlaneCodes := spec.Components.Schemas["ControlPlaneErrorCode"].Enum
 	if want := []string{
+		"runtime_not_found",
 		"runtime_operation_conflict",
 		"mode_not_available",
 		"mode_generation_conflict",
@@ -167,8 +175,8 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 		t.Fatalf("RuntimeOperationConflictError.error ref = %q", got)
 	}
 	bodySchema := spec.Components.Schemas["RuntimeOperationConflictErrorBody"]
-	if got := bodySchema.Properties["code"].Ref; got != "#/components/schemas/ControlPlaneErrorCode" {
-		t.Fatalf("RuntimeOperationConflictErrorBody.code ref = %q", got)
+	if got := bodySchema.Properties["code"].Enum; !reflect.DeepEqual(got, []string{"runtime_operation_conflict"}) {
+		t.Fatalf("RuntimeOperationConflictErrorBody.code enum = %v", got)
 	}
 
 	stop := spec.Paths["/realtime/v1/sessions/{session_id}/stop"]
@@ -189,6 +197,27 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 	}
 	if got := runtime.Get.Responses["200"].Content["application/json"].Schema.Ref; got != "#/components/schemas/RealtimeRuntimeSnapshot" {
 		t.Fatalf("Runtime 200 schema ref = %q", got)
+	}
+	mode := spec.Paths["/realtime/v1/sessions/{session_id}/mode"]
+	for method, response := range map[string]struct {
+		Ref string
+	}{
+		"GET":  {Ref: mode.Get.Responses["404"].Ref},
+		"POST": {Ref: mode.Post.Responses["404"].Ref},
+	} {
+		if want := "#/components/responses/RuntimeNotFound"; response.Ref != want {
+			t.Fatalf("Mode %s 404 response ref = %q, want %q", method, response.Ref, want)
+		}
+	}
+	if got := spec.Components.Responses["RuntimeNotFound"].Content["application/json"].Schema.Ref; got != "#/components/schemas/RuntimeNotFoundError" {
+		t.Fatalf("RuntimeNotFound response schema ref = %q", got)
+	}
+	runtimeNotFound := spec.Components.Schemas["RuntimeNotFoundError"]
+	if got := runtimeNotFound.Properties["error"].Ref; got != "#/components/schemas/RuntimeNotFoundErrorBody" {
+		t.Fatalf("RuntimeNotFoundError.error ref = %q", got)
+	}
+	if got := spec.Components.Schemas["RuntimeNotFoundErrorBody"].Properties["code"].Enum; !reflect.DeepEqual(got, []string{"runtime_not_found"}) {
+		t.Fatalf("RuntimeNotFoundErrorBody.code enum = %v", got)
 	}
 	connection := spec.Paths["/realtime/v1/sessions/{session_id}/connection"]
 	assertRealtimeSecurity(t, "connection", connection.Get.Security)

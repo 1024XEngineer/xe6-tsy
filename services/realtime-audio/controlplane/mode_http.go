@@ -2,11 +2,15 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
+
+var errModeRuntimeNotFound = errors.New("mode runtime not found")
 
 // ModeControl exposes only the runtime-owned business mode state and its
 // compare-and-switch operation. Implementations must not rebuild media or
@@ -24,7 +28,7 @@ func (h *Handler) modeState(writer http.ResponseWriter, request *http.Request) {
 	}
 	state, err := h.modes.GetModeState(request.Context(), sessionID)
 	if err != nil {
-		h.writeError(writer, request, err)
+		h.writeError(writer, request, mapModeControlError(err))
 		return
 	}
 	h.writeJSON(writer, http.StatusOK, state)
@@ -55,10 +59,17 @@ func (h *Handler) switchMode(writer http.ResponseWriter, request *http.Request) 
 	// runtime instance without applying the command's runtime identity fence.
 	result, err := h.modes.SwitchMode(request.Context(), command)
 	if err != nil {
-		h.writeError(writer, request, err)
+		h.writeError(writer, request, mapModeControlError(err))
 		return
 	}
 	h.writeJSON(writer, http.StatusOK, result)
+}
+
+func mapModeControlError(err error) error {
+	if errors.Is(err, session.ErrRuntimeNotFound) {
+		return errModeRuntimeNotFound
+	}
+	return err
 }
 
 func validSwitchModeCommand(sessionID string, command realtimev1.SwitchModeCommand) bool {

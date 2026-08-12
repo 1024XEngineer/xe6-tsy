@@ -300,6 +300,8 @@ func mapRuntimeState(value realtimev1.RuntimeState) (sessions.RuntimeState, erro
 		return sessions.RuntimeTranslating, nil
 	case realtimev1.RuntimeThinking:
 		return sessions.RuntimeThinking, nil
+	case realtimev1.RuntimeAssistantProcessing:
+		return sessions.RuntimeAssistantProcessing, nil
 	case realtimev1.RuntimeTTSProcessing:
 		return sessions.RuntimeTTSProcessing, nil
 	case realtimev1.RuntimePlaying:

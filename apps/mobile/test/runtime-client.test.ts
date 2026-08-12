@@ -156,3 +156,38 @@ test("late successful mode response is discarded after runtime replacement", asy
   assert.equal(client.state.status, "ready");
   assert.equal(client.state.errorCode, null);
 });
+
+test("rejects malformed snapshots before they poison client state", () => {
+  const client = new RuntimeClient("s1", new FakeTransport());
+
+  assert.throws(() =>
+    client.observeConnection({ ...connection(), connection_id: "", version: 0 }),
+  );
+  assert.throws(() =>
+    client.observeRuntime({ ...runtime, start_operation_id: "", updated_at: "invalid" }),
+  );
+  assert.throws(() =>
+    client.observeMode({ ...mode(), phase: "invalid" as "active" }),
+  );
+  assert.equal(client.state.connection, null);
+  assert.equal(client.state.runtime, null);
+  assert.equal(client.state.mode, null);
+});
+
+test("rejects a mode response for another operation", async () => {
+  const transport = new FakeTransport();
+  transport.switchMode = async (command) => ({
+    operation_id: "another-operation",
+    status: "applied",
+    state: {
+      ...mode(command.expected_generation + 1, command.runtime_instance_id, command.target_mode),
+      last_operation_id: "another-operation",
+    },
+  });
+  const client = new RuntimeClient("s1", transport, { createId: () => "operation-1" });
+  await client.sync();
+
+  await assert.rejects(client.switchMode("assistant"), /mode response does not match operation/);
+  assert.equal(client.state.mode?.active_mode, "interpretation");
+  assert.equal(client.state.status, "error");
+});

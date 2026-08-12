@@ -104,6 +104,14 @@ export function isRuntimeState(value: unknown): value is RuntimeState {
   );
 }
 
+export function isModePhase(value: unknown): value is ModePhase {
+  return value === "active" || value === "switching";
+}
+
+export function isModeSwitchStatus(value: unknown): value is ModeSwitchStatus {
+  return value === "applied" || value === "unchanged";
+}
+
 export function effectiveMode(snapshot: ModeStateSnapshot | null): Mode {
   // A missing mode snapshot is the rolling-compatibility path for old clients.
   // It must not block the existing interpretation flow or invent a mode state.

@@ -3,6 +3,8 @@ import {
   effectiveMode,
   isConnectionState,
   isMode,
+  isModePhase,
+  isModeSwitchStatus,
   isRuntimeState,
   type ConnectionSnapshot,
   type ConnectionState,
@@ -135,7 +137,14 @@ export class RuntimeClient {
   }
 
   observeConnection(snapshot: ConnectionSnapshot): boolean {
-    if (snapshot.session_id !== this.sessionId || !isConnectionState(snapshot.state)) {
+    if (
+      snapshot.session_id !== this.sessionId ||
+      !snapshot.connection_id ||
+      !isConnectionState(snapshot.state) ||
+      !Number.isInteger(snapshot.version) ||
+      snapshot.version < 1 ||
+      !isValidTimestamp(snapshot.updated_at)
+    ) {
       throw new Error("connection snapshot does not match session");
     }
     const previous = this.current.connection;
@@ -162,7 +171,12 @@ export class RuntimeClient {
   }
 
   observeRuntime(snapshot: RuntimeSnapshot): boolean {
-    if (snapshot.session_id !== this.sessionId || !isRuntimeState(snapshot.runtime_state)) {
+    if (
+      snapshot.session_id !== this.sessionId ||
+      !snapshot.start_operation_id ||
+      !isRuntimeState(snapshot.runtime_state) ||
+      !isValidTimestamp(snapshot.updated_at)
+    ) {
       throw new Error("runtime snapshot does not match session");
     }
     const previous = this.current.runtime;
@@ -187,8 +201,11 @@ export class RuntimeClient {
     if (
       snapshot.session_id !== this.sessionId ||
       !isMode(snapshot.active_mode) ||
+      !isModePhase(snapshot.phase) ||
+      !Number.isInteger(snapshot.generation) ||
       snapshot.generation < 1 ||
-      !snapshot.runtime_instance_id
+      !snapshot.runtime_instance_id ||
+      !isValidTimestamp(snapshot.updated_at)
     ) {
       throw new Error("mode snapshot does not match the public contract");
     }
@@ -238,6 +255,21 @@ export class RuntimeClient {
     this.update({ status: "syncing", errorCode: null });
     try {
       const result = await this.transport.switchMode(command);
+      if (
+        result.operation_id !== operationId ||
+        !isModeSwitchStatus(result.status) ||
+        result.state.session_id !== this.sessionId ||
+        result.state.runtime_instance_id !== command.runtime_instance_id ||
+        result.state.active_mode !== targetMode ||
+        result.state.phase !== "active" ||
+        result.state.last_operation_id !== operationId ||
+        (result.status === "applied" &&
+          result.state.generation !== command.expected_generation + 1) ||
+        (result.status === "unchanged" &&
+          result.state.generation !== command.expected_generation)
+      ) {
+        throw new Error("mode response does not match operation");
+      }
       this.pendingOperations.delete(operationId);
       const accepted = this.observeMode(result.state);
       const observed = this.current.mode;
@@ -363,6 +395,10 @@ function clientStatusForConnection(
 
 function isNewerTimestamp(previous: string, next: string): boolean {
   return Date.parse(next) > Date.parse(previous);
+}
+
+function isValidTimestamp(value: string): boolean {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
 function isModeConflict(error: unknown): error is RealtimeApiError {

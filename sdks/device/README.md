@@ -12,6 +12,7 @@
 - `StateStore` 按连接版本、Runtime 时间和 Mode generation 过滤迟到快照，允许新 runtime instance 替换旧观察值。
 - `Reconnector` 通过注入的 `ReconnectPolicy` 和 `Connect` 函数执行平台自定义重连。
 - `WakeCommandController` 暴露 `WakeWordEngine`、`CommandWindow` 接口；本地 KWS 或命令窗口失败时自动关闭可选能力，继续传统同传。
+- `SessionStartClient` 向 API Start 发送类型化 `initial_mode`；省略时显式使用 `interpretation`。
 
 从仓库根目录运行测试会自动通过 `go.work` 覆盖本 SDK；也可以在 SDK 目录独立运行：
 
@@ -27,7 +28,6 @@ go vet ./sdks/device/...
 
 - WebRTC offer/answer、ICE、音频 Track 和 PeerConnection 生命周期；
 - 通用上行 Control DataChannel 及类型化消息 envelope；
-- API Session `initial_mode` 请求字段和透传；
 - realtime Command Gate、Command ASR、确定性命令解析和命令窗口确认事件；
 - 任意芯片/OS 的真实本地唤醒词模型。
 

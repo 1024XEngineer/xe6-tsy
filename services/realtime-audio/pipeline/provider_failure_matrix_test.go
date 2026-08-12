@@ -90,7 +90,7 @@ func TestProviderFailureMatrixLLMDoesNotPublishAssistantFacts(t *testing.T) {
 		t.Fatalf("HandleASRFinal() error = %v, want provider error", err)
 	}
 	assertProviderFailureRuntimeStates(t, runtime,
-		session.RuntimeThinking, session.RuntimeListening)
+		session.RuntimeAssistantProcessing, session.RuntimeListening)
 	if len(replies.events) != 0 || len(usage.facts) != 0 || len(ttsProvider.Requests()) != 0 {
 		t.Fatalf("LLM failure side effects: replies=%#v usage=%#v TTS=%#v",
 			replies.events, usage.facts, ttsProvider.Requests())

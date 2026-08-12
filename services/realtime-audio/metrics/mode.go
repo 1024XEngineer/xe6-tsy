@@ -8,49 +8,15 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 )
 
-// ModeControl is the narrow runtime mode boundary observed by this package.
-type ModeControl interface {
-	GetModeState(context.Context, string) (realtimev1.ModeStateSnapshot, error)
-	SwitchMode(context.Context, realtimev1.SwitchModeCommand) (realtimev1.SwitchModeResult, error)
-}
-
 // ModeChangedSink accepts an immutable transition event before state commit.
 type ModeChangedSink interface {
 	Publish(context.Context, realtimev1.ModeChangedEvent) error
 }
 
-type observedModeControl struct {
-	next     ModeControl
-	registry *Registry
-}
-
-// ObserveModeControl decorates validated mode commands without changing their
-// results. Exact retries remain response observations; actual transitions are
-// counted separately by ObserveModeChangedSink.
-func ObserveModeControl(next ModeControl, registry *Registry) ModeControl {
-	if next == nil || registry == nil {
-		return next
-	}
-	return &observedModeControl{next: next, registry: registry}
-}
-
-func (o *observedModeControl) GetModeState(
-	ctx context.Context,
-	sessionID string,
-) (realtimev1.ModeStateSnapshot, error) {
-	return o.next.GetModeState(ctx, sessionID)
-}
-
-func (o *observedModeControl) SwitchMode(
-	ctx context.Context,
-	command realtimev1.SwitchModeCommand,
-) (realtimev1.SwitchModeResult, error) {
-	result, err := o.next.SwitchMode(ctx, command)
-	o.registry.recordModeCommand(result, err)
-	return result, err
-}
-
-func (r *Registry) recordModeCommand(result realtimev1.SwitchModeResult, err error) {
+// RecordModeCommand classifies one command that reached a runtime coordinator.
+// Manager-level lookup, cancellation, and dependency failures are deliberately
+// excluded so Total remains the denominator for coordinator decisions only.
+func (r *Registry) RecordModeCommand(result realtimev1.SwitchModeResult, err error) {
 	if r == nil {
 		return
 	}
@@ -103,5 +69,5 @@ func (o *observedModeChangedSink) Publish(
 	return nil
 }
 
-var _ ModeControl = (*observedModeControl)(nil)
+var _ runtime.ModeCommandObserver = (*Registry)(nil)
 var _ ModeChangedSink = (*observedModeChangedSink)(nil)

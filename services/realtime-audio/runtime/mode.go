@@ -43,6 +43,12 @@ type ModeChangedSink interface {
 	Publish(context.Context, realtimev1.ModeChangedEvent) error
 }
 
+// ModeCommandObserver receives only commands invoked on a concrete runtime
+// coordinator. Implementations must not retain command identifiers.
+type ModeCommandObserver interface {
+	RecordModeCommand(realtimev1.SwitchModeResult, error)
+}
+
 type pendingModeTransition struct {
 	command realtimev1.SwitchModeCommand
 	result  realtimev1.SwitchModeResult
@@ -61,6 +67,7 @@ type modeCoordinator struct {
 	pending         *pendingModeTransition
 	modeChanges     ModeChangedSink
 	now             func() time.Time
+	observer        ModeCommandObserver
 }
 
 func newModeCoordinator(
@@ -163,7 +170,10 @@ func (c *modeCoordinator) commitTurn(
 func (c *modeCoordinator) Switch(
 	ctx context.Context,
 	command realtimev1.SwitchModeCommand,
-) (realtimev1.SwitchModeResult, error) {
+) (result realtimev1.SwitchModeResult, returnErr error) {
+	if c != nil && c.observer != nil {
+		defer func() { c.observer.RecordModeCommand(result, returnErr) }()
+	}
 	if err := ctx.Err(); err != nil {
 		return realtimev1.SwitchModeResult{}, err
 	}
@@ -220,70 +230,13 @@ func (c *modeCoordinator) Switch(
 	c.state.LastOperationID = &operationID
 	c.state.UpdatedAt = c.now().UTC()
 	c.state.Phase = realtimev1.ModePhaseActive
-	result := realtimev1.SwitchModeResult{
+	result = realtimev1.SwitchModeResult{
 		OperationID: command.OperationID,
 		Status:      realtimev1.ModeSwitchUnchanged,
 		State:       cloneModeState(c.state),
 	}
 	c.rememberOperation(command, result)
 	return cloneModeResult(result), nil
-}
-
-func (m *Manager) logModeSwitch(
-	command realtimev1.SwitchModeCommand,
-	result realtimev1.SwitchModeResult,
-	err error,
-) {
-	if m == nil || m.logger == nil {
-		return
-	}
-	fields := []any{
-		"event", "mode_switch",
-		"session_id", command.SessionID,
-		"trace_id", command.TraceID,
-		"runtime_instance_id", command.RuntimeInstanceID,
-		"operation_id", command.OperationID,
-		"expected_generation", command.ExpectedGeneration,
-		"target_mode", command.TargetMode,
-	}
-	if err != nil {
-		fields = append(fields, "status", "failed", "error_class", modeSwitchErrorClass(err))
-		m.logger.Warn("realtime mode observation", fields...)
-		return
-	}
-	fields = append(fields,
-		"status", result.Status,
-		"active_mode", result.State.ActiveMode,
-		"generation", result.State.Generation,
-	)
-	m.logger.Info("realtime mode observation", fields...)
-}
-
-func modeSwitchErrorClass(err error) string {
-	switch {
-	case errors.Is(err, ErrModeCommandInvalid):
-		return "invalid_command"
-	case errors.Is(err, ErrModeNotAvailable):
-		return "not_available"
-	case errors.Is(err, ErrModeGenerationConflict):
-		return "generation_conflict"
-	case errors.Is(err, ErrModeRuntimeInstanceMismatch):
-		return "runtime_instance_mismatch"
-	case errors.Is(err, ErrModeOperationConflict):
-		return "operation_conflict"
-	case errors.Is(err, ErrModeEventUnavailable):
-		return "event_unavailable"
-	case errors.Is(err, session.ErrRuntimeNotFound):
-		return "runtime_not_found"
-	case errors.Is(err, ErrSessionIDRequired), errors.Is(err, ErrDependencyRequired):
-		return "invalid_request"
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "deadline_exceeded"
-	default:
-		return "unknown"
-	}
 }
 
 func (c *modeCoordinator) prepareTransition(command realtimev1.SwitchModeCommand) *pendingModeTransition {
@@ -410,14 +363,11 @@ func (m *Manager) SwitchMode(
 	coordinator, runCtx, err := m.currentModeRuntime(command.SessionID)
 	if err != nil {
 		unlock()
-		m.logModeSwitch(command, realtimev1.SwitchModeResult{}, err)
 		return realtimev1.SwitchModeResult{}, err
 	}
 	if runCtx == nil {
 		unlock()
-		result, switchErr := coordinator.Switch(ctx, command)
-		m.logModeSwitch(command, result, switchErr)
-		return result, switchErr
+		return coordinator.Switch(ctx, command)
 	}
 	switchCtx, cancel := context.WithCancel(ctx)
 	stopCancellation := context.AfterFunc(runCtx, cancel)
@@ -426,9 +376,7 @@ func (m *Manager) SwitchMode(
 		stopCancellation()
 		cancel()
 	}()
-	result, switchErr := coordinator.Switch(switchCtx, command)
-	m.logModeSwitch(command, result, switchErr)
-	return result, switchErr
+	return coordinator.Switch(switchCtx, command)
 }
 
 // logModeSwitch records control-plane correlation after the coordinator has
@@ -438,7 +386,7 @@ func (m *Manager) logModeSwitch(command realtimev1.SwitchModeCommand, result rea
 	if m == nil || m.logger == nil {
 		return
 	}
-	fields := make([]any, 0, 14)
+	fields := []any{"event", "mode_switch"}
 	if command.SessionID != "" {
 		fields = append(fields, "session_id", command.SessionID)
 	}
@@ -467,11 +415,38 @@ func (m *Manager) logModeSwitch(command realtimev1.SwitchModeCommand, result rea
 		fields = append(fields, "status", result.Status)
 	}
 	if err != nil {
-		fields = append(fields, "error", err)
+		fields = append(fields, "status", "failed", "error_class", modeSwitchErrorClass(err), "error", err)
 		m.logger.Warn("realtime mode switch rejected", fields...)
 		return
 	}
 	m.logger.Info("realtime mode switch resolved", fields...)
+}
+
+func modeSwitchErrorClass(err error) string {
+	switch {
+	case errors.Is(err, ErrModeCommandInvalid):
+		return "invalid_command"
+	case errors.Is(err, ErrModeNotAvailable):
+		return "not_available"
+	case errors.Is(err, ErrModeGenerationConflict):
+		return "generation_conflict"
+	case errors.Is(err, ErrModeRuntimeInstanceMismatch):
+		return "runtime_instance_mismatch"
+	case errors.Is(err, ErrModeOperationConflict):
+		return "operation_conflict"
+	case errors.Is(err, ErrModeEventUnavailable):
+		return "event_unavailable"
+	case errors.Is(err, session.ErrRuntimeNotFound):
+		return "runtime_not_found"
+	case errors.Is(err, ErrSessionIDRequired), errors.Is(err, ErrDependencyRequired):
+		return "invalid_request"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		return "unknown"
+	}
 }
 
 func (m *Manager) currentModeCoordinator(sessionID string) (*modeCoordinator, error) {

@@ -213,7 +213,7 @@ DataChannel、Track 和 PeerConnection。连接租约或空闲超时负责兜底
 | 模式切换成功率下降 | `accepted / attempted < 99%` | 检查 outbox 延迟、连接和重试；该比例只针对确实发生切换的事件 |
 | 过期客户端集中出现 | `(generation_conflict + runtime_mismatch) / total > 20%`，持续 15 分钟 | 检查客户端快照刷新、runtime 重启通知和请求重试退避；不要直接放宽 CAS |
 | 幂等键冲突 | `operation_conflict / total > 5%`，持续 15 分钟 | 检查 operation_id 生成和重试 payload 是否稳定 |
-| Provider 失败 | `provider_failures` 任一能力 5 分钟增量大于 5 | 结合结构化日志中的 `stage`、`provider` 定位 ASR、Assistant、翻译或 TTS 依赖 |
+| Provider 失败 | `provider_failures` 任一能力 5 分钟增量大于 5 | 结合结构化日志中的 `stage`、`provider`、`model` 定位 ASR、Assistant、翻译或 TTS 依赖 |
 | DataChannel 投递失败 | `data_channel_failures` 5 分钟增量大于 5 | 检查连接状态、客户端消费和发送超时；FinalTurn 的持久提交不因此回滚 |
 | Runtime 异常重启 | `runtimes_started - runtimes_stopped` 持续增长，或同一实例 15 分钟启动量超过正常会话基线 2 倍 | 检查 worker 失败日志、会话清理和控制面重试 |
 
@@ -222,7 +222,7 @@ DataChannel、Track 和 PeerConnection。连接租约或空闲超时负责兜底
 结构化日志按责任边界携带关联字段：
 
 - `realtime mode switch resolved/rejected` 携带 `session_id`、`operation_id`、`runtime_instance_id`、`mode`/`target_mode` 和 `generation`；模式命令没有 `turn_id` 或 provider，因此不填充这两个字段。
-- `realtime latency checkpoint` 和 `realtime provider failed` 携带 `session_id`、`turn_id`、`runtime_instance_id`、`mode`、`generation`，以及已从配置边界确定的 `provider`；Turn 不拥有模式命令的 `operation_id`，因此不强行关联。
+- `realtime latency checkpoint` 和 `realtime provider failed` 携带 `session_id`、`turn_id`、`runtime_instance_id`、`mode`、`generation`，以及 Provider 已返回或配置边界已知的 `provider`、`model`。Provider 尚未创建请求结果时不伪造 `model`；Turn 不拥有模式命令的 `operation_id` 或独立 `activity_id`，因此不把最近一次命令错误关联到当前 Turn。
 - `realtime pipeline worker failed` 在失败发生于 Turn 之外时携带 `session_id`、启动 `operation_id` 和 `trace_id`；如果失败发生在 Provider/Turn 内，则同时使用上面的 Turn 日志。
 
 当前阶段仍未宣称以下验收完成：上行 Control DataChannel、服务端 Command Gate/唤醒词、DataChannel 永久关闭后的重新绑定，以及浏览器与真实 Pion 的跨模式媒体 E2E。这些能力分别依赖阶段 12–14；本阶段验证现有 HTTP/Manager 模式控制、共享媒体输入、Pion 连接状态短暂断开后在同一 PeerConnection 上恢复、generation/Runtime 隔离、提交竞态和离线 Provider 失败矩阵。

@@ -97,15 +97,15 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		SessionID: turn.SessionID, TurnID: turn.ID, SourceLanguage: request.SourceLanguage,
 	})
 	if err != nil {
-		p.pipeline.latency.ProviderFailure("asr_start", turn, p.asrProvider, err)
+		p.pipeline.latency.ProviderFailure("asr_start", turn, p.asrProvider, "", err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("start ASR stream: %w", err))
 	}
 	if stream == nil {
-		p.pipeline.latency.ProviderFailure("asr_stream", turn, p.asrProvider, ErrASRStreamRequired)
+		p.pipeline.latency.ProviderFailure("asr_stream", turn, p.asrProvider, "", ErrASRStreamRequired)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, ErrASRStreamRequired)
 	}
 	asrStartedAt := time.Now()
-	p.pipeline.latency.ProviderCheckpoint("asr_stream_started", turn, asrStartedAt, p.asrProvider)
+	p.pipeline.latency.ProviderCheckpoint("asr_stream_started", turn, asrStartedAt, p.asrProvider, "")
 	defer stream.Close()
 	streamCtx, stopEvents := context.WithCancel(ctx)
 	defer stopEvents()
@@ -114,18 +114,18 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 	go collectFinalASREvent(streamCtx, p.pipeline.latency, turn, asrStartedAt, stream.Events(), finalEvents, eventErrors)
 	for _, chunk := range request.AudioChunks {
 		if err := stream.PushAudio(ctx, append([]byte(nil), chunk...)); err != nil {
-			p.pipeline.latency.ProviderFailure("asr_push_audio", turn, p.asrProvider, err)
+			p.pipeline.latency.ProviderFailure("asr_push_audio", turn, p.asrProvider, "", err)
 			return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("push audio for Turn %s: %w", turn.ID, err))
 		}
 	}
 
 	result, err := stream.Finish(ctx)
 	if err != nil {
-		p.pipeline.latency.ProviderFailure("asr_finish", turn, p.asrProvider, err)
+		p.pipeline.latency.ProviderFailure("asr_finish", turn, observedProvider(p.asrProvider, result.Provider), result.Model, err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("finish ASR stream: %w", err))
 	}
 	if err := <-eventErrors; err != nil {
-		p.pipeline.latency.ProviderFailure("asr_events", turn, p.asrProvider, err)
+		p.pipeline.latency.ProviderFailure("asr_events", turn, observedProvider(p.asrProvider, result.Provider), result.Model, err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, err)
 	}
 	select {
@@ -137,7 +137,7 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		result.SourceLanguage = request.SourceLanguage
 	}
 	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
-	p.pipeline.latency.ProviderCheckpoint("asr_final", turn, asrStartedAt, observedProvider(p.asrProvider, result.Provider),
+	p.pipeline.latency.ProviderCheckpoint("asr_final", turn, asrStartedAt, observedProvider(p.asrProvider, result.Provider), result.Model,
 		"source_language", result.SourceLanguage,
 		"text_bytes", len(result.Text),
 	)

@@ -157,7 +157,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		SourceLanguage: result.SourceLanguage, TargetLanguage: target,
 	})
 	if err != nil {
-		s.latency.ProviderFailure("translation", turn, observedProvider(s.translationProvider, translationResult.Provider), err)
+		s.latency.ProviderFailure("translation", turn, observedProvider(s.translationProvider, translationResult.Provider), translationResult.Model, err)
 		// Providers may still return token usage on rejected attempts. Publish
 		// that consumption before failing so retries cannot hide spend.
 		if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, translationResult); usageErr != nil {
@@ -165,7 +165,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		}
 		return fmt.Errorf("translate Turn %s: %w", turn.ID, err)
 	}
-	s.latency.ProviderCheckpoint("translate_done", turn, translateStartedAt, observedProvider(s.translationProvider, translationResult.Provider),
+	s.latency.ProviderCheckpoint("translate_done", turn, translateStartedAt, observedProvider(s.translationProvider, translationResult.Provider), translationResult.Model,
 		"source_language", result.SourceLanguage,
 		"target_language", target,
 		"provider_latency_ms", translationResult.LatencyMS,

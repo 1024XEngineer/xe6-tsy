@@ -81,6 +81,7 @@ type Dependencies struct {
 	Latency              *slog.Logger
 	ProviderFailures     pipeline.ProviderFailureObserver
 	Lifecycle            LifecycleObserver
+	ModeCommands         ModeCommandObserver
 	Now                  func() time.Time
 	NewRuntimeInstanceID RuntimeInstanceIDFactory
 }
@@ -327,10 +328,9 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			return fmt.Errorf("close previous audio input: %w", err)
 		}
 		m.mu.Lock()
-		if m.entries[snapshot.SessionID] == item {
-			delete(m.entries, snapshot.SessionID)
-		}
+		removed := m.removeEntryLocked(snapshot.SessionID, item)
 		m.mu.Unlock()
+		m.recordRuntimeStopped(removed)
 	}
 	runtimeInstanceID, err := m.deps.NewRuntimeInstanceID()
 	if err != nil {
@@ -351,6 +351,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	if err != nil {
 		return fmt.Errorf("create mode coordinator: %w", err)
 	}
+	mode.observer = m.deps.ModeCommands
 	input, err := m.deps.FrameSources.Open(ctx, snapshot)
 	if err != nil {
 		return fmt.Errorf("open audio input: %w", err)
@@ -486,12 +487,13 @@ func (m *Manager) run(item *entry, ctx context.Context) {
 	}
 	item.err = err
 	item.finished = true
-	if reportFailure && reportErr == nil && ctx.Err() == nil && item.source.closeError() == nil &&
-		m.entries[item.request.SessionID] == item {
-		delete(m.entries, item.request.SessionID)
+	removed := false
+	if reportFailure && reportErr == nil && ctx.Err() == nil && item.source.closeError() == nil {
+		removed = m.removeEntryLocked(item.request.SessionID, item)
 	}
 	close(item.done)
 	m.mu.Unlock()
+	m.recordRuntimeStopped(removed)
 }
 
 // PipelineActive reports whether a worker is active or still settling its
@@ -583,17 +585,30 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 		} else if finished {
 			err = nil
 		}
-		if closeAttempt.err == nil && m.entries[sessionID] == item {
-			delete(m.entries, sessionID)
-			stopped = true
+		if closeAttempt.err == nil {
+			stopped = m.removeEntryLocked(sessionID, item)
 		}
 		m.mu.Unlock()
-		if stopped && m.deps.Lifecycle != nil {
-			m.deps.Lifecycle.RecordRuntimeStopped()
-		}
+		m.recordRuntimeStopped(stopped)
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// removeEntryLocked is the single ownership transition from active/retained to
+// absent. The caller holds m.mu and records the lifecycle counter after unlock.
+func (m *Manager) removeEntryLocked(sessionID string, item *entry) bool {
+	if m.entries[sessionID] != item {
+		return false
+	}
+	delete(m.entries, sessionID)
+	return true
+}
+
+func (m *Manager) recordRuntimeStopped(removed bool) {
+	if removed && m.deps.Lifecycle != nil {
+		m.deps.Lifecycle.RecordRuntimeStopped()
 	}
 }
 

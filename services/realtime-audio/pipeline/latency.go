@@ -31,9 +31,12 @@ func (l LatencyLogger) Checkpoint(stage string, turn TurnContext, since time.Tim
 
 // ProviderCheckpoint adds the configured provider only when provider selection
 // is known at the composition boundary.
-func (l LatencyLogger) ProviderCheckpoint(stage string, turn TurnContext, since time.Time, provider string, attrs ...any) {
+func (l LatencyLogger) ProviderCheckpoint(stage string, turn TurnContext, since time.Time, provider, model string, attrs ...any) {
 	if provider = strings.TrimSpace(provider); provider != "" {
 		attrs = append([]any{"provider", provider}, attrs...)
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		attrs = append([]any{"model", model}, attrs...)
 	}
 	l.Checkpoint(stage, turn, since, attrs...)
 }
@@ -41,7 +44,7 @@ func (l LatencyLogger) ProviderCheckpoint(stage string, turn TurnContext, since 
 // ProviderFailure logs the immutable Turn snapshot at the provider boundary.
 // Operation IDs are intentionally absent because a Turn does not own the
 // session lifecycle or mode command operation that happened to precede it.
-func (l LatencyLogger) ProviderFailure(stage string, turn TurnContext, provider string, err error) {
+func (l LatencyLogger) ProviderFailure(stage string, turn TurnContext, provider, model string, err error) {
 	if err == nil {
 		return
 	}
@@ -55,6 +58,9 @@ func (l LatencyLogger) ProviderFailure(stage string, turn TurnContext, provider 
 	fields := turnLogFields(stage, turn)
 	if provider != "" {
 		fields = append(fields, "provider", provider)
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		fields = append(fields, "model", model)
 	}
 	fields = append(fields, "error", err)
 	l.Logger.Error("realtime provider failed", fields...)

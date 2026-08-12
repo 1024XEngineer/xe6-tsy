@@ -102,7 +102,7 @@ func (h *AssistantHandler) HandleASRFinal(ctx context.Context, turn TurnContext,
 		Language: asr.NormalizeLanguage(result.SourceLanguage),
 	})
 	if err != nil {
-		h.latency.ProviderFailure("assistant_llm", turn, observedProvider(h.provider, reply.Provider), err)
+		h.latency.ProviderFailure("assistant_llm", turn, observedProvider(h.provider, reply.Provider), reply.Model, err)
 		usageErr := h.publishLLMUsageIfPresent(ctx, turn, reply)
 		return errors.Join(fmt.Errorf("generate assistant reply: %w", err), usageErr)
 	}
@@ -112,10 +112,10 @@ func (h *AssistantHandler) HandleASRFinal(ctx context.Context, turn TurnContext,
 		reply.Language = asr.NormalizeLanguage(result.SourceLanguage)
 	}
 	if reply.Text == "" || reply.Language == "" {
-		h.latency.ProviderFailure("assistant_result", turn, observedProvider(h.provider, reply.Provider), ErrAssistantReplyInvalid)
+		h.latency.ProviderFailure("assistant_result", turn, observedProvider(h.provider, reply.Provider), reply.Model, ErrAssistantReplyInvalid)
 		return ErrAssistantReplyInvalid
 	}
-	h.latency.ProviderCheckpoint("assistant_reply_done", turn, startedAt, observedProvider(h.provider, reply.Provider),
+	h.latency.ProviderCheckpoint("assistant_reply_done", turn, startedAt, observedProvider(h.provider, reply.Provider), reply.Model,
 		"language", reply.Language, "provider_latency_ms", reply.LatencyMS,
 		"input_tokens", reply.InputTokens, "output_tokens", reply.OutputTokens,
 	)

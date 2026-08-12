@@ -13,7 +13,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 )
 
-func TestObservedModeControlClassifiesEveryCommandOnce(t *testing.T) {
+func TestRegistryClassifiesEveryCoordinatorCommandOnce(t *testing.T) {
 	tests := []struct {
 		name   string
 		result realtimev1.SwitchModeResult
@@ -34,31 +34,13 @@ func TestObservedModeControlClassifiesEveryCommandOnce(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			registry := &Registry{}
-			next := &stubModeControl{result: test.result, err: test.err}
-			observed := ObserveModeControl(next, registry)
-			result, err := observed.SwitchMode(context.Background(), realtimev1.SwitchModeCommand{})
-			if !errors.Is(err, test.err) || result.Status != test.result.Status {
-				t.Fatalf("SwitchMode() = (%#v, %v), want (%#v, %v)", result, err, test.result, test.err)
-			}
+			registry.RecordModeCommand(test.result, test.err)
 			got := registry.Current().ModeCommands
 			if got.Total != 1 || modeCommandOutcomeSum(got) != got.Total {
 				t.Fatalf("mode command counters = %#v, want one classified command", got)
 			}
 			test.assert(t, got)
 		})
-	}
-}
-
-func TestObservedModeControlPassesThroughStateReads(t *testing.T) {
-	want := realtimev1.ModeStateSnapshot{SessionID: "session-1", Generation: 3}
-	next := &stubModeControl{state: want}
-	registry := &Registry{}
-	got, err := ObserveModeControl(next, registry).GetModeState(context.Background(), want.SessionID)
-	if err != nil || got != want {
-		t.Fatalf("GetModeState() = (%#v, %v), want (%#v, nil)", got, err, want)
-	}
-	if snapshot := registry.Current(); snapshot != (Snapshot{}) {
-		t.Fatalf("state read changed counters: %#v", snapshot)
 	}
 }
 
@@ -83,7 +65,7 @@ func TestObservedModeChangedSinkCountsAcceptanceAndFailure(t *testing.T) {
 
 func TestMetricsHandlerReturnsJSONSnapshot(t *testing.T) {
 	registry := &Registry{}
-	registry.recordModeCommand(realtimev1.SwitchModeResult{Status: realtimev1.ModeSwitchApplied}, nil)
+	registry.RecordModeCommand(realtimev1.SwitchModeResult{Status: realtimev1.ModeSwitchApplied}, nil)
 	mux := http.NewServeMux()
 	Register(mux, registry, "metrics-secret")
 
@@ -108,18 +90,23 @@ func TestMetricsHandlerReturnsJSONSnapshot(t *testing.T) {
 
 func TestMetricsHandlerRequiresExplicitToken(t *testing.T) {
 	for _, test := range []struct {
-		name  string
-		token string
-		want  int
+		name          string
+		token         string
+		authorization string
+		want          int
 	}{
 		{name: "disabled when unset", want: http.StatusNotFound},
 		{name: "rejects missing bearer", token: "metrics-secret", want: http.StatusUnauthorized},
+		{name: "rejects bare token", token: "metrics-secret", authorization: "metrics-secret", want: http.StatusUnauthorized},
+		{name: "rejects another scheme", token: "metrics-secret", authorization: "Basic metrics-secret", want: http.StatusUnauthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			mux := http.NewServeMux()
 			Register(mux, NewRegistry(), test.token)
+			request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			request.Header.Set("Authorization", test.authorization)
 			response := httptest.NewRecorder()
-			mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+			mux.ServeHTTP(response, request)
 			if response.Code != test.want {
 				t.Fatalf("status = %d, want %d", response.Code, test.want)
 			}
@@ -153,20 +140,6 @@ func assertCounter(t testing.TB, got uint64) {
 	if got != 1 {
 		t.Fatalf("classified counter = %d, want 1", got)
 	}
-}
-
-type stubModeControl struct {
-	state  realtimev1.ModeStateSnapshot
-	result realtimev1.SwitchModeResult
-	err    error
-}
-
-func (s *stubModeControl) GetModeState(context.Context, string) (realtimev1.ModeStateSnapshot, error) {
-	return s.state, s.err
-}
-
-func (s *stubModeControl) SwitchMode(context.Context, realtimev1.SwitchModeCommand) (realtimev1.SwitchModeResult, error) {
-	return s.result, s.err
 }
 
 type stubModeChangedSink struct {

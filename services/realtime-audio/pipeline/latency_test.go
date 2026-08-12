@@ -43,12 +43,12 @@ func TestLatencyLoggerIncludesTurnCorrelation(t *testing.T) {
 		},
 	}
 
-	logger.ProviderFailure("assistant_llm", turn, "aliyun", errors.New("provider unavailable"))
+	logger.ProviderFailure("assistant_llm", turn, "aliyun", "qwen3.6-flash", errors.New("provider unavailable"))
 	fields := decodeLogFields(t, output.Bytes())
 	for key, want := range map[string]any{
 		"session_id": "session-1", "turn_id": "turn-1", "trace_id": "trace-1",
 		"runtime_instance_id": "runtime-1", "mode": "assistant", "generation": float64(3),
-		"provider": "aliyun",
+		"provider": "aliyun", "model": "qwen3.6-flash",
 	} {
 		if fields[key] != want {
 			t.Fatalf("field %s = %#v, want %#v", key, fields[key], want)
@@ -59,9 +59,9 @@ func TestLatencyLoggerIncludesTurnCorrelation(t *testing.T) {
 func TestLatencyLoggerOmitsUnavailableCorrelation(t *testing.T) {
 	var output bytes.Buffer
 	logger := LatencyLogger{Logger: slog.New(slog.NewJSONHandler(&output, nil))}
-	logger.ProviderFailure("asr_start", TurnContext{SessionID: "session-1", ID: "turn-1"}, "", errors.New("provider unavailable"))
+	logger.ProviderFailure("asr_start", TurnContext{SessionID: "session-1", ID: "turn-1"}, "", "", errors.New("provider unavailable"))
 	fields := decodeLogFields(t, output.Bytes())
-	for _, key := range []string{"trace_id", "runtime_instance_id", "mode", "generation", "provider"} {
+	for _, key := range []string{"trace_id", "runtime_instance_id", "mode", "generation", "provider", "model"} {
 		if _, ok := fields[key]; ok {
 			t.Fatalf("field %s unexpectedly present: %#v", key, fields[key])
 		}
@@ -70,7 +70,7 @@ func TestLatencyLoggerOmitsUnavailableCorrelation(t *testing.T) {
 
 func TestLatencyLoggerNotifiesFailureObserverWithoutLogger(t *testing.T) {
 	observer := &recordingProviderFailureObserver{}
-	LatencyLogger{Observer: observer}.ProviderFailure("asr_finish", TurnContext{}, "aliyun", errors.New("failed"))
+	LatencyLogger{Observer: observer}.ProviderFailure("asr_finish", TurnContext{}, "aliyun", "qwen-asr", errors.New("failed"))
 	if observer.stage != "asr_finish" || observer.provider != "aliyun" || observer.calls != 1 {
 		t.Fatalf("observer = %#v", observer)
 	}

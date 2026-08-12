@@ -16,7 +16,11 @@ func Register(mux *http.ServeMux, registry *Registry, token string) {
 		return
 	}
 	mux.HandleFunc("GET /metrics", func(writer http.ResponseWriter, request *http.Request) {
-		provided := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
+		provided, ok := strings.CutPrefix(request.Header.Get("Authorization"), "Bearer ")
+		if !ok {
+			http.Error(writer, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
 			http.Error(writer, "unauthorized", http.StatusUnauthorized)
 			return

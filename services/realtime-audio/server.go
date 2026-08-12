@@ -265,6 +265,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		Latency:          slog.Default(),
 		ProviderFailures: metricRegistry,
 		Lifecycle:        metricRegistry,
+		ModeCommands:     metricRegistry,
 		Now:              now,
 	})
 	if err != nil {
@@ -285,7 +286,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 
 	handler, err := controlplane.New(controlplane.Dependencies{
 		Lifecycle:       lifecycle,
-		Modes:           realtimemetrics.ObserveModeControl(manager, metricRegistry),
+		Modes:           manager,
 		Fallback:        manager,
 		FallbackReplays: fallbackReplays,
 		Signaling:       signaling,

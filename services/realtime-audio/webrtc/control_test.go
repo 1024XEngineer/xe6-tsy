@@ -50,6 +50,7 @@ func TestPionControlReceiverRejectsInvalidMessagesWithoutClosingAudioTransport(t
 		{name: "binary", data: validJSON, code: realtimev1.ErrorControlInvalidMessage},
 		{name: "empty", text: true, code: realtimev1.ErrorControlInvalidMessage},
 		{name: "malformed", data: []byte(`{"protocol_version":`), text: true, code: realtimev1.ErrorControlInvalidMessage},
+		{name: "invalid UTF-8", data: []byte("{\"request_id\":\"\xff\"}"), text: true, code: realtimev1.ErrorControlInvalidMessage},
 		{name: "unknown field and forged session", data: unknownField, text: true, code: realtimev1.ErrorControlInvalidMessage},
 		{name: "trailing JSON", data: append(validJSON, []byte(` {}`)...), text: true, code: realtimev1.ErrorControlInvalidMessage},
 		{name: "oversized", data: oversized, text: true, code: realtimev1.ErrorControlInvalidMessage},
@@ -142,6 +143,39 @@ func TestPionControlReceiverBoundsQueue(t *testing.T) {
 	}
 }
 
+func TestPionControlReceiverClosesWhenResponseQueueIsFull(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	channel := newControlChannelRecorder(realtimev1.ControlDataChannelLabel, true)
+	receiver := &PionControlReceiver{
+		channel: channel, ctx: ctx, cancel: cancel,
+		responses: make(chan realtimev1.ControlResponse, controlResponseCapacity),
+	}
+	for range cap(receiver.responses) {
+		receiver.responses <- protocolError("request-1", realtimev1.ErrorControlUnavailable)
+	}
+	receiver.tryQueueResponse(protocolError("overflow", realtimev1.ErrorControlUnavailable))
+	if channel.ReadyState() != pion.DataChannelStateClosed {
+		t.Fatal("response overflow left an unacknowledged control channel open")
+	}
+}
+
+func TestPionTransportReattachesClosedControlChannel(t *testing.T) {
+	transport := &PionTransport{}
+	handler := &controlHandlerRecorder{}
+	first := newControlChannelRecorder(realtimev1.ControlDataChannelLabel, true)
+	transport.attachControlChannel(first, handler, "session-1", "rtc-1")
+	oldReceiver := transport.control
+	_ = first.Close()
+	second := newControlChannelRecorder(realtimev1.ControlDataChannelLabel, true)
+	transport.attachControlChannel(second, handler, "session-1", "rtc-1")
+	transport.detachControlChannel(oldReceiver)
+	second.Receive(t, validControlModeSwitchRequest(), true)
+	if response := second.NextResponse(t); response.Result == nil {
+		t.Fatalf("replacement control response = %#v", response)
+	}
+	_ = second.Close()
+}
+
 func TestPionControlReceiverCloseCancelsInFlightCommand(t *testing.T) {
 	handler := &cancelAwareControlHandler{entered: make(chan struct{}), canceled: make(chan struct{})}
 	channel, receiver := newTestControlReceiver(t, handler)
@@ -172,7 +206,7 @@ func TestPionControlReceiverRejectsNonReliableOrderedChannel(t *testing.T) {
 		newControlChannelRecorder(realtimev1.ControlDataChannelLabel, false),
 		partialChannel,
 	} {
-		_, err := newPionControlReceiver(channel, &controlHandlerRecorder{}, "session-1", "rtc-1")
+		_, err := newPionControlReceiver(channel, &controlHandlerRecorder{}, "session-1", "rtc-1", nil)
 		if !errors.Is(err, ErrControlChannelInvalid) || channel.ReadyState() != pion.DataChannelStateClosed {
 			t.Fatalf("invalid control channel: state=%s error=%v", channel.ReadyState(), err)
 		}
@@ -182,7 +216,7 @@ func TestPionControlReceiverRejectsNonReliableOrderedChannel(t *testing.T) {
 func newTestControlReceiver(t *testing.T, handler ControlCommandHandler) (*controlChannelRecorder, *PionControlReceiver) {
 	t.Helper()
 	channel := newControlChannelRecorder(realtimev1.ControlDataChannelLabel, true)
-	receiver, err := newPionControlReceiver(channel, handler, "session-1", "rtc-1")
+	receiver, err := newPionControlReceiver(channel, handler, "session-1", "rtc-1", nil)
 	if err != nil {
 		t.Fatalf("newPionControlReceiver() error = %v", err)
 	}

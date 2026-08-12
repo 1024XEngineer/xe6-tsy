@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"unicode/utf8"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	pion "github.com/pion/webrtc/v4"
@@ -79,6 +80,7 @@ type PionControlReceiver struct {
 	responses chan realtimev1.ControlResponse
 	done      chan struct{}
 	sendDone  chan struct{}
+	onStopped func(*PionControlReceiver)
 }
 
 func newPionControlReceiver(
@@ -86,6 +88,7 @@ func newPionControlReceiver(
 	handler ControlCommandHandler,
 	sessionID string,
 	connectionID string,
+	onStopped func(*PionControlReceiver),
 ) (*PionControlReceiver, error) {
 	if channel == nil || handler == nil || sessionID == "" || connectionID == "" {
 		return nil, ErrControlHandlerRequired
@@ -98,14 +101,17 @@ func newPionControlReceiver(
 	ctx, cancel := context.WithCancel(context.Background())
 	receiver := &PionControlReceiver{
 		channel: channel, handler: handler, sessionID: sessionID, connectionID: connectionID,
-		ctx: ctx, cancel: cancel,
+		ctx: ctx, cancel: cancel, onStopped: onStopped,
 		queue:     make(chan controlMessage, controlQueueCapacity),
 		responses: make(chan realtimev1.ControlResponse, controlResponseCapacity),
 		done:      make(chan struct{}), sendDone: make(chan struct{}),
 	}
 	channel.OnMessage(receiver.onMessage)
-	channel.OnClose(cancel)
-	channel.OnError(func(error) { cancel() })
+	channel.OnClose(receiver.stop)
+	channel.OnError(func(error) {
+		receiver.stop()
+		_ = channel.Close()
+	})
 	go receiver.runSender()
 	go receiver.run()
 	return receiver, nil
@@ -154,7 +160,8 @@ func (r *PionControlReceiver) runSender() {
 			return
 		case response := <-r.responses:
 			if err := r.send(response); err != nil {
-				r.cancel()
+				r.stop()
+				_ = r.channel.Close()
 				return
 			}
 		}
@@ -168,11 +175,20 @@ func (r *PionControlReceiver) tryQueueResponse(response realtimev1.ControlRespon
 	case <-r.ctx.Done():
 	case r.responses <- response:
 	default:
+		r.stop()
+		_ = r.channel.Close()
+	}
+}
+
+func (r *PionControlReceiver) stop() {
+	r.cancel()
+	if r.onStopped != nil {
+		r.onStopped(r)
 	}
 }
 
 func (r *PionControlReceiver) handle(message controlMessage) realtimev1.ControlResponse {
-	if !message.isString || len(message.data) == 0 || len(message.data) > maxControlMessageBytes {
+	if !message.isString || len(message.data) == 0 || len(message.data) > maxControlMessageBytes || !utf8.Valid(message.data) {
 		return protocolError(requestIDFromJSON(message.data), realtimev1.ErrorControlInvalidMessage)
 	}
 	header, err := decodeControlHeader(message.data)
@@ -219,7 +235,7 @@ func (r *PionControlReceiver) Close(ctx context.Context) error {
 	if r == nil {
 		return nil
 	}
-	r.cancel()
+	r.stop()
 	closeErr := r.channel.Close()
 	workerDone, senderDone := r.done, r.sendDone
 	for workerDone != nil || senderDone != nil {

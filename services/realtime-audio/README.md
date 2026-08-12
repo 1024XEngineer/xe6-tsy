@@ -96,7 +96,8 @@ WebRTC。真正发生切换时，Coordinator 会先将 `realtime.mode.changed` �
 `mode.switch.result` 或 `control.error`。Session 来自 ticket 校验后绑定的 PeerConnection，不来自消息。
 同载荷、同 `operation_id` 的重试返回首次结果；同 ID 不同载荷返回
 `mode_operation_conflict`。二进制、畸形、尾随、未知字段和超限消息返回类型化错误，队列满或依赖
-暂不可用返回 `control_unavailable`。连接关闭会先取消排队和执行中的命令；ACK 丢失时，客户端应
+暂不可用返回 `control_unavailable`；若连错误响应也无法排队，服务端关闭控制通道。客户端可在同一
+PeerConnection 内重建控制通道。连接关闭会先取消排队和执行中的命令；ACK 丢失时，客户端应
 查询模式快照并以原 operation 重试相同载荷。
 
 正常命令由单 worker 按接收顺序执行；队列过载错误通过独立有界发送队列返回，可能先于较早命令的

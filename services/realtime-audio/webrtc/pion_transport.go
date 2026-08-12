@@ -85,13 +85,21 @@ func (t *PionTransport) attachControlChannel(
 		_ = channel.Close()
 		return
 	}
-	receiver, err := newPionControlReceiver(channel, handler, sessionID, connectionID)
+	receiver, err := newPionControlReceiver(channel, handler, sessionID, connectionID, t.detachControlChannel)
 	if err != nil {
 		t.mu.Unlock()
 		return
 	}
 	t.control = receiver
 	t.mu.Unlock()
+}
+
+func (t *PionTransport) detachControlChannel(receiver *PionControlReceiver) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.control == receiver {
+		t.control = nil
+	}
 }
 
 // Answer applies an offer and returns the fully gathered local answer.

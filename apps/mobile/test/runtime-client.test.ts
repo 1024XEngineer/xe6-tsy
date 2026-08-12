@@ -153,4 +153,6 @@ test("late successful mode response is discarded after runtime replacement", asy
   );
   assert.equal(client.state.mode?.runtime_instance_id, "r2");
   assert.equal(client.isOperationStale(lastOperationId), true);
+  assert.equal(client.state.status, "ready");
+  assert.equal(client.state.errorCode, null);
 });

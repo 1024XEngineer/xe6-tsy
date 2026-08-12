@@ -256,6 +256,11 @@ export class RuntimeClient {
       return result;
     } catch (cause) {
       this.pendingOperations.delete(operationId);
+      if (cause instanceof ModeConflictError) {
+        // A late success was already compared with the newer authoritative
+        // snapshot above. Preserve that snapshot and its ready projection.
+        throw cause;
+      }
       if (isModeConflict(cause)) {
         this.markOperationStale(operationId);
         const refreshedMode = await this.refreshMode();

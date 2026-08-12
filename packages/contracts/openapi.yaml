@@ -719,8 +719,8 @@ components:
       description: Session identity is bound by the authenticated PeerConnection and is never accepted from this payload.
       required: [runtime_instance_id, operation_id, expected_generation, target_mode]
       properties:
-        runtime_instance_id: { type: string, minLength: 1, maxLength: 128 }
-        operation_id: { type: string, minLength: 1, maxLength: 256 }
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        operation_id: { type: string, minLength: 1, maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
         expected_generation: { type: integer, format: int64, minimum: 1 }
         target_mode: { $ref: '#/components/schemas/RealtimeMode' }
     ControlModeSwitchRequest:
@@ -730,7 +730,7 @@ components:
       properties:
         protocol_version: { type: integer, const: 1 }
         type: { type: string, const: mode.switch }
-        request_id: { type: string, minLength: 1, maxLength: 128 }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
         command: { $ref: '#/components/schemas/ControlModeSwitchCommand' }
     ControlError:
       type: object
@@ -746,7 +746,7 @@ components:
       properties:
         protocol_version: { type: integer, const: 1 }
         type: { type: string, enum: [mode.switch.result, control.error] }
-        request_id: { type: string, minLength: 1, maxLength: 128 }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
         result: { $ref: '#/components/schemas/SwitchModeResult' }
         error: { $ref: '#/components/schemas/ControlError' }
       oneOf:

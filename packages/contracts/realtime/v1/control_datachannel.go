@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -12,10 +13,10 @@ const (
 	// ControlDataChannelLabel identifies the client-created, reliable ordered control channel.
 	ControlDataChannelLabel = "lingow-control-v1"
 
-	maxControlRequestIDBytes    = 128
-	maxControlRuntimeIDBytes    = 128
-	maxControlOperationIDBytes  = 256
-	maxControlErrorMessageBytes = 512
+	maxControlRequestIDLength    = 128
+	maxControlRuntimeIDLength    = 128
+	maxControlOperationIDLength  = 256
+	maxControlErrorMessageLength = 512
 )
 
 var ErrInvalidControlMessage = errors.New("invalid realtime control message")
@@ -51,9 +52,9 @@ type ControlModeSwitchCommand struct {
 // Validate rejects commands that cannot safely be promoted to a SwitchModeCommand.
 func (command ControlModeSwitchCommand) Validate() error {
 	switch {
-	case !validControlID(command.RuntimeInstanceID, maxControlRuntimeIDBytes):
+	case !validControlID(command.RuntimeInstanceID, maxControlRuntimeIDLength):
 		return invalidControlField("command.runtime_instance_id")
-	case !validControlID(command.OperationID, maxControlOperationIDBytes):
+	case !validControlID(command.OperationID, maxControlOperationIDLength):
 		return invalidControlField("command.operation_id")
 	case command.ExpectedGeneration < 1:
 		return invalidControlField("command.expected_generation")
@@ -80,7 +81,7 @@ func (request ControlModeSwitchRequest) Validate() error {
 		return invalidControlField("protocol_version")
 	case request.Type != ControlMessageModeSwitch:
 		return invalidControlField("type")
-	case !validControlID(request.RequestID, maxControlRequestIDBytes):
+	case !validControlID(request.RequestID, maxControlRequestIDLength):
 		return invalidControlField("request_id")
 	default:
 		return request.Command.Validate()
@@ -98,7 +99,7 @@ func (controlError ControlError) Validate() error {
 	if !controlError.Code.Valid() {
 		return invalidControlField("error.code")
 	}
-	if !validControlText(controlError.Message, maxControlErrorMessageBytes) {
+	if !validControlText(controlError.Message, maxControlErrorMessageLength) {
 		return invalidControlField("error.message")
 	}
 	return nil
@@ -119,7 +120,7 @@ func (response ControlResponse) Validate() error {
 	if response.ProtocolVersion != ControlProtocolVersion {
 		return invalidControlField("protocol_version")
 	}
-	if response.RequestID != "" && !validControlID(response.RequestID, maxControlRequestIDBytes) {
+	if response.RequestID != "" && !validControlID(response.RequestID, maxControlRequestIDLength) {
 		return invalidControlField("request_id")
 	}
 	switch response.Type {
@@ -141,13 +142,13 @@ func (response ControlResponse) Validate() error {
 func validateControlModeResult(result SwitchModeResult) error {
 	state := result.State
 	switch {
-	case !validControlID(result.OperationID, maxControlOperationIDBytes):
+	case !validControlID(result.OperationID, maxControlOperationIDLength):
 		return invalidControlField("result.operation_id")
 	case !result.Status.Valid():
 		return invalidControlField("result.status")
 	case strings.TrimSpace(state.SessionID) == "":
 		return invalidControlField("result.state.session_id")
-	case !validControlID(state.RuntimeInstanceID, maxControlRuntimeIDBytes):
+	case !validControlID(state.RuntimeInstanceID, maxControlRuntimeIDLength):
 		return invalidControlField("result.state.runtime_instance_id")
 	case !state.ActiveMode.Valid():
 		return invalidControlField("result.state.active_mode")
@@ -164,12 +165,12 @@ func validateControlModeResult(result SwitchModeResult) error {
 	}
 }
 
-func validControlID(value string, maxBytes int) bool {
-	return validControlText(value, maxBytes) && !strings.ContainsAny(value, "\r\n\t")
+func validControlID(value string, maxLength int) bool {
+	return validControlText(value, maxLength) && !strings.ContainsAny(value, "\r\n\t")
 }
 
-func validControlText(value string, maxBytes int) bool {
-	return strings.TrimSpace(value) != "" && len([]byte(value)) <= maxBytes
+func validControlText(value string, maxLength int) bool {
+	return strings.TrimSpace(value) != "" && utf8.RuneCountInString(value) <= maxLength
 }
 
 func invalidControlField(field string) error {

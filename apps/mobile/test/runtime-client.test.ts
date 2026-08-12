@@ -114,6 +114,17 @@ test("mode refresh failure preserves state but rejects and reports error", async
   assert.equal(client.state.status, "error");
 });
 
+test("does not downgrade a previously mode-capable session to legacy fallback", async () => {
+  const transport = new FakeTransport();
+  const client = new RuntimeClient("s1", transport);
+  await client.sync();
+  transport.getMode = async () => { throw new RealtimeApiError(501, "not_implemented"); };
+
+  await assert.rejects(client.refreshMode(), RealtimeApiError);
+  assert.equal(client.state.status, "error");
+  assert.equal(client.state.mode?.runtime_instance_id, "r1");
+});
+
 test("sync does not report non-ready connection states as ready", async () => {
   for (const [state, expected] of [
     ["new", "syncing"],

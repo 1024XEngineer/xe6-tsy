@@ -415,7 +415,7 @@ export class RuntimeClient {
       this.observeModeSnapshot(snapshot);
       return this.current.mode;
     } catch (cause) {
-      if (isLegacyModeUnavailable(cause)) return this.current.mode;
+      if (!this.current.mode && isLegacyModeUnavailable(cause)) return null;
       throw cause;
     }
   }

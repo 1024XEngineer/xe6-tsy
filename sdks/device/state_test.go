@@ -67,3 +67,22 @@ func TestStateStoreRejectsRetiredRuntimeOperation(t *testing.T) {
 		t.Fatal("retired runtime operation was restored")
 	}
 }
+
+func TestStateStoreRejectsRuntimeWithoutStartOperation(t *testing.T) {
+	store, err := NewStateStore("session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := RuntimeSnapshot{SessionID: "session-1", RuntimeState: RuntimeListening, UpdatedAt: time.Unix(1, 0).UTC()}
+	if store.ApplyRuntime(empty) {
+		t.Fatal("runtime without start operation was accepted")
+	}
+	valid := RuntimeSnapshot{SessionID: "session-1", StartOperationID: "start-1", RuntimeState: RuntimeListening, UpdatedAt: time.Unix(2, 0).UTC()}
+	if !store.ApplyRuntime(valid) {
+		t.Fatal("valid runtime was rejected after empty snapshot")
+	}
+	empty.UpdatedAt = time.Unix(3, 0).UTC()
+	if store.ApplyRuntime(empty) {
+		t.Fatal("empty operation snapshot replaced valid runtime")
+	}
+}

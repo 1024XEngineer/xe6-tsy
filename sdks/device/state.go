@@ -66,7 +66,7 @@ func (s *StateStore) ApplyConnection(next ConnectionSnapshot) bool {
 }
 
 func (s *StateStore) ApplyRuntime(next RuntimeSnapshot) bool {
-	if s == nil || next.SessionID != s.session || !next.RuntimeState.Valid() || next.UpdatedAt.IsZero() {
+	if s == nil || next.SessionID != s.session || strings.TrimSpace(next.StartOperationID) == "" || !next.RuntimeState.Valid() || next.UpdatedAt.IsZero() {
 		return false
 	}
 	s.mu.Lock()

@@ -20,6 +20,13 @@ import {
   type VoiceInitialMode,
   type VoiceTurn,
 } from "../lib/lingow-api";
+import {
+  getRealtimeModeState,
+  switchRealtimeMode,
+  type ModeStateSnapshot,
+  type RealtimeConnectionState,
+  type RealtimeMode,
+} from "../lib/realtime-api";
 import { getOrCreateAuthSession } from "../lib/auth-session";
 import {
   DEFAULT_VOICE_CONFIG,
@@ -28,8 +35,10 @@ import {
   type VoiceSessionConfig,
   voiceConfigFromLanguageConfig,
 } from "../lib/languages";
-import { ApiError } from "../lib/http";
+import { ApiError, newIdempotencyKey } from "../lib/http";
 import { parseTranslationFinal } from "../lib/translation-events";
+import { ModeSnapshotTracker } from "../lib/realtime-state";
+import { RealtimeTicketCache, withRealtimeTicket } from "../lib/realtime-ticket-cache";
 import { parseAssistantReply } from "../lib/assistant-replies";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
 import {
@@ -46,6 +55,10 @@ import {
   type WakeListenerStatus,
 } from "../lib/wake-word/wake-listener";
 import {
+  LocalCommandWindow,
+  type CommandWindowSnapshot,
+} from "../lib/wake-word/command-window";
+import {
   initialSession,
   sessionReducer,
   type TranslationTurn,
@@ -58,6 +71,9 @@ export type SessionDebugInfo = {
   accountId: string | null;
   sessionId: string | null;
   runtimeState: RuntimeState | null;
+  connectionState: RealtimeConnectionState | null;
+  modeState: ModeStateSnapshot | null;
+  modeCommandPending: boolean;
   lastError: string | null;
   wakeStatus: WakeListenerStatus;
 };
@@ -198,9 +214,13 @@ export function useVoiceSession() {
     accountId: null,
     sessionId: null,
     runtimeState: null,
+    connectionState: null,
+    modeState: null,
+    modeCommandPending: false,
     lastError: null,
     wakeStatus: "idle",
   });
+  const activeMode = debug.modeState?.active_mode ?? initialMode;
 
   const configRef = useRef<VoiceSessionConfig>(voiceConfig);
   const runningRef = useRef(false);
@@ -210,6 +230,10 @@ export function useVoiceSession() {
   const webrtcRef = useRef<WebRTCSessionHandles | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
+  const realtimeTicketCacheRef = useRef<RealtimeTicketCache | null>(null);
+  const modeStateRef = useRef<ModeStateSnapshot | null>(null);
+  const modeSnapshotTrackerRef = useRef(new ModeSnapshotTracker());
+  const modeOperationRef = useRef<string | null>(null);
   const activeLanguageConfigVersionRef = useRef<number | null>(null);
   const lastAppliedVoiceConfigRef = useRef<VoiceSessionConfig>(voiceConfig);
   const activeConfigUpdateChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -217,8 +241,84 @@ export function useVoiceSession() {
   const pendingConfigUpdatesRef = useRef(0);
   const latestAutomaticOutputStatusRef = useRef<string | null>(null);
   const wakeRef = useRef<WakeWordListener | null>(null);
+  const [commandWindow, setCommandWindow] = useState<CommandWindowSnapshot>({
+    state: "closed",
+    expiresAt: null,
+  });
+  const commandWindowRef = useRef<LocalCommandWindow | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
+
+  if (!realtimeTicketCacheRef.current) {
+    realtimeTicketCacheRef.current = new RealtimeTicketCache({
+      mint: async () => {
+        const token = accessTokenRef.current;
+        const sessionId = sessionIdRef.current;
+        if (!token || !sessionId || !runningRef.current) {
+          throw new Error("当前会话不能续签 realtime ticket");
+        }
+        const ticket = await mintRealtimeTicket(token, sessionId);
+        if (sessionIdRef.current !== sessionId || !runningRef.current) {
+          throw new Error("realtime ticket 所属会话已结束");
+        }
+        return ticket;
+      },
+    });
+  }
+
+  const applyModeSnapshot = useCallback((snapshot: ModeStateSnapshot): boolean => {
+    if (!modeSnapshotTrackerRef.current.observe(snapshot)) return false;
+    const previous = modeStateRef.current;
+    const runtimeChanged = Boolean(
+      previous && previous.runtime_instance_id !== snapshot.runtime_instance_id,
+    );
+    modeStateRef.current = snapshot;
+    if (runtimeChanged) modeOperationRef.current = null;
+    setDebug((prev) => ({
+      ...prev,
+      modeState: snapshot,
+      modeCommandPending: runtimeChanged ? false : prev.modeCommandPending,
+    }));
+    if (runtimeChanged) {
+      setHintMessage("realtime runtime 已更换，模式快照已刷新，请重新发送模式命令。");
+    }
+    return true;
+  }, []);
+
+  const refreshModeSnapshot = useCallback(async (): Promise<ModeStateSnapshot | null> => {
+    const sessionId = sessionIdRef.current;
+    const tickets = realtimeTicketCacheRef.current;
+    if (!tickets || !sessionId || !runningRef.current) return null;
+    try {
+      const snapshot = await withRealtimeTicket(tickets, (ticket) =>
+        getRealtimeModeState(ticket, sessionId),
+      );
+      if (sessionIdRef.current !== sessionId) return null;
+      applyModeSnapshot(snapshot);
+      return modeStateRef.current;
+    } catch {
+      // Older realtime deployments do not expose mode yet. Keep interpretation
+      // controls hidden and preserve the existing translation path.
+      return null;
+    }
+  }, [applyModeSnapshot]);
+
+  const refreshControlSnapshots = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    const tickets = realtimeTicketCacheRef.current;
+    if (!tickets || !sessionId || !runningRef.current) return;
+
+    const modeResult = await withRealtimeTicket(tickets, (ticket) =>
+      getRealtimeModeState(ticket, sessionId),
+    ).then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (reason) => ({ status: "rejected" as const, reason }),
+    );
+    if (sessionIdRef.current !== sessionId) return;
+    if (modeResult.status === "fulfilled") {
+      applyModeSnapshot(modeResult.value);
+    }
+  }, [applyModeSnapshot]);
 
   const updateConfig = useCallback((next: VoiceSessionConfig) => {
     const normalized = normalizeVoiceConfig(next);
@@ -377,7 +477,12 @@ export function useVoiceSession() {
       else if (phase === "playing") dispatch({ type: "PLAYING" });
       else dispatch({ type: "ACTIVATE" });
 
-      setStatusMessage(mapRuntimeToStatus(snapshot.runtime_state, initialMode));
+      setStatusMessage(
+        mapRuntimeToStatus(
+          snapshot.runtime_state,
+          modeStateRef.current?.active_mode ?? initialMode,
+        ),
+      );
       setDebug((prev) => ({
         ...prev,
         runtimeState: snapshot.runtime_state,
@@ -393,10 +498,11 @@ export function useVoiceSession() {
       } else if (snapshot.last_error_code) {
         setHintMessage(`last_error_code: ${snapshot.last_error_code}`);
       }
+      void refreshControlSnapshots();
     } catch (error) {
       setHintMessage(errorMessage(error, "轮询会话状态失败"));
     }
-  }, [initialMode, syncAutomaticOutputStatus]);
+  }, [initialMode, refreshControlSnapshots, syncAutomaticOutputStatus]);
 
   const startPolling = useCallback(() => {
     stopPolling();
@@ -408,6 +514,8 @@ export function useVoiceSession() {
 
   const end = useCallback(async () => {
     runningRef.current = false;
+    commandWindowRef.current?.close();
+    setCommandWindow({ state: "closed", expiresAt: null });
     startAbortRef.current?.abort();
     startAbortRef.current = null;
     stopPolling();
@@ -424,6 +532,10 @@ export function useVoiceSession() {
     }
 
     sessionIdRef.current = null;
+    realtimeTicketCacheRef.current?.clear();
+    modeStateRef.current = null;
+    modeSnapshotTrackerRef.current.reset();
+    modeOperationRef.current = null;
     activeLanguageConfigVersionRef.current = null;
     latestAutomaticOutputStatusRef.current = null;
     setAutomaticOutputMessage(null);
@@ -441,14 +553,91 @@ export function useVoiceSession() {
       accountId: accountIdRef.current,
       sessionId: null,
       runtimeState: null,
+      connectionState: null,
+      modeState: null,
+      modeCommandPending: false,
       lastError: null,
       wakeStatus: prev.wakeStatus,
     }));
   }, [cleanupMedia, initialMode, stopPolling]);
 
+  const switchMode = useCallback(
+    async (targetMode: RealtimeMode) => {
+      const sessionId = sessionIdRef.current;
+      const current = modeStateRef.current;
+      const tickets = realtimeTicketCacheRef.current;
+      if (!tickets || !sessionId || !current || !runningRef.current) {
+        setHintMessage("当前实时模式快照不可用，继续使用传统同传入口。");
+        return;
+      }
+
+      const operationId = newIdempotencyKey("mode-operation");
+      const command = {
+        session_id: sessionId,
+        runtime_instance_id: current.runtime_instance_id,
+        operation_id: operationId,
+        trace_id: newIdempotencyKey("mode-trace"),
+        expected_generation: current.generation,
+        target_mode: targetMode,
+      };
+      modeOperationRef.current = operationId;
+      setDebug((prev) => ({ ...prev, modeCommandPending: true }));
+      try {
+        const requestId = newIdempotencyKey("mode-request");
+        const result = await withRealtimeTicket(tickets, (ticket) =>
+          switchRealtimeMode(ticket, sessionId, command, requestId),
+        );
+        if (sessionIdRef.current !== sessionId) return;
+        if (result.state.runtime_instance_id !== command.runtime_instance_id) {
+          await refreshModeSnapshot();
+          setHintMessage("realtime runtime 已变化，旧模式命令已丢弃，请重新选择模式。");
+          return;
+        }
+        if (!applyModeSnapshot(result.state)) {
+          setHintMessage("模式命令响应已过期，已保留较新的模式状态。");
+          return;
+        }
+        setHintMessage(
+          result.status === "unchanged"
+            ? `已处于${targetMode === "assistant" ? "助手" : "同声传译"}模式。`
+            : `已切换到${targetMode === "assistant" ? "助手" : "同声传译"}模式。`,
+        );
+      } catch (error) {
+        const conflict =
+          error instanceof ApiError &&
+          (error.code === "mode_generation_conflict" ||
+            error.code === "mode_runtime_instance_mismatch" ||
+            error.code === "mode_operation_conflict");
+        if (conflict) {
+          // A changed generation/runtime instance invalidates this command.
+          // Refresh only; never replay the stale operation automatically.
+          const refreshed = await refreshModeSnapshot();
+          setHintMessage(
+            refreshed
+              ? "模式状态已更新，请重新选择目标模式。"
+              : "模式状态已变化，请稍后重试。",
+          );
+        } else {
+          setHintMessage(errorMessage(error, "模式切换失败，当前同传仍可继续。"));
+        }
+      } finally {
+        if (
+          sessionIdRef.current === sessionId &&
+          modeOperationRef.current === operationId
+        ) {
+          modeOperationRef.current = null;
+          setDebug((prev) => ({ ...prev, modeCommandPending: false }));
+        }
+      }
+    },
+    [applyModeSnapshot, refreshModeSnapshot],
+  );
+
   const start = useCallback(async () => {
     if (runningRef.current) return;
 
+    commandWindowRef.current?.close();
+    setCommandWindow({ state: "closed", expiresAt: null });
     runningRef.current = true;
     const startAbort = new AbortController();
     startAbortRef.current = startAbort;
@@ -461,6 +650,9 @@ export function useVoiceSession() {
       accountId: null,
       sessionId: null,
       runtimeState: null,
+      connectionState: "connecting",
+      modeState: null,
+      modeCommandPending: false,
       lastError: null,
       wakeStatus: prev.wakeStatus,
     }));
@@ -510,6 +702,7 @@ export function useVoiceSession() {
         session.id,
       );
       const ticket = ticketResponse.ticket;
+      realtimeTicketCacheRef.current?.seed(ticketResponse);
 
       let sessionStream: MediaStream | null = null;
       let ttsResumeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -579,6 +772,17 @@ export function useVoiceSession() {
               },
             });
           },
+          onConnectionStateChange: (connectionState) => {
+            if (sessionIdRef.current !== session.id) return;
+            setDebug((prev) => ({ ...prev, connectionState }));
+            if (connectionState === "disconnected") {
+              setHintMessage("实时连接暂时中断，正在等待浏览器恢复媒体连接。");
+            } else if (connectionState === "failed" || connectionState === "closed") {
+              setHintMessage("实时媒体连接已失效，请结束当前会话后重新开始。");
+            } else if (connectionState === "connected") {
+              void refreshControlSnapshots();
+            }
+          },
         });
         sessionStream = webrtcRef.current.localStream;
       } catch (webrtcError) {
@@ -618,6 +822,7 @@ export function useVoiceSession() {
           ? "助手已开启 · 可直接提问 · 说「小灵，停止翻译」或轻触结束"
           : `传译已开启 · ${formatActivePair(configRef.current)} · 可说「小灵，停止翻译」或轻触结束`,
       );
+      setDebug((prev) => ({ ...prev, connectionState: "connected" }));
       startPolling();
     } catch (error) {
       if (startAbort.signal.aborted) return;
@@ -637,10 +842,20 @@ export function useVoiceSession() {
       cleanupMedia();
       stopPolling();
       sessionIdRef.current = null;
+      realtimeTicketCacheRef.current?.clear();
+      modeStateRef.current = null;
+      modeSnapshotTrackerRef.current.reset();
+      modeOperationRef.current = null;
       activeLanguageConfigVersionRef.current = null;
       latestAutomaticOutputStatusRef.current = null;
       setAutomaticOutputMessage(null);
       setConfigSyncStatus("idle");
+      setDebug((prev) => ({
+        ...prev,
+        connectionState: null,
+        modeState: null,
+        modeCommandPending: false,
+      }));
       runningRef.current = false;
       dispatch({ type: "END" });
       setStatusMessage("联调失败");
@@ -657,7 +872,7 @@ export function useVoiceSession() {
         startAbortRef.current = null;
       }
     }
-  }, [cleanupMedia, initialMode, startPolling, stopPolling]);
+  }, [cleanupMedia, initialMode, refreshControlSnapshots, startPolling, stopPolling]);
 
   useEffect(() => {
     startRef.current = start;
@@ -673,23 +888,43 @@ export function useVoiceSession() {
   }, [end, start]);
 
   useEffect(() => {
+    const localCommandWindow = new LocalCommandWindow({
+      onExpire: () => setCommandWindow({ state: "closed", expiresAt: null }),
+    });
+    commandWindowRef.current = localCommandWindow;
     const listener = new WakeWordListener({
       onCommand: (command, keyword) => {
+        const acceptedByWindow = localCommandWindow.consume(command);
+        if (acceptedByWindow) {
+          setCommandWindow(localCommandWindow.snapshot());
+        }
         if (command === "start") {
           if (runningRef.current || sessionIdRef.current) return;
-          setHintMessage(`已识别「${keyword}」，正在开启${initialMode === "assistant" ? "助手" : "传译"}…`);
+          setHintMessage(
+            acceptedByWindow
+              ? `已确认「${keyword}」，正在开启${initialMode === "assistant" ? "助手" : "传译"}…`
+              : `已识别「${keyword}」，正在开启${initialMode === "assistant" ? "助手" : "传译"}…`,
+          );
           void startRef.current();
           return;
         }
         if (command === "stop") {
           if (!runningRef.current && !sessionIdRef.current) return;
-          setHintMessage(`已识别「${keyword}」，正在停止${initialMode === "assistant" ? "对话" : "传译"}…`);
+          const currentMode = modeStateRef.current?.active_mode ?? initialMode;
+          setHintMessage(
+            acceptedByWindow
+              ? `已确认「${keyword}」，正在停止${currentMode === "assistant" ? "对话" : "传译"}…`
+              : `已识别「${keyword}」，正在停止${currentMode === "assistant" ? "对话" : "传译"}…`,
+          );
           void endRef.current();
           return;
         }
         if (command === "listen") {
-          // Temporary verify hook until command-mode behavior lands.
-          console.log(`[wake] listen recognized: ${keyword}`);
+          const snapshot = localCommandWindow.open();
+          setCommandWindow(snapshot);
+          setHintMessage(
+            `已识别「${keyword}」，请在 5 秒内说「小灵，开始翻译」或「小灵，停止翻译」。`,
+          );
         }
       },
       onStatus: (status, detail) => {
@@ -722,6 +957,10 @@ export function useVoiceSession() {
     return () => {
       wakeRef.current = null;
       listener.stop();
+      localCommandWindow.dispose();
+      if (commandWindowRef.current === localCommandWindow) {
+        commandWindowRef.current = null;
+      }
     };
   }, [initialMode]);
 
@@ -741,7 +980,7 @@ export function useVoiceSession() {
       state,
       latestTurn: state.turns.at(-1),
       latestAssistantReply: state.assistantReplies.at(-1),
-      initialMode,
+      activeMode,
       statusMessage,
       hintMessage: hintMessage ?? state.notice,
       automaticOutputMessage,
@@ -750,20 +989,24 @@ export function useVoiceSession() {
       updateConfig,
       debug,
       wakeStatus,
+      commandWindow,
+      switchMode,
       toggle,
     }),
     [
       debug,
+      activeMode,
       automaticOutputMessage,
       configSyncStatus,
       hintMessage,
-      initialMode,
       state,
       statusMessage,
+      switchMode,
       toggle,
       updateConfig,
       voiceConfig,
       wakeStatus,
+      commandWindow,
     ],
   );
 }

@@ -55,6 +55,9 @@ describe("VoiceExperience", () => {
   let startInitialModes: Array<string | undefined> = [];
   let createdSessions = 0;
   let anonymousRequests = 0;
+  let modeRequests = 0;
+  let activeMode: "assistant" | "interpretation" = "interpretation";
+  let modeGeneration = 1;
   let languageConfigVersion = 0;
   let conflictNextLanguageConfig = false;
   let automaticDeliveryReady = true;
@@ -82,6 +85,9 @@ describe("VoiceExperience", () => {
     startInitialModes = [];
     createdSessions = 0;
     anonymousRequests = 0;
+    modeRequests = 0;
+    activeMode = "interpretation";
+    modeGeneration = 1;
     languageConfigVersion = 0;
     conflictNextLanguageConfig = false;
     automaticDeliveryReady = true;
@@ -199,6 +205,9 @@ describe("VoiceExperience", () => {
           startRequests += 1;
           const body = init?.body ? JSON.parse(String(init.body)) as { initial_mode?: string } : {};
           startInitialModes.push(body.initial_mode);
+          if (body.initial_mode === "assistant" || body.initial_mode === "interpretation") {
+            activeMode = body.initial_mode;
+          }
           if (failFirstStart && startRequests <= 2) {
             return jsonResponse(
               { error: { code: "realtime_start_failed", message: "temporary" } },
@@ -249,6 +258,48 @@ describe("VoiceExperience", () => {
             retryable: false,
             runtime_updated_at: "2026-07-31T00:00:02Z",
           });
+        }
+
+        if (url.endsWith("/connection")) {
+          return jsonResponse({
+            session_id: "vs-1",
+            connection_id: "conn-1",
+            state: "connected",
+            version: 1,
+            updated_at: "2026-07-31T00:00:02Z",
+          });
+        }
+
+        if (url.endsWith("/mode")) {
+          let operationId: string | null = null;
+          if (method === "POST") {
+            modeRequests += 1;
+            const body = JSON.parse(String(init?.body)) as {
+              target_mode: "assistant" | "interpretation";
+              operation_id: string;
+            };
+            activeMode = body.target_mode;
+            operationId = body.operation_id;
+            modeGeneration += 1;
+          }
+          const state = {
+            session_id: "vs-1",
+            runtime_instance_id: "runtime-1",
+            active_mode: activeMode,
+            generation: modeGeneration,
+            phase: "active",
+            last_operation_id: operationId,
+            updated_at: "2026-07-31T00:00:02Z",
+          };
+          return jsonResponse(
+            method === "POST"
+              ? {
+                  operation_id: operationId,
+                  status: "applied",
+                  state,
+                }
+              : state,
+          );
         }
 
         if (url.includes("/turns")) {
@@ -534,9 +585,10 @@ describe("VoiceExperience", () => {
   });
 
   it("connects through xe6-tsy APIs and shows the newest bilingual turn", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
     render(<VoiceExperience />);
 
-    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
 
     await waitFor(() => {
       expect(screen.getByText("正在聆听")).toBeInTheDocument();
@@ -548,6 +600,84 @@ describe("VoiceExperience", () => {
       expect(
         screen.getByText("Hello, how can I get to the main venue?"),
       ).toBeInTheDocument();
+    });
+  });
+
+  it("shows runtime connection/mode state and sends a typed mode command", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/连接：connected/)).toBeInTheDocument();
+      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "同声传译" }));
+    await waitFor(() => {
+      expect(modeRequests).toBe(1);
+      expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+    });
+  });
+
+  it("uses the runtime mode for controls and output after switching to interpretation", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+    });
+
+    dataMessageHandler?.({
+      type: "assistant.reply",
+      id: "reply-before-interpretation",
+      turn_id: "turn-before-interpretation",
+      text: "这是切换前的助手回复。",
+      language: "zh-CN",
+    });
+    expect(await screen.findByText("这是切换前的助手回复。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "同声传译" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "停止翻译" })).toBeVisible();
+      expect(screen.queryByText("这是切换前的助手回复。")).not.toBeInTheDocument();
+      expect(
+        screen.getByText("Hello, how can I get to the main venue?"),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("uses the runtime mode for controls and output after switching to assistant", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+      expect(
+        screen.getByText("Hello, how can I get to the main venue?"),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "AI 助手" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "停止对话" })).toBeVisible();
+      expect(
+        screen.queryByText("Hello, how can I get to the main venue?"),
+      ).not.toBeInTheDocument();
+    });
+
+    dataMessageHandler?.({
+      type: "assistant.reply",
+      id: "reply-after-assistant",
+      turn_id: "turn-after-assistant",
+      text: "切换到助手后显示这条回复。",
+      language: "zh-CN",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("切换到助手后显示这条回复。")).toBeInTheDocument();
+      expect(
+        screen.queryByText("Hello, how can I get to the main venue?"),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -581,8 +711,9 @@ describe("VoiceExperience", () => {
   });
 
   it("opens the complete history from the newest subtitle", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
     render(<VoiceExperience />);
-    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
 
     await waitFor(() => {
       expect(

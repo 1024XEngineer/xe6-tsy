@@ -60,7 +60,7 @@ npm run dev
 - 说「小灵，开始翻译」或点击主按钮 → 开启助手入口（WebRTC + `/start`）；回退为 `interpretation` 时继续进入传译
 - 说「小灵，停止翻译」或再次点击 → 结束当前会话，麦克风继续监听唤醒词
 
-`npm install` / `npm run dev` / `npm run build` 会自动把缺失的 int8 模型与 `.wasm` 拉到 `public/kws/`（已存在则跳过）。首次需要能访问 GitHub Releases 与 jsDelivr。离线可设 `LINGOW_SKIP_KWS_SYNC=1`。详见 `public/kws/README.md`。
+`npm install` / `npm run dev` / `npm run build` 会自动把缺失的 int8 模型与 `.wasm` 拉到 `public/kws/`（已存在则跳过）。首次需要能访问 GitHub Releases 与 jsDelivr；离线时可设 `LINGOW_SKIP_KWS_SYNC=1`，让下载失败不阻断命令。详见 `public/kws/README.md`。
 
 ## 职责边界
 

@@ -52,6 +52,13 @@ func TestValidateLoadedSpeechRoute(t *testing.T) {
 			},
 			want: ErrSpeechRouteInvalid,
 		},
+		{
+			name: "TTS misses routed language",
+			mutate: func(loaded *loadedSpeechRoute) {
+				loaded.tts.SupportedLanguages = []string{"en-US"}
+			},
+			want: ErrSpeechRouteInvalid,
+		},
 	}
 
 	for _, tt := range tests {

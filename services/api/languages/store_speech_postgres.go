@@ -199,8 +199,14 @@ func validateLoadedSpeechRoute(loaded loadedSpeechRoute) error {
 			}
 		}
 	}
-	if _, err := speechLanguageSet(loaded.tts.SupportedLanguages); err != nil {
+	ttsLanguages, err := speechLanguageSet(loaded.tts.SupportedLanguages)
+	if err != nil {
 		return ErrSpeechRouteInvalid
+	}
+	for _, languageCode := range []string{languageA, languageB} {
+		if _, ok := ttsLanguages[languageCode]; !ok {
+			return fmt.Errorf("%w: TTS profile %s does not support %s", ErrSpeechRouteInvalid, loaded.tts.ID, languageCode)
+		}
 	}
 	return nil
 }

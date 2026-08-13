@@ -25,6 +25,7 @@ func TestNormalizeSpeechPair(t *testing.T) {
 			wantB:     "zh-CN",
 		},
 		{name: "empty language", languageA: "", languageB: "en-US", wantErr: true},
+		{name: "invalid second language", languageA: "en-US", languageB: "zh@@CN", wantErr: true},
 		{name: "same canonical language", languageA: "en-US", languageB: "en_us", wantErr: true},
 		{name: "unparseable language", languageA: "en@@US", languageB: "zh-CN", wantErr: true},
 	}
@@ -70,6 +71,38 @@ func TestValidateSpeechRouteCapabilities(t *testing.T) {
 			name: "ASR without coverage is rejected",
 			mutateASR: func(profile *ASRProfile) {
 				profile.SupportedLanguages = []string{"en-US"}
+			},
+			ttsTargets: []string{"en-US"},
+			wantErr:    true,
+		},
+		{
+			name: "ASR profile ID mismatch is rejected",
+			mutateASR: func(profile *ASRProfile) {
+				profile.ID = "asr-other"
+			},
+			ttsTargets: []string{"en-US"},
+			wantErr:    true,
+		},
+		{
+			name: "TTS profile ID mismatch is rejected",
+			mutateTTS: func(profile *TTSProfile) {
+				profile.ID = "tts-other"
+			},
+			ttsTargets: []string{"en-US"},
+			wantErr:    true,
+		},
+		{
+			name: "ASR malformed supported language is rejected",
+			mutateASR: func(profile *ASRProfile) {
+				profile.SupportedLanguages = []string{"en-US", "zh@@CN"}
+			},
+			ttsTargets: []string{"en-US"},
+			wantErr:    true,
+		},
+		{
+			name: "TTS malformed supported language is rejected",
+			mutateTTS: func(profile *TTSProfile) {
+				profile.SupportedLanguages = []string{"en-US", "zh@@CN"}
 			},
 			ttsTargets: []string{"en-US"},
 			wantErr:    true,
@@ -165,6 +198,55 @@ func TestValidateSpeechRouteCapabilities(t *testing.T) {
 			}
 			if !tt.wantErr && err != nil {
 				t.Fatalf("validateSpeechRouteCapabilities() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestSpeechPairFromDirections(t *testing.T) {
+	tests := []struct {
+		name  string
+		pairs []LanguagePair
+		want  error
+	}{
+		{
+			name: "canonical mutual directions",
+			pairs: []LanguagePair{
+				{Source: " zh_CN ", Target: "en_US"},
+				{Source: "en-US", Target: "zh-CN"},
+			},
+		},
+		{
+			name:  "only one direction",
+			pairs: []LanguagePair{{Source: "en-US", Target: "zh-CN"}},
+			want:  errSpeechLanguageInvalid,
+		},
+		{
+			name: "directions describe different pairs",
+			pairs: []LanguagePair{
+				{Source: "en-US", Target: "zh-CN"},
+				{Source: "zh-CN", Target: "ja-JP"},
+			},
+			want: errSpeechLanguageInvalid,
+		},
+		{
+			name: "duplicate source language",
+			pairs: []LanguagePair{
+				{Source: "en-US", Target: "zh-CN"},
+				{Source: "en-US", Target: "zh-CN"},
+			},
+			want: errSpeechLanguageInvalid,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			languageA, languageB, err := speechPairFromDirections(tt.pairs)
+			if tt.want != nil && !errors.Is(err, tt.want) {
+				t.Fatalf("speechPairFromDirections() error = %v, want %v", err, tt.want)
+			}
+			if tt.want == nil && (err != nil || languageA != "en-US" || languageB != "zh-CN") {
+				t.Fatalf("speechPairFromDirections() = %q, %q, %v", languageA, languageB, err)
 			}
 		})
 	}

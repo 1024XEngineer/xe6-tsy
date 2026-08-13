@@ -609,31 +609,40 @@ func TestMemoryConnectionManagerSerializesConcurrentOffers(t *testing.T) {
 		started:   started, release: release,
 	}
 	manager := NewMemoryConnectionManager(factory)
-	results := make(chan Connection, 2)
-	errs := make(chan error, 2)
 	request := validOpenConnectionRequest()
-
-	for range 2 {
-		go func() {
-			connection, err := manager.Open(context.Background(), request)
-			if err != nil {
-				errs <- err
-				return
-			}
-			results <- connection
-		}()
+	type openResult struct {
+		connection Connection
+		err        error
 	}
+	firstResult := make(chan openResult, 1)
+	go func() {
+		connection, err := manager.Open(context.Background(), request)
+		firstResult <- openResult{connection: connection, err: err}
+	}()
 	<-started
-	close(release)
-	first := <-results
-	second := <-results
-	if first.ID != second.ID || factory.createCalls != 1 {
-		t.Fatalf("connections = %#v, %#v; factory calls = %d", first, second, factory.createCalls)
-	}
+
+	waitEntered := make(chan struct{})
+	secondResult := make(chan openResult, 1)
+	go func() {
+		connection, err := manager.Open(&doneObservingContext{
+			Context: context.Background(),
+			entered: waitEntered,
+		}, request)
+		secondResult <- openResult{connection: connection, err: err}
+	}()
 	select {
-	case err := <-errs:
-		t.Fatalf("Open() error = %v", err)
-	default:
+	case <-waitEntered:
+	case <-time.After(time.Second):
+		t.Fatal("second Open() did not wait for the first open")
+	}
+	close(release)
+	first := <-firstResult
+	second := <-secondResult
+	if first.err != nil || second.err != nil {
+		t.Fatalf("Open() errors = %v, %v", first.err, second.err)
+	}
+	if first.connection.ID != second.connection.ID || factory.createCalls != 1 {
+		t.Fatalf("connections = %#v, %#v; factory calls = %d", first.connection, second.connection, factory.createCalls)
 	}
 }
 
@@ -820,6 +829,17 @@ type fakeTransportFactory struct {
 	release     <-chan struct{}
 	createCalls int
 	once        sync.Once
+}
+
+type doneObservingContext struct {
+	context.Context
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (c *doneObservingContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.entered) })
+	return c.Context.Done()
 }
 
 type stateCallbackTransportFactory struct {

@@ -316,7 +316,7 @@ func TestSessionProductionCompositionRunsControlPlaneFlow(t *testing.T) {
 		"/api/v1/voice-sessions/"+created.ID+"/language-configs",
 		account.Tokens.AccessToken,
 		"language-config",
-		strings.NewReader(`{"languages":[{"source":"zh-CN","target":"en-US"},{"source":"en-US","target":"zh-CN"}]}`),
+		strings.NewReader(`{"languages":[{"source":"ja-JP","target":"en-US"},{"source":"en-US","target":"ja-JP"}]}`),
 	)
 	if languageConfig.Code != http.StatusCreated {
 		t.Fatalf("language config status = %d, body = %s", languageConfig.Code, languageConfig.Body.String())

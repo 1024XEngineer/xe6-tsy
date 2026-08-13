@@ -275,8 +275,7 @@ func newLanguageDependenciesWithPool(
 	if len(readiness) > 0 {
 		deliveryReadiness = readiness[0]
 	}
-	store := languages.NewPostgresStore(pool, nil)
-	svc := languages.NewServiceWithSpeechRouteValidator(store, sessions, store, deliveryReadiness)
+	svc := languages.NewService(languages.NewPostgresStore(pool, nil), sessions, deliveryReadiness)
 	slog.Info("language configuration service enabled")
 	accountID := func(r *http.Request) (string, bool) {
 		return internalwebapi.AccountIDFromContext(r.Context())

@@ -58,12 +58,12 @@ Routes retain a durable `id` and lifecycle state. The active route for a pair
 is unique only while `enabled=true` and `retired_at IS NULL`, allowing an older
 route record to remain auditable after it is retired.
 
-Production language-config creation enables strict route validation. It rejects
-a pair without an active, unretired route, requires ASR support for both possible
-source languages unless auto-detection is declared, and requires TTS support
-only for target languages whose output routes set `tts_enabled=true`. The
-ordinary `NewService` constructor remains non-strict for existing in-memory
-callers and offline tests.
+Strict route validation is opt-in through `NewServiceWithSpeechRouteValidator`.
+It rejects a pair without an active, unretired route, requires ASR support for
+both possible source languages unless auto-detection is declared, and requires
+TTS support only for target languages whose output routes set `tts_enabled=true`.
+Phase 1 production wiring uses `NewService`, preserving the existing active
+language catalog until constructable provider profiles and routes are provisioned.
 
 Migration `005_speech_routing.sql` seeds `legacy-default` ASR/TTS profiles and
 the `en-US` / `zh-CN` route only when both active catalog entries retain source

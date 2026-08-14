@@ -90,7 +90,9 @@ realtime ticket 调用 WebRTC connection、Start、Stop 和 runtime state 接口
 
 语义命令需要调整同传语言方向时，`services/realtime-audio` 调用 API 内部语言配置端点。两服务必须
 配置相同的 `LINGOW_COMMAND_SYSTEM_TOKEN`，令牌至少 32 bytes；API 只负责持久化权威语言配置，
-不接收唤醒词事件、不运行 KWS 或命令语义模型。Realtime 侧同时配置 `LINGOW_API_BASE_URL`。
+不接收唤醒词事件、不运行 KWS 或命令语义模型。命令幂等键在 API 内部按 `session_id + command_id`
+作用域化；已经被后续配置替代的旧命令重放返回 `stale_command` 冲突，不会把历史配置当作当前配置。
+Realtime 侧同时配置 `LINGOW_API_BASE_URL`。
 
 结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
 本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。

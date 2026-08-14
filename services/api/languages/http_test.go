@@ -73,6 +73,58 @@ func TestHTTPConfigureFromCommandRejectsIdempotencyConflict(t *testing.T) {
 	assertLanguageError(t, got, http.StatusConflict, CodeIdempotencyConflict)
 }
 
+func TestHTTPConfigureFromCommandScopesIdempotencyToSession(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	owners := MapSessionOwner{"vs_command": "acct_command", "vs_other": "acct_command"}
+	handler := NewHandler(NewService(store, owners), nil)
+	handler.ConfigureSystemCommands(testCommandSystemToken)
+	mux := http.NewServeMux()
+	handler.Register(mux, withoutAuthentication)
+
+	first := languagesv1.CommandConfigRequest{SessionID: "vs_command", CommandID: "cmd_same", SourceLanguage: "zh-CN", TargetLanguage: "en-US"}
+	second := first
+	second.SessionID = "vs_other"
+	for _, request := range []languagesv1.CommandConfigRequest{first, second} {
+		if got := serveCommandConfig(t, mux, request, testCommandSystemToken); got.Code != http.StatusOK {
+			t.Fatalf("session %s status=%d body=%s", request.SessionID, got.Code, got.Body.String())
+		}
+	}
+
+	firstHistory, _, err := store.ListConfigs(t.Context(), ListConfigsQuery{SessionID: first.SessionID, Limit: 10})
+	if err != nil || len(firstHistory) != 1 {
+		t.Fatalf("first history=%#v err=%v, want one config", firstHistory, err)
+	}
+	secondHistory, _, err := store.ListConfigs(t.Context(), ListConfigsQuery{SessionID: second.SessionID, Limit: 10})
+	if err != nil || len(secondHistory) != 1 {
+		t.Fatalf("second history=%#v err=%v, want one config", secondHistory, err)
+	}
+}
+
+func TestHTTPConfigureFromCommandRejectsSupersededReplay(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	handler := NewHandler(NewService(store, MapSessionOwner{"vs_command": "acct_command"}), nil)
+	handler.ConfigureSystemCommands(testCommandSystemToken)
+	mux := http.NewServeMux()
+	handler.Register(mux, withoutAuthentication)
+
+	first := languagesv1.CommandConfigRequest{SessionID: "vs_command", CommandID: "cmd_1", SourceLanguage: "zh-CN", TargetLanguage: "en-US"}
+	second := languagesv1.CommandConfigRequest{SessionID: "vs_command", CommandID: "cmd_2", SourceLanguage: "en-US", TargetLanguage: "zh-CN"}
+	for _, request := range []languagesv1.CommandConfigRequest{first, second} {
+		if got := serveCommandConfig(t, mux, request, testCommandSystemToken); got.Code != http.StatusOK {
+			t.Fatalf("seed command %s status=%d body=%s", request.CommandID, got.Code, got.Body.String())
+		}
+	}
+
+	assertLanguageError(t, serveCommandConfig(t, mux, first, testCommandSystemToken), http.StatusConflict, CodeStaleCommand)
+	active, err := store.GetActiveConfig(t.Context(), first.SessionID)
+	if err != nil {
+		t.Fatalf("get active config: %v", err)
+	}
+	if active.Version != 2 || active.LanguagePairs[0].Source != "en-US" || active.LanguagePairs[0].Target != "zh-CN" {
+		t.Fatalf("active config=%#v, want second command config", active)
+	}
+}
+
 func TestHTTPConfigureFromCommandRejectsInvalidRequests(t *testing.T) {
 	valid := languagesv1.CommandConfigRequest{SessionID: "vs_command", CommandID: "cmd_1", SourceLanguage: "zh-CN", TargetLanguage: "en-US"}
 	tests := []struct {

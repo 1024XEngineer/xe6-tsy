@@ -2,7 +2,9 @@ package languages
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -71,7 +73,7 @@ func (h *Handler) configureFromCommand(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, r, err)
 		return
 	}
-	config, err := h.svc.CreateConfig(r.Context(), accountID, request.SessionID, "command_"+request.CommandID, CreateLanguageConfigRequest{
+	config, err := h.svc.CreateConfig(r.Context(), accountID, request.SessionID, commandIdempotencyKey(request.SessionID, request.CommandID), CreateLanguageConfigRequest{
 		Languages: []LanguagePair{
 			{Source: request.SourceLanguage, Target: request.TargetLanguage},
 			{Source: request.TargetLanguage, Target: request.SourceLanguage},
@@ -81,9 +83,21 @@ func (h *Handler) configureFromCommand(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, r, err)
 		return
 	}
+	if config.Status != StatusActive {
+		writeServiceError(w, r, ErrStaleCommand)
+		return
+	}
 	writeJSON(w, http.StatusOK, languagesv1.CommandConfigResult{
 		SessionID: request.SessionID, CommandID: request.CommandID, Version: config.Version,
 	})
+}
+
+// commandIdempotencyKey scopes command retries to one session while keeping the
+// existing language-config idempotency column's 128-byte limit.
+func commandIdempotencyKey(sessionID, commandID string) string {
+	payload, _ := json.Marshal([2]string{sessionID, commandID})
+	digest := sha256.Sum256(payload)
+	return "command_" + hex.EncodeToString(digest[:])
 }
 
 func (h *Handler) automaticDeliveryReadiness(w http.ResponseWriter, r *http.Request) {

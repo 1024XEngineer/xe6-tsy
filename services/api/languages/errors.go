@@ -11,6 +11,7 @@ const (
 	CodeNoActiveConfig         = "no_active_config"
 	CodeVersionConflict        = "version_conflict"
 	CodeIdempotencyConflict    = "idempotency_conflict"
+	CodeStaleCommand           = "stale_command"
 	CodeUnsupportedLanguage    = "unsupported_language"
 	CodeInvalidLanguagePair    = "invalid_language_pair"
 	CodeDeliveryTargetRequired = "delivery_target_required"
@@ -28,6 +29,7 @@ var (
 	ErrNoActiveConfig            = errors.New(CodeNoActiveConfig)
 	ErrVersionConflict           = errors.New(CodeVersionConflict)
 	ErrIdempotencyConflict       = errors.New(CodeIdempotencyConflict)
+	ErrStaleCommand              = errors.New(CodeStaleCommand)
 	ErrUnsupportedLanguage       = errors.New(CodeUnsupportedLanguage)
 	ErrInvalidLanguagePair       = errors.New(CodeInvalidLanguagePair)
 	ErrDeliveryTargetRequired    = errors.New(CodeDeliveryTargetRequired)

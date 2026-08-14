@@ -58,6 +58,8 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code, message = http.StatusConflict, CodeVersionConflict, "expected_version does not match the active config"
 	case errors.Is(err, ErrIdempotencyConflict):
 		status, code, message = http.StatusConflict, CodeIdempotencyConflict, "idempotency key was reused with a different payload"
+	case errors.Is(err, ErrStaleCommand):
+		status, code, message = http.StatusConflict, CodeStaleCommand, "command replay refers to a superseded language config"
 	case errors.Is(err, ErrUnsupportedLanguage):
 		status, code, message = http.StatusUnprocessableEntity, CodeUnsupportedLanguage, err.Error()
 	case errors.Is(err, ErrInvalidLanguagePair):

@@ -136,6 +136,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	if err != nil {
 		return nil, nil, err
 	}
+	languageDependencies.handler.ConfigureSystemCommands(processConfig.CommandSystemToken)
 
 	records, err := newRecordsHTTPDependenciesFromPool(
 		startupCtx,

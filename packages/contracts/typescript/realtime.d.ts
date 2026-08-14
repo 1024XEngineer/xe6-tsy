@@ -29,6 +29,34 @@ export type RealtimeConnectionState =
 
 export type ModeSwitchStatus = "applied" | "unchanged";
 
+export type CommandResultStatus =
+  | "applied"
+  | "unchanged"
+  | "clarification_required"
+  | "unsupported"
+  | "failed";
+
+export interface WakeWordDetectedSignal {
+  type: "wake_word.detected";
+  event_version: 1;
+  signal_id: string;
+  detected_at: string;
+}
+
+export interface CommandResultEvent {
+  type: "command.result";
+  event_version: 1;
+  command_id: string;
+  session_id: string;
+  runtime_instance_id?: string;
+  generation?: number;
+  status: CommandResultStatus;
+  action?: string;
+  target_mode?: RealtimeMode;
+  message: string;
+  occurred_at: string;
+}
+
 export interface RealtimeRuntimeSnapshot {
   session_id: string;
   start_operation_id: string;

@@ -230,6 +230,20 @@ func TestLoadRejectsShortRecordsSystemToken(t *testing.T) {
 	}
 }
 
+func TestLoadReadsAndRedactsCommandSystemToken(t *testing.T) {
+	token := "command-system-token-secret-123456"
+	config, err := LoadFrom(mapCoreEnv(map[string]string{"LINGOW_COMMAND_SYSTEM_TOKEN": token}))
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if config.CommandSystemToken != token || strings.Contains(config.String(), token) {
+		t.Fatalf("command token was not loaded and redacted: %s", config.String())
+	}
+	if _, err := LoadFrom(mapCoreEnv(map[string]string{"LINGOW_COMMAND_SYSTEM_TOKEN": "short"})); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("short command token error = %v", err)
+	}
+}
+
 func TestLoadEnabledRequiresInfrastructureAndSecrets(t *testing.T) {
 	_, err := LoadFrom(mapEnv(map[string]string{"LINGOW_DELIVERY_RUNTIME": "enabled"}))
 	if !errors.Is(err, domain.ErrInvalidArgument) {

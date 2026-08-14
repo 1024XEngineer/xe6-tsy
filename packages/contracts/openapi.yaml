@@ -746,6 +746,35 @@ components:
     ModeSwitchStatus:
       type: string
       enum: [applied, unchanged]
+    CommandResultStatus:
+      type: string
+      enum: [applied, unchanged, clarification_required, unsupported, failed]
+    WakeWordDetectedSignal:
+      type: object
+      additionalProperties: false
+      description: Client-side KWS output sent over the authenticated reliable ordered DataChannel. It contains no business command or session identity.
+      required: [type, event_version, signal_id, detected_at]
+      properties:
+        type: { type: string, const: wake_word.detected }
+        event_version: { type: integer, const: 1 }
+        signal_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        detected_at: { type: string, format: date-time }
+    CommandResultEvent:
+      type: object
+      additionalProperties: false
+      required: [type, event_version, command_id, session_id, status, message, occurred_at]
+      properties:
+        type: { type: string, const: command.result }
+        event_version: { type: integer, const: 1 }
+        command_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        session_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        runtime_instance_id: { type: string, minLength: 1 }
+        generation: { type: integer, format: int64, minimum: 1 }
+        status: { $ref: '#/components/schemas/CommandResultStatus' }
+        action: { type: string, minLength: 1, maxLength: 64 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        message: { type: string, minLength: 1, maxLength: 512 }
+        occurred_at: { type: string, format: date-time }
     SwitchModeResult:
       type: object
       additionalProperties: false

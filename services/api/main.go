@@ -99,6 +99,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	langDependencies.handler.ConfigureSystemCommands(processConfig.CommandSystemToken)
 	records, err := newRecordsHTTPDependenciesFromPool(
 		context.Background(),
 		pool,

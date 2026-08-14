@@ -30,6 +30,8 @@ channels:
     messages:
       modeSwitchRequest: { $ref: '#/components/messages/ControlModeSwitchRequest' }
       controlResponse: { $ref: '#/components/messages/ControlResponse' }
+      wakeWordDetected: { $ref: '#/components/messages/WakeWordDetected' }
+      commandResult: { $ref: '#/components/messages/CommandResult' }
 operations:
   consumeUsageRecorded:
     action: receive
@@ -63,6 +65,14 @@ operations:
     action: send
     channel: { $ref: '#/channels/controlDataChannel' }
     messages: [{ $ref: '#/channels/controlDataChannel/messages/controlResponse' }]
+  receiveWakeWordDetected:
+    action: receive
+    channel: { $ref: '#/channels/controlDataChannel' }
+    messages: [{ $ref: '#/channels/controlDataChannel/messages/wakeWordDetected' }]
+  sendCommandResult:
+    action: send
+    channel: { $ref: '#/channels/controlDataChannel' }
+    messages: [{ $ref: '#/channels/controlDataChannel/messages/commandResult' }]
 components:
   messages:
     UsageRecorded:
@@ -103,6 +113,18 @@ components:
       contentType: application/json
       payload:
         $ref: '#/components/schemas/ControlResponse'
+    WakeWordDetected:
+      name: wake_word.detected
+      summary: Reports a fixed wake-word decision made by the connected client or device.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/WakeWordDetectedSignal'
+    CommandResult:
+      name: command.result
+      summary: Returns the terminal acknowledgement for one wake-word command attempt.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/CommandResultEvent'
   schemas:
     UsageRecordedPayload:
       type: object
@@ -161,6 +183,7 @@ components:
         code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
         message: { type: string, minLength: 1, maxLength: 512 }
     ModeSwitchStatus: { type: string, enum: [applied, unchanged] }
+    CommandResultStatus: { type: string, enum: [applied, unchanged, clarification_required, unsupported, failed] }
     ModePhase: { type: string, enum: [active, switching] }
     ModeStateSnapshot:
       type: object
@@ -199,6 +222,33 @@ components:
         - properties: { type: { type: string, const: control.error } }
           required: [error]
           not: { required: [result] }
+    WakeWordDetectedSignal:
+      type: object
+      additionalProperties: false
+      description: Client-side KWS output. Session identity comes from the authenticated PeerConnection; detected_at is observational and never defines the authoritative server audio boundary.
+      required: [type, event_version, signal_id, detected_at]
+      properties:
+        type: { type: string, const: wake_word.detected }
+        event_version: { type: integer, const: 1 }
+        signal_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        detected_at: { type: string, format: date-time }
+    CommandResultEvent:
+      type: object
+      additionalProperties: false
+      description: Informational command acknowledgement. A client must never replay execution from this event; runtime fields are omitted when failure happened before execution.
+      required: [type, event_version, command_id, session_id, status, message, occurred_at]
+      properties:
+        type: { type: string, const: command.result }
+        event_version: { type: integer, const: 1 }
+        command_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        session_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        runtime_instance_id: { type: string, minLength: 1 }
+        generation: { type: integer, format: int64, minimum: 1 }
+        status: { $ref: '#/components/schemas/CommandResultStatus' }
+        action: { type: string, minLength: 1, maxLength: 64 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        message: { type: string, minLength: 1, maxLength: 512 }
+        occurred_at: { type: string, format: date-time }
     ModeChangedEvent:
       type: object
       additionalProperties: false

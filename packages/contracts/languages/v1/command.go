@@ -28,7 +28,8 @@ func (r CommandConfigRequest) Validate() error {
 	return nil
 }
 
-// CommandConfigResult identifies the active API-owned snapshot created or replayed for a command.
+// CommandConfigResult identifies the active API-owned snapshot created or replayed
+// while the command's configuration remains current. A stale replay is rejected.
 type CommandConfigResult struct {
 	SessionID string `json:"session_id"`
 	CommandID string `json:"command_id"`

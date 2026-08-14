@@ -757,7 +757,7 @@ components:
       properties:
         type: { type: string, const: wake_word.detected }
         event_version: { type: integer, const: 1 }
-        signal_id: { type: string, minLength: 1, maxLength: 128 }
+        signal_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
         detected_at: { type: string, format: date-time }
     CommandResultEvent:
       type: object
@@ -766,8 +766,8 @@ components:
       properties:
         type: { type: string, const: command.result }
         event_version: { type: integer, const: 1 }
-        command_id: { type: string, minLength: 1, maxLength: 128 }
-        session_id: { type: string, minLength: 1, maxLength: 128 }
+        command_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        session_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
         runtime_instance_id: { type: string, minLength: 1 }
         generation: { type: integer, format: int64, minimum: 1 }
         status: { $ref: '#/components/schemas/CommandResultStatus' }

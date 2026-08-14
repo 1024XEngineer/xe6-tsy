@@ -170,6 +170,19 @@ func TestControlSchemasMatchGoContract(t *testing.T) {
 			if requestID["maxLength"] != maxControlRequestIDLength || requestID["pattern"] == nil {
 				t.Fatalf("request_id bounds = %#v", requestID)
 			}
+			for _, test := range []struct {
+				schema string
+				field  string
+			}{
+				{schema: "WakeWordDetectedSignal", field: "signal_id"},
+				{schema: "CommandResultEvent", field: "command_id"},
+				{schema: "CommandResultEvent", field: "session_id"},
+			} {
+				properties := nestedMap(t, nestedMap(t, schemas, test.schema), "properties")
+				if nestedMap(t, properties, test.field)["pattern"] != `^(?:[^\r\n\t]*\S[^\r\n\t]*)$` {
+					t.Fatalf("%s.%s pattern is incomplete", test.schema, test.field)
+				}
+			}
 			if got := nestedMap(t, requestProperties, "type")["const"]; got != string(ControlMessageModeSwitch) {
 				t.Fatalf("request type = %v, want %q", got, ControlMessageModeSwitch)
 			}

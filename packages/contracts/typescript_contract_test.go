@@ -20,6 +20,7 @@ func TestTypeScriptRealtimeBindingMatchesOpenAPI(t *testing.T) {
 		"RealtimeRuntimeState",
 		"ModePhase",
 		"ModeSwitchStatus",
+		"CommandResultStatus",
 		"VoiceSessionStatus",
 	} {
 		schema := schemas[schemaName].(map[string]any)
@@ -36,6 +37,8 @@ func TestTypeScriptRealtimeBindingMatchesOpenAPI(t *testing.T) {
 		"ModeStateSnapshot",
 		"SwitchModeCommand",
 		"SwitchModeResult",
+		"WakeWordDetectedSignal",
+		"CommandResultEvent",
 		"VoiceSessionAudioConfig",
 		"VoiceSessionCapabilities",
 		"VoiceSession",

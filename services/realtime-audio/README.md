@@ -193,6 +193,11 @@ translator abandons the task after a reinforced retry it is
 `realtime_translation_rejected` instead. This log is the diagnostic source for
 failures after signaling and lifecycle Start.
 
+FinalTurn 进入可靠投递后，后续 TTS、播放、用量或运行状态上报错误只影响当前 Turn。
+Segment worker 会记录带有会话和 Trace 关联信息的
+`realtime turn post-commit processing failed` 日志，并继续使用现有 WebRTC Runtime；
+已经接受的 Turn 不会被重新翻译。FinalTurn 提交前的错误仍然属于终止 Worker 的错误。
+
 Official protocol references:
 
 - [Qwen ASR realtime interaction](https://help.aliyun.com/zh/model-studio/qwen-asr-realtime-interaction-process)

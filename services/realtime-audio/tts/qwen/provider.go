@@ -564,13 +564,28 @@ func languageInstruction(language string) string {
 }
 
 func languageType(language string) string {
-	if strings.HasPrefix(strings.ToLower(language), "zh") {
-		return "Chinese"
+	primary := strings.ToLower(strings.TrimSpace(language))
+	if index := strings.IndexAny(primary, "-_"); index >= 0 {
+		primary = primary[:index]
 	}
-	if strings.HasPrefix(strings.ToLower(language), "en") {
-		return "English"
+	languages := map[string]string{
+		"zh": "Chinese",
+		"en": "English",
+		"de": "German",
+		"it": "Italian",
+		"pt": "Portuguese",
+		"es": "Spanish",
+		"ja": "Japanese",
+		"ko": "Korean",
+		"fr": "French",
+		"ru": "Russian",
 	}
-	return language
+	if value := languages[primary]; value != "" {
+		return value
+	}
+	// Qwen TTS rejects unknown BCP-47 tags. Auto lets the provider infer the
+	// spoken language without leaking application locale syntax across the adapter.
+	return "Auto"
 }
 
 func firstNonEmpty(values ...string) string {

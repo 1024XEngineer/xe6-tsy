@@ -7,7 +7,10 @@ import (
 
 var ErrInvalidCommandConfigRequest = errors.New("invalid command language configuration request")
 
-const MaxCommandIDLength = 120
+// MaxCommandIDLength matches the 128-character realtime command ID bound. The
+// API scopes its idempotency key with a fixed-length hash, so no prefix budget
+// is deducted from this contract limit.
+const MaxCommandIDLength = 128
 
 // CommandConfigRequest is the internal control-plane contract used by realtime after a semantic
 // command has passed deterministic validation. CommandID is the stable idempotency identity.

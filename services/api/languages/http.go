@@ -44,7 +44,8 @@ func (h *Handler) ConfigureSystemCommands(token string) {
 	}
 }
 
-// Register attaches language routes behind the caller's authentication boundary.
+// Register attaches account language routes behind caller authentication and the
+// internal command route behind its fail-closed system-token boundary.
 func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) http.Handler) {
 	if authenticate == nil {
 		panic("language authentication middleware is required")

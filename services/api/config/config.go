@@ -20,8 +20,7 @@ const (
 	defaultRealtimeHTTPTimeout  = 5 * time.Second
 	maxRealtimeHTTPTimeout      = 5 * time.Second
 	minRealtimeTicketSecretSize = 32
-	minRecordsSystemTokenSize   = 32
-	minCommandSystemTokenSize   = 32
+	minSystemTokenSize          = 32
 )
 
 // Config contains only process configuration. Secrets are kept as strings at
@@ -179,11 +178,11 @@ func validateCore(config Config) error {
 	if len([]byte(config.JWTSecret)) < 32 {
 		return fmt.Errorf("%w: JWT_SECRET must contain at least 32 bytes", domain.ErrInvalidArgument)
 	}
-	if config.RecordsSystemToken != "" && len([]byte(config.RecordsSystemToken)) < minRecordsSystemTokenSize {
-		return fmt.Errorf("%w: LINGOW_RECORDS_SYSTEM_TOKEN must contain at least %d bytes when configured", domain.ErrInvalidArgument, minRecordsSystemTokenSize)
+	if config.RecordsSystemToken != "" && len([]byte(config.RecordsSystemToken)) < minSystemTokenSize {
+		return fmt.Errorf("%w: LINGOW_RECORDS_SYSTEM_TOKEN must contain at least %d bytes when configured", domain.ErrInvalidArgument, minSystemTokenSize)
 	}
-	if config.CommandSystemToken != "" && len([]byte(config.CommandSystemToken)) < minCommandSystemTokenSize {
-		return fmt.Errorf("%w: LINGOW_COMMAND_SYSTEM_TOKEN must contain at least %d bytes when configured", domain.ErrInvalidArgument, minCommandSystemTokenSize)
+	if config.CommandSystemToken != "" && len([]byte(config.CommandSystemToken)) < minSystemTokenSize {
+		return fmt.Errorf("%w: LINGOW_COMMAND_SYSTEM_TOKEN must contain at least %d bytes when configured", domain.ErrInvalidArgument, minSystemTokenSize)
 	}
 	return nil
 }

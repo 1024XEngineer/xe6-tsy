@@ -259,6 +259,53 @@ func TestDataChannelCommandResultSinkQueuesWithoutWaitingForTransport(t *testing
 	close(release)
 }
 
+func TestDataChannelCommandResultSinkIsolatesSlowSessions(t *testing.T) {
+	t.Parallel()
+	slowStarted := make(chan struct{})
+	fastStarted := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	var slowOnce sync.Once
+	var fastOnce sync.Once
+	sink := NewDataChannelCommandResultSink(mediaLookupFunc(func(ctx context.Context, sessionID string) (webrtc.MediaTransport, error) {
+		switch sessionID {
+		case "session-slow":
+			slowOnce.Do(func() { close(slowStarted) })
+			select {
+			case <-releaseSlow:
+			case <-ctx.Done():
+			}
+		case "session-fast":
+			fastOnce.Do(func() { close(fastStarted) })
+		}
+		return nil, errors.New("unavailable")
+	}), nil)
+	event := realtimev1.CommandResultEvent{
+		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
+		CommandID: "wake-slow", SessionID: "session-slow", Status: realtimev1.CommandResultFailed,
+		Message: "命令未执行，原模式保持不变", OccurredAt: time.Unix(2, 0).UTC(),
+	}
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish(slow) error = %v", err)
+	}
+	select {
+	case <-slowStarted:
+	case <-time.After(time.Second):
+		t.Fatal("slow session worker did not start")
+	}
+
+	event.CommandID = "wake-fast"
+	event.SessionID = "session-fast"
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish(fast) error = %v", err)
+	}
+	select {
+	case <-fastStarted:
+	case <-time.After(time.Second):
+		t.Fatal("fast session was blocked behind the slow session")
+	}
+	close(releaseSlow)
+}
+
 func TestEnergySpeechClassifierDetectsLoudFrame(t *testing.T) {
 	quiet := make([]byte, 320)
 	loud := make([]byte, 320)

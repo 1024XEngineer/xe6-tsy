@@ -14,6 +14,7 @@ type RuntimeState = realtimev1.RuntimeState
 type RuntimeSnapshot = realtimev1.RuntimeSnapshot
 type ConnectionState = realtimev1.ConnectionState
 type ConnectionSnapshot = realtimev1.ConnectionSnapshot
+type WakeWordDetectedSignal = realtimev1.WakeWordDetectedSignal
 
 const (
 	ModeAssistant      = realtimev1.ModeAssistant
@@ -33,4 +34,7 @@ const (
 	ConnectionClosed       = realtimev1.ConnectionClosed
 
 	RuntimeListening = realtimev1.RuntimeListening
+
+	WakeWordDetectedType         = realtimev1.WakeWordDetectedType
+	WakeWordDetectedEventVersion = realtimev1.WakeWordDetectedEventVersion
 )

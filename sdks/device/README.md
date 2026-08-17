@@ -11,7 +11,7 @@
 - 每个 operation 首次发送时固定完整命令 payload；不确定错误后的显式重试只重放原 payload，不会根据刷新后的 generation/runtime 重新组装。发生 generation 或 runtime instance 冲突时，旧 operation 会被废弃并立即 GET 刷新；不会自动重放旧命令。
 - `StateStore` 按连接版本、Runtime 时间和 Mode generation 过滤迟到快照，允许新 runtime instance 替换旧观察值。
 - `Reconnector` 通过注入的 `ReconnectPolicy` 和 `Connect` 函数执行平台自定义重连。
-- `WakeCommandController` 暴露 `WakeWordEngine`、`CommandWindow` 接口；本地 KWS 或命令窗口失败时自动关闭可选能力，继续传统同传。
+- `WakeCommandController` 将 `WakeWordEngine` 的板载 KWS 结果转换为统一 `wake_word.detected`，并通过平台实现的 `WakeWordSignalSender` 写入现有可靠有序 DataChannel；设备不解析业务命令，也不管理服务端命令窗口。
 - `SessionStartClient` 向 API Start 发送类型化 `initial_mode`；省略时显式使用 `interpretation`。
 
 从仓库根目录运行测试会自动通过 `go.work` 覆盖本 SDK；也可以在 SDK 目录独立运行：
@@ -27,14 +27,12 @@ go vet ./sdks/device/...
 本提交不伪造以下尚未存在的后端能力：
 
 - WebRTC offer/answer、ICE、音频 Track 和 PeerConnection 生命周期；
-- 通用上行 Control DataChannel 及类型化消息 envelope；
-- realtime Command Gate、Command ASR、确定性命令解析和命令窗口确认事件；
 - 任意芯片/OS 的真实本地唤醒词模型。
 
 因此设备端默认不改变旧行为：省略 mode 时由 realtime 使用 `interpretation`，模式控制、KWS 或刷新失败
-不会阻断普通音频和传统同传。后续平台适配必须通过本目录的接口接入，不能在 SDK 核心中引入供应商类型。
+不会阻断普通音频和当前活动模式。后续平台适配必须通过本目录的接口接入，不能在 SDK 核心中引入供应商类型。
 
-## 事件方向（待阶段 12/13 契约完成后接入）
+## 事件方向
 
 ```text
 device -> api:
@@ -44,14 +42,19 @@ device -> api:
 
 device -> realtime-audio:
   webrtc.offer / ice.candidate / audio track
-  control.command (待 Control DataChannel 契约)
+  wake_word.detected (可靠有序 lingow-control-v1 DataChannel)
 
 realtime-audio -> device:
   webrtc.answer / ice.candidate
   runtime.snapshot / mode.snapshot
   asr.partial / asr.final / translation.final
   playback.start / playback.stop / error
+  command.result
 ```
+
+ESP32-S3 等平台应让同一份麦克风 PCM 持续进入板载 KWS 和既有 WebRTC 编码链路。KWS 命中固定
+「小灵小灵」后调用 SDK 控制器即可；不得停止上行、重建 PeerConnection，或把模型名称、阈值、
+目标模式和语言方向放入事件。模型格式、版本和阈值由固件自行管理。
 
 设备结束会话时只向 API 发送 `session.end`，随后停止采集并关闭本地 PeerConnection。API 负责幂等调用
 realtime `Stop`；realtime 完成 Pipeline 和连接清理后，API 才把业务会话标记为 `ended`。

@@ -2,17 +2,19 @@ package device
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
 
-var ErrCommandWindowUnavailable = errors.New("device command window unavailable")
+var ErrWakeWordSignalUnavailable = errors.New("device wake-word signal unavailable")
 
 // WakeWordEvent is emitted by a platform-local engine. The engine never
-// decides a business mode; it only requests a bounded command window.
+// decides a business mode; it only reports that the fixed local wake word fired.
 type WakeWordEvent struct {
-	Phrase     string
 	DetectedAt time.Time
 }
 
@@ -22,30 +24,37 @@ type WakeWordEngine interface {
 	Stop() error
 }
 
-// CommandWindow is the boundary to the future server-side Command Gate. This
-// stage only models its lifecycle and does not send audio or parse commands.
-type CommandWindow interface {
-	Open(context.Context, time.Duration) error
-	Close(context.Context) error
-	Active() bool
+// WakeWordSignalSender writes the shared wake_word.detected contract to the
+// reliable ordered DataChannel owned by the platform WebRTC adapter. Send must
+// not create or close a PeerConnection and must not stop microphone uplink.
+type WakeWordSignalSender interface {
+	SendWakeWordDetected(context.Context, WakeWordDetectedSignal) error
 }
 
-// WakeCommandController makes wake-word failures fail open: normal microphone
-// audio and the legacy interpretation flow remain available when local KWS or
-// command-window support is unavailable.
+// WakeCommandController bridges a platform-local KWS callback to the shared
+// server signal. The backend owns command capture and semantic decisions; this
+// controller never opens a local command window or interprets business intent.
 type WakeCommandController struct {
 	Engine WakeWordEngine
-	Window CommandWindow
+	Sender WakeWordSignalSender
 
-	mu      sync.Mutex
-	enabled bool
-	started bool
-	epoch   uint64
-	lastErr error
+	mu          sync.Mutex
+	enabled     bool
+	started     bool
+	epoch       uint64
+	runCtx      context.Context
+	cancel      context.CancelFunc
+	lastErr     error
+	now         func() time.Time
+	newSignalID func() (string, error)
+	callbacks   sync.WaitGroup
 }
 
-func NewWakeCommandController(engine WakeWordEngine, window CommandWindow) *WakeCommandController {
-	return &WakeCommandController{Engine: engine, Window: window, enabled: engine != nil && window != nil}
+func NewWakeCommandController(engine WakeWordEngine, sender WakeWordSignalSender) *WakeCommandController {
+	return &WakeCommandController{
+		Engine: engine, Sender: sender, enabled: engine != nil && sender != nil,
+		now: func() time.Time { return time.Now().UTC() }, newSignalID: newWakeWordSignalID,
+	}
 }
 
 func (c *WakeCommandController) Start(ctx context.Context) error {
@@ -53,11 +62,19 @@ func (c *WakeCommandController) Start(ctx context.Context) error {
 		return nil
 	}
 	c.mu.Lock()
+	if c.started {
+		c.mu.Unlock()
+		return nil
+	}
+	runCtx, cancel := context.WithCancel(ctx)
 	c.started = true
 	c.epoch++
 	epoch := c.epoch
+	c.runCtx = runCtx
+	c.cancel = cancel
 	c.mu.Unlock()
-	if err := c.Engine.Start(ctx, func(event WakeWordEvent) { c.handleWake(epoch, event) }); err != nil {
+	if err := c.Engine.Start(runCtx, func(event WakeWordEvent) { c.handleWake(epoch, event) }); err != nil {
+		cancel()
 		c.disable(err)
 		return nil
 	}
@@ -71,17 +88,21 @@ func (c *WakeCommandController) Stop() error {
 	c.mu.Lock()
 	c.started = false
 	c.epoch++
-	var stopErr error
-	if c.Window != nil && c.Window.Active() {
-		stopErr = c.Window.Close(context.Background())
-	}
+	cancel := c.cancel
+	c.cancel = nil
+	c.runCtx = nil
 	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 
 	// Engine shutdown stays outside the lifecycle lock because platform engines
 	// may wait for an in-flight callback. The callback has already been fenced.
+	var stopErr error
 	if c.Engine != nil {
-		stopErr = errors.Join(stopErr, c.Engine.Stop())
+		stopErr = c.Engine.Stop()
 	}
+	c.callbacks.Wait()
 	if stopErr != nil {
 		c.disable(stopErr)
 	}
@@ -106,21 +127,50 @@ func (c *WakeCommandController) LastError() error {
 	return c.lastErr
 }
 
-func (c *WakeCommandController) handleWake(epoch uint64, _ WakeWordEvent) {
+func (c *WakeCommandController) handleWake(epoch uint64, event WakeWordEvent) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !c.enabled || !c.started || c.epoch != epoch {
+		c.mu.Unlock()
 		return
 	}
-	if err := c.Window.Open(context.Background(), 5*time.Second); err != nil {
-		c.enabled = false
-		c.started = false
-		c.epoch++
-		c.lastErr = errors.Join(ErrCommandWindowUnavailable, err)
+	ctx := c.runCtx
+	now := c.now
+	newSignalID := c.newSignalID
+	c.callbacks.Add(1)
+	c.mu.Unlock()
+	defer c.callbacks.Done()
+
+	signalID, err := newSignalID()
+	if err == nil {
+		detectedAt := event.DetectedAt
+		if detectedAt.IsZero() {
+			detectedAt = now()
+		}
+		err = c.Sender.SendWakeWordDetected(ctx, WakeWordDetectedSignal{
+			Type: WakeWordDetectedType, EventVersion: WakeWordDetectedEventVersion,
+			SignalID: signalID, DetectedAt: detectedAt.UTC(),
+		})
 	}
+	if err != nil {
+		c.mu.Lock()
+		if c.started && c.epoch == epoch {
+			// A transient DataChannel failure must not disable KWS or ordinary audio;
+			// the next physical wake produces a fresh signal and retries naturally.
+			c.lastErr = errors.Join(ErrWakeWordSignalUnavailable, err)
+		}
+		c.mu.Unlock()
+	}
+}
+
+func newWakeWordSignalID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("create wake-word signal id: %w", err)
+	}
+	return "wake-" + hex.EncodeToString(random[:]), nil
 }
 
 func (c *WakeCommandController) disable(err error) {

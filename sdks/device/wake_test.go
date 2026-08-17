@@ -8,7 +8,7 @@ import (
 )
 
 func TestWakeCommandControllerFailsOpenWhenEngineUnavailable(t *testing.T) {
-	controller := NewWakeCommandController(failingWakeEngine{}, &fakeCommandWindow{})
+	controller := NewWakeCommandController(failingWakeEngine{}, &fakeWakeSender{})
 	if err := controller.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -17,23 +17,46 @@ func TestWakeCommandControllerFailsOpenWhenEngineUnavailable(t *testing.T) {
 	}
 }
 
-func TestWakeCommandControllerOpensBoundedWindow(t *testing.T) {
-	window := &fakeCommandWindow{}
+func TestWakeCommandControllerSendsSharedSignal(t *testing.T) {
+	sender := &fakeWakeSender{}
 	engine := &fakeWakeEngine{}
-	controller := NewWakeCommandController(engine, window)
+	controller := NewWakeCommandController(engine, sender)
+	controller.now = func() time.Time { return time.Unix(20, 0).UTC() }
+	controller.newSignalID = func() (string, error) { return "wake-1", nil }
 	if err := controller.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	engine.emit(WakeWordEvent{Phrase: "小灵"})
-	if window.openCalls != 1 || window.duration != 5*time.Second {
-		t.Fatalf("window calls=%d duration=%s", window.openCalls, window.duration)
+	engine.emit(WakeWordEvent{})
+	if len(sender.signals) != 1 {
+		t.Fatalf("signal count = %d", len(sender.signals))
+	}
+	want := WakeWordDetectedSignal{
+		Type: WakeWordDetectedType, EventVersion: WakeWordDetectedEventVersion,
+		SignalID: "wake-1", DetectedAt: time.Unix(20, 0).UTC(),
+	}
+	if sender.signals[0] != want {
+		t.Fatalf("signal = %#v, want %#v", sender.signals[0], want)
 	}
 }
 
-func TestWakeCommandControllerStopClosesWindowAndRejectsLateWake(t *testing.T) {
-	window := &fakeCommandWindow{active: true}
+func TestWakeCommandControllerKeepsKWSAvailableAfterSendFailure(t *testing.T) {
+	sender := &fakeWakeSender{err: errors.New("data channel unavailable")}
 	engine := &fakeWakeEngine{}
-	controller := NewWakeCommandController(engine, window)
+	controller := NewWakeCommandController(engine, sender)
+	controller.newSignalID = func() (string, error) { return "wake-1", nil }
+	if err := controller.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	engine.emit(WakeWordEvent{DetectedAt: time.Unix(10, 0).UTC()})
+	if !controller.Enabled() || controller.LastError() == nil {
+		t.Fatal("transient signal failure disabled local KWS or was not reported")
+	}
+}
+
+func TestWakeCommandControllerStopRejectsLateWake(t *testing.T) {
+	sender := &fakeWakeSender{}
+	engine := &fakeWakeEngine{}
+	controller := NewWakeCommandController(engine, sender)
 	if err := controller.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -41,13 +64,10 @@ func TestWakeCommandControllerStopClosesWindowAndRejectsLateWake(t *testing.T) {
 	if err := controller.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	if window.closeCalls != 1 || window.Active() {
-		t.Fatalf("window close calls=%d active=%v", window.closeCalls, window.Active())
-	}
 
-	lateHandler(WakeWordEvent{Phrase: "小灵"})
-	if window.openCalls != 0 {
-		t.Fatalf("late wake reopened window: open calls=%d", window.openCalls)
+	lateHandler(WakeWordEvent{})
+	if len(sender.signals) != 0 {
+		t.Fatalf("late wake sent %d signals", len(sender.signals))
 	}
 }
 
@@ -67,22 +87,12 @@ func (f *fakeWakeEngine) Start(_ context.Context, handler func(WakeWordEvent)) e
 func (f *fakeWakeEngine) Stop() error              { return nil }
 func (f *fakeWakeEngine) emit(event WakeWordEvent) { f.handler(event) }
 
-type fakeCommandWindow struct {
-	openCalls  int
-	closeCalls int
-	duration   time.Duration
-	active     bool
+type fakeWakeSender struct {
+	signals []WakeWordDetectedSignal
+	err     error
 }
 
-func (f *fakeCommandWindow) Open(_ context.Context, duration time.Duration) error {
-	f.openCalls++
-	f.duration = duration
-	f.active = true
-	return nil
+func (s *fakeWakeSender) SendWakeWordDetected(_ context.Context, signal WakeWordDetectedSignal) error {
+	s.signals = append(s.signals, signal)
+	return s.err
 }
-func (f *fakeCommandWindow) Close(context.Context) error {
-	f.closeCalls++
-	f.active = false
-	return nil
-}
-func (f *fakeCommandWindow) Active() bool { return f.active }

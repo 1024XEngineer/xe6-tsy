@@ -41,6 +41,7 @@ var defaultCommandOptions = command.Options{
 	NoSpeechTimeout:  2 * time.Second,
 	MaxAudioDuration: 12 * time.Second,
 	EndSilence:       800 * time.Millisecond,
+	PrefixPadding:    500 * time.Millisecond,
 }
 
 // AudioInput is the typed handoff from a WebRTC media adapter to the audio loop.

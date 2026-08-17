@@ -60,6 +60,7 @@ type Options struct {
 	NoSpeechTimeout  time.Duration
 	MaxAudioDuration time.Duration
 	EndSilence       time.Duration
+	PrefixPadding    time.Duration
 }
 
 // OpenRequest carries identity owned by the existing realtime runtime. CommandID becomes the
@@ -179,7 +180,8 @@ func NewGate(deps Dependencies, options Options) (*Gate, error) {
 	}
 	if options.WindowTTL <= 0 || options.NoSpeechTimeout <= 0 || options.MaxAudioDuration <= 0 ||
 		options.EndSilence <= 0 || options.NoSpeechTimeout > options.WindowTTL ||
-		options.MaxAudioDuration > options.WindowTTL || options.EndSilence >= options.MaxAudioDuration {
+		options.MaxAudioDuration > options.WindowTTL || options.EndSilence >= options.MaxAudioDuration ||
+		options.PrefixPadding < 0 || options.PrefixPadding >= options.MaxAudioDuration {
 		return nil, ErrInvalidOptions
 	}
 	now := deps.Now
@@ -191,8 +193,9 @@ func NewGate(deps Dependencies, options Options) (*Gate, error) {
 		logger = slog.Default()
 	}
 	segmenter, err := vad.NewSegmenter(deps.Classifier, vad.Options{
-		SilenceAfter: options.EndSilence,
-		MaxDuration:  options.MaxAudioDuration,
+		SilenceAfter:  options.EndSilence,
+		MaxDuration:   options.MaxAudioDuration,
+		PrefixPadding: options.PrefixPadding,
 	})
 	if err != nil {
 		return nil, ErrInvalidOptions

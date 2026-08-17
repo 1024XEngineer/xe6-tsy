@@ -8,7 +8,7 @@ import (
 )
 
 func TestNewLocalVADSegmenterFactoryEnergy(t *testing.T) {
-	factory, err := newLocalVADSegmenterFactory(func(key string) string {
+	segmenters, classifiers, err := newLocalVADFactories(func(key string) string {
 		if key == "LOCAL_VAD_PROVIDER" {
 			return silero.ProviderEnergy
 		}
@@ -17,17 +17,21 @@ func TestNewLocalVADSegmenterFactoryEnergy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("factory error = %v", err)
 	}
-	segmenter, err := factory()
+	segmenter, err := segmenters()
 	if err != nil {
 		t.Fatalf("NewSegmenter error = %v", err)
 	}
 	if segmenter == nil {
 		t.Fatal("segmenter is nil")
 	}
+	classifier, err := classifiers()
+	if err != nil || classifier == nil {
+		t.Fatalf("command classifier = %#v, %v", classifier, err)
+	}
 }
 
 func TestNewLocalVADSegmenterFactoryRejectsUnknown(t *testing.T) {
-	_, err := newLocalVADSegmenterFactory(func(key string) string {
+	_, _, err := newLocalVADFactories(func(key string) string {
 		if key == "LOCAL_VAD_PROVIDER" {
 			return "other"
 		}
@@ -47,7 +51,7 @@ func TestNewLocalVADSegmenterFactorySileroLoadsWhenAssetsPresent(t *testing.T) {
 	if _, err := os.Stat(model); err != nil {
 		t.Skipf("silero model missing: %v", err)
 	}
-	factory, err := newLocalVADSegmenterFactory(func(key string) string {
+	segmenters, classifiers, err := newLocalVADFactories(func(key string) string {
 		switch key {
 		case "LOCAL_VAD_PROVIDER":
 			return silero.ProviderSilero
@@ -62,11 +66,15 @@ func TestNewLocalVADSegmenterFactorySileroLoadsWhenAssetsPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("silero factory error = %v", err)
 	}
-	segmenter, err := factory()
+	segmenter, err := segmenters()
 	if err != nil {
 		t.Fatalf("NewSegmenter error = %v", err)
 	}
 	if segmenter == nil {
 		t.Fatal("segmenter is nil")
+	}
+	classifier, err := classifiers()
+	if err != nil || classifier == nil {
+		t.Fatalf("command classifier = %#v, %v", classifier, err)
 	}
 }

@@ -16,7 +16,8 @@ func TestDefaultCommandOptionsMatchOrdinaryUtteranceBounds(t *testing.T) {
 	if defaultCommandOptions.WindowTTL != 15*time.Second ||
 		defaultCommandOptions.NoSpeechTimeout != 2*time.Second ||
 		defaultCommandOptions.MaxAudioDuration != 12*time.Second ||
-		defaultCommandOptions.EndSilence != 800*time.Millisecond {
+		defaultCommandOptions.EndSilence != 800*time.Millisecond ||
+		defaultCommandOptions.PrefixPadding != 500*time.Millisecond {
 		t.Fatalf("default command options = %#v, want ordinary VAD sentence bounds", defaultCommandOptions)
 	}
 }

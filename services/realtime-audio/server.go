@@ -244,7 +244,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		voiceID = "Cherry"
 	}
 
-	newSegmenter, err := newLocalVADSegmenterFactory(os.Getenv)
+	newSegmenter, newCommandClassifier, err := newLocalVADFactories(os.Getenv)
 	if err != nil {
 		return nil, fmt.Errorf("configure local VAD: %w", err)
 	}
@@ -259,27 +259,23 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			SourceLanguage: cfg.SourceLanguage,
 			Languages:      languages,
 		},
-		NewSegmenter: newSegmenter,
-		// Command recognition uses an isolated lightweight classifier. It is
-		// intentionally separate from the rolling ordinary-VAD classifier.
-		NewCommandClassifier: func() (vad.Classifier, error) {
-			return localruntime.EnergySpeechClassifier{Threshold: 0.01}, nil
-		},
-		Languages:           languages,
-		FinalTurns:          finalTurns,
-		AssistantReplies:    localruntime.DataChannelAssistantReplySink{Media: connections, Failures: metricRegistry},
-		ModeChanges:         realtimemetrics.ObserveModeChangedSink(sinks.ModeChanges, metricRegistry),
-		Usage:               usage,
-		Audio:               audioSink,
-		PlaybackInterrupter: playbackInterrupter,
-		Runtime:             runtimeBridge,
-		VoiceID:             voiceID,
-		Logger:              slog.Default(),
-		Latency:             slog.Default(),
-		ProviderFailures:    metricRegistry,
-		Lifecycle:           metricRegistry,
-		ModeCommands:        metricRegistry,
-		Now:                 now,
+		NewSegmenter:         newSegmenter,
+		NewCommandClassifier: newCommandClassifier,
+		Languages:            languages,
+		FinalTurns:           finalTurns,
+		AssistantReplies:     localruntime.DataChannelAssistantReplySink{Media: connections, Failures: metricRegistry},
+		ModeChanges:          realtimemetrics.ObserveModeChangedSink(sinks.ModeChanges, metricRegistry),
+		Usage:                usage,
+		Audio:                audioSink,
+		PlaybackInterrupter:  playbackInterrupter,
+		Runtime:              runtimeBridge,
+		VoiceID:              voiceID,
+		Logger:               slog.Default(),
+		Latency:              slog.Default(),
+		ProviderFailures:     metricRegistry,
+		Lifecycle:            metricRegistry,
+		ModeCommands:         metricRegistry,
+		Now:                  now,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure runtime manager: %w", err)
@@ -359,11 +355,14 @@ const (
 	localVADPrefixPadding = 500 * time.Millisecond
 )
 
-// newLocalVADSegmenterFactory wires the process-local utterance cutter used by
-// every realtime session. Silero is the default production classifier; energy
-// remains an explicit LOCAL_VAD_PROVIDER=energy fallback for environments
-// without ONNX Runtime.
-func newLocalVADSegmenterFactory(getenv func(string) string) (runtime.SegmenterFactory, error) {
+// newLocalVADFactories wires ordinary and command utterance cutters from one provider
+// configuration. Each call returns isolated classifier state, while provider type, thresholds,
+// end silence, maximum duration, and prefix padding remain identical across both audio paths.
+func newLocalVADFactories(getenv func(string) string) (
+	runtime.SegmenterFactory,
+	runtime.CommandClassifierFactory,
+	error,
+) {
 	cfg := silero.LoadLocalConfigFromEnv(getenv)
 	options := vad.Options{
 		SilenceAfter:  localVADSilenceAfter,
@@ -373,12 +372,13 @@ func newLocalVADSegmenterFactory(getenv func(string) string) (runtime.SegmenterF
 	switch cfg.Provider {
 	case silero.ProviderEnergy:
 		slog.Info("realtime-audio local VAD provider", "provider", silero.ProviderEnergy)
-		return func() (*vad.Segmenter, error) {
-			return vad.NewSegmenter(localruntime.EnergySpeechClassifier{Threshold: 0.01}, options)
-		}, nil
+		classifierFactory := func() (vad.Classifier, error) {
+			return localruntime.EnergySpeechClassifier{Threshold: 0.01}, nil
+		}
+		return segmenterFactory(classifierFactory, options), classifierFactory, nil
 	case silero.ProviderSilero:
 		if err := silero.EnsureAssets(&cfg); err != nil {
-			return nil, fmt.Errorf("prepare silero VAD assets: %w", err)
+			return nil, nil, fmt.Errorf("prepare silero VAD assets: %w", err)
 		}
 		rt, err := silero.NewRuntime(silero.RuntimeConfig{
 			LibraryPath:  cfg.LibraryPath,
@@ -387,7 +387,7 @@ func newLocalVADSegmenterFactory(getenv func(string) string) (runtime.SegmenterF
 			NegThreshold: cfg.NegThreshold,
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		slog.Info("realtime-audio local VAD provider",
 			"provider", silero.ProviderSilero,
@@ -395,15 +395,20 @@ func newLocalVADSegmenterFactory(getenv func(string) string) (runtime.SegmenterF
 			"library_path", cfg.LibraryPath,
 			"threshold", cfg.Threshold,
 		)
-		return func() (*vad.Segmenter, error) {
-			classifier, err := rt.NewClassifier()
-			if err != nil {
-				return nil, err
-			}
-			return vad.NewSegmenter(classifier, options)
-		}, nil
+		classifierFactory := func() (vad.Classifier, error) { return rt.NewClassifier() }
+		return segmenterFactory(classifierFactory, options), classifierFactory, nil
 	default:
-		return nil, fmt.Errorf("unsupported LOCAL_VAD_PROVIDER %q (want %q or %q)", cfg.Provider, silero.ProviderSilero, silero.ProviderEnergy)
+		return nil, nil, fmt.Errorf("unsupported LOCAL_VAD_PROVIDER %q (want %q or %q)", cfg.Provider, silero.ProviderSilero, silero.ProviderEnergy)
+	}
+}
+
+func segmenterFactory(classifiers runtime.CommandClassifierFactory, options vad.Options) runtime.SegmenterFactory {
+	return func() (*vad.Segmenter, error) {
+		classifier, err := classifiers()
+		if err != nil {
+			return nil, err
+		}
+		return vad.NewSegmenter(classifier, options)
 	}
 }
 

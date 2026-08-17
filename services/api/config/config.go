@@ -239,6 +239,8 @@ func validateEnabled(config Config) error {
 	for key, value := range map[string]string{
 		"DATABASE_URL":                    config.DatabaseURL,
 		"REDIS_URL":                       config.RedisURL,
+		"REALTIME_BASE_URL":               config.RealtimeBaseURL,
+		"REALTIME_TICKET_SECRET":          config.RealtimeTicketSecret,
 		"JWT_SECRET":                      config.JWTSecret,
 		"LINGOW_DELIVERY_DESTINATION_KEY": config.DestinationKey,
 		"JWT_ISSUER":                      config.JWTIssuer,
@@ -250,6 +252,12 @@ func validateEnabled(config Config) error {
 	}
 	if len([]byte(config.JWTSecret)) < 32 {
 		return fmt.Errorf("%w: JWT_SECRET must contain at least 32 bytes", domain.ErrInvalidArgument)
+	}
+	if len([]byte(config.RealtimeTicketSecret)) < minRealtimeTicketSecretSize {
+		return fmt.Errorf("%w: REALTIME_TICKET_SECRET must contain at least 32 bytes", domain.ErrInvalidArgument)
+	}
+	if err := validateRealtimeBaseURL(config.RealtimeBaseURL); err != nil {
+		return err
 	}
 	switch config.DeliveryProvider {
 	case providerUnconfigured:

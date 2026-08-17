@@ -153,26 +153,24 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 
 	sessionHandler := newSessionHandler(nil)
 	var sessionRecovery backgroundWorker
-	var fallbackPlayer delivery.AutomaticTurnFallbackPlayer
+	sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
+		Repository:     sessionRepository,
+		SessionReader:  sessionRepository,
+		LanguageReader: languageDependencies.service,
+		HTTPClient: &http.Client{
+			Timeout: realtimeHTTPTimeout(processConfig),
+		},
+		IDs:    newSessionIDGenerator(),
+		Clock:  utcClock{},
+		Config: processConfig,
+		Logger: slog.Default(),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("initialize configured realtime fallback: %w", err)
+	}
 	if processConfig.SessionRuntimeEnabled {
-		sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
-			Repository:     sessionRepository,
-			SessionReader:  sessionRepository,
-			LanguageReader: languageDependencies.service,
-			HTTPClient: &http.Client{
-				Timeout: realtimeHTTPTimeout(processConfig),
-			},
-			IDs:    newSessionIDGenerator(),
-			Clock:  utcClock{},
-			Config: processConfig,
-			Logger: slog.Default(),
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("initialize configured session HTTP: %w", err)
-		}
 		sessionHandler = sessionDependencies.handler
 		sessionRecovery = sessionDependencies.endRecovery
-		fallbackPlayer = sessionDependencies.realtime
 	} else {
 		slog.Warn(
 			"voice session runtime disabled",
@@ -222,12 +220,9 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	deliveryService.ConfigureTargetBinding(destinationKey, processConfig.AppEnv)
 	deliveryService.ConfigureEmailVerification(deliveryRepository, newEmailBindSender(processConfig, smtpMailer))
 	deliveryService.ConfigureWeChatBinding(wecomClient)
-	var fallbackWorker *delivery.AutomaticTurnFallbackWorker
-	if fallbackPlayer != nil {
-		deliveryService.ConfigureAutomaticFallback(fallbackPlayer)
-		deliveryService.ConfigureAutomaticOutputRestorer(languageOutputRestorer{service: languageDependencies.service})
-		fallbackWorker = delivery.NewAutomaticTurnFallbackWorker(deliveryService, time.Second)
-	}
+	deliveryService.ConfigureAutomaticFallback(sessionDependencies.realtime)
+	deliveryService.ConfigureAutomaticOutputRestorer(languageOutputRestorer{service: languageDependencies.service})
+	fallbackWorker := delivery.NewAutomaticTurnFallbackWorker(deliveryService, time.Second)
 
 	usageConsumerName := processConfig.UsageConsumer
 	if usageConsumerName == "" {

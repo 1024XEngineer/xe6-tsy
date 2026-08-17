@@ -160,11 +160,15 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 		commandModel = translationModel
 	}
 	commandAPIKey := value(lookup, "COMMAND_LLM_API_KEY")
+	commandBaseURL := value(lookup, "COMMAND_LLM_BASE_URL")
+	if (commandAPIKey == "") != (commandBaseURL == "") {
+		return ProviderConfig{}, fmt.Errorf(
+			"%w: COMMAND_LLM_API_KEY and COMMAND_LLM_BASE_URL must be configured together",
+			ErrInvalidEnvironmentValue,
+		)
+	}
 	if commandAPIKey == "" {
 		commandAPIKey = value(lookup, "LLM_API_KEY")
-	}
-	commandBaseURL := value(lookup, "COMMAND_LLM_BASE_URL")
-	if commandBaseURL == "" {
 		commandBaseURL = value(lookup, "LLM_BASE_URL")
 	}
 

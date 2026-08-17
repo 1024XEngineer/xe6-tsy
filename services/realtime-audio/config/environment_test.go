@@ -87,6 +87,8 @@ func TestLoadProviderConfigRejectsInvalidValues(t *testing.T) {
 		{name: "boolean", values: map[string]string{"LLM_ENABLE_THINKING": "sometimes"}, want: ErrInvalidEnvironmentValue},
 		{name: "command interpreter", values: map[string]string{"COMMAND_INTERPRETER": "other"}, want: ErrUnsupportedProvider},
 		{name: "command timeout", values: map[string]string{"COMMAND_LLM_TIMEOUT_MS": "-1"}, want: ErrInvalidEnvironmentValue},
+		{name: "command key without endpoint", values: map[string]string{"COMMAND_LLM_API_KEY": "command-key"}, want: ErrInvalidEnvironmentValue},
+		{name: "command endpoint without key", values: map[string]string{"COMMAND_LLM_BASE_URL": "https://command.example/v1"}, want: ErrInvalidEnvironmentValue},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

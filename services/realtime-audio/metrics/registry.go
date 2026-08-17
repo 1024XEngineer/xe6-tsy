@@ -163,9 +163,7 @@ func (r *Registry) RecordCommandInterpretation(duration time.Duration, failed bo
 		return
 	}
 	r.commandInterpretations.Add(1)
-	if duration > 0 {
-		r.commandInterpretationNanos.Add(uint64(duration))
-	}
+	r.commandInterpretationNanos.Add(uint64(duration))
 	if failed {
 		r.commandInterpretationFailures.Add(1)
 	}

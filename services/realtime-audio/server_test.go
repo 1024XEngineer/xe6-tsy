@@ -199,6 +199,21 @@ func TestNewControlPlaneHandlerRejectsQwenWithoutCommandAPI(t *testing.T) {
 	}
 }
 
+func TestNewControlPlaneHandlerLegacyDoesNotConstructUnusedCommandAPIClient(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("COMMAND_INTERPRETER", "legacy")
+	t.Setenv("LINGOW_API_BASE_URL", "://invalid-command-api")
+	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", strings.Repeat("c", minCommandTokenBytes))
+
+	handler, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+	if handler == nil {
+		t.Fatal("newControlPlaneHandler() = nil")
+	}
+}
+
 func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {
 	setMockProviderEnv(t)
 	secret := strings.Repeat("r", 32)

@@ -217,6 +217,9 @@ const (
 
 const maxAutomaticTargetAttempts = 2
 
+// AutomaticTurnTrigger records the closed set of persisted causes for automatic delivery.
+// Recovery restores output settings for AutomaticTurnTriggerConfiguredRoute, completes
+// AutomaticTurnTriggerLongSentence directly, and rejects unknown values as conflicts.
 type AutomaticTurnTrigger string
 
 const (

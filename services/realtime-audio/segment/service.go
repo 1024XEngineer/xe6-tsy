@@ -120,6 +120,13 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		defer close(workerDone)
 		for event := range finalizedEvents {
 			if err := s.handleEvents(runCtx, request, []vad.Event{event}); err != nil {
+				if errors.Is(err, pipeline.ErrFinalTurnAccepted) {
+					// FinalTurn is already durable at this point. TTS, playback, usage, or
+					// runtime-reporting failures belong to this Turn and must not tear down
+					// the shared WebRTC session or cause the Turn to be translated again.
+					s.logPostCommitFailure(request, err)
+					continue
+				}
 				processingErrors <- err
 				cancel()
 				return
@@ -332,6 +339,17 @@ func (s *Service) logVADCheckpoint(request Request, event vad.Event) {
 			"frame_count", len(event.Frames),
 		)
 	}
+}
+
+func (s *Service) logPostCommitFailure(request Request, err error) {
+	if s == nil || s.latency == nil || err == nil {
+		return
+	}
+	s.latency.Error("realtime turn post-commit processing failed",
+		"session_id", request.SessionID,
+		"trace_id", request.TraceID,
+		"error", err,
+	)
 }
 
 func audioChunks(frames []audio.Frame) [][]byte {

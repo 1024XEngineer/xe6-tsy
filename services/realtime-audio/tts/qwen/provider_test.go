@@ -185,6 +185,67 @@ func TestProviderStreamsQwenTTSAudio(t *testing.T) {
 	}
 }
 
+func TestProviderSendsJapaneseLanguageType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Input struct {
+				LanguageType string `json:"language_type"`
+			} `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if request.Input.LanguageType != "Japanese" {
+			t.Errorf("language_type = %q, want Japanese", request.Input.LanguageType)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: " + ttsEvent([]byte{1, 2}) + "\n\n"))
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(Config{APIKey: "test-key", BaseURL: server.URL + "/api/v1"})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	stream, err := provider.StartStream(context.Background(), tts.Request{Text: "こんにちは", TargetLanguage: "ja-JP"})
+	if err != nil {
+		t.Fatalf("StartStream() error = %v", err)
+	}
+	for range stream.Chunks() {
+	}
+	if _, err := stream.Finish(context.Background()); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+}
+
+func TestLanguageTypeMapsSupportedLocales(t *testing.T) {
+	tests := []struct {
+		name     string
+		language string
+		want     string
+	}{
+		{name: "Chinese locale", language: "zh-CN", want: "Chinese"},
+		{name: "English locale", language: "en_US", want: "English"},
+		{name: "German", language: "de-DE", want: "German"},
+		{name: "Italian", language: "it-IT", want: "Italian"},
+		{name: "Portuguese", language: "pt-BR", want: "Portuguese"},
+		{name: "Spanish", language: "es-ES", want: "Spanish"},
+		{name: "Japanese", language: "ja-JP", want: "Japanese"},
+		{name: "Korean", language: "ko-KR", want: "Korean"},
+		{name: "French", language: "fr-FR", want: "French"},
+		{name: "Russian", language: "ru-RU", want: "Russian"},
+		{name: "unknown locale", language: "th-TH", want: "Auto"},
+		{name: "empty locale", language: "", want: "Auto"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := languageType(test.language); got != test.want {
+				t.Fatalf("languageType(%q) = %q, want %q", test.language, got, test.want)
+			}
+		})
+	}
+}
+
 func TestCosyVoiceRequestUsesMultilingualInstruction(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/services/audio/tts/SpeechSynthesizer" {

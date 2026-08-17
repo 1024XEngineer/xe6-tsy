@@ -1,9 +1,12 @@
 package segment
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -210,6 +213,36 @@ func TestServicePropagatesProcessorError(t *testing.T) {
 	}
 	if source.closeCalls != 1 {
 		t.Fatalf("source close calls = %d, want 1", source.closeCalls)
+	}
+}
+
+func TestServiceContinuesAfterFinalTurnPostCommitFailure(t *testing.T) {
+	base := time.Unix(41, 0)
+	source := &fakeSource{frames: []audio.Frame{
+		testFrame(t, 1, base),
+		testFrame(t, 0, base.Add(300*time.Millisecond)),
+		testFrame(t, 1, base.Add(400*time.Millisecond)),
+		testFrame(t, 0, base.Add(700*time.Millisecond)),
+	}}
+	postCommitErr := errors.Join(pipeline.ErrFinalTurnAccepted, errors.New("play Japanese TTS"))
+	processor := &sequenceProcessor{errors: []error{postCommitErr, nil}}
+	service := newTestService(t, source, processor)
+	var logs bytes.Buffer
+	service.latency = slog.New(slog.NewJSONHandler(&logs, nil))
+
+	err := service.Run(context.Background(), Request{SessionID: "session-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if processor.calls != 2 {
+		t.Fatalf("processor calls = %d, want second Turn after post-commit failure", processor.calls)
+	}
+	for _, want := range []string{
+		"realtime turn post-commit processing failed", "session-1", "trace-1", "play Japanese TTS",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("post-commit log = %s, missing %q", logs.String(), want)
+		}
 	}
 }
 
@@ -436,6 +469,21 @@ func (p *fakeProcessor) ProcessAudio(_ context.Context, request pipeline.TurnPro
 		return pipeline.TurnContext{}, p.err
 	}
 	return pipeline.TurnContext{ID: "turn-1", SessionID: request.SessionID}, nil
+}
+
+type sequenceProcessor struct {
+	calls  int
+	errors []error
+}
+
+func (p *sequenceProcessor) ProcessAudio(_ context.Context, request pipeline.TurnProcessRequest) (pipeline.TurnContext, error) {
+	p.calls++
+	var err error
+	if len(p.errors) > 0 {
+		err = p.errors[0]
+		p.errors = p.errors[1:]
+	}
+	return pipeline.TurnContext{ID: "turn", SessionID: request.SessionID}, err
 }
 
 func testFrame(t *testing.T, value byte, capturedAt time.Time) audio.Frame {

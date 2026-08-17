@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,6 +36,32 @@ var (
 	_ TurnReader         = turnReaderStub{}
 	_ SessionOwnerReader = sessionOwnerReaderStub{}
 )
+
+func TestIsLongSourceTurn(t *testing.T) {
+	tests := []struct {
+		name          string
+		sourceText    string
+		audioDuration time.Duration
+		want          bool
+	}{
+		{name: "short source", sourceText: strings.Repeat("a", 49), audioDuration: 19 * time.Second},
+		{name: "text boundary", sourceText: strings.Repeat("a", LongSourceTextThreshold), audioDuration: 19 * time.Second},
+		{name: "text exceeds boundary", sourceText: strings.Repeat("a", LongSourceTextThreshold+1), want: true},
+		{name: "audio reaches boundary", sourceText: "short", audioDuration: LongSourceAudioThreshold, want: true},
+		{name: "both thresholds", sourceText: strings.Repeat("a", LongSourceTextThreshold+1), audioDuration: LongSourceAudioThreshold, want: true},
+		{name: "unicode counts characters", sourceText: strings.Repeat("字", LongSourceTextThreshold+1), want: true},
+		{name: "trim surrounding whitespace", sourceText: " \t" + strings.Repeat("字", LongSourceTextThreshold) + "\n ", audioDuration: 19 * time.Second},
+		{name: "zero duration", sourceText: "short"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsLongSourceTurn(test.sourceText, test.audioDuration); got != test.want {
+				t.Fatalf("IsLongSourceTurn(%q, %s) = %v, want %v", test.sourceText, test.audioDuration, got, test.want)
+			}
+		})
+	}
+}
 
 func TestFinalTurnEventJSONPreservesNullableAttribution(t *testing.T) {
 	event := validFinalTurnEvent()

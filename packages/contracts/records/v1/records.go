@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type AttributionStatus string
@@ -31,12 +33,22 @@ const (
 	FinalTurnEventVersion = 1
 	// MaxFinalTurnBatchSize bounds one immutable outbound-message snapshot request.
 	MaxFinalTurnBatchSize = 100
+	// LongSourceTextThreshold is the maximum source-text length that remains eligible for initial TTS.
+	LongSourceTextThreshold = 50
+	// LongSourceAudioThreshold is the source-audio duration at which a Turn uses long-source delivery.
+	LongSourceAudioThreshold = 20 * time.Second
 )
 
 var ErrInvalidFinalTurnEvent = errors.New("invalid final turn event")
 
 // FinalTurnPayloadHash is the fixed-size digest stored for FinalTurn idempotency checks.
 type FinalTurnPayloadHash [sha256.Size]byte
+
+// IsLongSourceTurn reports whether source text or source audio reaches a long-source threshold.
+func IsLongSourceTurn(sourceText string, audioDuration time.Duration) bool {
+	return utf8.RuneCountInString(strings.TrimSpace(sourceText)) > LongSourceTextThreshold ||
+		audioDuration >= LongSourceAudioThreshold
+}
 
 type ErrorCode string
 

@@ -93,6 +93,54 @@ func TestCommandExecutorConfiguresLanguagesBeforeModeSwitch(t *testing.T) {
 	}
 }
 
+func TestCommandExecutorBootstrapsExplicitLanguagesWithoutSnapshot(t *testing.T) {
+	t.Parallel()
+	sink := &recordingModeChangedSink{}
+	manager := commandTestManager(t, realtimev1.ModeAssistant, sink)
+	reader := &countingLanguageReader{err: errors.New("snapshot must not be read")}
+	configurator := &recordingLanguageConfigurator{}
+
+	_, err := (commandExecutor{
+		manager: manager, languages: reader, configurator: configurator,
+	}).ExecuteCommand(t.Context(), interpretationRequest(command.Arguments{
+		SourceLanguage: "zh-CN", TargetLanguage: "ja-JP",
+	}))
+	if err != nil {
+		t.Fatalf("ExecuteCommand() error = %v", err)
+	}
+	if reader.calls != 0 {
+		t.Fatalf("language snapshot reads = %d, want 0", reader.calls)
+	}
+	if len(configurator.requests) != 1 || configurator.requests[0].SourceLanguage != "zh-CN" ||
+		configurator.requests[0].TargetLanguage != "ja-JP" {
+		t.Fatalf("configure requests = %#v", configurator.requests)
+	}
+	if manager.entries["session-1"].mode.Snapshot().ActiveMode != realtimev1.ModeInterpretation {
+		t.Fatal("mode did not switch after language bootstrap")
+	}
+}
+
+func TestCommandExecutorPropagatesLanguageSnapshotFailure(t *testing.T) {
+	t.Parallel()
+	dependencyErr := errors.New("language snapshot unavailable")
+	sink := &recordingModeChangedSink{}
+	manager := commandTestManager(t, realtimev1.ModeAssistant, sink)
+	configurator := &recordingLanguageConfigurator{}
+
+	_, err := (commandExecutor{
+		manager:      manager,
+		languages:    &countingLanguageReader{err: dependencyErr},
+		configurator: configurator,
+	}).ExecuteCommand(t.Context(), interpretationRequest(command.Arguments{SourceLanguage: "zh-CN"}))
+	if !errors.Is(err, dependencyErr) {
+		t.Fatalf("ExecuteCommand() error = %v, want %v", err, dependencyErr)
+	}
+	if len(configurator.requests) != 0 || len(sink.Attempts()) != 0 ||
+		manager.entries["session-1"].mode.Snapshot().ActiveMode != realtimev1.ModeAssistant {
+		t.Fatalf("snapshot failure caused side effects: requests=%#v attempts=%#v", configurator.requests, sink.Attempts())
+	}
+}
+
 func TestCommandExecutorNormalizesChineseJapaneseDirection(t *testing.T) {
 	t.Parallel()
 	manager := commandTestManager(t, realtimev1.ModeAssistant, &recordingModeChangedSink{})
@@ -248,7 +296,9 @@ func TestCommandExecutorRejectsAmbiguousAndInvalidLanguages(t *testing.T) {
 		{name: "inactive current config", reader: commandLanguageReaderWith(session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "superseded",
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
-		}), want: ErrCommandLanguageInvalid},
+		}), want: ErrCommandLanguageClarification},
+		{name: "partial direction without current config", arguments: command.Arguments{SourceLanguage: "zh-CN"},
+			reader: commandLanguageReaderWith(session.LanguageConfigSnapshot{}), want: ErrCommandLanguageClarification},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			manager := commandTestManager(t, realtimev1.ModeAssistant, &recordingModeChangedSink{})

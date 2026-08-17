@@ -129,14 +129,19 @@ func (e commandExecutor) executeAssistantQuery(ctx context.Context, request comm
 }
 
 func (e commandExecutor) prepareInterpretation(ctx context.Context, request command.ExecuteRequest) error {
-	snapshot, err := e.languages.GetCurrentConfig(ctx, request.SessionID)
-	if err != nil {
-		return fmt.Errorf("read current command language configuration: %w", err)
+	arguments := request.Command.Arguments
+	var snapshot session.LanguageConfigSnapshot
+	if strings.TrimSpace(arguments.SourceLanguage) == "" || strings.TrimSpace(arguments.TargetLanguage) == "" {
+		var err error
+		snapshot, err = e.languages.GetCurrentConfig(ctx, request.SessionID)
+		if err != nil {
+			return fmt.Errorf("read current command language configuration: %w", err)
+		}
+		if snapshot.SessionID != "" && snapshot.SessionID != request.SessionID {
+			return fmt.Errorf("%w: got %q for %q", ErrCommandLanguageSession, snapshot.SessionID, request.SessionID)
+		}
 	}
-	if snapshot.SessionID != request.SessionID {
-		return fmt.Errorf("%w: got %q for %q", ErrCommandLanguageSession, snapshot.SessionID, request.SessionID)
-	}
-	arguments, explicit, err := resolveLanguageArguments(request.Command.Arguments, snapshot)
+	arguments, explicit, err := resolveLanguageArguments(arguments, snapshot)
 	if err != nil {
 		if errors.Is(err, ErrCommandLanguageClarification) {
 			return errors.Join(command.ErrClarificationRequired, err)
@@ -168,18 +173,13 @@ func (e commandExecutor) prepareInterpretation(ctx context.Context, request comm
 	return nil
 }
 
-// resolveLanguageArguments normalizes explicit BCP-47 slots and uses the active snapshot only to
-// fill one missing slot when exactly one configured direction matches. It never guesses a pair.
+// resolveLanguageArguments normalizes explicit BCP-47 slots. A complete explicit pair can
+// bootstrap API-owned configuration without an existing snapshot; an incomplete pair may use an
+// active snapshot only when exactly one configured direction matches. It never guesses a pair.
 func resolveLanguageArguments(arguments command.Arguments, snapshot session.LanguageConfigSnapshot) (command.Arguments, bool, error) {
 	sourceRaw := strings.TrimSpace(arguments.SourceLanguage)
 	targetRaw := strings.TrimSpace(arguments.TargetLanguage)
 	explicit := sourceRaw != "" || targetRaw != ""
-	if !validActiveLanguageSnapshot(snapshot) {
-		return command.Arguments{}, explicit, ErrCommandLanguageInvalid
-	}
-	if !explicit {
-		return command.Arguments{}, false, nil
-	}
 	source, err := normalizeLanguageTag(sourceRaw)
 	if err != nil {
 		return command.Arguments{}, true, err
@@ -188,14 +188,21 @@ func resolveLanguageArguments(arguments command.Arguments, snapshot session.Lang
 	if err != nil {
 		return command.Arguments{}, true, err
 	}
-	if source == "" || target == "" {
-		source, target, err = completeLanguageDirection(source, target, snapshot.LanguagePairs)
-		if err != nil {
-			return command.Arguments{}, true, err
+	if source != "" && target != "" {
+		if source == target {
+			return command.Arguments{}, true, ErrCommandLanguageInvalid
 		}
+		return command.Arguments{SourceLanguage: source, TargetLanguage: target}, true, nil
 	}
-	if source == target {
-		return command.Arguments{}, true, ErrCommandLanguageInvalid
+	if !validActiveLanguageSnapshot(snapshot) {
+		return command.Arguments{}, explicit, ErrCommandLanguageClarification
+	}
+	if !explicit {
+		return command.Arguments{}, false, nil
+	}
+	source, target, err = completeLanguageDirection(source, target, snapshot.LanguagePairs)
+	if err != nil {
+		return command.Arguments{}, true, err
 	}
 	return command.Arguments{SourceLanguage: source, TargetLanguage: target}, true, nil
 }

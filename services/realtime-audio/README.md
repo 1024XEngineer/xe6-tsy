@@ -115,11 +115,16 @@ The realtime entrypoint segments microphone audio with **Silero VAD** before ASR
 WebRTC Opus → 16 kHz PCM frames → silero.Classifier → vad.Segmenter → ASR
 ```
 
-`vad.Segmenter` is unchanged. Only the `vad.Classifier` implementation switched from
+Ordinary-turn segmentation uses the existing `vad.Segmenter`; its classifier switched from
 RMS energy to Silero (512-sample windows + 64-sample rolling context, start/end
 hysteresis). On first Windows start, missing ONNX Runtime is downloaded into
 `third_party/onnxruntime` automatically. Optional override:
 `LOCAL_VAD_PROVIDER=energy`.
+
+The Command Gate owns a separate classifier and `vad.Segmenter` state, but uses the same
+800 ms end-silence and 12 second safety boundary as ordinary turns. A validated wake transfers
+the ordinary Segmenter's complete active utterance into the command Segmenter; there is no fixed
+two-second server pre-roll. A duplicate wake never claims or resets ordinary audio.
 
 
 From the repo root on Windows, start API + realtime together (loads root `.env`):

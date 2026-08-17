@@ -37,10 +37,11 @@ var (
 const failureReportTimeout = 5 * time.Second
 
 var defaultCommandOptions = command.Options{
-	WindowTTL:        4 * time.Second,
-	NoSpeechTimeout:  1200 * time.Millisecond,
-	MaxAudioDuration: 3 * time.Second,
-	EndSilence:       450 * time.Millisecond,
+	WindowTTL:        15 * time.Second,
+	NoSpeechTimeout:  2 * time.Second,
+	MaxAudioDuration: 12 * time.Second,
+	EndSilence:       800 * time.Millisecond,
+	PrefixPadding:    500 * time.Millisecond,
 }
 
 // AudioInput is the typed handoff from a WebRTC media adapter to the audio loop.
@@ -123,16 +124,18 @@ type LifecycleObserver interface {
 // Start prepares the graph; Activate is used by LifecycleService after it has
 // persisted RuntimeListening, and Stop is safe to retry after a timeout.
 type Manager struct {
-	mu         sync.Mutex
-	locks      keyedLocker
-	processor  *pipeline.TurnProcessor
-	commandASR asr.Provider
-	playback   *pipeline.PipelineService
-	router     *modeRouter
-	failure    session.RuntimeFailureReporter
-	logger     *slog.Logger
-	deps       Dependencies
-	entries    map[string]*entry
+	mu                 sync.Mutex
+	locks              keyedLocker
+	processor          *pipeline.TurnProcessor
+	commandASR         asr.Provider
+	commandInterpreter command.Interpreter
+	commandValidator   command.Validator
+	playback           *pipeline.PipelineService
+	router             *modeRouter
+	failure            session.RuntimeFailureReporter
+	logger             *slog.Logger
+	deps               Dependencies
+	entries            map[string]*entry
 }
 
 type entry struct {
@@ -262,9 +265,34 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		ASR: providers.ASR, ASRProvider: labels.asr, Opener: opener, Pipeline: service, Finals: router,
 	})
 	manager.commandASR = providers.ASR
+	registry, err := commandRegistry(router.availableModes())
+	if err != nil {
+		return nil, fmt.Errorf("create command capability registry: %w", err)
+	}
+	manager.commandInterpreter = command.LegacyInterpreter{}
+	manager.commandValidator = registry
 	manager.playback = service
 	manager.router = router
 	return manager, nil
+}
+
+func commandRegistry(modes []realtimev1.Mode) (*command.Registry, error) {
+	descriptors := make([]command.CapabilityDescriptor, 0, len(modes))
+	for _, mode := range modes {
+		switch mode {
+		case realtimev1.ModeAssistant:
+			descriptors = append(descriptors, command.CapabilityDescriptor{
+				Mode: mode, Description: "通用 AI 助手", SchemaVersion: 1,
+				Actions: []command.Action{command.ActionReturnToAssistant, command.ActionAssistantQuery},
+			})
+		case realtimev1.ModeInterpretation:
+			descriptors = append(descriptors, command.CapabilityDescriptor{
+				Mode: mode, Description: "双语同声传译", SchemaVersion: 1,
+				Actions: []command.Action{command.ActionActivateMode},
+			})
+		}
+	}
+	return command.NewRegistry(descriptors...)
 }
 
 // PlayFallback sends an immutable translated-text snapshot through the active
@@ -407,9 +435,11 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			options = defaultCommandOptions
 		}
 		gate, gateErr := command.NewGate(command.Dependencies{
-			Classifier: classifier,
-			ASR:        m.commandASR,
-			Executor:   commandExecutor{manager: m},
+			Classifier:  classifier,
+			ASR:         m.commandASR,
+			Interpreter: m.commandInterpreter,
+			Validator:   m.commandValidator,
+			Executor:    commandExecutor{manager: m},
 		}, options)
 		if gateErr != nil {
 			closeErr := owned.closeContext(ctx)
@@ -626,6 +656,10 @@ func (g runtimeCommandGate) Consume(ctx context.Context, frame audio.Frame) comm
 	return g.gate.Consume(ctx, frame)
 }
 
+func (g runtimeCommandGate) Replay(ctx context.Context, frames []audio.Frame) command.Result {
+	return g.gate.Replay(ctx, frames)
+}
+
 func (g runtimeCommandGate) Cancel() {
 	g.gate.Cancel()
 }
@@ -635,13 +669,13 @@ func (g runtimeCommandGate) Cancel() {
 // mode state machine.
 type commandExecutor struct{ manager *Manager }
 
-func (e commandExecutor) ExecuteCommand(ctx context.Context, request command.ExecuteRequest) error {
+func (e commandExecutor) ExecuteCommand(ctx context.Context, request command.ExecuteRequest) (command.ExecutionResult, error) {
 	if e.manager == nil || request.SessionID == "" || request.CommandID == "" || !request.Command.TargetMode.Valid() {
-		return ErrModeCommandInvalid
+		return command.ExecutionResult{}, ErrModeCommandInvalid
 	}
 	state, err := e.manager.GetModeState(ctx, request.SessionID)
 	if err != nil {
-		return err
+		return command.ExecutionResult{}, err
 	}
 	modeCommand := realtimev1.SwitchModeCommand{
 		SessionID:          request.SessionID,
@@ -651,8 +685,8 @@ func (e commandExecutor) ExecuteCommand(ctx context.Context, request command.Exe
 		ExpectedGeneration: state.Generation,
 		TargetMode:         request.Command.TargetMode,
 	}
-	_, err = e.manager.SwitchMode(ctx, modeCommand)
-	return err
+	result, err := e.manager.SwitchMode(ctx, modeCommand)
+	return command.ExecutionResult{Status: result.Status, State: result.State}, err
 }
 
 // Stop cancels processing, closes the input source, and waits for the loop.

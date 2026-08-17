@@ -98,6 +98,9 @@ func TestSegmenterPrependsRecentAudioBeforeSpeech(t *testing.T) {
 	if len(events) != 2 || events[0].Type != EventOpened {
 		t.Fatalf("Push(speech) events = %#v, want opened and audio", events)
 	}
+	if len(events[0].Frames) != 2 || events[0].Frames[0].PCM[0] != 2 || events[0].Frames[1].PCM[0] != 3 {
+		t.Fatalf("opened prefix frames = %#v, want retained frames 2 and 3", events[0].Frames)
+	}
 
 	segmenter.classifier = fakeClassifier{speech: false}
 	ended, err := segmenter.Push(context.Background(), testFrame(t, 5, base.Add(time.Second)))
@@ -133,6 +136,52 @@ func TestSegmenterResetDropsActiveUtteranceAndTimestampHistory(t *testing.T) {
 	}
 	if len(events) != 2 || events[0].Type != EventOpened || events[1].Type != EventAudio {
 		t.Fatalf("events after Reset = %#v, want a fresh opened segment", events)
+	}
+}
+
+func TestSegmenterClaimsCompleteActiveUtterance(t *testing.T) {
+	segmenter, err := NewSegmenter(fakeClassifier{speech: false}, Options{
+		SilenceAfter: 500 * time.Millisecond, MaxDuration: 2 * time.Second, PrefixPadding: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewSegmenter() error = %v", err)
+	}
+	base := time.Unix(21, 0)
+	if _, err := segmenter.Push(t.Context(), testFrame(t, 1, base)); err != nil {
+		t.Fatalf("Push(prefix) error = %v", err)
+	}
+	segmenter.classifier = fakeClassifier{speech: true}
+	if _, err := segmenter.Push(t.Context(), testFrame(t, 2, base.Add(100*time.Millisecond))); err != nil {
+		t.Fatalf("Push(speech) error = %v", err)
+	}
+
+	claimed := segmenter.ClaimActiveUtterance()
+	if len(claimed) != 2 || claimed[0].PCM[0] != 1 || claimed[1].PCM[0] != 2 {
+		t.Fatalf("claimed frames = %#v, want prefix and speech", claimed)
+	}
+	claimed[0].PCM[0] = 9
+	if second := segmenter.ClaimActiveUtterance(); len(second) != 0 {
+		t.Fatalf("second claim = %#v, want empty", second)
+	}
+	segmenter.classifier = fakeClassifier{speech: true}
+	events, err := segmenter.Push(t.Context(), testFrame(t, 3, base.Add(-time.Second)))
+	if err != nil || len(events) != 2 || events[0].Type != EventOpened {
+		t.Fatalf("Push() after claim = %#v, %v; want fresh utterance", events, err)
+	}
+}
+
+func TestSegmenterDoesNotClaimPrefixOnlyAudio(t *testing.T) {
+	segmenter, err := NewSegmenter(fakeClassifier{speech: false}, Options{
+		SilenceAfter: 500 * time.Millisecond, MaxDuration: 2 * time.Second, PrefixPadding: 300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewSegmenter() error = %v", err)
+	}
+	if _, err := segmenter.Push(t.Context(), testFrame(t, 1, time.Unix(22, 0))); err != nil {
+		t.Fatalf("Push(prefix) error = %v", err)
+	}
+	if claimed := segmenter.ClaimActiveUtterance(); len(claimed) != 0 {
+		t.Fatalf("claimed prefix-only frames = %#v", claimed)
 	}
 }
 

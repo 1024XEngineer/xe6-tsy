@@ -44,6 +44,7 @@ type WakeWordSource interface {
 // dormant state after success or any bounded failure.
 type CommandGate interface {
 	Open(command.OpenRequest) error
+	Replay(context.Context, []audio.Frame) command.Result
 	Consume(context.Context, audio.Frame) command.Result
 	Cancel()
 }
@@ -167,7 +168,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		for {
 			select {
 			case wake := <-wakeSignals:
-				s.openCommandWindow(request, wake)
+				s.openCommandWindow(runCtx, request, wake)
 			default:
 				return
 			}
@@ -270,19 +271,29 @@ type receivedWakeWord struct {
 	receivedAt time.Time
 }
 
-func (s *Service) openCommandWindow(request Request, wake receivedWakeWord) {
+func (s *Service) openCommandWindow(ctx context.Context, request Request, wake receivedWakeWord) bool {
 	if s == nil || s.command == nil || wake.signal.Validate() != nil || wake.receivedAt.IsZero() {
-		return
+		return false
 	}
 	if err := s.command.Open(command.OpenRequest{
 		SessionID: request.SessionID, CommandID: wake.signal.SignalID,
 		SourceLanguage: request.SourceLanguage, OpenedAt: wake.receivedAt,
 	}); err != nil {
-		return
+		// A device may retry the same signal_id after uncertain delivery. The Gate recognizes that
+		// retry and leaves both the current command attempt and ordinary VAD state untouched.
+		return false
 	}
-	// Reset before the command frame is consumed. This drops any ordinary
-	// utterance that was in flight when the hardware wake signal arrived.
-	s.segmenter.Reset()
+	// The ordinary Segmenter already owns the complete in-flight utterance, including its VAD
+	// prefix and internal pauses. Transfer that utterance only after Open succeeds, so a duplicate
+	// wake cannot discard ordinary audio. Command Replay receives the same sentence boundary rather
+	// than an arbitrary wall-clock slice; when no sentence is active, Reset still prevents stale
+	// prefix/timestamp history from crossing into the post-command ordinary stream.
+	frames := s.segmenter.ClaimActiveUtterance()
+	if len(frames) == 0 {
+		s.segmenter.Reset()
+	}
+	_ = s.command.Replay(ctx, frames)
+	return true
 }
 
 func (s *Service) flush(ctx context.Context, lastSeen time.Time) ([]vad.Event, error) {

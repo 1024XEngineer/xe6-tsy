@@ -13,7 +13,8 @@ Web sherpa-onnx / ESP32-S3 KWS / 其他本地模型
   -> 检测固定唤醒词「小灵小灵」
   -> 通过已鉴权 PeerConnection 的可靠有序 DataChannel 发送 wake_word.detected
   -> 命令语音继续走同一条 WebRTC 上行音轨
-  -> realtime-audio 使用服务端音频时间打开 Command Gate
+  -> realtime-audio 将普通 VAD 当前未结束的完整语句转交 Command Gate
+  -> Command Gate 复用同一套 VAD 断句实现，等待该语句自然结束
   -> Command ASR + AI 语义理解 + 确定性校验 + Capability Executor
   -> command.result
 ```
@@ -31,7 +32,8 @@ Web sherpa-onnx / ESP32-S3 KWS / 其他本地模型
 
 - 从已鉴权 PeerConnection 绑定 Session，拒绝消息内自报 `session_id`；
 - 校验唤醒事件类型、版本、大小和字段，不信任客户端业务判断；
-- 使用服务端接收时刻和服务端生成的音频帧时间确定回看边界；
+- wake 校验并成功打开 Command Gate 后，按普通 VAD 已持有的完整语句转移音频所有权，不使用固定秒数回看窗口；
+- 普通音频与命令音频使用独立 VAD 状态，但复用同一个 Segmenter 断句实现和句末规则；
 - 使用 Command ASR 和 AI Interpreter 理解自然语言，再经 Registry、Validator 和 Executor 执行；
 - 对同一 `signal_id` 幂等处理，对新的 ID 取消尚未完成的旧命令；
 - 模式切换复用当前 Runtime 和 WebRTC 连接，不调用 Session Stop/Start。
@@ -95,6 +97,10 @@ PeerConnection 和 DataChannel 绑定；业务语义来自随后上传的音频�
 4. 网络重试复用同一 `signal_id`；用户再次说出唤醒词才生成新 ID。
 5. 设备时钟不需要与服务器精确同步，`detected_at` 不参与服务端音频切分。
 6. 设备不能直接发送 `mode.switch` 代替语义入口，也不能在本地维护权威 active mode。
+
+KWS 应在用户说出唤醒词时立即发送事件。服务端只认领普通 VAD 中仍处于 active 状态的当前语句；
+已经按 VAD 句末结束并提交的普通 Turn 不会被追溯撤回。该规则避免固定两秒缓存截断长命令，也避免
+同一段 active 音频同时进入普通处理器和命令处理器。
 
 建议 ESP32-S3 固件将 KWS 作为 WebRTC 音频采集旁路：同一份麦克风 PCM 一路持续送入板载 KWS，
 另一路按现有编码和发送策略进入 WebRTC。KWS 命中只产生控制事件，不能重启采集器、切换音轨或

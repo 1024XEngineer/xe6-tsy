@@ -1,5 +1,5 @@
 # Lingow
-[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2F1024XEngineer.github.io%2Fxe6-tsy%2Fcoverage.json)](https://github.com/1024XEngineer/xe6-tsy/actions/workflows/go.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2F1024xengineer.github.io%2Fxe6-tsy%2Fcoverage.json)](https://github.com/1024xengineer/xe6-tsy/actions/workflows/go.yml)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/1024XEngineer/xe6-tsy/go.yml)
 [![Github repo](https://img.shields.io/badge/github-repo-blue?logo=github)](https://github.com/1024XEngineer/xe6-tsy)
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/1024XEngineer/xe6-tsy?filename=services%2Fapi%2Fgo.mod)

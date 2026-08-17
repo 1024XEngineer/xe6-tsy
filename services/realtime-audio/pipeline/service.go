@@ -299,6 +299,12 @@ func buildUsageFact(turn TurnContext, serviceType, provider, model string, durat
 	return fact, nil
 }
 
+// BuildUsageFact creates the shared durable usage contract for non-Turn callers that reuse
+// provider infrastructure, such as command confirmation speech.
+func BuildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string, occurredAt time.Time) (UsageFact, error) {
+	return buildUsageFact(turn, serviceType, provider, model, durationMS, inputTokens, outputTokens, cost, currency, occurredAt)
+}
+
 func turnBounds(turn TurnContext, result asr.FinalResult, fallback time.Time) (time.Time, time.Time) {
 	startedAt := turn.StartedAt
 	if startedAt.IsZero() {

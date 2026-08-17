@@ -133,6 +133,7 @@ type Manager struct {
 	commandInterpreter command.Interpreter
 	commandValidator   command.Validator
 	commandOpener      *pipeline.TurnOpener
+	speech             *pipeline.SpeechOutput
 	playback           *pipeline.PipelineService
 	router             *modeRouter
 	failure            session.RuntimeFailureReporter
@@ -276,6 +277,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	manager.commandInterpreter = command.LegacyInterpreter{}
 	manager.commandValidator = registry
 	manager.playback = service
+	manager.speech = speech
 	manager.router = router
 	return manager, nil
 }
@@ -438,6 +440,10 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		if options == (command.Options{}) {
 			options = defaultCommandOptions
 		}
+		feedback := newCommandSpeechFeedback(commandSpeechFeedbackDependencies{
+			Speech: m.speech, Usage: m.deps.Usage, Runtime: m.deps.Runtime,
+			AccountID: snapshot.AccountID, TraceID: snapshot.TraceID, Logger: m.logger, Now: m.deps.Now,
+		})
 		gate, gateErr := command.NewGate(command.Dependencies{
 			Classifier:  classifier,
 			ASR:         m.commandASR,
@@ -446,7 +452,8 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			Executor: commandExecutor{
 				manager: m, languages: m.deps.Languages, configurator: m.deps.LanguageConfigurator,
 			},
-			Results: m.deps.CommandResults,
+			Results:  m.deps.CommandResults,
+			Feedback: feedback,
 		}, options)
 		if gateErr != nil {
 			closeErr := owned.closeContext(ctx)

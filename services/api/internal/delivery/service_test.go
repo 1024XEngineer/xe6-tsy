@@ -331,11 +331,12 @@ func TestScheduleFinalTurnRoutesLongSourceOnlyToConfiguredWeChat(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			persistedTurn := FinalTurnSnapshot{TurnID: "turn-1", SourceText: "persisted source", TranslatedText: "persisted translation"}
 			repository := &atomicScheduleRepository{retryRepositoryStub: retryRepositoryStub{preferences: []Preference{
 				{AccountID: "account-1", Channel: ChannelEmail, DestinationRef: "primary-email", Enabled: true, Verified: true},
 				{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Enabled: true, Verified: true},
 			}}}
-			service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
+			service := NewPersistentUseCases(repository, automaticTurnReaderStub{turns: []FinalTurnSnapshot{persistedTurn}}, automaticDestinationReaderStub{}, nil)
 			service.ConfigureChannelRouter(NewChannelRouter(NewFakeEmailProvider(FakeEmailProviderConfig{}), &channelProviderStub{channel: ChannelWeChat}))
 			event := automaticScheduleEvent(tt.sourceText, startedAt, tt.endedAt)
 			if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
@@ -346,6 +347,10 @@ func TestScheduleFinalTurnRoutesLongSourceOnlyToConfiguredWeChat(t *testing.T) {
 			}
 			if len(repository.record.Targets) != 1 || repository.record.Targets[0].Message.Channel != ChannelWeChat {
 				t.Fatalf("targets = %#v, want WeChat only", repository.record.Targets)
+			}
+			turns := repository.record.Targets[0].Message.Turns
+			if len(turns) != 1 || turns[0].SourceText != persistedTurn.SourceText || turns[0].TranslatedText != persistedTurn.TranslatedText {
+				t.Fatalf("message turns = %#v, want original Final Turn snapshot", turns)
 			}
 			if got := repository.record.Targets[0].IdempotencyKey; got != "auto:final_turn:turn-1:wechat:primary-wechat" {
 				t.Fatalf("idempotency key = %q", got)

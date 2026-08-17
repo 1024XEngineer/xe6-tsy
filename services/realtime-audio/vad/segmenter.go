@@ -66,6 +66,21 @@ func (s *Segmenter) Reset() {
 	s.reset()
 }
 
+// ClaimActiveUtterance transfers the complete in-flight utterance to another
+// consumer and resets ordinary segmentation. The returned frames are owned by
+// the caller; an inactive segmenter never exposes prefix-only silence.
+func (s *Segmenter) ClaimActiveUtterance() []audio.Frame {
+	if s == nil || !s.active {
+		return nil
+	}
+	frames := make([]audio.Frame, len(s.frames))
+	for index, frame := range s.frames {
+		frames[index] = frame.Clone()
+	}
+	s.reset()
+	return frames
+}
+
 func NewSegmenter(classifier Classifier, options Options) (*Segmenter, error) {
 	if classifier == nil {
 		return nil, ErrClassifierRequired

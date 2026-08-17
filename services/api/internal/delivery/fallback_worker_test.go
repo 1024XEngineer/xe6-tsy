@@ -98,7 +98,7 @@ func TestAutomaticTurnFallbackWorkerRecoversTotalInitialFailureWithoutRetry(t *t
 	run := AutomaticTurnRun{
 		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1",
 		TargetLanguage: "zh-CN", TranslatedText: "译文", LanguageConfigVersion: 3,
-		Status: AutomaticTurnRunFailed, TargetCount: 1, SettledCount: 1, FailedCount: 1,
+		Trigger: AutomaticTurnTriggerLongSentence, Status: AutomaticTurnRunFailed, TargetCount: 1, SettledCount: 1, FailedCount: 1,
 		FallbackOperationID: "fallback_turn-1",
 	}
 	message := Message{ID: "message-1", AccountID: "account-1", Status: MessageStatusFailed, Attempts: 1}
@@ -125,8 +125,51 @@ func TestAutomaticTurnFallbackWorkerRecoversTotalInitialFailureWithoutRetry(t *t
 	if fallback.calls != 1 || !repository.fallbackPlayed {
 		t.Fatalf("fallback calls=%d played=%t, want one played fallback", fallback.calls, repository.fallbackPlayed)
 	}
-	if !repository.restored || restorer.expectedVersion != 3 {
+	if !repository.restored || restorer.calls != 0 {
 		t.Fatalf("restore result=%t input=%#v", repository.restored, restorer)
+	}
+}
+
+func TestAutomaticTurnFallbackWorkerRecoversLongSourceWithoutTarget(t *testing.T) {
+	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
+		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1",
+		TargetLanguage: "zh-CN", TranslatedText: "译文", LanguageConfigVersion: 3,
+		Trigger: AutomaticTurnTriggerLongSentence, Status: AutomaticTurnRunPending,
+		FallbackOperationID: "fallback_turn-1",
+	}}
+	fallback := &fallbackPlayerFake{}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	service.ConfigureAutomaticFallback(fallback)
+
+	if err := NewAutomaticTurnFallbackWorker(service, 0).runOnce(t.Context()); err != nil {
+		t.Fatalf("runOnce() error = %v", err)
+	}
+	if fallback.calls != 1 || !repository.fallbackPlayed || !repository.restored {
+		t.Fatalf("fallback calls=%d played=%t restored=%t", fallback.calls, repository.fallbackPlayed, repository.restored)
+	}
+	if err := NewAutomaticTurnFallbackWorker(service, 0).runOnce(t.Context()); err != nil {
+		t.Fatalf("replayed runOnce() error = %v", err)
+	}
+	if fallback.calls != 1 {
+		t.Fatalf("fallback calls after replay = %d, want 1", fallback.calls)
+	}
+}
+
+func TestAutomaticTurnFallbackWorkerSkipsSuccessfulLongSourceDelivery(t *testing.T) {
+	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
+		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1",
+		Trigger: AutomaticTurnTriggerLongSentence, Status: AutomaticTurnRunSucceeded,
+		TargetCount: 1, SettledCount: 1, SucceededCount: 1,
+	}}
+	fallback := &fallbackPlayerFake{}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	service.ConfigureAutomaticFallback(fallback)
+
+	if err := NewAutomaticTurnFallbackWorker(service, 0).runOnce(t.Context()); err != nil {
+		t.Fatalf("runOnce() error = %v", err)
+	}
+	if fallback.calls != 0 || repository.fallbackPlayed || repository.restored {
+		t.Fatalf("fallback calls=%d played=%t restored=%t", fallback.calls, repository.fallbackPlayed, repository.restored)
 	}
 }
 

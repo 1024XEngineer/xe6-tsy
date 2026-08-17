@@ -418,6 +418,23 @@ func TestScheduleFinalTurnSkipsShortSourceWithoutConfiguredDelivery(t *testing.T
 	}
 }
 
+func TestScheduleFinalTurnLongSourceReplayDoesNotCreateTargetsAgain(t *testing.T) {
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	event := automaticScheduleEvent(strings.Repeat("x", recordsv1.LongSourceTextThreshold+1), startedAt, startedAt.Add(time.Second))
+	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
+		AccountID: "account-1", TurnID: event.TurnID, SessionID: event.SessionID, TraceID: event.TraceID,
+		TargetLanguage: event.TargetLanguage, TranslatedText: event.TranslatedText,
+		LanguageConfigVersion: event.LanguageConfigVersion, Trigger: AutomaticTurnTriggerLongSentence,
+	}}
+	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
+	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
+		t.Fatalf("ScheduleFinalTurn() error = %v", err)
+	}
+	if repository.record.Run.TurnID != "" {
+		t.Fatalf("automatic schedule = %#v, want replay no-op", repository.record)
+	}
+}
+
 func automaticScheduleEvent(sourceText string, startedAt, endedAt time.Time) recordsv1.FinalTurnEvent {
 	return recordsv1.FinalTurnEvent{
 		TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1", TargetLanguage: "en-US",
@@ -647,7 +664,7 @@ func TestRecoverAutomaticTurnPropagatesClaimFailure(t *testing.T) {
 func TestRestoreAutomaticTurnMarksRunAfterBidirectionalConfig(t *testing.T) {
 	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
 		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1",
-		LanguageConfigVersion: 3, Status: AutomaticTurnRunFallbackPlayed,
+		LanguageConfigVersion: 3, Trigger: AutomaticTurnTriggerConfiguredRoute, Status: AutomaticTurnRunFallbackPlayed,
 		FallbackOperationID: "fallback_turn-1",
 	}}
 	restorer := &outputRestorerFake{}
@@ -667,7 +684,7 @@ func TestRestoreAutomaticTurnMarksRunAfterBidirectionalConfig(t *testing.T) {
 func TestRestoreAutomaticTurnReportsOutputRestoreFailure(t *testing.T) {
 	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
 		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1",
-		LanguageConfigVersion: 3, Status: AutomaticTurnRunFallbackPlayed,
+		LanguageConfigVersion: 3, Trigger: AutomaticTurnTriggerConfiguredRoute, Status: AutomaticTurnRunFallbackPlayed,
 		FallbackOperationID: "fallback_turn-1",
 	}}
 	restorer := &outputRestorerFake{err: errors.New("realtime unavailable")}
@@ -684,7 +701,7 @@ func TestRestoreAutomaticTurnReportsStateUpdateFailure(t *testing.T) {
 	repository := &atomicScheduleRepository{
 		existing: AutomaticTurnRun{
 			AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1",
-			LanguageConfigVersion: 3, Status: AutomaticTurnRunFallbackPlayed,
+			LanguageConfigVersion: 3, Trigger: AutomaticTurnTriggerConfiguredRoute, Status: AutomaticTurnRunFallbackPlayed,
 			FallbackOperationID: "fallback_turn-1",
 		},
 		restoredErr: errors.New("restore state unavailable"),
@@ -695,6 +712,63 @@ func TestRestoreAutomaticTurnReportsStateUpdateFailure(t *testing.T) {
 	err := service.RestoreAutomaticTurn(t.Context(), "account-1", "turn-1")
 	if err == nil || err.Error() != "restore state unavailable" {
 		t.Fatalf("RestoreAutomaticTurn() error = %v", err)
+	}
+}
+
+func TestRestoreAutomaticTurnCompletesLongSourceWithoutChangingOutput(t *testing.T) {
+	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
+		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1",
+		LanguageConfigVersion: 3, Trigger: AutomaticTurnTriggerLongSentence, Status: AutomaticTurnRunFallbackPlayed,
+		FallbackOperationID: "fallback_turn-1",
+	}}
+	restorer := &outputRestorerFake{}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	service.ConfigureAutomaticOutputRestorer(restorer)
+
+	if err := service.RestoreAutomaticTurn(t.Context(), "account-1", "turn-1"); err != nil {
+		t.Fatalf("RestoreAutomaticTurn() error = %v", err)
+	}
+	if !repository.restored || restorer.calls != 0 {
+		t.Fatalf("restored=%t output restore calls=%d, want completed without output restore", repository.restored, restorer.calls)
+	}
+}
+
+func TestRestoreAutomaticTurnsDoesNotRequireRestorerForLongSource(t *testing.T) {
+	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
+		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1",
+		LanguageConfigVersion: 3, Trigger: AutomaticTurnTriggerLongSentence, Status: AutomaticTurnRunFallbackPlayed,
+	}}
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+	if err := service.RestoreAutomaticTurns(t.Context(), 1); err != nil {
+		t.Fatalf("RestoreAutomaticTurns() error = %v", err)
+	}
+	if !repository.restored {
+		t.Fatal("long-source run was not marked restored")
+	}
+}
+
+func TestRestoreAutomaticTurnRejectsMissingConfiguredRouteRestorerAndUnknownTrigger(t *testing.T) {
+	tests := []struct {
+		name    string
+		trigger AutomaticTurnTrigger
+		want    error
+	}{
+		{name: "configured route without restorer", trigger: AutomaticTurnTriggerConfiguredRoute, want: domain.ErrNotImplemented},
+		{name: "unknown trigger", trigger: "unknown", want: domain.ErrConflict},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
+				AccountID: "account-1", TurnID: "turn-1", Status: AutomaticTurnRunFallbackPlayed, Trigger: tt.trigger,
+			}}
+			service := NewPersistentUseCases(repository, nil, nil, nil)
+			if err := service.RestoreAutomaticTurn(t.Context(), "account-1", "turn-1"); !errors.Is(err, tt.want) {
+				t.Fatalf("RestoreAutomaticTurn() error = %v, want %v", err, tt.want)
+			}
+			if repository.restored {
+				t.Fatal("invalid recovery run was marked restored")
+			}
+		})
 	}
 }
 
@@ -749,7 +823,13 @@ func (r *atomicScheduleRepository) RetryAutomaticTurnTarget(_ context.Context, _
 }
 
 func (r *atomicScheduleRepository) ListAutomaticTurnRecoveryCandidates(context.Context, int) ([]AutomaticTurnRun, error) {
-	return []AutomaticTurnRun{r.existing}, nil
+	run := r.existing
+	eligible := (run.TargetCount == 0 && run.Status == AutomaticTurnRunPending) ||
+		(run.TargetCount > 0 && run.FailedCount == run.TargetCount && (run.Status == AutomaticTurnRunFailed || run.Status == AutomaticTurnRunFallbackPending))
+	if !eligible {
+		return nil, nil
+	}
+	return []AutomaticTurnRun{run}, nil
 }
 
 func (r *atomicScheduleRepository) ClaimAutomaticTurnFallback(context.Context, string, string) (AutomaticTurnRun, bool, error) {
@@ -773,6 +853,9 @@ func (r *atomicScheduleRepository) MarkAutomaticTurnFallbackPlayed(context.Conte
 }
 
 func (r *atomicScheduleRepository) ListAutomaticTurnRestoreCandidates(context.Context, int) ([]AutomaticTurnRun, error) {
+	if r.existing.Status != AutomaticTurnRunFallbackPlayed {
+		return nil, nil
+	}
 	return []AutomaticTurnRun{r.existing}, nil
 }
 
@@ -796,9 +879,11 @@ type outputRestorerFake struct {
 	expectedVersion int
 	operationID     string
 	err             error
+	calls           int
 }
 
 func (f *outputRestorerFake) RestoreBidirectionalOutput(_ context.Context, _, sessionID string, expectedVersion int, operationID string) error {
+	f.calls++
 	f.sessionID = sessionID
 	f.expectedVersion = expectedVersion
 	f.operationID = operationID

@@ -474,10 +474,10 @@ func (u *UseCases) RecoverAutomaticTurns(ctx context.Context, limit int) error {
 	return nil
 }
 
-// RestoreAutomaticTurn restores bidirectional output for one completed fallback.
+// RestoreAutomaticTurn completes recovery for one played fallback.
 func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID string) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
-	if !ok || u.restorer == nil {
+	if !ok {
 		return domain.ErrNotImplemented
 	}
 	scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository)
@@ -491,8 +491,18 @@ func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID s
 	if run.Status != AutomaticTurnRunFallbackPlayed {
 		return domain.ErrConflict
 	}
-	if err := u.restorer.RestoreBidirectionalOutput(ctx, run.AccountID, run.SessionID, int(run.LanguageConfigVersion), "restore_"+run.FallbackOperationID); err != nil {
-		return fmt.Errorf("restore bidirectional output: %w", err)
+	switch run.Trigger {
+	case AutomaticTurnTriggerLongSentence:
+		return repository.MarkAutomaticTurnRestored(ctx, accountID, turnID)
+	case AutomaticTurnTriggerConfiguredRoute:
+		if u.restorer == nil {
+			return domain.ErrNotImplemented
+		}
+		if err := u.restorer.RestoreBidirectionalOutput(ctx, run.AccountID, run.SessionID, int(run.LanguageConfigVersion), "restore_"+run.FallbackOperationID); err != nil {
+			return fmt.Errorf("restore bidirectional output: %w", err)
+		}
+	default:
+		return domain.ErrConflict
 	}
 	return repository.MarkAutomaticTurnRestored(ctx, accountID, turnID)
 }
@@ -500,7 +510,7 @@ func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID s
 // RestoreAutomaticTurns processes a bounded batch of output-restore candidates.
 func (u *UseCases) RestoreAutomaticTurns(ctx context.Context, limit int) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
-	if !ok || u.restorer == nil {
+	if !ok {
 		return domain.ErrNotImplemented
 	}
 	if limit <= 0 {

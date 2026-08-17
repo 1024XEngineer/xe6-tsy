@@ -44,7 +44,6 @@ const (
 	FailureNone           Failure = ""
 	FailureWindowExpired  Failure = "window_expired"
 	FailureNoSpeech       Failure = "no_speech"
-	FailureAudioTooLong   Failure = "audio_too_long"
 	FailureASR            Failure = "asr_failed"
 	FailureInterpretation Failure = "interpretation_failed"
 	FailureNotAllowed     Failure = "command_not_allowed"
@@ -53,10 +52,9 @@ const (
 	FailureInvalidAudio   Failure = "invalid_audio"
 )
 
-// Options bounds every command attempt. WindowTTL is a hard deadline for the complete attempt;
-// NoSpeechTimeout bounds armed silence, MaxAudioDuration bounds live command PCM, and EndSilence
-// deterministically finalizes a spoken command. Server-buffered replay is still sent to ASR, but
-// is excluded from MaxAudioDuration because it covers wake-word detection and signal-delivery lag.
+// Options bounds every command attempt. WindowTTL is a hard deadline for capture;
+// NoSpeechTimeout bounds armed silence. MaxAudioDuration and EndSilence are passed to the shared
+// VAD Segmenter, so ordinary and command audio use the same utterance-boundary implementation.
 type Options struct {
 	WindowTTL        time.Duration
 	NoSpeechTimeout  time.Duration
@@ -150,11 +148,9 @@ type Gate struct {
 	mu               sync.Mutex
 	deps             Dependencies
 	options          Options
+	segmenter        *vad.Segmenter
 	state            State
 	request          OpenRequest
-	lastFrame        time.Time
-	lastSpeech       time.Time
-	audioLength      time.Duration
 	stream           asr.Stream
 	attemptCtx       context.Context
 	attemptCancel    context.CancelFunc
@@ -194,9 +190,17 @@ func NewGate(deps Dependencies, options Options) (*Gate, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	segmenter, err := vad.NewSegmenter(deps.Classifier, vad.Options{
+		SilenceAfter: options.EndSilence,
+		MaxDuration:  options.MaxAudioDuration,
+	})
+	if err != nil {
+		return nil, ErrInvalidOptions
+	}
 	return &Gate{
 		deps: deps, options: options, state: StateDormant,
-		now: now, logger: logger, seenCommandIDs: make(map[string]struct{}, commandIDRetentionLimit),
+		segmenter: segmenter, now: now, logger: logger,
+		seenCommandIDs:   make(map[string]struct{}, commandIDRetentionLimit),
 		commandIDOrder:   make([]string, 0, commandIDRetentionLimit),
 		recognitionTasks: make(map[uint64]chan struct{}),
 		afterFunc: func(delay time.Duration, callback func()) commandTimer {
@@ -289,11 +293,11 @@ func (g *Gate) Consume(ctx context.Context, frame audio.Frame) Result {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.consumeLocked(ctx, frame, true, true)
+	return g.consumeLocked(ctx, frame, false)
 }
 
-// Replay consumes server-buffered frames without allowing buffered silence to finalize the
-// command. The next live frame resumes ordinary end-silence detection.
+// Replay consumes an utterance explicitly transferred from the ordinary Segmenter. Its frames may
+// predate OpenedAt, but they still pass through the command Segmenter's identical VAD state machine.
 func (g *Gate) Replay(ctx context.Context, frames []audio.Frame) Result {
 	if g == nil {
 		return Result{State: StateDormant}
@@ -302,7 +306,7 @@ func (g *Gate) Replay(ctx context.Context, frames []audio.Frame) Result {
 	defer g.mu.Unlock()
 	result := Result{Consumed: true, State: g.state}
 	for _, frame := range frames {
-		result = g.consumeLocked(ctx, frame, false, false)
+		result = g.consumeLocked(ctx, frame, true)
 		if result.State == StateDormant {
 			return result
 		}
@@ -310,7 +314,7 @@ func (g *Gate) Replay(ctx context.Context, frames []audio.Frame) Result {
 	return result
 }
 
-func (g *Gate) consumeLocked(ctx context.Context, frame audio.Frame, allowRecognition bool, countTowardLimit bool) Result {
+func (g *Gate) consumeLocked(ctx context.Context, frame audio.Frame, replayed bool) Result {
 	if g.state == StateDormant {
 		return Result{State: StateDormant}
 	}
@@ -323,60 +327,52 @@ func (g *Gate) consumeLocked(ctx context.Context, frame audio.Frame, allowRecogn
 	if err := ctx.Err(); err != nil {
 		return g.failLocked(FailureCanceled)
 	}
-	if !validFrame(frame) || (!g.lastFrame.IsZero() && !frame.CapturedAt.After(g.lastFrame)) {
+	if !validFrame(frame) {
 		return g.failLocked(FailureInvalidAudio)
 	}
 	// Frames captured before the local wake decision belong to the ordinary
 	// microphone timeline. Quarantine them without starting Command ASR so a
 	// delayed media packet cannot become the spoken command.
-	if frame.CapturedAt.Before(g.request.CaptureFrom) {
+	if !replayed && frame.CapturedAt.Before(g.request.CaptureFrom) {
 		return Result{Consumed: true, State: StateArmed}
 	}
-	g.lastFrame = frame.CapturedAt
 
-	if !frame.CapturedAt.Before(g.request.OpenedAt.Add(g.options.WindowTTL)) {
+	if !replayed && !frame.CapturedAt.Before(g.request.OpenedAt.Add(g.options.WindowTTL)) {
 		return g.failLocked(FailureWindowExpired)
 	}
-	if g.state == StateArmed && !frame.CapturedAt.Before(g.request.OpenedAt.Add(g.options.NoSpeechTimeout)) {
+	if !replayed && g.state == StateArmed && !frame.CapturedAt.Before(g.request.OpenedAt.Add(g.options.NoSpeechTimeout)) {
 		return g.failLocked(FailureNoSpeech)
 	}
 
-	isSpeech := g.deps.Classifier.Speech(frame)
-	if g.state == StateArmed {
-		if !isSpeech {
-			return Result{Consumed: true, State: StateArmed}
+	events, err := g.segmenter.Push(ctx, frame)
+	if err != nil {
+		return g.failLocked(g.classifyFailure(ctx, FailureInvalidAudio))
+	}
+	result := Result{Consumed: true, State: g.state}
+	for _, event := range events {
+		switch event.Type {
+		case vad.EventOpened:
+			if failure := g.startCaptureLocked(ctx); failure != FailureNone {
+				return g.failLocked(failure)
+			}
+			if g.silenceTimer != nil {
+				g.silenceTimer.Stop()
+				g.silenceTimer = nil
+			}
+			result.State = StateCapturing
+		case vad.EventAudio:
+			if event.Frame == nil || g.stream == nil {
+				return g.failLocked(FailureInvalidAudio)
+			}
+			if err := g.stream.PushAudio(g.attemptCtx, event.Frame.PCM); err != nil {
+				return g.failLocked(g.classifyFailure(ctx, FailureASR))
+			}
+			result.State = StateCapturing
+		case vad.EventFinal:
+			return g.startRecognitionLocked(ctx)
 		}
-		if failure := g.startCaptureLocked(ctx); failure != FailureNone {
-			return g.failLocked(failure)
-		}
-		if g.silenceTimer != nil {
-			g.silenceTimer.Stop()
-			g.silenceTimer = nil
-		}
-		g.lastSpeech = frame.CapturedAt
 	}
-
-	frameDuration := pcmDuration(frame)
-	if countTowardLimit && g.audioLength+frameDuration > g.options.MaxAudioDuration {
-		return g.failLocked(FailureAudioTooLong)
-	}
-	if err := g.stream.PushAudio(g.attemptCtx, frame.PCM); err != nil {
-		return g.failLocked(g.classifyFailure(ctx, FailureASR))
-	}
-	if countTowardLimit {
-		g.audioLength += frameDuration
-	}
-	if isSpeech {
-		g.lastSpeech = frame.CapturedAt
-		return Result{Consumed: true, State: StateCapturing}
-	}
-	if frame.CapturedAt.Sub(g.lastSpeech) < g.options.EndSilence {
-		return Result{Consumed: true, State: StateCapturing}
-	}
-	if !allowRecognition {
-		return Result{Consumed: true, State: StateCapturing}
-	}
-	return g.startRecognitionLocked(ctx)
+	return result
 }
 
 func (g *Gate) startCaptureLocked(ctx context.Context) Failure {
@@ -636,8 +632,8 @@ func executionFailureFeedback(parsed Command, err error) (realtimev1.CommandResu
 }
 
 // stripWakeWordPrefix keeps only speech after the last fixed wake word. The Gate can reach this
-// function only after trusted local KWS opened it; taking the suffix discards bounded pre-roll
-// speech without allowing an unwoken utterance into semantic interpretation.
+// function only after trusted local KWS opened it; taking the suffix discards any earlier speech
+// from the transferred utterance without admitting an unwoken utterance to semantic processing.
 func stripWakeWordPrefix(text string) string {
 	trimmed := strings.TrimSpace(text)
 	compact := strings.Map(func(r rune) rune {
@@ -668,7 +664,6 @@ func defaultFailureResult(request OpenRequest, failure Failure, occurredAt time.
 	message := map[Failure]string{
 		FailureWindowExpired: "命令窗口已超时，请重新唤醒后再试",
 		FailureNoSpeech:      "没有听到命令，请重新唤醒后再试",
-		FailureAudioTooLong:  "命令过长，请简短说明",
 		FailureASR:           "命令语音识别失败，请重试",
 		FailureCanceled:      "上一条命令已被新的唤醒取消",
 		FailureInvalidAudio:  "命令音频无效，请重试",
@@ -733,9 +728,9 @@ func (g *Gate) abandonLocked() {
 	}
 	g.state = StateDormant
 	g.request = OpenRequest{}
-	g.lastFrame = time.Time{}
-	g.lastSpeech = time.Time{}
-	g.audioLength = 0
+	if g.segmenter != nil {
+		g.segmenter.Reset()
+	}
 	g.captureComplete = false
 	g.stream = nil
 	g.attemptCtx = nil
@@ -748,9 +743,4 @@ func (g *Gate) abandonLocked() {
 func validFrame(frame audio.Frame) bool {
 	return len(frame.PCM) > 0 && len(frame.PCM)%2 == 0 && frame.SampleRate == audio.SupportedSampleRate &&
 		!frame.CapturedAt.IsZero()
-}
-
-func pcmDuration(frame audio.Frame) time.Duration {
-	samples := len(frame.PCM) / 2
-	return time.Duration(samples) * time.Second / time.Duration(frame.SampleRate)
 }

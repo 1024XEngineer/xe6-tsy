@@ -193,10 +193,6 @@ func TestGateBoundsRestoreDormant(t *testing.T) {
 			name: "no speech", classifier: speechSequence{false}, want: FailureNoSpeech,
 			frames: []frameSpec{{600 * time.Millisecond, 100 * time.Millisecond}},
 		},
-		{
-			name: "audio too long", classifier: speechSequence{true, true, true}, want: FailureAudioTooLong,
-			frames: []frameSpec{{100 * time.Millisecond, 200 * time.Millisecond}, {300 * time.Millisecond, 200 * time.Millisecond}, {500 * time.Millisecond, 200 * time.Millisecond}},
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -214,6 +210,26 @@ func TestGateBoundsRestoreDormant(t *testing.T) {
 				t.Fatalf("failure left state %q or executed %#v", gate.State(), executor.requests)
 			}
 		})
+	}
+}
+
+func TestGateFinalizesAtSharedVADMaximumDuration(t *testing.T) {
+	executor := &recordingExecutor{}
+	gate := newTestGate(t, speechSequence{true, true}, asr.FakeProviderConfig{
+		Final: asr.FinalResult{Text: "开始同声传译"},
+	}, executor)
+	openTestGate(t, gate)
+
+	if result := gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond)); result.State != StateCapturing {
+		t.Fatalf("first Consume() = %#v, want capturing", result)
+	}
+	result := gate.Consume(t.Context(), testFrame(t, testStart.Add(600*time.Millisecond), 100*time.Millisecond))
+	if !result.Consumed || result.State != StateRecognizing || result.Failure != FailureNone {
+		t.Fatalf("boundary Consume() = %#v, want normal VAD finalization", result)
+	}
+	waitGateRecognition(t, gate)
+	if len(executor.requests) != 1 {
+		t.Fatalf("executor requests = %#v, want one complete command", executor.requests)
 	}
 }
 
@@ -333,8 +349,8 @@ func TestGateAcceptsBufferedFrameFromCaptureBoundary(t *testing.T) {
 	}
 }
 
-func TestGateReplayDoesNotConsumeLiveAudioLimit(t *testing.T) {
-	classifier := speechSequence{true, true, true, true, false}
+func TestGateReplayAndLiveAudioShareUtteranceBoundary(t *testing.T) {
+	classifier := speechSequence{true, true, false}
 	executor := &recordingExecutor{}
 	g, err := NewGate(Dependencies{
 		Classifier:  &classifier,
@@ -358,18 +374,9 @@ func TestGateReplayDoesNotConsumeLiveAudioLimit(t *testing.T) {
 			t.Fatalf("Replay() = %#v, want capturing", result)
 		}
 	}
-	for _, frame := range []struct {
-		offset time.Duration
-		length time.Duration
-	}{
-		{100 * time.Millisecond, 400 * time.Millisecond},
-		{600 * time.Millisecond, 400 * time.Millisecond},
-		{1100 * time.Millisecond, 100 * time.Millisecond},
-	} {
-		result := g.Consume(t.Context(), testFrame(t, testStart.Add(frame.offset), frame.length))
-		if !result.Consumed || result.State == StateDormant && result.Failure == FailureAudioTooLong {
-			t.Fatalf("Consume(%s) = %#v, replay incorrectly consumed live limit", frame.offset, result)
-		}
+	result := g.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+	if !result.Consumed || result.State != StateRecognizing || result.Failure != FailureNone {
+		t.Fatalf("live end-silence Consume() = %#v, want shared VAD finalization", result)
 	}
 	waitGateRecognition(t, g)
 	if len(executor.requests) != 1 {

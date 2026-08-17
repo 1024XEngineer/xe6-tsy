@@ -82,10 +82,6 @@ type Service struct {
 // finalizedEventQueueCapacity bounds audio-turn backlog while provider calls run.
 const finalizedEventQueueCapacity = 8
 
-// commandPreRollDuration covers KWS and DataChannel delivery skew while keeping replay memory
-// bounded. Frames are timestamped by the same realtime process, so no client clock is trusted.
-const commandPreRollDuration = 2 * time.Second
-
 func NewService(deps Dependencies) (*Service, error) {
 	if deps.Source == nil || deps.Segmenter == nil || deps.Processor == nil {
 		return nil, ErrDependencyRequired
@@ -168,15 +164,11 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		<-wakeDone
 	}()
 
-	preRoll := make([]audio.Frame, 0, 128)
 	openPendingWake := func() {
 		for {
 			select {
 			case wake := <-wakeSignals:
-				if s.openCommandWindow(request, wake) {
-					_ = s.command.Replay(runCtx, preRoll)
-					preRoll = preRoll[:0]
-				}
+				s.openCommandWindow(runCtx, request, wake)
 			default:
 				return
 			}
@@ -211,7 +203,6 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		// A wake signal may arrive while ReadFrame is blocked. Drain it before
 		// routing this frame so command audio cannot reach ordinary VAD.
 		openPendingWake()
-		preRoll = appendCommandPreRoll(preRoll, frame)
 		if s.command != nil {
 			result := s.command.Consume(runCtx, frame)
 			if result.Consumed {
@@ -280,37 +271,29 @@ type receivedWakeWord struct {
 	receivedAt time.Time
 }
 
-func (s *Service) openCommandWindow(request Request, wake receivedWakeWord) bool {
+func (s *Service) openCommandWindow(ctx context.Context, request Request, wake receivedWakeWord) bool {
 	if s == nil || s.command == nil || wake.signal.Validate() != nil || wake.receivedAt.IsZero() {
 		return false
 	}
 	if err := s.command.Open(command.OpenRequest{
 		SessionID: request.SessionID, CommandID: wake.signal.SignalID,
 		SourceLanguage: request.SourceLanguage, OpenedAt: wake.receivedAt,
-		CaptureFrom: wake.receivedAt.Add(-commandPreRollDuration),
 	}); err != nil {
 		// A device may retry the same signal_id after uncertain delivery. The Gate recognizes that
 		// retry and leaves both the current command attempt and ordinary VAD state untouched.
 		return false
 	}
-	// Reset before the command frame is consumed. This drops any ordinary
-	// utterance that was in flight when the hardware wake signal arrived.
-	s.segmenter.Reset()
+	// The ordinary Segmenter already owns the complete in-flight utterance, including its VAD
+	// prefix and internal pauses. Transfer that utterance only after Open succeeds, so a duplicate
+	// wake cannot discard ordinary audio. Command Replay receives the same sentence boundary rather
+	// than an arbitrary wall-clock slice; when no sentence is active, Reset still prevents stale
+	// prefix/timestamp history from crossing into the post-command ordinary stream.
+	frames := s.segmenter.ClaimActiveUtterance()
+	if len(frames) == 0 {
+		s.segmenter.Reset()
+	}
+	_ = s.command.Replay(ctx, frames)
 	return true
-}
-
-func appendCommandPreRoll(frames []audio.Frame, frame audio.Frame) []audio.Frame {
-	frames = append(frames, frame)
-	cutoff := frame.CapturedAt.Add(-commandPreRollDuration)
-	first := 0
-	for first < len(frames) && frames[first].CapturedAt.Before(cutoff) {
-		first++
-	}
-	if first == 0 {
-		return frames
-	}
-	copy(frames, frames[first:])
-	return frames[:len(frames)-first]
 }
 
 func (s *Service) flush(ctx context.Context, lastSeen time.Time) ([]vad.Event, error) {

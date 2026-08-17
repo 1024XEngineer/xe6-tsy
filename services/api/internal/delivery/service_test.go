@@ -824,7 +824,7 @@ func (r *atomicScheduleRepository) RetryAutomaticTurnTarget(_ context.Context, _
 
 func (r *atomicScheduleRepository) ListAutomaticTurnRecoveryCandidates(context.Context, int) ([]AutomaticTurnRun, error) {
 	run := r.existing
-	eligible := (run.TargetCount == 0 && run.Status == AutomaticTurnRunPending) ||
+	eligible := (run.TargetCount == 0 && (run.Status == AutomaticTurnRunPending || run.Status == AutomaticTurnRunFallbackPending)) ||
 		(run.TargetCount > 0 && run.FailedCount == run.TargetCount && (run.Status == AutomaticTurnRunFailed || run.Status == AutomaticTurnRunFallbackPending))
 	if !eligible {
 		return nil, nil

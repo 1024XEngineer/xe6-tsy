@@ -20,7 +20,7 @@ func (r *PostgresRepository) ListAutomaticTurnRecoveryCandidates(ctx context.Con
 		language_config_version,delivery_trigger,status,target_count,settled_count,succeeded_count,
 		failed_count,fallback_operation_id,created_at,updated_at
 		FROM automatic_turn_runs
-		WHERE (target_count=0 AND status='pending')
+		WHERE (target_count=0 AND status IN ('pending','fallback_pending'))
 		   OR (target_count>0 AND failed_count=target_count AND status IN ('failed','fallback_pending'))
 		ORDER BY updated_at ASC, turn_id ASC
 		LIMIT $1`, limit)

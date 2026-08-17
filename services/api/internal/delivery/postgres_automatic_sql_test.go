@@ -63,6 +63,16 @@ func TestAutomaticPostgresRetryCandidatesExcludeTotalFailures(t *testing.T) {
 	}
 }
 
+func TestAutomaticPostgresRecoveryCandidatesReclaimZeroTargetFallback(t *testing.T) {
+	pool := &automaticPostgresPoolFake{rows: []*automaticRowsFake{{}}}
+	if _, err := (&PostgresRepository{pool: pool}).ListAutomaticTurnRecoveryCandidates(t.Context(), 5); err != nil {
+		t.Fatalf("ListAutomaticTurnRecoveryCandidates() error = %v", err)
+	}
+	if len(pool.queries) != 1 || !strings.Contains(pool.queries[0], "target_count=0 AND status IN ('pending','fallback_pending')") {
+		t.Fatalf("recovery candidate query = %#v, want reclaimable zero-target fallback", pool.queries)
+	}
+}
+
 func TestAutomaticPostgresListsOutputStatusForAccountSession(t *testing.T) {
 	updatedAt := time.Unix(1_700_000_000, 0).UTC()
 	pool := &automaticPostgresPoolFake{rows: []*automaticRowsFake{{rows: [][]any{{

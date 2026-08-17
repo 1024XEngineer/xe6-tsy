@@ -12,6 +12,15 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 )
 
+func TestDefaultCommandOptionsMatchOrdinaryUtteranceBounds(t *testing.T) {
+	if defaultCommandOptions.WindowTTL != 15*time.Second ||
+		defaultCommandOptions.NoSpeechTimeout != 2*time.Second ||
+		defaultCommandOptions.MaxAudioDuration != 12*time.Second ||
+		defaultCommandOptions.EndSilence != 800*time.Millisecond {
+		t.Fatalf("default command options = %#v, want ordinary VAD sentence bounds", defaultCommandOptions)
+	}
+}
+
 func TestCommandExecutorUsesRuntimeModeCoordinator(t *testing.T) {
 	t.Parallel()
 	sink := &recordingModeChangedSink{}

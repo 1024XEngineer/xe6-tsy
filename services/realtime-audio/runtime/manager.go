@@ -37,10 +37,10 @@ var (
 const failureReportTimeout = 5 * time.Second
 
 var defaultCommandOptions = command.Options{
-	WindowTTL:        4 * time.Second,
-	NoSpeechTimeout:  1200 * time.Millisecond,
-	MaxAudioDuration: 3 * time.Second,
-	EndSilence:       450 * time.Millisecond,
+	WindowTTL:        15 * time.Second,
+	NoSpeechTimeout:  2 * time.Second,
+	MaxAudioDuration: 12 * time.Second,
+	EndSilence:       800 * time.Millisecond,
 }
 
 // AudioInput is the typed handoff from a WebRTC media adapter to the audio loop.

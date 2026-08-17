@@ -5,19 +5,9 @@ import { sendWakeWordDetectedSignal } from "./wake-word-signal";
 function fakeSession(options?: {
   readyState?: RTCDataChannelState;
   send?: (payload: string) => void;
-  onTrackEnabled?: (enabled: boolean) => void;
 }) {
-  const track = { kind: "audio" } as MediaStreamTrack;
-  Object.defineProperty(track, "enabled", {
-    configurable: true,
-    get: () => false,
-    set: (enabled: boolean) => options?.onTrackEnabled?.(enabled),
-  });
   return {
-    localStream: {
-      getAudioTracks: () => [track],
-    } as unknown as MediaStream,
-    dataChannel: {
+    wakeWordChannel: {
       readyState: options?.readyState ?? "open",
       send: options?.send ?? vi.fn(),
     } as unknown as RTCDataChannel,
@@ -25,12 +15,11 @@ function fakeSession(options?: {
 }
 
 describe("sendWakeWordDetectedSignal", () => {
-  it("cancels playback, enables uplink, then sends the typed signal", () => {
+  it("cancels playback and sends the typed signal without controlling media", () => {
     const steps: string[] = [];
     const send = vi.fn((payload: string) => steps.push(`send:${payload}`));
     const session = fakeSession({
       send,
-      onTrackEnabled: () => steps.push("enable"),
     });
 
     const result = sendWakeWordDetectedSignal(session, {
@@ -50,24 +39,20 @@ describe("sendWakeWordDetectedSignal", () => {
     });
     expect(steps).toEqual([
       "cancel",
-      "enable",
       `send:${JSON.stringify(result.ok ? result.signal : null)}`,
     ]);
   });
 
   it("keeps the session usable when the DataChannel is not open", () => {
     const cancelPlayback = vi.fn();
-    const onTrackEnabled = vi.fn();
     const session = fakeSession({
       readyState: "connecting",
-      onTrackEnabled,
     });
 
     expect(
       sendWakeWordDetectedSignal(session, { cancelPlayback }),
     ).toEqual({ ok: false, reason: "data_channel_not_open" });
     expect(cancelPlayback).toHaveBeenCalledOnce();
-    expect(onTrackEnabled).toHaveBeenCalledWith(true);
   });
 
   it("returns a send failure without closing transport handles", () => {

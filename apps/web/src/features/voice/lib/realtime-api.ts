@@ -10,6 +10,11 @@ export type WebRTCConfig = {
   }>;
   ice_transport_policy: string;
   data_channel: { label: string; ordered: boolean };
+  control_data_channel?: {
+    label: string;
+    ordered: boolean;
+    protocol_version: number;
+  };
   audio: {
     uplink_codec: string;
     downlink_codec: string;

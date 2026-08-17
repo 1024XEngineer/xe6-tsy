@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -312,6 +313,116 @@ func TestScheduleFinalTurnUsesAtomicRepositoryForEveryEnabledTarget(t *testing.T
 	}
 	if repository.record.Run.FallbackOperationID != "fallback_turn-1" {
 		t.Fatalf("fallback operation = %q", repository.record.Run.FallbackOperationID)
+	}
+	if repository.record.Run.Trigger != AutomaticTurnTriggerConfiguredRoute {
+		t.Fatalf("delivery trigger = %q, want configured route", repository.record.Run.Trigger)
+	}
+}
+
+func TestScheduleFinalTurnRoutesLongSourceOnlyToConfiguredWeChat(t *testing.T) {
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	tests := []struct {
+		name       string
+		sourceText string
+		endedAt    time.Time
+	}{
+		{name: "text threshold", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold+1), endedAt: startedAt.Add(time.Second)},
+		{name: "audio threshold", sourceText: "short", endedAt: startedAt.Add(recordsv1.LongSourceAudioThreshold)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repository := &atomicScheduleRepository{retryRepositoryStub: retryRepositoryStub{preferences: []Preference{
+				{AccountID: "account-1", Channel: ChannelEmail, DestinationRef: "primary-email", Enabled: true, Verified: true},
+				{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Enabled: true, Verified: true},
+			}}}
+			service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
+			service.ConfigureChannelRouter(NewChannelRouter(NewFakeEmailProvider(FakeEmailProviderConfig{}), &channelProviderStub{channel: ChannelWeChat}))
+			event := automaticScheduleEvent(tt.sourceText, startedAt, tt.endedAt)
+			if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
+				t.Fatalf("ScheduleFinalTurn() error = %v", err)
+			}
+			if repository.record.Run.Trigger != AutomaticTurnTriggerLongSentence || repository.record.Run.TargetCount != 1 {
+				t.Fatalf("automatic run = %#v, want one long-sentence target", repository.record.Run)
+			}
+			if len(repository.record.Targets) != 1 || repository.record.Targets[0].Message.Channel != ChannelWeChat {
+				t.Fatalf("targets = %#v, want WeChat only", repository.record.Targets)
+			}
+			if got := repository.record.Targets[0].IdempotencyKey; got != "auto:final_turn:turn-1:wechat:primary-wechat" {
+				t.Fatalf("idempotency key = %q", got)
+			}
+		})
+	}
+}
+
+func TestScheduleFinalTurnPersistsZeroTargetForUnavailableLongSourceWeChat(t *testing.T) {
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	tests := []struct {
+		name        string
+		preferences []Preference
+		router      *ChannelRouter
+		destErr     error
+	}{
+		{name: "unbound", router: NewChannelRouter(NewFakeEmailProvider(FakeEmailProviderConfig{}), &channelProviderStub{channel: ChannelWeChat})},
+		{name: "provider unconfigured", preferences: []Preference{{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Enabled: true, Verified: true}}, router: NewChannelRouter(NewFakeEmailProvider(FakeEmailProviderConfig{}), UnconfiguredProvider{})},
+		{name: "destination invalid", preferences: []Preference{{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Enabled: true, Verified: true}}, router: NewChannelRouter(nil, &channelProviderStub{channel: ChannelWeChat}), destErr: domain.ErrNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repository := &atomicScheduleRepository{retryRepositoryStub: retryRepositoryStub{preferences: tt.preferences}}
+			service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{err: tt.destErr}, nil)
+			service.ConfigureChannelRouter(tt.router)
+			event := automaticScheduleEvent(strings.Repeat("x", recordsv1.LongSourceTextThreshold+1), startedAt, startedAt.Add(time.Second))
+			if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
+				t.Fatalf("ScheduleFinalTurn() error = %v", err)
+			}
+			if repository.record.Run.Trigger != AutomaticTurnTriggerLongSentence || repository.record.Run.TargetCount != 0 || len(repository.record.Targets) != 0 {
+				t.Fatalf("automatic schedule = %#v, want zero-target long run", repository.record)
+			}
+		})
+	}
+}
+
+func TestScheduleFinalTurnLongSourcePropagatesTransientDestinationFailure(t *testing.T) {
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	repository := &atomicScheduleRepository{retryRepositoryStub: retryRepositoryStub{preference: Preference{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Enabled: true, Verified: true}}}
+	destinationErr := errors.New("destination store unavailable")
+	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{err: destinationErr}, nil)
+	service.ConfigureChannelRouter(NewChannelRouter(nil, &channelProviderStub{channel: ChannelWeChat}))
+	event := automaticScheduleEvent(strings.Repeat("x", recordsv1.LongSourceTextThreshold+1), startedAt, startedAt.Add(time.Second))
+	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); !errors.Is(err, destinationErr) {
+		t.Fatalf("ScheduleFinalTurn() error = %v, want %v", err, destinationErr)
+	}
+	if repository.record.Run.TurnID != "" {
+		t.Fatalf("automatic schedule = %#v, want no committed record", repository.record)
+	}
+}
+
+func TestScheduleFinalTurnLongSourceFailsClosedWithoutAtomicRepository(t *testing.T) {
+	service := NewPersistentUseCases(&retryRepositoryStub{}, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
+	event := recordsv1.FinalTurnEvent{TurnID: "turn-1", SourceText: strings.Repeat("x", recordsv1.LongSourceTextThreshold+1)}
+	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("ScheduleFinalTurn() error = %v, want not implemented", err)
+	}
+}
+
+func TestScheduleFinalTurnSkipsShortSourceWithoutConfiguredDelivery(t *testing.T) {
+	repository := &atomicScheduleRepository{}
+	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	event := automaticScheduleEvent("short", startedAt, startedAt.Add(recordsv1.LongSourceAudioThreshold-time.Millisecond))
+	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
+		t.Fatalf("ScheduleFinalTurn() error = %v", err)
+	}
+	if repository.record.Run.TurnID != "" {
+		t.Fatalf("automatic schedule = %#v, want no-op", repository.record)
+	}
+}
+
+func automaticScheduleEvent(sourceText string, startedAt, endedAt time.Time) recordsv1.FinalTurnEvent {
+	return recordsv1.FinalTurnEvent{
+		TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1", TargetLanguage: "en-US",
+		SourceText: sourceText, TranslatedText: "translation", LanguageConfigVersion: 3,
+		StartedAt: startedAt, EndedAt: endedAt,
 	}
 }
 

@@ -212,6 +212,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		destinationReader,
 		queue,
 	)
+	deliveryService.ConfigureChannelRouter(providerRouter)
 	deliveryService.ConfigureAutomaticOutputSessionReader(
 		automaticOutputSessionReader{reader: sessionRepository},
 	)

@@ -26,6 +26,7 @@ type UseCases struct {
 	outputSessions      AutomaticOutputSessionReader
 	fallback            AutomaticTurnFallbackPlayer
 	restorer            AutomaticTurnOutputRestorer
+	channelRouter       *ChannelRouter
 }
 
 func NewUseCases() *UseCases { return &UseCases{} }
@@ -60,6 +61,10 @@ func (u *UseCases) ConfigureAutomaticFallback(player AutomaticTurnFallbackPlayer
 
 func (u *UseCases) ConfigureAutomaticOutputRestorer(restorer AutomaticTurnOutputRestorer) {
 	u.restorer = restorer
+}
+
+func (u *UseCases) ConfigureChannelRouter(router *ChannelRouter) {
+	u.channelRouter = router
 }
 
 // Create accepts selected final Turns and creates an asynchronous delivery task.
@@ -253,11 +258,15 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 	if u == nil || u.repository == nil {
 		return domain.ErrNotImplemented
 	}
-	if accountID == "" || event.TurnID == "" || !event.DeliveryEnabled {
+	longSource := recordsv1.IsLongSourceTurn(event.SourceText, event.EndedAt.Sub(event.StartedAt))
+	if accountID == "" || event.TurnID == "" || (!event.DeliveryEnabled && !longSource) {
 		return nil
 	}
 	if scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository); ok {
-		return u.scheduleAutomaticTurnAtomically(ctx, scheduler, accountID, event)
+		return u.scheduleAutomaticTurnAtomically(ctx, scheduler, accountID, event, longSource)
+	}
+	if longSource {
+		return domain.ErrNotImplemented
 	}
 	preferences, err := u.Preferences(ctx, accountID)
 	if err != nil {
@@ -278,17 +287,21 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 	return nil
 }
 
-func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, scheduler AutomaticTurnSchedulerRepository, accountID string, event recordsv1.FinalTurnEvent) error {
+func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, scheduler AutomaticTurnSchedulerRepository, accountID string, event recordsv1.FinalTurnEvent, longSource bool) error {
 	if event.SessionID == "" || event.TraceID == "" || event.TargetLanguage == "" || event.TranslatedText == "" || event.LanguageConfigVersion < 1 {
 		return domain.ErrInvalidArgument
 	}
 	if u.turns == nil || u.destinations == nil {
 		return domain.ErrInvalidArgument
 	}
+	trigger := AutomaticTurnTriggerConfiguredRoute
+	if longSource {
+		trigger = AutomaticTurnTriggerLongSentence
+	}
 	existing, err := scheduler.GetAutomaticTurnRun(ctx, accountID, event.TurnID)
 	if err == nil {
 		if existing.SessionID != event.SessionID || existing.TraceID != event.TraceID || existing.TargetLanguage != event.TargetLanguage ||
-			existing.TranslatedText != event.TranslatedText || existing.LanguageConfigVersion != event.LanguageConfigVersion {
+			existing.TranslatedText != event.TranslatedText || existing.LanguageConfigVersion != event.LanguageConfigVersion || existing.Trigger != trigger {
 			return domain.ErrConflict
 		}
 		return nil
@@ -313,7 +326,13 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 		if !preference.Enabled || !preference.Verified || preference.DestinationRef == "" || !IsSupportedChannel(preference.Channel) {
 			continue
 		}
+		if longSource && (preference.Channel != ChannelWeChat || u.channelRouter == nil || !u.channelRouter.SupportsChannel(ChannelWeChat)) {
+			continue
+		}
 		if _, err := u.destinations.ResolveVerifiedDestination(ctx, accountID, preference.Channel, preference.DestinationRef); err != nil {
+			if longSource && isPermanentDestinationError(err) {
+				continue
+			}
 			return err
 		}
 		message := Message{
@@ -336,7 +355,7 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 	run := AutomaticTurnRun{
 		AccountID: accountID, TurnID: event.TurnID, SessionID: event.SessionID, TraceID: event.TraceID,
 		TargetLanguage: event.TargetLanguage, TranslatedText: event.TranslatedText,
-		LanguageConfigVersion: event.LanguageConfigVersion, Trigger: AutomaticTurnTriggerConfiguredRoute, Status: AutomaticTurnRunPending,
+		LanguageConfigVersion: event.LanguageConfigVersion, Trigger: trigger, Status: AutomaticTurnRunPending,
 		TargetCount: len(targets), FallbackOperationID: "fallback_" + event.TurnID,
 		CreatedAt: now, UpdatedAt: now,
 	}

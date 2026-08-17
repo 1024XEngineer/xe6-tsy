@@ -175,9 +175,10 @@ Web / Mobile / Device SDK
 
 `assistant / interpretation` 是后端权威业务模式；`continuous / wake_word` 是客户端交互策略，两者
 正交。常驻策略持续发送当前业务模式的语音；唤醒词策略默认关闭 WebRTC 上行，只让本地 KWS 工作，
-命中唤醒词后开放一个有界语音轮次，收到对应结果或客户端兜底超时后重新关闭。切换交互策略不重建
-WebRTC，也不改变业务模式。普通助手问题通过 `assistant_query` 复用现有 Assistant Handler，且仅在
-助手模式执行；同传时要求先切回助手，避免两类输出混流。
+命中唤醒词后通过同一音频桥接轨补发本地有界 pre-roll，再开放一个有界语音轮次；收到对应结果或
+客户端兜底超时后重新关闭。pre-roll 只存在客户端内存中，未唤醒时不会上传环境音频。切换交互策略
+不重建 WebRTC，也不改变业务模式。普通助手问题通过 `assistant_query` 复用现有 Assistant Handler，
+且仅在助手模式执行；同传时要求先切回助手，避免两类输出混流。
 
 ## 4. 会话状态机
 

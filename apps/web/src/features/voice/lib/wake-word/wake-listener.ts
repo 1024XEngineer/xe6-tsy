@@ -3,9 +3,7 @@
  * Owns a MediaStream that can be cloned for WebRTC uplink.
  */
 
-import {
-  resolveWakePhrase,
-} from "./keywords";
+import { resolveWakePhrase } from "./keywords";
 import {
   createKeywordSpotter,
   ensureSherpaKwsRuntime,
@@ -14,7 +12,15 @@ import {
 } from "./sherpa-runtime";
 
 const TARGET_SAMPLE_RATE = 16000;
+const PROCESSOR_BUFFER_SIZE = 2048;
 const COOLDOWN_MS = 1800;
+export const PRE_ROLL_CAPACITY_MS = 2500;
+export const PRE_ROLL_MAX_REPLAY_MS = 2000;
+const SILENCE_BOUNDARY_MS = 160;
+const WAKE_TAIL_GUARD_MS = 900;
+const SILENCE_RMS_THRESHOLD = 0.012;
+
+type UplinkMode = "closed" | "continuous" | "replay";
 
 export type WakeListenerStatus =
   | "idle"
@@ -61,14 +67,57 @@ function downsampleBuffer(
   return result;
 }
 
+/** Select the utterance start before the wake phrase, capped to two seconds. */
+export function selectWakePreRoll(
+  samples: Float32Array,
+  sampleRate: number,
+): Float32Array {
+  if (samples.length === 0 || sampleRate <= 0) return new Float32Array();
+  const maxReplay = Math.round((sampleRate * PRE_ROLL_MAX_REPLAY_MS) / 1000);
+  const silenceSize = Math.max(
+    1,
+    Math.round((sampleRate * SILENCE_BOUNDARY_MS) / 1000),
+  );
+  const guardedTail = Math.round((sampleRate * WAKE_TAIL_GUARD_MS) / 1000);
+  let boundary = Math.max(0, samples.length - maxReplay);
+
+  for (
+    let end = samples.length - guardedTail;
+    end >= silenceSize;
+    end -= Math.max(1, Math.floor(silenceSize / 4))
+  ) {
+    let energy = 0;
+    for (let index = end - silenceSize; index < end; index += 1) {
+      energy += samples[index]! * samples[index]!;
+    }
+    if (Math.sqrt(energy / silenceSize) <= SILENCE_RMS_THRESHOLD) {
+      boundary = end;
+      break;
+    }
+  }
+
+  return new Float32Array(
+    samples.subarray(Math.max(boundary, samples.length - maxReplay)),
+  );
+}
+
 export class WakeWordListener {
   private readonly handlers: WakeListenerHandlers;
   private stream: MediaStream | null = null;
   private audioCtx: AudioContext | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
   private processor: ScriptProcessorNode | null = null;
+  private uplinkDestination: MediaStreamAudioDestinationNode | null = null;
   private spotter: SherpaKwsSpotter | null = null;
   private kwsStream: SherpaKwsStream | null = null;
+  private recordSampleRate = TARGET_SAMPLE_RATE;
+  private preRollChunks: Float32Array[] = [];
+  private preRollSampleCount = 0;
+  private uplinkMode: UplinkMode = "closed";
+  private replayChunks: Float32Array[] = [];
+  private replayOffset = 0;
+  private audioFrame = 0;
+  private replayOpenedFrame = -1;
   private running = false;
   private startGeneration = 0;
   private lastFireAt = 0;
@@ -134,14 +183,21 @@ export class WakeWordListener {
       this.audioCtx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
       // Some browsers ignore the requested rate; downsample if needed.
       const recordRate = this.audioCtx.sampleRate;
+      this.recordSampleRate = recordRate;
       this.source = this.audioCtx.createMediaStreamSource(this.stream);
-      const bufferSize = 4096;
-      this.processor = this.audioCtx.createScriptProcessor(bufferSize, 1, 1);
+      this.uplinkDestination = this.audioCtx.createMediaStreamDestination();
+      this.processor = this.audioCtx.createScriptProcessor(
+        PROCESSOR_BUFFER_SIZE,
+        1,
+        1,
+      );
       this.processor.onaudioprocess = (event) => {
         if (!this.running || !this.spotter || !this.kwsStream) return;
-        const input = event.inputBuffer.getChannelData(0);
+        const frame = ++this.audioFrame;
+        const input = new Float32Array(event.inputBuffer.getChannelData(0));
+        this.appendPreRoll(input);
         const samples = downsampleBuffer(
-          new Float32Array(input),
+          input,
           recordRate,
           TARGET_SAMPLE_RATE,
         );
@@ -154,9 +210,15 @@ export class WakeWordListener {
           this.spotter.reset(this.kwsStream);
           this.emitKeyword(keyword);
         }
+        this.writeUplinkFrame(
+          input,
+          event.outputBuffer.getChannelData(0),
+          frame,
+        );
       };
 
       this.source.connect(this.processor);
+      this.processor.connect(this.uplinkDestination);
       // ScriptProcessor must connect to destination to run, but keep silent.
       const mute = this.audioCtx.createGain();
       mute.gain.value = 0;
@@ -197,10 +259,97 @@ export class WakeWordListener {
     this.handlers.onWake(match.phrase);
   }
 
-  /** Clone mic tracks for WebRTC so TTS mute / session close won't stop KWS. */
+  setUplinkEnabled(enabled: boolean): void {
+    this.uplinkMode = enabled ? "continuous" : "closed";
+    this.clearReplay();
+  }
+
+  /** Start one delayed uplink turn with the buffered wake phrase included. */
+  openCommandUplink(): void {
+    const preRoll = selectWakePreRoll(
+      this.snapshotPreRoll(),
+      this.recordSampleRate,
+    );
+    this.uplinkMode = "replay";
+    this.replayChunks = preRoll.length > 0 ? [preRoll] : [];
+    this.replayOffset = 0;
+    this.replayOpenedFrame = this.audioFrame;
+  }
+
+  /** Clone the audio bridge track so KWS capture remains session-owned. */
   cloneAudioTracksForPeer(): MediaStreamTrack[] {
-    if (!this.stream) return [];
-    return this.stream.getAudioTracks().map((track) => track.clone());
+    if (!this.uplinkDestination) return [];
+    return this.uplinkDestination.stream
+      .getAudioTracks()
+      .map((track) => track.clone());
+  }
+
+  private appendPreRoll(input: Float32Array): void {
+    this.preRollChunks.push(input);
+    this.preRollSampleCount += input.length;
+    const capacity = Math.round(
+      (this.recordSampleRate * PRE_ROLL_CAPACITY_MS) / 1000,
+    );
+    while (
+      this.preRollChunks[0] &&
+      this.preRollSampleCount - this.preRollChunks[0].length >= capacity
+    ) {
+      this.preRollSampleCount -= this.preRollChunks.shift()!.length;
+    }
+    if (this.preRollSampleCount > capacity && this.preRollChunks[0]) {
+      const excess = this.preRollSampleCount - capacity;
+      this.preRollChunks[0] = this.preRollChunks[0].slice(excess);
+      this.preRollSampleCount = capacity;
+    }
+  }
+
+  private snapshotPreRoll(): Float32Array {
+    const snapshot = new Float32Array(this.preRollSampleCount);
+    let offset = 0;
+    for (const chunk of this.preRollChunks) {
+      snapshot.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return snapshot;
+  }
+
+  private writeUplinkFrame(
+    input: Float32Array,
+    output: Float32Array,
+    frame: number,
+  ): void {
+    output.fill(0);
+    if (this.uplinkMode === "continuous") {
+      output.set(input.subarray(0, output.length));
+      return;
+    }
+    if (this.uplinkMode !== "replay") return;
+    if (this.replayOpenedFrame !== frame) this.replayChunks.push(input);
+
+    let written = 0;
+    while (written < output.length && this.replayChunks[0]) {
+      const chunk = this.replayChunks[0];
+      const count = Math.min(
+        output.length - written,
+        chunk.length - this.replayOffset,
+      );
+      output.set(
+        chunk.subarray(this.replayOffset, this.replayOffset + count),
+        written,
+      );
+      written += count;
+      this.replayOffset += count;
+      if (this.replayOffset === chunk.length) {
+        this.replayChunks.shift();
+        this.replayOffset = 0;
+      }
+    }
+  }
+
+  private clearReplay(): void {
+    this.replayChunks = [];
+    this.replayOffset = 0;
+    this.replayOpenedFrame = -1;
   }
 
   stop(): void {
@@ -211,6 +360,10 @@ export class WakeWordListener {
   }
 
   private releaseResources(): void {
+    this.uplinkMode = "closed";
+    this.clearReplay();
+    this.preRollChunks = [];
+    this.preRollSampleCount = 0;
     this.stopMicGraph();
     if (this.kwsStream) {
       try {
@@ -249,6 +402,12 @@ export class WakeWordListener {
     }
     this.processor = null;
     this.source = null;
+    if (this.uplinkDestination) {
+      for (const track of this.uplinkDestination.stream.getTracks()) {
+        track.stop();
+      }
+      this.uplinkDestination = null;
+    }
     if (this.audioCtx) {
       void this.audioCtx.close().catch(() => undefined);
       this.audioCtx = null;

@@ -301,6 +301,7 @@ export function useVoiceSession() {
   const activeCommandIdRef = useRef<string | null>(null);
   const interactionPolicyRef = useRef<VoiceInteractionPolicy>(interactionPolicy);
   const setUplinkEnabledRef = useRef<(enabled: boolean) => void>(() => undefined);
+  const openCommandUplinkRef = useRef<() => void>(() => undefined);
   const commandUplinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
@@ -492,6 +493,7 @@ export function useVoiceSession() {
   const cleanupMedia = useCallback(() => {
     clearCommandUplinkTimer();
     setUplinkEnabledRef.current = () => undefined;
+    openCommandUplinkRef.current = () => undefined;
     webrtcRef.current?.close();
     webrtcRef.current = null;
   }, [clearCommandUplinkTimer]);
@@ -845,7 +847,17 @@ export function useVoiceSession() {
       realtimeTicketCacheRef.current?.seed(ticketResponse);
 
       let sessionStream: MediaStream | null = null;
+      let sessionUsesWakeUplink = false;
       let ttsResumeTimer: ReturnType<typeof setTimeout> | null = null;
+      const setSessionUplinkEnabled = (enabled: boolean) => {
+        if (sessionUsesWakeUplink) {
+          wakeRef.current?.setUplinkEnabled(enabled);
+          return;
+        }
+        for (const track of sessionStream?.getAudioTracks() ?? []) {
+          track.enabled = enabled;
+        }
+      };
       const setMicrophoneInputEnabled = (enabled: boolean) => {
         if (sessionIdRef.current !== session.id) return;
         const stream = sessionStream;
@@ -855,16 +867,12 @@ export function useVoiceSession() {
           ttsResumeTimer = null;
         }
         if (!enabled) {
-          for (const track of stream.getAudioTracks()) {
-            track.enabled = false;
-          }
+          setSessionUplinkEnabled(false);
           return;
         }
         ttsResumeTimer = setTimeout(() => {
           if (sessionIdRef.current !== session.id) return;
-          for (const track of stream.getAudioTracks()) {
-            track.enabled = true;
-          }
+          setSessionUplinkEnabled(true);
           ttsResumeTimer = null;
         }, TTS_INPUT_RESUME_DELAY_MS);
       };
@@ -874,9 +882,7 @@ export function useVoiceSession() {
           clearTimeout(ttsResumeTimer);
           ttsResumeTimer = null;
         }
-        for (const track of sessionStream?.getAudioTracks() ?? []) {
-          track.enabled = enabled;
-        }
+        setSessionUplinkEnabled(enabled);
       };
 
       setStatusMessage("正在建立 WebRTC");
@@ -884,6 +890,17 @@ export function useVoiceSession() {
       await wakeStart;
       ensureStartupActive();
       const wakeTracks = wakeRef.current?.cloneAudioTracksForPeer() ?? [];
+      sessionUsesWakeUplink = wakeTracks.length > 0;
+      openCommandUplinkRef.current = () => {
+        if (sessionIdRef.current !== session.id) return;
+        if (sessionUsesWakeUplink) {
+          wakeRef.current?.openCommandUplink();
+          return;
+        }
+        for (const track of sessionStream?.getAudioTracks() ?? []) {
+          track.enabled = true;
+        }
+      };
       try {
         startupResources.webrtc = await openWebRTCSession({
           ticket,
@@ -1131,7 +1148,7 @@ export function useVoiceSession() {
             effectiveVoiceInteractionPolicy(mode, interactionPolicyRef.current) ===
             "wake_word"
           ) {
-            setUplinkEnabledRef.current(true);
+            openCommandUplinkRef.current();
             armCommandUplinkTimeout(result.signal.signal_id);
           }
           activeCommandIdRef.current = result.signal.signal_id;

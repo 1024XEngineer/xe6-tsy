@@ -16,7 +16,11 @@ import {
   createKeywordSpotter,
   ensureSherpaKwsRuntime,
 } from "./sherpa-runtime";
-import { WakeWordListener } from "./wake-listener";
+import {
+  PRE_ROLL_MAX_REPLAY_MS,
+  WakeWordListener,
+  selectWakePreRoll,
+} from "./wake-listener";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -39,6 +43,34 @@ function fakeStream() {
   } as unknown as MediaStream;
   return { stream, track };
 }
+
+function fakeUplinkDestination(track = fakeStream().track) {
+  return {
+    stream: {
+      getTracks: () => [track],
+      getAudioTracks: () => [track],
+    } as unknown as MediaStream,
+  } as MediaStreamAudioDestinationNode;
+}
+
+describe("selectWakePreRoll", () => {
+  it("starts after a sustained silence before the guarded wake-word tail", () => {
+    const samples = new Float32Array(2500).fill(0.2);
+    samples.fill(0, 300, 600);
+
+    const selected = selectWakePreRoll(samples, 1000);
+
+    expect(selected).toHaveLength(1900);
+    expect(selected[0]).toBeCloseTo(0.2);
+  });
+
+  it("caps replay when no silence boundary is available", () => {
+    const samples = new Float32Array(3000).fill(0.2);
+    expect(selectWakePreRoll(samples, 1000)).toHaveLength(
+      PRE_ROLL_MAX_REPLAY_MS,
+    );
+  });
+});
 
 describe("WakeWordListener", () => {
   beforeEach(() => {
@@ -82,6 +114,12 @@ describe("WakeWordListener", () => {
       stop: vi.fn(),
       clone: vi.fn(() => clone),
     } as unknown as MediaStreamTrack;
+    const uplinkTrack = {
+      id: "uplink",
+      kind: "audio",
+      stop: vi.fn(),
+      clone: vi.fn(() => clone),
+    } as unknown as MediaStreamTrack;
     const stream = {
       getTracks: () => [sourceTrack],
       getAudioTracks: () => [sourceTrack],
@@ -99,6 +137,9 @@ describe("WakeWordListener", () => {
       state: AudioContextState = "running";
       destination = {} as AudioDestinationNode;
       createMediaStreamSource = vi.fn(() => ({ connect: vi.fn() }));
+      createMediaStreamDestination = vi.fn(() =>
+        fakeUplinkDestination(uplinkTrack),
+      );
       createScriptProcessor = vi.fn(() => ({
         onaudioprocess: null,
         connect: vi.fn(),
@@ -118,12 +159,56 @@ describe("WakeWordListener", () => {
 
     expect(listener.getStatus()).toBe("listening");
     expect(listener.cloneAudioTracksForPeer()).toEqual([clone]);
-    expect(sourceTrack.clone).toHaveBeenCalledTimes(1);
+    expect(uplinkTrack.clone).toHaveBeenCalledTimes(1);
     expect(sourceTrack.stop).not.toHaveBeenCalled();
 
     listener.stop();
     expect(sourceTrack.stop).toHaveBeenCalledTimes(1);
+    expect(uplinkTrack.stop).toHaveBeenCalledTimes(1);
     expect(listener.getStatus()).toBe("idle");
+  });
+
+  it("replays buffered wake audio, then supports closed and continuous output", () => {
+    const listener = new WakeWordListener({ onWake: vi.fn() });
+    const harness = listener as unknown as {
+      recordSampleRate: number;
+      audioFrame: number;
+      appendPreRoll(input: Float32Array): void;
+      writeUplinkFrame(
+        input: Float32Array,
+        output: Float32Array,
+        frame: number,
+      ): void;
+    };
+    harness.recordSampleRate = 1000;
+    harness.audioFrame = 1;
+    const buffered = new Float32Array(2500).fill(0.25);
+    buffered.fill(0, 300, 600);
+    harness.appendPreRoll(buffered);
+
+    listener.openCommandUplink();
+    const replay = new Float32Array(4);
+    harness.writeUplinkFrame(new Float32Array([0.8, 0.8, 0.8, 0.8]), replay, 1);
+    expect([...replay]).toEqual([0.25, 0.25, 0.25, 0.25]);
+
+    listener.setUplinkEnabled(false);
+    const closed = new Float32Array(4).fill(1);
+    harness.writeUplinkFrame(new Float32Array(4).fill(0.8), closed, 2);
+    expect([...closed]).toEqual([0, 0, 0, 0]);
+
+    listener.setUplinkEnabled(true);
+    const continuous = new Float32Array(4);
+    harness.writeUplinkFrame(
+      new Float32Array([0.1, 0.2, 0.3, 0.4]),
+      continuous,
+      3,
+    );
+    expect([...continuous]).toEqual([
+      expect.closeTo(0.1),
+      expect.closeTo(0.2),
+      expect.closeTo(0.3),
+      expect.closeTo(0.4),
+    ]);
   });
 
   it("initializes KWS when the browser exposes webdriver", async () => {
@@ -142,6 +227,7 @@ describe("WakeWordListener", () => {
         connect: vi.fn(),
         disconnect: vi.fn(),
       }));
+      createMediaStreamDestination = vi.fn(() => fakeUplinkDestination());
       createScriptProcessor = vi.fn(() => ({
         onaudioprocess: null,
         connect: vi.fn(),

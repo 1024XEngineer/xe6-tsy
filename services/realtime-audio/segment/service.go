@@ -44,6 +44,7 @@ type WakeWordSource interface {
 // dormant state after success or any bounded failure.
 type CommandGate interface {
 	Open(command.OpenRequest) error
+	Replay(context.Context, []audio.Frame) command.Result
 	Consume(context.Context, audio.Frame) command.Result
 	Cancel()
 }
@@ -80,6 +81,10 @@ type Service struct {
 
 // finalizedEventQueueCapacity bounds audio-turn backlog while provider calls run.
 const finalizedEventQueueCapacity = 8
+
+// commandPreRollDuration covers KWS and DataChannel delivery skew while keeping replay memory
+// bounded. Frames are timestamped by the same realtime process, so no client clock is trusted.
+const commandPreRollDuration = 2 * time.Second
 
 func NewService(deps Dependencies) (*Service, error) {
 	if deps.Source == nil || deps.Segmenter == nil || deps.Processor == nil {
@@ -163,11 +168,15 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		<-wakeDone
 	}()
 
+	preRoll := make([]audio.Frame, 0, 128)
 	openPendingWake := func() {
 		for {
 			select {
 			case wake := <-wakeSignals:
-				s.openCommandWindow(request, wake)
+				if s.openCommandWindow(request, wake) {
+					_ = s.command.Replay(runCtx, preRoll)
+					preRoll = preRoll[:0]
+				}
 			default:
 				return
 			}
@@ -202,6 +211,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		// A wake signal may arrive while ReadFrame is blocked. Drain it before
 		// routing this frame so command audio cannot reach ordinary VAD.
 		openPendingWake()
+		preRoll = appendCommandPreRoll(preRoll, frame)
 		if s.command != nil {
 			result := s.command.Consume(runCtx, frame)
 			if result.Consumed {
@@ -270,19 +280,37 @@ type receivedWakeWord struct {
 	receivedAt time.Time
 }
 
-func (s *Service) openCommandWindow(request Request, wake receivedWakeWord) {
+func (s *Service) openCommandWindow(request Request, wake receivedWakeWord) bool {
 	if s == nil || s.command == nil || wake.signal.Validate() != nil || wake.receivedAt.IsZero() {
-		return
+		return false
 	}
 	if err := s.command.Open(command.OpenRequest{
 		SessionID: request.SessionID, CommandID: wake.signal.SignalID,
 		SourceLanguage: request.SourceLanguage, OpenedAt: wake.receivedAt,
+		CaptureFrom: wake.receivedAt.Add(-commandPreRollDuration),
 	}); err != nil {
-		return
+		// A device may retry the same signal_id after uncertain delivery. The Gate recognizes that
+		// retry and leaves both the current command attempt and ordinary VAD state untouched.
+		return false
 	}
 	// Reset before the command frame is consumed. This drops any ordinary
 	// utterance that was in flight when the hardware wake signal arrived.
 	s.segmenter.Reset()
+	return true
+}
+
+func appendCommandPreRoll(frames []audio.Frame, frame audio.Frame) []audio.Frame {
+	frames = append(frames, frame)
+	cutoff := frame.CapturedAt.Add(-commandPreRollDuration)
+	first := 0
+	for first < len(frames) && frames[first].CapturedAt.Before(cutoff) {
+		first++
+	}
+	if first == 0 {
+		return frames
+	}
+	copy(frames, frames[first:])
+	return frames[:len(frames)-first]
 }
 
 func (s *Service) flush(ctx context.Context, lastSeen time.Time) ([]vad.Event, error) {

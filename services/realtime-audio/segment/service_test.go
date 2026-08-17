@@ -154,10 +154,40 @@ func TestServiceQuarantinesAudioAfterWakeWord(t *testing.T) {
 		t.Fatalf("gate opened at = %s, want server receive time %s", gate.openRequest.OpenedAt, base)
 	}
 	if gate.consumed != 1 {
-		t.Fatalf("command frames consumed = %d, want 1", gate.consumed)
+		t.Fatalf("command frames consumed = %d, want current command frame", gate.consumed)
 	}
 	if len(processor.requests) != 1 || len(processor.requests[0].AudioChunks) != 2 {
 		t.Fatalf("ordinary processor requests = %#v, want only post-command turn", processor.requests)
+	}
+}
+
+func TestAppendCommandPreRollKeepsOnlyBoundedFrames(t *testing.T) {
+	base := time.Unix(32, 0).UTC()
+	var frames []audio.Frame
+	for _, offset := range []time.Duration{0, time.Second, 2100 * time.Millisecond, 2500 * time.Millisecond} {
+		frames = appendCommandPreRoll(frames, testFrame(t, 1, base.Add(offset)))
+	}
+	if len(frames) != 3 || !frames[0].CapturedAt.Equal(base.Add(time.Second)) ||
+		!frames[2].CapturedAt.Equal(base.Add(2500*time.Millisecond)) {
+		t.Fatalf("pre-roll frames = %#v", frames)
+	}
+}
+
+func TestOpenCommandWindowLeavesStateUntouchedForDuplicateSignal(t *testing.T) {
+	base := time.Unix(33, 0).UTC()
+	gate := &recordingGate{openErr: command.ErrDuplicateOpen}
+	service := newTestServiceWithDeps(t, &fakeSource{}, &fakeProcessor{}, gate, nil, func() time.Time { return base })
+	if service.openCommandWindow(Request{SessionID: "session-1"}, receivedWakeWord{
+		signal: realtimev1.WakeWordDetectedSignal{
+			Type: realtimev1.WakeWordDetectedType, EventVersion: 1,
+			SignalID: "wake-1", DetectedAt: base,
+		},
+		receivedAt: base,
+	}) {
+		t.Fatal("duplicate signal reopened command window")
+	}
+	if gate.openCalls != 1 || gate.active {
+		t.Fatalf("duplicate signal changed gate state: %#v", gate)
 	}
 }
 
@@ -350,11 +380,25 @@ func (s *wakeAwareSource) Close() error { return nil }
 
 type recordingGate struct {
 	openRequest command.OpenRequest
+	openErr     error
+	openCalls   int
 	active      bool
 	consumed    int
 }
 
+func (g *recordingGate) Replay(_ context.Context, frames []audio.Frame) command.Result {
+	if !g.active || len(frames) == 0 {
+		return command.Result{State: command.StateDormant}
+	}
+	g.consumed += len(frames)
+	return command.Result{Consumed: true, State: command.StateCapturing}
+}
+
 func (g *recordingGate) Open(request command.OpenRequest) error {
+	g.openCalls++
+	if g.openErr != nil {
+		return g.openErr
+	}
 	g.openRequest = request
 	g.active = true
 	return nil

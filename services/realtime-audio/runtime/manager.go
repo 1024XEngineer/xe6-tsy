@@ -655,6 +655,10 @@ func (g runtimeCommandGate) Consume(ctx context.Context, frame audio.Frame) comm
 	return g.gate.Consume(ctx, frame)
 }
 
+func (g runtimeCommandGate) Replay(ctx context.Context, frames []audio.Frame) command.Result {
+	return g.gate.Replay(ctx, frames)
+}
+
 func (g runtimeCommandGate) Cancel() {
 	g.gate.Cancel()
 }

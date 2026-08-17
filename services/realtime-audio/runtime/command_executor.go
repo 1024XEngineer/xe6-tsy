@@ -18,7 +18,9 @@ import (
 var (
 	ErrCommandLanguageClarification = errors.New("command language direction requires clarification")
 	ErrCommandLanguageInvalid       = errors.New("command language direction is invalid")
+	ErrCommandLanguageSession       = errors.New("command language configuration belongs to another session")
 	ErrCommandConfiguratorRequired  = errors.New("command language configurator is required")
+	ErrCommandConfigResultInvalid   = errors.New("command language configuration result is invalid")
 )
 
 // commandExecutor applies validated intents through existing control-plane boundaries. Language
@@ -140,6 +142,9 @@ func (e commandExecutor) prepareInterpretation(ctx context.Context, request comm
 	if err != nil {
 		return fmt.Errorf("read current command language configuration: %w", err)
 	}
+	if snapshot.SessionID != request.SessionID {
+		return fmt.Errorf("%w: got %q for %q", ErrCommandLanguageSession, snapshot.SessionID, request.SessionID)
+	}
 	arguments, explicit, err := resolveLanguageArguments(request.Command.Arguments, snapshot)
 	if err != nil {
 		if errors.Is(err, ErrCommandLanguageClarification) {
@@ -156,12 +161,16 @@ func (e commandExecutor) prepareInterpretation(ctx context.Context, request comm
 	if e.configurator == nil {
 		return ErrCommandConfiguratorRequired
 	}
-	_, err = e.configurator.Configure(ctx, languagesv1.CommandConfigRequest{
+	result, err := e.configurator.Configure(ctx, languagesv1.CommandConfigRequest{
 		SessionID: request.SessionID, CommandID: request.CommandID,
 		SourceLanguage: arguments.SourceLanguage, TargetLanguage: arguments.TargetLanguage,
 	})
 	if err != nil {
 		return fmt.Errorf("configure command language direction: %w", err)
+	}
+	if result.SessionID != request.SessionID || result.CommandID != request.CommandID || result.Version <= 0 {
+		return fmt.Errorf("%w: got session %q command %q version %d",
+			ErrCommandConfigResultInvalid, result.SessionID, result.CommandID, result.Version)
 	}
 	return nil
 }

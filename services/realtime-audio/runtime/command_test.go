@@ -130,6 +130,47 @@ func TestCommandExecutorDoesNotSwitchWhenLanguageConfigurationFails(t *testing.T
 	}
 }
 
+func TestCommandExecutorRejectsLanguageSnapshotFromAnotherSession(t *testing.T) {
+	t.Parallel()
+	sink := &recordingModeChangedSink{}
+	manager := commandTestManager(t, realtimev1.ModeAssistant, sink)
+	snapshot := session.LanguageConfigSnapshot{
+		SessionID: "session-2", Version: 1, Status: "active",
+		LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+	}
+	configurator := &recordingLanguageConfigurator{}
+	_, err := (commandExecutor{
+		manager: manager, languages: commandLanguageReaderWith(snapshot), configurator: configurator,
+	}).ExecuteCommand(t.Context(), interpretationRequest(command.Arguments{SourceLanguage: "zh-CN"}))
+	if !errors.Is(err, ErrCommandLanguageSession) {
+		t.Fatalf("ExecuteCommand() error = %v, want session mismatch", err)
+	}
+	if len(configurator.requests) != 0 || len(sink.Attempts()) != 0 ||
+		manager.entries["session-1"].mode.Snapshot().ActiveMode != realtimev1.ModeAssistant {
+		t.Fatalf("mismatched snapshot caused side effects: requests=%#v attempts=%#v", configurator.requests, sink.Attempts())
+	}
+}
+
+func TestCommandExecutorRejectsInvalidLanguageConfigurationResult(t *testing.T) {
+	t.Parallel()
+	sink := &recordingModeChangedSink{}
+	manager := commandTestManager(t, realtimev1.ModeAssistant, sink)
+	configurator := command.LanguageConfiguratorFunc(func(context.Context, languagesv1.CommandConfigRequest) (languagesv1.CommandConfigResult, error) {
+		return languagesv1.CommandConfigResult{SessionID: "session-2", CommandID: "signal-1", Version: 2}, nil
+	})
+	_, err := (commandExecutor{
+		manager: manager, languages: commandLanguageReader(), configurator: configurator,
+	}).ExecuteCommand(t.Context(), interpretationRequest(command.Arguments{
+		SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+	}))
+	if !errors.Is(err, ErrCommandConfigResultInvalid) {
+		t.Fatalf("ExecuteCommand() error = %v, want invalid configuration result", err)
+	}
+	if len(sink.Attempts()) != 0 || manager.entries["session-1"].mode.Snapshot().ActiveMode != realtimev1.ModeAssistant {
+		t.Fatalf("invalid result changed mode: state=%#v attempts=%#v", manager.entries["session-1"].mode.Snapshot(), sink.Attempts())
+	}
+}
+
 func TestCommandExecutorReplaysConfigurationAfterModeCASFailure(t *testing.T) {
 	t.Parallel()
 	dependencyErr := errors.New("outbox unavailable")

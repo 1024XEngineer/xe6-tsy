@@ -12,7 +12,7 @@ export type WakeWordDetectedSignal = {
 
 type WakeWordSignalSession = Pick<
   import("./webrtc-session").WebRTCSessionHandles,
-  "localStream" | "dataChannel"
+  "wakeWordChannel"
 >;
 
 type WakeWordSignalDependencies = {
@@ -63,13 +63,7 @@ export function sendWakeWordDetectedSignal(
     dependencies.cancelPlayback ?? cancelAllTTSAudioPlayback;
   cancelPlayback();
 
-  // TTS playback normally mutes uplink tracks. Wake audio must be available to
-  // Command Gate immediately, without waiting for the normal resume delay.
-  for (const track of session.localStream.getAudioTracks()) {
-    track.enabled = true;
-  }
-
-  const channel = session.dataChannel;
+  const channel = session.wakeWordChannel;
   if (!channel || channel.readyState !== "open") {
     return { ok: false, reason: "data_channel_not_open" };
   }

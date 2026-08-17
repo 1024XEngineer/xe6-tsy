@@ -11,7 +11,8 @@ export type WebRTCSessionHandles = {
   peerConnection: RTCPeerConnection;
   localStream: MediaStream;
   remoteAudio: HTMLAudioElement;
-  dataChannel: RTCDataChannel | null;
+  wakeWordChannel: RTCDataChannel;
+  controlDataChannel: RTCDataChannel;
   close: () => void;
 };
 
@@ -24,7 +25,7 @@ export type WebRTCSessionOptions = {
    * Optional mic tracks already opened (e.g. wake-word listener clones).
    * Ownership transfers to this function immediately: close() and failure
    * cleanup always stop these tracks. Callers must pass clones so the
-   * always-on wake stream stays alive.
+   * session-scoped wake stream stays alive until the session ends.
    */
   audioTracks?: MediaStreamTrack[];
 };
@@ -83,14 +84,59 @@ function waitForPeerConnectionConnected(
   });
 }
 
+function waitForDataChannelOpen(
+  channel: RTCDataChannel,
+  timeoutMs: number,
+): Promise<void> {
+  if (channel.readyState === "open") return Promise.resolve();
+  if (channel.readyState === "closing" || channel.readyState === "closed") {
+    return Promise.reject(
+      new Error(`DataChannel ${channel.label} 已关闭，无法启动语音命令入口`),
+    );
+  }
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      cleanup();
+      reject(
+        new Error(
+          `DataChannel ${channel.label} 未在 ${timeoutMs}ms 内打开（当前=${channel.readyState}）`,
+        ),
+      );
+    }, timeoutMs);
+    const onOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const onFailure = () => {
+      cleanup();
+      reject(new Error(`DataChannel ${channel.label} 在打开前失效`));
+    };
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      channel.removeEventListener("open", onOpen);
+      channel.removeEventListener("close", onFailure);
+      channel.removeEventListener("error", onFailure);
+    };
+    channel.addEventListener("open", onOpen);
+    channel.addEventListener("close", onFailure);
+    channel.addEventListener("error", onFailure);
+  });
+}
+
 function closePartialSession(parts: {
   peerConnection?: RTCPeerConnection | null;
   localStream?: MediaStream | null;
   remoteAudio?: HTMLAudioElement | null;
-  dataChannel?: RTCDataChannel | null;
+  wakeWordChannel?: RTCDataChannel | null;
+  controlDataChannel?: RTCDataChannel | null;
 }): void {
   try {
-    parts.dataChannel?.close();
+    parts.wakeWordChannel?.close();
+  } catch {
+    // ignore
+  }
+  try {
+    parts.controlDataChannel?.close();
   } catch {
     // ignore
   }
@@ -116,7 +162,8 @@ export async function openWebRTCSession(
   let peerConnection: RTCPeerConnection | null = null;
   let localStream: MediaStream | null = null;
   let remoteAudio: HTMLAudioElement | null = null;
-  let dataChannel: RTCDataChannel | null = null;
+  let wakeWordChannel: RTCDataChannel | null = null;
+  let controlDataChannel: RTCDataChannel | null = null;
 
   // Claim provided clones before any await so getWebRTCConfig / later failures
   // still run closePartialSession and stop leaked mic tracks.
@@ -165,7 +212,9 @@ export async function openWebRTCSession(
       }
     };
 
-    const label = config.data_channel.label || "translation-events";
+    const eventLabel = config.data_channel.label || "translation-events";
+    const controlLabel =
+      config.control_data_channel?.label || "lingow-control-v1";
     const bindDataChannel = (channel: RTCDataChannel) => {
       channel.onmessage = (event) => {
         if (!options.onDataMessage) return;
@@ -176,16 +225,20 @@ export async function openWebRTCSession(
         }
       };
     };
-    // Local client channel (control). Server also opens translation-events;
-    // subscribe via ondatachannel so mock FinalTurn events are received.
-    dataChannel = peerConnection.createDataChannel(label, {
+    // Realtime receives wake_word.detected on the event label and typed mode
+    // controls on a separate protocol channel. Both must exist in the Offer.
+    wakeWordChannel = peerConnection.createDataChannel(eventLabel, {
       ordered: config.data_channel.ordered,
     });
-    bindDataChannel(dataChannel);
+    controlDataChannel = peerConnection.createDataChannel(controlLabel, {
+      ordered: config.control_data_channel?.ordered ?? true,
+    });
+    bindDataChannel(wakeWordChannel);
+    bindDataChannel(controlDataChannel);
     peerConnection.ondatachannel = (event) => {
       if (
-        event.channel.label === label ||
-        event.channel.label === "translation-events"
+        event.channel.label === eventLabel ||
+        event.channel.label === controlLabel
       ) {
         bindDataChannel(event.channel);
       }
@@ -267,23 +320,30 @@ export async function openWebRTCSession(
       options.sessionId,
       20_000,
     );
+    await Promise.all([
+      waitForDataChannelOpen(wakeWordChannel, 10_000),
+      waitForDataChannelOpen(controlDataChannel, 10_000),
+    ]);
 
     const pc = peerConnection;
     const stream = localStream;
     const audio = remoteAudio;
-    const channel = dataChannel;
+    const wakeChannel = wakeWordChannel;
+    const controlChannel = controlDataChannel;
     return {
       connectionId,
       peerConnection: pc,
       localStream: stream,
       remoteAudio: audio,
-      dataChannel: channel,
+      wakeWordChannel: wakeChannel,
+      controlDataChannel: controlChannel,
       close: () => {
         closePartialSession({
           peerConnection: pc,
           localStream: stream,
           remoteAudio: audio,
-          dataChannel: channel,
+          wakeWordChannel: wakeChannel,
+          controlDataChannel: controlChannel,
         });
       },
     };
@@ -292,7 +352,8 @@ export async function openWebRTCSession(
       peerConnection,
       localStream,
       remoteAudio,
-      dataChannel,
+      wakeWordChannel,
+      controlDataChannel,
     });
     throw error;
   }

@@ -358,6 +358,11 @@ func (g *Gate) consumeLocked(ctx context.Context, frame audio.Frame, replayed bo
 			if failure := g.startCaptureLocked(ctx); failure != FailureNone {
 				return g.failLocked(failure)
 			}
+			for _, prefix := range event.Frames {
+				if err := g.stream.PushAudio(g.attemptCtx, prefix.PCM); err != nil {
+					return g.failLocked(g.classifyFailure(ctx, FailureASR))
+				}
+			}
 			if g.silenceTimer != nil {
 				g.silenceTimer.Stop()
 				g.silenceTimer = nil

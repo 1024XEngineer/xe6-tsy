@@ -350,15 +350,19 @@ func TestGateAcceptsBufferedFrameFromCaptureBoundary(t *testing.T) {
 }
 
 func TestGateReplayAndLiveAudioShareUtteranceBoundary(t *testing.T) {
-	classifier := speechSequence{true, true, false}
+	classifier := speechSequence{false, true, false}
 	executor := &recordingExecutor{}
+	provider := &recordingAudioProvider{stream: &recordingAudioStream{
+		final: asr.FinalResult{Text: "停止翻译"},
+	}}
 	g, err := NewGate(Dependencies{
 		Classifier:  &classifier,
-		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "停止翻译"}}),
+		ASR:         provider,
 		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t), Executor: executor,
 	}, Options{
 		WindowTTL: 3 * time.Second, NoSpeechTimeout: time.Second,
 		MaxAudioDuration: 900 * time.Millisecond, EndSilence: 100 * time.Millisecond,
+		PrefixPadding: 300 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewGate() error = %v", err)
@@ -368,10 +372,12 @@ func TestGateReplayAndLiveAudioShareUtteranceBoundary(t *testing.T) {
 	if err := g.Open(request); err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	for _, offset := range []time.Duration{-500 * time.Millisecond, -100 * time.Millisecond} {
-		result := g.Replay(t.Context(), []audio.Frame{testFrame(t, testStart.Add(offset), 300*time.Millisecond)})
-		if !result.Consumed || result.State != StateCapturing {
-			t.Fatalf("Replay() = %#v, want capturing", result)
+	for index, offset := range []time.Duration{-300 * time.Millisecond, -100 * time.Millisecond} {
+		frame := testFrame(t, testStart.Add(offset), 100*time.Millisecond)
+		frame.PCM[0] = byte(index + 1)
+		result := g.Replay(t.Context(), []audio.Frame{frame})
+		if !result.Consumed || index == 0 && result.State != StateArmed || index == 1 && result.State != StateCapturing {
+			t.Fatalf("Replay(%d) = %#v", index, result)
 		}
 	}
 	result := g.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
@@ -381,6 +387,9 @@ func TestGateReplayAndLiveAudioShareUtteranceBoundary(t *testing.T) {
 	waitGateRecognition(t, g)
 	if len(executor.requests) != 1 {
 		t.Fatalf("executor requests = %#v, want one command", executor.requests)
+	}
+	if len(provider.stream.audio) != 2 || provider.stream.audio[0][0] != 1 || provider.stream.audio[1][0] != 2 {
+		t.Fatalf("ASR audio = %#v, want prefix before first speech frame", provider.stream.audio)
 	}
 }
 
@@ -871,6 +880,36 @@ type blockingASRProvider struct {
 	started  chan struct{}
 	canceled chan struct{}
 }
+
+type recordingAudioProvider struct {
+	stream *recordingAudioStream
+}
+
+func (p *recordingAudioProvider) StartStream(context.Context, asr.StreamRequest) (asr.Stream, error) {
+	return p.stream, nil
+}
+
+type recordingAudioStream struct {
+	audio [][]byte
+	final asr.FinalResult
+}
+
+func (s *recordingAudioStream) PushAudio(_ context.Context, pcm []byte) error {
+	s.audio = append(s.audio, append([]byte(nil), pcm...))
+	return nil
+}
+
+func (s *recordingAudioStream) Events() <-chan asr.Event {
+	events := make(chan asr.Event)
+	close(events)
+	return events
+}
+
+func (s *recordingAudioStream) Finish(context.Context) (asr.FinalResult, error) {
+	return s.final, nil
+}
+
+func (s *recordingAudioStream) Close() error { return nil }
 
 func (p *blockingASRProvider) StartStream(ctx context.Context, _ asr.StreamRequest) (asr.Stream, error) {
 	close(p.started)

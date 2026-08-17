@@ -98,6 +98,9 @@ func TestSegmenterPrependsRecentAudioBeforeSpeech(t *testing.T) {
 	if len(events) != 2 || events[0].Type != EventOpened {
 		t.Fatalf("Push(speech) events = %#v, want opened and audio", events)
 	}
+	if len(events[0].Frames) != 2 || events[0].Frames[0].PCM[0] != 2 || events[0].Frames[1].PCM[0] != 3 {
+		t.Fatalf("opened prefix frames = %#v, want retained frames 2 and 3", events[0].Frames)
+	}
 
 	segmenter.classifier = fakeClassifier{speech: false}
 	ended, err := segmenter.Push(context.Background(), testFrame(t, 5, base.Add(time.Second)))

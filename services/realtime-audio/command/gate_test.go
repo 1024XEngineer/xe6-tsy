@@ -1,8 +1,11 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,10 +41,11 @@ func TestGateExecutesAllowlistedCommandsAndQuarantinesAudio(t *testing.T) {
 				if index < 2 && result.State == StateDormant {
 					t.Fatalf("Consume(%d).State = dormant before recognition", index)
 				}
-				if index == 2 && (result.State != StateDormant || result.Executed == nil || result.Executed.TargetMode != test.want) {
-					t.Fatalf("final Consume() = %#v, want executed %q", result, test.want)
+				if index == 2 && result.State != StateRecognizing {
+					t.Fatalf("final Consume() = %#v, want recognizing", result)
 				}
 			}
+			waitGateRecognition(t, gate)
 			if len(executor.requests) != 1 || executor.requests[0].Command.TargetMode != test.want {
 				t.Fatalf("executor requests = %#v, want one %q command", executor.requests, test.want)
 			}
@@ -49,6 +53,128 @@ func TestGateExecutesAllowlistedCommandsAndQuarantinesAudio(t *testing.T) {
 				t.Fatal("dormant gate consumed ordinary audio")
 			}
 		})
+	}
+}
+
+func TestGatePublishesTypedResultWithoutReexecutingOnDeliveryFailure(t *testing.T) {
+	executor := &recordingExecutor{}
+	results := &recordingResultSink{err: errors.New("data channel closed")}
+	classifier := speechSequence{true, false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
+			Final: asr.FinalResult{Text: "开始同声传译"},
+		}),
+		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t), Executor: executor,
+		Results: results, Now: func() time.Time { return testStart.Add(time.Second) },
+	}, Options{
+		WindowTTL: 1500 * time.Millisecond, NoSpeechTimeout: 500 * time.Millisecond,
+		MaxAudioDuration: 500 * time.Millisecond, EndSilence: 250 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	openTestGate(t, gate)
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+	result := gate.Consume(t.Context(), testFrame(t, testStart.Add(400*time.Millisecond), 100*time.Millisecond))
+	if result.State != StateRecognizing {
+		t.Fatalf("Consume() = %#v, want recognizing", result)
+	}
+	waitGateRecognition(t, gate)
+	if len(executor.requests) != 1 || len(results.events) != 1 {
+		t.Fatalf("result=%#v executor=%#v events=%#v", result, executor.requests, results.events)
+	}
+	event := results.events[0]
+	if event.Status != realtimev1.CommandResultApplied || event.CommandID != "command-1" ||
+		event.TargetMode != realtimev1.ModeInterpretation || event.Generation != 2 {
+		t.Fatalf("command result = %#v", event)
+	}
+	if err := gate.Open(validOpenRequest()); !errors.Is(err, ErrDuplicateOpen) {
+		t.Fatalf("duplicate Open() error = %v, want ErrDuplicateOpen", err)
+	}
+	if len(executor.requests) != 1 {
+		t.Fatalf("delivery failure or duplicate wake reexecuted command: %#v", executor.requests)
+	}
+}
+
+func TestGateReportsEmptyPostWakeASRWithoutSendingItToInterpreter(t *testing.T) {
+	var logs bytes.Buffer
+	results := &recordingResultSink{}
+	interpreterCalls := 0
+	classifier := speechSequence{true, false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier,
+		ASR:        asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "小灵小灵"}}),
+		Interpreter: InterpreterFunc(func(context.Context, InterpretRequest) (Candidate, error) {
+			interpreterCalls++
+			return Candidate{}, nil
+		}),
+		Validator: testGateRegistry(t), Executor: &recordingExecutor{}, Results: results,
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)), Now: func() time.Time { return testStart.Add(time.Second) },
+	}, Options{
+		WindowTTL: 1500 * time.Millisecond, NoSpeechTimeout: 500 * time.Millisecond,
+		MaxAudioDuration: 500 * time.Millisecond, EndSilence: 250 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	openTestGate(t, gate)
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(400*time.Millisecond), 100*time.Millisecond))
+	waitGateRecognition(t, gate)
+	if interpreterCalls != 0 || len(results.events) != 1 {
+		t.Fatalf("interpreter calls = %d, events = %#v", interpreterCalls, results.events)
+	}
+	if got := results.events[0]; got.Status != realtimev1.CommandResultFailed ||
+		got.Message != "没有识别到唤醒词后的问题，请稍作停顿后重试" {
+		t.Fatalf("command result = %#v", got)
+	}
+	if output := logs.String(); !strings.Contains(output, "stage=asr_empty") || strings.Contains(output, "小灵小灵") {
+		t.Fatalf("diagnostic log = %q", output)
+	}
+}
+
+func TestGatePublishesClarificationAndKeepsRuntimeUsable(t *testing.T) {
+	executor := &recordingExecutor{err: ErrClarificationRequired}
+	results := &recordingResultSink{}
+	classifier := speechSequence{true, false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
+			Final: asr.FinalResult{Text: "开始同声传译"},
+		}),
+		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t), Executor: executor,
+		Results: results, Now: func() time.Time { return testStart.Add(time.Second) },
+	}, Options{
+		WindowTTL: 1500 * time.Millisecond, NoSpeechTimeout: 500 * time.Millisecond,
+		MaxAudioDuration: 500 * time.Millisecond, EndSilence: 250 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	openTestGate(t, gate)
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+	result := gate.Consume(t.Context(), testFrame(t, testStart.Add(400*time.Millisecond), 100*time.Millisecond))
+	if result.State != StateRecognizing {
+		t.Fatalf("Consume() = %#v, want recognizing", result)
+	}
+	waitGateRecognition(t, gate)
+	if gate.State() != StateDormant || len(results.events) != 1 ||
+		results.events[0].Status != realtimev1.CommandResultClarificationRequired {
+		t.Fatalf("result=%#v state=%q events=%#v", result, gate.State(), results.events)
+	}
+	if gate.Consume(t.Context(), testFrame(t, testStart.Add(time.Second), 100*time.Millisecond)).Consumed {
+		t.Fatal("single-command failure left ordinary audio quarantined")
+	}
+}
+
+func TestExecutionFailureFeedbackDistinguishesAssistantQueries(t *testing.T) {
+	t.Parallel()
+	status, message := executionFailureFeedback(Command{Action: ActionAssistantQuery}, errors.New("assistant unavailable"))
+	if status != realtimev1.CommandResultFailed || message != "助手暂时无法回答，请重试" {
+		t.Fatalf("assistant failure feedback = %q/%q", status, message)
+	}
+	status, message = executionFailureFeedback(Command{Action: ActionActivateMode}, errors.New("mode unavailable"))
+	if status != realtimev1.CommandResultFailed || message != "命令未执行，原模式保持不变" {
+		t.Fatalf("mode failure feedback = %q/%q", status, message)
 	}
 }
 
@@ -122,11 +248,182 @@ func TestGateOperationalFailuresRestoreDormant(t *testing.T) {
 			if test.asrConfig.StartErr == nil && !test.cancel {
 				result = gate.Consume(ctx, testFrame(t, testStart.Add(500*time.Millisecond), 100*time.Millisecond))
 			}
-			if !result.Consumed || result.State != StateDormant || result.Failure != test.want {
+			if result.State == StateRecognizing {
+				waitGateRecognition(t, gate)
+			} else if !result.Consumed || result.State != StateDormant || result.Failure != test.want {
 				t.Fatalf("failure Consume() = %#v, want consumed dormant %q", result, test.want)
 			}
 			if gate.State() != StateDormant {
 				t.Fatalf("State() = %q, want dormant", gate.State())
+			}
+		})
+	}
+}
+
+func TestGatePassesFinalASRIdentityToInterpreter(t *testing.T) {
+	t.Parallel()
+	var received InterpretRequest
+	interpreter := InterpreterFunc(func(_ context.Context, request InterpretRequest) (Candidate, error) {
+		received = request
+		return Candidate{Text: request.Text, Action: ActionReturnToAssistant, TargetMode: realtimev1.ModeAssistant}, nil
+	})
+	executor := &recordingExecutor{}
+	classifier := speechSequence{true, false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier,
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+			Text: "回到助手", SourceLanguage: "zh-CN",
+		}}),
+		Interpreter: interpreter, Validator: testGateRegistry(t), Executor: executor,
+	}, Options{
+		WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond,
+		MaxAudioDuration: 800 * time.Millisecond, EndSilence: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	openTestGate(t, gate)
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+	result := gate.Consume(t.Context(), testFrame(t, testStart.Add(500*time.Millisecond), 100*time.Millisecond))
+	if result.State != StateRecognizing {
+		t.Fatalf("Consume() = %#v, want recognizing", result)
+	}
+	waitGateRecognition(t, gate)
+	if len(executor.requests) != 1 {
+		t.Fatalf("Consume() = %#v, executor = %#v", result, executor.requests)
+	}
+	if received.SessionID != "session-1" || received.CommandID != "command-1" || received.Text != "回到助手" || received.Language != "zh-CN" {
+		t.Fatalf("Interpret request = %#v", received)
+	}
+}
+
+func TestGateStripsFixedWakeWordFromContinuousCommand(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "continuous", text: "小灵小灵开始同声传译，中译英", want: "开始同声传译，中译英"},
+		{name: "pre-roll speech", text: "刚才还在聊天小灵小灵，结束同声传译", want: "结束同声传译"},
+		{name: "alias", text: "小林小林 停止翻译", want: "停止翻译"},
+		{name: "already stripped", text: "开始同声传译，中译英", want: "开始同声传译，中译英"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripWakeWordPrefix(tt.text); got != tt.want {
+				t.Fatalf("stripWakeWordPrefix(%q) = %q, want %q", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGateAcceptsBufferedFrameFromCaptureBoundary(t *testing.T) {
+	t.Parallel()
+	gate := newTestGate(t, speechSequence{true}, asr.FakeProviderConfig{}, &recordingExecutor{})
+	request := validOpenRequest()
+	request.OpenedAt = testStart.Add(time.Second)
+	request.CaptureFrom = testStart.Add(-time.Second)
+	if err := gate.Open(request); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	result := gate.Consume(t.Context(), testFrame(t, testStart, 100*time.Millisecond))
+	if !result.Consumed || result.State != StateCapturing {
+		t.Fatalf("buffered Consume() = %#v, want capturing", result)
+	}
+}
+
+func TestGateReplayDoesNotConsumeLiveAudioLimit(t *testing.T) {
+	classifier := speechSequence{true, true, true, true, false}
+	executor := &recordingExecutor{}
+	g, err := NewGate(Dependencies{
+		Classifier:  &classifier,
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "停止翻译"}}),
+		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t), Executor: executor,
+	}, Options{
+		WindowTTL: 3 * time.Second, NoSpeechTimeout: time.Second,
+		MaxAudioDuration: 900 * time.Millisecond, EndSilence: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	request := validOpenRequest()
+	request.CaptureFrom = testStart.Add(-time.Second)
+	if err := g.Open(request); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	for _, offset := range []time.Duration{-500 * time.Millisecond, -100 * time.Millisecond} {
+		result := g.Replay(t.Context(), []audio.Frame{testFrame(t, testStart.Add(offset), 300*time.Millisecond)})
+		if !result.Consumed || result.State != StateCapturing {
+			t.Fatalf("Replay() = %#v, want capturing", result)
+		}
+	}
+	for _, frame := range []struct {
+		offset time.Duration
+		length time.Duration
+	}{
+		{100 * time.Millisecond, 400 * time.Millisecond},
+		{600 * time.Millisecond, 400 * time.Millisecond},
+		{1100 * time.Millisecond, 100 * time.Millisecond},
+	} {
+		result := g.Consume(t.Context(), testFrame(t, testStart.Add(frame.offset), frame.length))
+		if !result.Consumed || result.State == StateDormant && result.Failure == FailureAudioTooLong {
+			t.Fatalf("Consume(%s) = %#v, replay incorrectly consumed live limit", frame.offset, result)
+		}
+	}
+	waitGateRecognition(t, g)
+	if len(executor.requests) != 1 {
+		t.Fatalf("executor requests = %#v, want one command", executor.requests)
+	}
+}
+
+func TestGateClassifiesInterpreterAndValidatorFailures(t *testing.T) {
+	t.Parallel()
+	dependencyErr := errors.New("semantic provider failed")
+	tests := []struct {
+		name        string
+		interpreter Interpreter
+		validator   Validator
+		want        Failure
+	}{
+		{
+			name: "provider failure",
+			interpreter: InterpreterFunc(func(context.Context, InterpretRequest) (Candidate, error) {
+				return Candidate{}, dependencyErr
+			}),
+			validator: testGateRegistry(t), want: FailureInterpretation,
+		},
+		{
+			name: "candidate rejected",
+			interpreter: InterpreterFunc(func(context.Context, InterpretRequest) (Candidate, error) {
+				return Candidate{Action: ActionActivateMode, TargetMode: "english_practice"}, nil
+			}),
+			validator: testGateRegistry(t), want: FailureNotAllowed,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			classifier := speechSequence{true, false}
+			gate, err := NewGate(Dependencies{
+				Classifier:  &classifier,
+				ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "自然语言命令"}}),
+				Interpreter: test.interpreter, Validator: test.validator, Executor: &recordingExecutor{},
+			}, Options{
+				WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond,
+				MaxAudioDuration: 800 * time.Millisecond, EndSilence: 100 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("NewGate() error = %v", err)
+			}
+			openTestGate(t, gate)
+			gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+			result := gate.Consume(t.Context(), testFrame(t, testStart.Add(500*time.Millisecond), 100*time.Millisecond))
+			if result.State != StateRecognizing {
+				t.Fatalf("Consume() = %#v, want recognizing before %q", result, test.want)
+			}
+			waitGateRecognition(t, gate)
+			if gate.State() != StateDormant {
+				t.Fatalf("State() = %q, want dormant after %q", gate.State(), test.want)
 			}
 		})
 	}
@@ -146,6 +443,230 @@ func TestOpenReplacesIncompleteCommandWindow(t *testing.T) {
 	}
 	if gate.State() != StateArmed {
 		t.Fatalf("State() = %q, want armed", gate.State())
+	}
+}
+
+func TestOpenCancelsRecognizingAttemptWithoutPublishingLateResult(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	interpreter := InterpreterFunc(func(ctx context.Context, _ InterpretRequest) (Candidate, error) {
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		return Candidate{}, ctx.Err()
+	})
+	results := &synchronizedResultSink{published: make(chan realtimev1.CommandResultEvent, 4)}
+	classifier := speechSequence{true, false, true, false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier,
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
+			Final: asr.FinalResult{Text: "开始同声传译"},
+		}),
+		Interpreter: interpreter, Validator: testGateRegistry(t), Executor: &recordingExecutor{}, Results: results,
+	}, Options{
+		WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond,
+		MaxAudioDuration: 800 * time.Millisecond, EndSilence: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	openTestGate(t, gate)
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+	if got := gate.Consume(t.Context(), testFrame(t, testStart.Add(500*time.Millisecond), 100*time.Millisecond)); got.State != StateRecognizing {
+		t.Fatalf("Consume() = %#v, want recognizing", got)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("interpreter did not start")
+	}
+
+	second := validOpenRequest()
+	second.CommandID = "command-2"
+	second.OpenedAt = testStart.Add(600 * time.Millisecond)
+	if err := gate.Open(second); err != nil {
+		t.Fatalf("Open(second) error = %v", err)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("new wake did not cancel the recognizing attempt")
+	}
+	waitForCommandResult(t, results.published, "command-1", realtimev1.CommandResultFailed)
+	select {
+	case event := <-results.published:
+		t.Fatalf("old recognition published a late result: %#v", event)
+	default:
+	}
+	if gate.State() != StateArmed {
+		t.Fatalf("State() = %q, want second attempt armed", gate.State())
+	}
+}
+
+func TestGateCaptureDeadlineDoesNotCancelAssistantProcessing(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	interpreter := InterpreterFunc(func(ctx context.Context, request InterpretRequest) (Candidate, error) {
+		close(started)
+		select {
+		case <-release:
+			return Candidate{
+				Text: request.Text, Action: ActionAssistantQuery, TargetMode: realtimev1.ModeAssistant,
+			}, nil
+		case <-ctx.Done():
+			return Candidate{}, ctx.Err()
+		}
+	})
+	executor := &recordingExecutor{}
+	classifier := speechSequence{true, false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier,
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
+			Final: asr.FinalResult{Text: "今天的天气怎么样"},
+		}),
+		Interpreter: interpreter, Validator: testGateRegistry(t), Executor: executor,
+	}, Options{
+		WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond,
+		MaxAudioDuration: 800 * time.Millisecond, EndSilence: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	var timers []*manualTimer
+	gate.afterFunc = func(_ time.Duration, callback func()) commandTimer {
+		timer := &manualTimer{callback: callback}
+		timers = append(timers, timer)
+		return timer
+	}
+	openTestGate(t, gate)
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+	result := gate.Consume(t.Context(), testFrame(t, testStart.Add(500*time.Millisecond), 100*time.Millisecond))
+	if result.State != StateRecognizing {
+		t.Fatalf("Consume() = %#v, want recognizing", result)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("interpreter did not start")
+	}
+	timers[0].Fire()
+	if gate.State() != StateRecognizing {
+		t.Fatalf("capture deadline changed processing state to %q", gate.State())
+	}
+	close(release)
+	waitGateRecognition(t, gate)
+	if len(executor.requests) != 1 || executor.requests[0].Command.Action != ActionAssistantQuery {
+		t.Fatalf("executor requests = %#v, want assistant query", executor.requests)
+	}
+}
+
+func TestGateStartsOnlyOneRecognitionWorkerWhileLaterFramesArrive(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	interpreter := InterpreterFunc(func(ctx context.Context, request InterpretRequest) (Candidate, error) {
+		started <- struct{}{}
+		select {
+		case <-release:
+			return Candidate{
+				Text: request.Text, Action: ActionAssistantQuery, TargetMode: realtimev1.ModeAssistant,
+			}, nil
+		case <-ctx.Done():
+			return Candidate{}, ctx.Err()
+		}
+	})
+	executor := &recordingExecutor{}
+	classifier := speechSequence{true, false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier,
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
+			Final: asr.FinalResult{Text: "今天的天气怎么样"},
+		}),
+		Interpreter: interpreter, Validator: testGateRegistry(t), Executor: executor,
+	}, Options{
+		WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond,
+		MaxAudioDuration: 800 * time.Millisecond, EndSilence: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	openTestGate(t, gate)
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+	if got := gate.Consume(t.Context(), testFrame(t, testStart.Add(500*time.Millisecond), 100*time.Millisecond)); got.State != StateRecognizing {
+		t.Fatalf("Consume() = %#v, want recognizing", got)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("interpreter did not start")
+	}
+	for index := 0; index < 8; index++ {
+		capturedAt := testStart.Add(600*time.Millisecond + time.Duration(index)*20*time.Millisecond)
+		if got := gate.Consume(t.Context(), testFrame(t, capturedAt, 20*time.Millisecond)); !got.Consumed || got.State != StateRecognizing {
+			t.Fatalf("later Consume(%d) = %#v, want quarantined recognizing", index, got)
+		}
+	}
+	select {
+	case <-started:
+		t.Fatal("later audio started duplicate semantic interpretation")
+	default:
+	}
+	close(release)
+	waitGateRecognition(t, gate)
+	if len(executor.requests) != 1 || executor.requests[0].Command.Action != ActionAssistantQuery {
+		t.Fatalf("executor requests = %#v, want one assistant query", executor.requests)
+	}
+}
+
+func TestCancelWaitsForRecognitionWorkerAndClosesGate(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	interpreter := InterpreterFunc(func(ctx context.Context, _ InterpretRequest) (Candidate, error) {
+		close(started)
+		<-ctx.Done()
+		<-release
+		return Candidate{}, ctx.Err()
+	})
+	classifier := speechSequence{true, false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier,
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
+			Final: asr.FinalResult{Text: "开始同声传译"},
+		}),
+		Interpreter: interpreter, Validator: testGateRegistry(t), Executor: &recordingExecutor{},
+	}, Options{
+		WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond,
+		MaxAudioDuration: 800 * time.Millisecond, EndSilence: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	openTestGate(t, gate)
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(500*time.Millisecond), 100*time.Millisecond))
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("interpreter did not start")
+	}
+
+	cancelDone := make(chan struct{})
+	go func() {
+		gate.Cancel()
+		close(cancelDone)
+	}()
+	select {
+	case <-cancelDone:
+		t.Fatal("Cancel returned before the recognition worker released resources")
+	default:
+	}
+	close(release)
+	select {
+	case <-cancelDone:
+	case <-time.After(time.Second):
+		t.Fatal("Cancel did not finish after the worker returned")
+	}
+	if err := gate.Open(validOpenRequest()); !errors.Is(err, ErrGateClosed) {
+		t.Fatalf("Open() after Cancel error = %v, want ErrGateClosed", err)
 	}
 }
 
@@ -178,9 +699,10 @@ func TestGateQuarantinesPreWakeFrameWithoutStartingASR(t *testing.T) {
 func TestGateExpiresWithoutAnotherAudioFrame(t *testing.T) {
 	classifier := speechSequence{false}
 	gate, err := NewGate(Dependencies{
-		Classifier: &classifier,
-		ASR:        asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Executor:   &recordingExecutor{},
+		Classifier:  &classifier,
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t),
+		Executor: &recordingExecutor{},
 	}, Options{
 		WindowTTL: 100 * time.Millisecond, NoSpeechTimeout: 20 * time.Millisecond,
 		MaxAudioDuration: 50 * time.Millisecond, EndSilence: 10 * time.Millisecond,
@@ -206,9 +728,10 @@ func TestGateExpiresWithoutAnotherAudioFrame(t *testing.T) {
 func TestOldCommandTimerCannotCloseReopenedWindow(t *testing.T) {
 	classifier := speechSequence{false}
 	gate, err := NewGate(Dependencies{
-		Classifier: &classifier,
-		ASR:        asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Executor:   &recordingExecutor{},
+		Classifier:  &classifier,
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t),
+		Executor: &recordingExecutor{},
 	}, Options{
 		WindowTTL: 200 * time.Millisecond, NoSpeechTimeout: 80 * time.Millisecond,
 		MaxAudioDuration: 100 * time.Millisecond, EndSilence: 10 * time.Millisecond,
@@ -240,9 +763,10 @@ func TestOldCommandTimerCannotCloseReopenedWindow(t *testing.T) {
 func TestLateNoSpeechTimerCannotCloseActiveCapture(t *testing.T) {
 	classifier := speechSequence{true}
 	gate, err := NewGate(Dependencies{
-		Classifier: &classifier,
-		ASR:        asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Executor:   &recordingExecutor{},
+		Classifier:  &classifier,
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t),
+		Executor: &recordingExecutor{},
 	}, Options{
 		WindowTTL: 200 * time.Millisecond, NoSpeechTimeout: 80 * time.Millisecond,
 		MaxAudioDuration: 100 * time.Millisecond, EndSilence: 10 * time.Millisecond,
@@ -275,7 +799,8 @@ func TestGatePropagatesCallerCancellationToCommandASR(t *testing.T) {
 	provider := &blockingASRProvider{started: make(chan struct{}), canceled: make(chan struct{})}
 	classifier := speechSequence{true}
 	gate, err := NewGate(Dependencies{
-		Classifier: &classifier, ASR: provider, Executor: &recordingExecutor{},
+		Classifier: &classifier, ASR: provider, Interpreter: LegacyInterpreter{},
+		Validator: testGateRegistry(t), Executor: &recordingExecutor{},
 	}, Options{
 		WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond,
 		MaxAudioDuration: 800 * time.Millisecond, EndSilence: 100 * time.Millisecond,
@@ -305,7 +830,8 @@ func TestGateDeadlineCancelsBlockedCommandASR(t *testing.T) {
 	provider := &blockingASRProvider{started: make(chan struct{}), canceled: make(chan struct{})}
 	classifier := speechSequence{true}
 	gate, err := NewGate(Dependencies{
-		Classifier: &classifier, ASR: provider, Executor: &recordingExecutor{},
+		Classifier: &classifier, ASR: provider, Interpreter: LegacyInterpreter{},
+		Validator: testGateRegistry(t), Executor: &recordingExecutor{},
 	}, Options{
 		WindowTTL: 50 * time.Millisecond, NoSpeechTimeout: 25 * time.Millisecond,
 		MaxAudioDuration: 40 * time.Millisecond, EndSilence: 10 * time.Millisecond,
@@ -390,16 +916,67 @@ func (s *speechSequence) Speech(audio.Frame) bool {
 type recordingExecutor struct {
 	requests []ExecuteRequest
 	err      error
+	result   ExecutionResult
 }
 
-func (e *recordingExecutor) ExecuteCommand(_ context.Context, request ExecuteRequest) error {
+type recordingResultSink struct {
+	events []realtimev1.CommandResultEvent
+	err    error
+}
+
+type synchronizedResultSink struct {
+	published chan realtimev1.CommandResultEvent
+}
+
+func (s *synchronizedResultSink) Publish(_ context.Context, event realtimev1.CommandResultEvent) error {
+	s.published <- event
+	return nil
+}
+
+func waitForCommandResult(
+	t *testing.T,
+	events <-chan realtimev1.CommandResultEvent,
+	commandID string,
+	status realtimev1.CommandResultStatus,
+) realtimev1.CommandResultEvent {
+	t.Helper()
+	select {
+	case event := <-events:
+		if event.CommandID != commandID || event.Status != status {
+			t.Fatalf("command result = %#v, want command %q status %q", event, commandID, status)
+		}
+		return event
+	case <-time.After(time.Second):
+		t.Fatalf("command result %q was not published", commandID)
+		return realtimev1.CommandResultEvent{}
+	}
+}
+
+func (s *recordingResultSink) Publish(_ context.Context, event realtimev1.CommandResultEvent) error {
+	s.events = append(s.events, event)
+	return s.err
+}
+
+func (e *recordingExecutor) ExecuteCommand(_ context.Context, request ExecuteRequest) (ExecutionResult, error) {
 	e.requests = append(e.requests, request)
-	return e.err
+	if e.result.Status == "" {
+		e.result = ExecutionResult{
+			Status: realtimev1.ModeSwitchApplied,
+			State: realtimev1.ModeStateSnapshot{
+				SessionID: request.SessionID, RuntimeInstanceID: "runtime-1",
+				ActiveMode: request.Command.TargetMode, Generation: 2,
+			},
+		}
+	}
+	return e.result, e.err
 }
 
 func newTestGate(t *testing.T, classifier speechSequence, config asr.FakeProviderConfig, executor Executor) *Gate {
 	t.Helper()
-	gate, err := NewGate(Dependencies{Classifier: &classifier, ASR: asr.NewFakeProvider(config), Executor: executor}, Options{
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier, ASR: asr.NewFakeProvider(config),
+		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t), Executor: executor,
+	}, Options{
 		WindowTTL: 1500 * time.Millisecond, NoSpeechTimeout: 500 * time.Millisecond,
 		MaxAudioDuration: 500 * time.Millisecond, EndSilence: 250 * time.Millisecond,
 	})
@@ -409,10 +986,47 @@ func newTestGate(t *testing.T, classifier speechSequence, config asr.FakeProvide
 	return gate
 }
 
+func testGateRegistry(t *testing.T) *Registry {
+	t.Helper()
+	registry, err := NewRegistry(
+		CapabilityDescriptor{
+			Mode: realtimev1.ModeInterpretation, Description: "interpretation", SchemaVersion: 1,
+			Actions: []Action{ActionActivateMode},
+		},
+		CapabilityDescriptor{
+			Mode: realtimev1.ModeAssistant, Description: "assistant", SchemaVersion: 1,
+			Actions: []Action{ActionReturnToAssistant, ActionAssistantQuery},
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	return registry
+}
+
 func openTestGate(t *testing.T, gate *Gate) {
 	t.Helper()
 	if err := gate.Open(validOpenRequest()); err != nil {
 		t.Fatalf("Open() error = %v", err)
+	}
+}
+
+func waitGateRecognition(t *testing.T, gate *Gate) {
+	t.Helper()
+	gate.mu.Lock()
+	done := gate.recognitionTasks[gate.attempt]
+	state := gate.state
+	gate.mu.Unlock()
+	if done == nil {
+		if state != StateDormant {
+			t.Fatalf("recognition task missing in state %q", state)
+		}
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("command recognition did not complete")
 	}
 }
 

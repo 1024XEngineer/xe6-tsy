@@ -774,17 +774,18 @@ func TestRestoreAutomaticTurnRejectsMissingConfiguredRouteRestorerAndUnknownTrig
 
 type atomicScheduleRepository struct {
 	retryRepositoryStub
-	record            AutomaticTurnScheduleRecord
-	existing          AutomaticTurnRun
-	getErr            error
-	scheduleErr       error
-	claimErr          error
-	settlements       []AutomaticTurnSettlement
-	retried           []automaticRetryRecord
-	fallbackPlayed    bool
-	fallbackPlayedErr error
-	restored          bool
-	restoredErr       error
+	record             AutomaticTurnScheduleRecord
+	existing           AutomaticTurnRun
+	recoveryCandidates []AutomaticTurnRun
+	getErr             error
+	scheduleErr        error
+	claimErr           error
+	settlements        []AutomaticTurnSettlement
+	retried            []automaticRetryRecord
+	fallbackPlayed     bool
+	fallbackPlayedErr  error
+	restored           bool
+	restoredErr        error
 }
 
 func (r *atomicScheduleRepository) GetAutomaticTurnRun(context.Context, string, string) (AutomaticTurnRun, error) {
@@ -823,13 +824,9 @@ func (r *atomicScheduleRepository) RetryAutomaticTurnTarget(_ context.Context, _
 }
 
 func (r *atomicScheduleRepository) ListAutomaticTurnRecoveryCandidates(context.Context, int) ([]AutomaticTurnRun, error) {
-	run := r.existing
-	eligible := (run.TargetCount == 0 && (run.Status == AutomaticTurnRunPending || run.Status == AutomaticTurnRunFallbackPending)) ||
-		(run.TargetCount > 0 && run.FailedCount == run.TargetCount && (run.Status == AutomaticTurnRunFailed || run.Status == AutomaticTurnRunFallbackPending))
-	if !eligible {
-		return nil, nil
-	}
-	return []AutomaticTurnRun{run}, nil
+	candidates := r.recoveryCandidates
+	r.recoveryCandidates = nil
+	return candidates, nil
 }
 
 func (r *atomicScheduleRepository) ClaimAutomaticTurnFallback(context.Context, string, string) (AutomaticTurnRun, bool, error) {

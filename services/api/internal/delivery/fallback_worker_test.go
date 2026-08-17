@@ -105,6 +105,7 @@ func TestAutomaticTurnFallbackWorkerRecoversTotalInitialFailureWithoutRetry(t *t
 	repository := &atomicScheduleRepository{
 		retryRepositoryStub: retryRepositoryStub{current: map[string]Message{"account-1": message}},
 		existing:            run,
+		recoveryCandidates:  []AutomaticTurnRun{run},
 		settlements: []AutomaticTurnSettlement{{
 			TurnID: "turn-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat",
 			Status: AutomaticTurnSettlementFailed, MessageID: message.ID,
@@ -131,12 +132,13 @@ func TestAutomaticTurnFallbackWorkerRecoversTotalInitialFailureWithoutRetry(t *t
 }
 
 func TestAutomaticTurnFallbackWorkerRecoversLongSourceWithoutTarget(t *testing.T) {
-	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
+	run := AutomaticTurnRun{
 		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1",
 		TargetLanguage: "zh-CN", TranslatedText: "译文", LanguageConfigVersion: 3,
 		Trigger: AutomaticTurnTriggerLongSentence, Status: AutomaticTurnRunPending,
 		FallbackOperationID: "fallback_turn-1",
-	}}
+	}
+	repository := &atomicScheduleRepository{existing: run, recoveryCandidates: []AutomaticTurnRun{run}}
 	fallback := &fallbackPlayerFake{}
 	service := NewPersistentUseCases(repository, nil, nil, nil)
 	service.ConfigureAutomaticFallback(fallback)

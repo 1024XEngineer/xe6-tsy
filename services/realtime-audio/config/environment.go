@@ -15,9 +15,13 @@ const defaultTranslationModel = "qwen3.6-flash"
 
 type ProviderName string
 
+type CommandInterpreterName string
+
 const (
-	ProviderMock   ProviderName = "mock"
-	ProviderAliyun ProviderName = "aliyun"
+	ProviderMock             ProviderName           = "mock"
+	ProviderAliyun           ProviderName           = "aliyun"
+	CommandInterpreterLegacy CommandInterpreterName = "legacy"
+	CommandInterpreterQwen   CommandInterpreterName = "qwen"
 )
 
 var (
@@ -32,6 +36,7 @@ type ProviderConfig struct {
 	ASR         ASRConfig
 	Translation TranslationConfig
 	TTS         TTSConfig
+	Command     CommandConfig
 }
 
 type ASRConfig struct {
@@ -66,6 +71,16 @@ type TTSConfig struct {
 	Timeout    time.Duration
 }
 
+// CommandConfig selects the semantic command boundary independently from ordinary assistant
+// replies. Qwen may reuse transport credentials while retaining its own timeout and model.
+type CommandConfig struct {
+	Interpreter CommandInterpreterName
+	APIKey      string
+	BaseURL     string
+	Model       string
+	Timeout     time.Duration
+}
+
 type LookupEnv func(key string) (string, bool)
 
 // LoadProviderConfig reads settings through an injected lookup for deterministic tests.
@@ -83,6 +98,10 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 		return ProviderConfig{}, err
 	}
 	ttsProvider, err := readProvider(lookup, "TTS_PROVIDER")
+	if err != nil {
+		return ProviderConfig{}, err
+	}
+	commandInterpreter, err := readCommandInterpreter(lookup)
 	if err != nil {
 		return ProviderConfig{}, err
 	}
@@ -132,6 +151,22 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 	if err != nil {
 		return ProviderConfig{}, err
 	}
+	commandTimeout, err := readMilliseconds(lookup, "COMMAND_LLM_TIMEOUT_MS")
+	if err != nil {
+		return ProviderConfig{}, err
+	}
+	commandModel := value(lookup, "COMMAND_LLM_MODEL")
+	if commandModel == "" {
+		commandModel = translationModel
+	}
+	commandAPIKey := value(lookup, "COMMAND_LLM_API_KEY")
+	if commandAPIKey == "" {
+		commandAPIKey = value(lookup, "LLM_API_KEY")
+	}
+	commandBaseURL := value(lookup, "COMMAND_LLM_BASE_URL")
+	if commandBaseURL == "" {
+		commandBaseURL = value(lookup, "LLM_BASE_URL")
+	}
 
 	return ProviderConfig{
 		ASR: ASRConfig{
@@ -150,7 +185,23 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 			BaseURL: value(lookup, "TTS_BASE_URL"), Model: value(lookup, "TTS_MODEL"),
 			Voice: value(lookup, "TTS_VOICE"), SampleRate: ttsSampleRate, Timeout: ttsTimeout,
 		},
+		Command: CommandConfig{
+			Interpreter: commandInterpreter, APIKey: commandAPIKey, BaseURL: commandBaseURL,
+			Model: commandModel, Timeout: commandTimeout,
+		},
 	}, nil
+}
+
+func readCommandInterpreter(lookup LookupEnv) (CommandInterpreterName, error) {
+	raw := strings.ToLower(value(lookup, "COMMAND_INTERPRETER"))
+	if raw == "" {
+		return CommandInterpreterLegacy, nil
+	}
+	interpreter := CommandInterpreterName(raw)
+	if interpreter != CommandInterpreterLegacy && interpreter != CommandInterpreterQwen {
+		return "", fmt.Errorf("%w: COMMAND_INTERPRETER=%q", ErrUnsupportedProvider, raw)
+	}
+	return interpreter, nil
 }
 
 // LoadProviderConfigFromEnvironment reads the process environment without loading .env files.

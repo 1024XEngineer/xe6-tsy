@@ -1212,9 +1212,6 @@ export function useVoiceSession() {
       updateConfig,
       debug,
       wakeStatus,
-      // Removed by the following UI commit; keeps this Hook migration
-      // independently compatible with the previous VoiceExperience tree.
-      commandWindow: { state: "closed" as const, expiresAt: null },
       commandFeedback,
       interactionPolicy: effectiveInteractionPolicy,
       interactionPolicyLocked: activeMode === "interpretation",

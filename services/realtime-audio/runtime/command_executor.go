@@ -35,9 +35,6 @@ func (e commandExecutor) ExecuteCommand(ctx context.Context, request command.Exe
 	if err := validateExecutableCommand(request); err != nil {
 		return command.ExecutionResult{}, err
 	}
-	if e.manager == nil {
-		return command.ExecutionResult{}, ErrDependencyRequired
-	}
 	if request.Command.Action == command.ActionAssistantQuery {
 		return e.executeAssistantQuery(ctx, request)
 	}
@@ -93,9 +90,6 @@ func validateExecutableCommand(request command.ExecuteRequest) error {
 // sessions must explicitly return to assistant mode to prevent assistant and translation output
 // from sharing one spoken turn.
 func (e commandExecutor) executeAssistantQuery(ctx context.Context, request command.ExecuteRequest) (command.ExecutionResult, error) {
-	if e.manager == nil || e.manager.commandOpener == nil || e.manager.router == nil {
-		return command.ExecutionResult{}, ErrDependencyRequired
-	}
 	e.manager.mu.Lock()
 	item := e.manager.entries[request.SessionID]
 	if item == nil || !item.active || item.stopping || item.terminal || item.finished {
@@ -135,9 +129,6 @@ func (e commandExecutor) executeAssistantQuery(ctx context.Context, request comm
 }
 
 func (e commandExecutor) prepareInterpretation(ctx context.Context, request command.ExecuteRequest) error {
-	if e.manager == nil || e.languages == nil {
-		return ErrDependencyRequired
-	}
 	snapshot, err := e.languages.GetCurrentConfig(ctx, request.SessionID)
 	if err != nil {
 		return fmt.Errorf("read current command language configuration: %w", err)
@@ -158,6 +149,8 @@ func (e commandExecutor) prepareInterpretation(ctx context.Context, request comm
 	if !explicit {
 		return nil
 	}
+	// LanguageConfigurator is optional at Manager construction so legacy command paths remain
+	// usable; an explicit language direction cannot proceed without the API-owned writer.
 	if e.configurator == nil {
 		return ErrCommandConfiguratorRequired
 	}

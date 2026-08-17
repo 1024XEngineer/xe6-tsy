@@ -19,6 +19,15 @@ type recordingDataChannelFailures struct{ calls int }
 
 func (r *recordingDataChannelFailures) RecordDataChannelFailure() { r.calls++ }
 
+type notifyingDataChannelFailures struct {
+	once   sync.Once
+	called chan struct{}
+}
+
+func (n *notifyingDataChannelFailures) RecordDataChannelFailure() {
+	n.once.Do(func() { close(n.called) })
+}
+
 func TestFrontendTranslationFinalJSONShape(t *testing.T) {
 	event := recordsv1.FinalTurnEvent{
 		EventVersion:          recordsv1.FinalTurnEventVersion,
@@ -211,18 +220,20 @@ func TestDataChannelAssistantReplySinkReportsDeliveryFailures(t *testing.T) {
 
 func TestDataChannelCommandResultSinkReportsUnavailableMedia(t *testing.T) {
 	t.Parallel()
-	failures := &recordingDataChannelFailures{}
+	failures := &notifyingDataChannelFailures{called: make(chan struct{})}
+	sink := NewDataChannelCommandResultSink(nil, failures)
 	event := realtimev1.CommandResultEvent{
 		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
 		CommandID: "wake-1", SessionID: "session-1", Status: realtimev1.CommandResultFailed,
 		Message: "命令未执行，原模式保持不变", OccurredAt: time.Unix(2, 0).UTC(),
 	}
-	err := (DataChannelCommandResultSink{Failures: failures}).Publish(context.Background(), event)
-	if !errors.Is(err, ErrCommandResultMediaUnavailable) {
-		t.Fatalf("Publish() error = %v, want media unavailable", err)
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish() error = %v", err)
 	}
-	if failures.calls != 1 {
-		t.Fatalf("failure observations = %d, want 1", failures.calls)
+	select {
+	case <-failures.called:
+	case <-time.After(time.Second):
+		t.Fatal("missing media failure was not observed")
 	}
 }
 

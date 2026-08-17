@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -25,7 +27,7 @@ func TestCommandSpeechFeedbackReusesSpeechOutputAndPublishesUsage(t *testing.T) 
 			TTS: ttsProvider, Audio: audio, Runtime: runtimeReporter,
 		}),
 		Usage: usage, Runtime: runtimeReporter, AccountID: "account-1", TraceID: "trace-1",
-		Now: func() time.Time { return time.Unix(20, 0).UTC() },
+		Logger: commandFeedbackTestLogger(), Now: func() time.Time { return time.Unix(20, 0).UTC() },
 	})
 	feedback.Publish(validCommandFeedbackEvent())
 	feedback.wg.Wait()
@@ -50,6 +52,7 @@ func TestCommandSpeechFeedbackFailureRestoresListeningWithoutRetry(t *testing.T)
 			TTS: ttsProvider, Audio: &recordingAudioSink{}, Runtime: runtimeReporter,
 		}),
 		Usage: &recordingUsageSink{}, Runtime: runtimeReporter, AccountID: "account-1", TraceID: "trace-1",
+		Logger: commandFeedbackTestLogger(), Now: func() time.Time { return time.Unix(20, 0).UTC() },
 	})
 	feedback.Publish(validCommandFeedbackEvent())
 	feedback.wg.Wait()
@@ -74,6 +77,7 @@ func TestCommandSpeechFeedbackUsageFailureDoesNotRetrySpeech(t *testing.T) {
 			TTS: ttsProvider, Audio: &recordingAudioSink{}, Runtime: runtimeReporter,
 		}),
 		Usage: usage, Runtime: runtimeReporter, AccountID: "account-1", TraceID: "trace-1",
+		Logger: commandFeedbackTestLogger(), Now: func() time.Time { return time.Unix(20, 0).UTC() },
 	})
 	feedback.Publish(validCommandFeedbackEvent())
 	feedback.wg.Wait()
@@ -95,6 +99,10 @@ func validCommandFeedbackEvent() realtimev1.CommandResultEvent {
 		Status: realtimev1.CommandResultApplied, Action: "activate_mode", TargetMode: realtimev1.ModeInterpretation,
 		Message: "已进入同声传译模式", OccurredAt: time.Unix(10, 0).UTC(),
 	}
+}
+
+func commandFeedbackTestLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 func (r *recordingRuntimeReporter) recordedState(want session.RuntimeState) bool {

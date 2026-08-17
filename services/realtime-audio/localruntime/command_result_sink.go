@@ -60,9 +60,6 @@ func (s DataChannelCommandResultSink) Publish(ctx context.Context, event realtim
 	if err := event.Validate(); err != nil {
 		return err
 	}
-	if s.dispatch == nil {
-		return s.publishNow(ctx, event)
-	}
 	s.enqueue(event)
 	return nil
 }

@@ -130,6 +130,24 @@ func TestCommandExecutorDoesNotSwitchWhenLanguageConfigurationFails(t *testing.T
 	}
 }
 
+func TestCommandExecutorRequiresConfiguratorForExplicitLanguageDirection(t *testing.T) {
+	t.Parallel()
+	sink := &recordingModeChangedSink{}
+	manager := commandTestManager(t, realtimev1.ModeAssistant, sink)
+	executor := commandExecutor{manager: manager, languages: commandLanguageReader()}
+
+	_, err := executor.ExecuteCommand(t.Context(), interpretationRequest(command.Arguments{
+		SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+	}))
+	if !errors.Is(err, ErrCommandConfiguratorRequired) {
+		t.Fatalf("ExecuteCommand() error = %v, want missing configurator", err)
+	}
+	if len(sink.Attempts()) != 0 || manager.entries["session-1"].mode.Snapshot().ActiveMode != realtimev1.ModeAssistant {
+		t.Fatalf("missing configurator changed mode: state=%#v attempts=%#v",
+			manager.entries["session-1"].mode.Snapshot(), sink.Attempts())
+	}
+}
+
 func TestCommandExecutorRejectsLanguageSnapshotFromAnotherSession(t *testing.T) {
 	t.Parallel()
 	sink := &recordingModeChangedSink{}

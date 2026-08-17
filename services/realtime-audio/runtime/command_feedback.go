@@ -38,21 +38,15 @@ type commandSpeechFeedback struct {
 }
 
 func newCommandSpeechFeedback(deps commandSpeechFeedbackDependencies) *commandSpeechFeedback {
-	if deps.Logger == nil {
-		deps.Logger = slog.Default()
-	}
-	if deps.Now == nil {
-		deps.Now = func() time.Time { return time.Now().UTC() }
-	}
 	return &commandSpeechFeedback{deps: deps}
 }
 
 func (f *commandSpeechFeedback) Publish(event realtimev1.CommandResultEvent) {
-	if f == nil || event.Validate() != nil || event.Message == "" {
+	if event.Validate() != nil || event.Message == "" {
 		return
 	}
 	f.mu.Lock()
-	if f.closed || f.deps.Speech == nil {
+	if f.closed {
 		f.mu.Unlock()
 		return
 	}
@@ -69,9 +63,6 @@ func (f *commandSpeechFeedback) Publish(event realtimev1.CommandResultEvent) {
 }
 
 func (f *commandSpeechFeedback) Interrupt() {
-	if f == nil {
-		return
-	}
 	f.mu.Lock()
 	if f.cancel != nil {
 		f.cancel()
@@ -81,9 +72,6 @@ func (f *commandSpeechFeedback) Interrupt() {
 }
 
 func (f *commandSpeechFeedback) Close() {
-	if f == nil {
-		return
-	}
 	f.mu.Lock()
 	f.closed = true
 	if f.cancel != nil {
@@ -109,20 +97,18 @@ func (f *commandSpeechFeedback) play(ctx context.Context, attempt uint64, event 
 		f.restoreListeningIfCurrent(attempt, event, turn.ID, playbackID)
 		return
 	}
-	if f.deps.Usage != nil {
-		fact, factErr := pipeline.BuildUsageFact(turn, "tts", result.Provider, result.Model,
-			result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency, f.deps.Now())
-		if factErr != nil {
-			f.logFailure(event, "usage_build", factErr)
-		} else {
-			// A completed synthesis remains billable after a newer wake cancels playback feedback,
-			// but a stalled sink must not keep Runtime shutdown waiting indefinitely.
-			usageCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandUsagePublishTimeout)
-			publishErr := f.deps.Usage.Publish(usageCtx, fact)
-			cancel()
-			if publishErr != nil {
-				f.logFailure(event, "usage_publish", publishErr)
-			}
+	fact, factErr := pipeline.BuildUsageFact(turn, "tts", result.Provider, result.Model,
+		result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency, f.deps.Now())
+	if factErr != nil {
+		f.logFailure(event, "usage_build", factErr)
+	} else {
+		// A completed synthesis remains billable after a newer wake cancels playback feedback,
+		// but a stalled sink must not keep Runtime shutdown waiting indefinitely.
+		usageCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandUsagePublishTimeout)
+		publishErr := f.deps.Usage.Publish(usageCtx, fact)
+		cancel()
+		if publishErr != nil {
+			f.logFailure(event, "usage_publish", publishErr)
 		}
 	}
 	f.restoreListeningIfCurrent(attempt, event, turn.ID, playbackID)
@@ -138,9 +124,6 @@ func (f *commandSpeechFeedback) restoreListeningIfCurrent(
 	current := !f.closed && f.attempt == attempt
 	f.mu.Unlock()
 	if !current {
-		return
-	}
-	if f.deps.Runtime == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

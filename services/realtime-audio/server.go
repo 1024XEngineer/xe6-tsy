@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command/languageconfig"
+	commandqwen "github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command/qwen"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlchannel"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
@@ -30,24 +34,29 @@ import (
 )
 
 const (
-	defaultAddr           = ":8090"
-	minTicketSecretBytes  = 32
-	httpReadHeaderTimeout = 5 * time.Second
-	httpReadTimeout       = 30 * time.Second
-	httpWriteTimeout      = 45 * time.Second
-	httpIdleTimeout       = 60 * time.Second
+	defaultAddr                 = ":8090"
+	minTicketSecretBytes        = 32
+	httpReadHeaderTimeout       = 5 * time.Second
+	httpReadTimeout             = 30 * time.Second
+	httpWriteTimeout            = 45 * time.Second
+	httpIdleTimeout             = 60 * time.Second
+	minCommandTokenBytes        = 32
+	defaultCommandConfigTimeout = 3 * time.Second
 )
 
 type processConfig struct {
-	Addr           string
-	TicketSecret   string
-	SkipTTSTrack   bool
-	ForceMockTTS   bool
-	DownlinkMode   string // none | pcm | opus
-	DownlinkCodec  string
-	SourceLanguage string
-	TargetLanguage string
-	MetricsToken   string
+	Addr                 string
+	TicketSecret         string
+	SkipTTSTrack         bool
+	ForceMockTTS         bool
+	DownlinkMode         string // none | pcm | opus
+	DownlinkCodec        string
+	SourceLanguage       string
+	TargetLanguage       string
+	MetricsToken         string
+	APIBaseURL           string
+	CommandToken         string
+	CommandConfigTimeout time.Duration
 }
 
 func loadProcessConfig(getenv func(string) string) (processConfig, error) {
@@ -84,11 +93,28 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 	if target == "" {
 		target = "en-US"
 	}
+	commandConfigTimeout := defaultCommandConfigTimeout
+	if raw := strings.TrimSpace(getenv("COMMAND_CONFIG_TIMEOUT_MS")); raw != "" {
+		milliseconds, err := strconv.Atoi(raw)
+		if err != nil || milliseconds <= 0 {
+			return processConfig{}, fmt.Errorf("COMMAND_CONFIG_TIMEOUT_MS must be a positive integer")
+		}
+		commandConfigTimeout = time.Duration(milliseconds) * time.Millisecond
+	}
+	apiBaseURL := strings.TrimSpace(getenv("LINGOW_API_BASE_URL"))
+	commandToken := strings.TrimSpace(getenv("LINGOW_COMMAND_SYSTEM_TOKEN"))
+	if (apiBaseURL == "") != (commandToken == "") {
+		return processConfig{}, fmt.Errorf("LINGOW_API_BASE_URL and LINGOW_COMMAND_SYSTEM_TOKEN must be configured together")
+	}
+	if commandToken != "" && len([]byte(commandToken)) < minCommandTokenBytes {
+		return processConfig{}, fmt.Errorf("LINGOW_COMMAND_SYSTEM_TOKEN must contain at least %d bytes", minCommandTokenBytes)
+	}
 	return processConfig{
 		Addr: addr, TicketSecret: ticketSecret, SkipTTSTrack: skipTTS, ForceMockTTS: forceMock,
 		DownlinkMode: mode, DownlinkCodec: codec,
 		SourceLanguage: source, TargetLanguage: target,
 		MetricsToken: strings.TrimSpace(getenv("REALTIME_METRICS_TOKEN")),
+		APIBaseURL:   apiBaseURL, CommandToken: commandToken, CommandConfigTimeout: commandConfigTimeout,
 	}, nil
 }
 
@@ -222,6 +248,20 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		return nil, fmt.Errorf("load provider config: %w", err)
 	}
 	providerConfig = applySubtitleOnlyOverrides(cfg, providerConfig)
+	var languageConfigurator command.LanguageConfigurator
+	if providerConfig.Command.Interpreter == config.CommandInterpreterQwen {
+		// activate_mode may include an explicit source/target language pair. Persist that API-owned
+		// configuration before the realtime mode CAS so a successful switch never uses stale languages.
+		if cfg.APIBaseURL == "" {
+			return nil, fmt.Errorf("semantic command interpreter requires LINGOW_API_BASE_URL and LINGOW_COMMAND_SYSTEM_TOKEN")
+		}
+		languageConfigurator, err = languageconfig.NewClient(languageconfig.Config{
+			BaseURL: cfg.APIBaseURL, SystemToken: cfg.CommandToken, Timeout: cfg.CommandConfigTimeout,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("configure command language client: %w", err)
+		}
+	}
 	// Local Silero (or energy) VAD owns utterance cuts; disable Qwen server_vad unless set.
 	if strings.TrimSpace(os.Getenv("ASR_SERVER_VAD")) == "" {
 		providerConfig.ASR.ServerVAD = false
@@ -259,23 +299,27 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 			SourceLanguage: cfg.SourceLanguage,
 			Languages:      languages,
 		},
-		NewSegmenter:         newSegmenter,
-		NewCommandClassifier: newCommandClassifier,
-		Languages:            languages,
-		FinalTurns:           finalTurns,
-		AssistantReplies:     localruntime.DataChannelAssistantReplySink{Media: connections, Failures: metricRegistry},
-		ModeChanges:          realtimemetrics.ObserveModeChangedSink(sinks.ModeChanges, metricRegistry),
-		Usage:                usage,
-		Audio:                audioSink,
-		PlaybackInterrupter:  playbackInterrupter,
-		Runtime:              runtimeBridge,
-		VoiceID:              voiceID,
-		Logger:               slog.Default(),
-		Latency:              slog.Default(),
-		ProviderFailures:     metricRegistry,
-		Lifecycle:            metricRegistry,
-		ModeCommands:         metricRegistry,
-		Now:                  now,
+		NewSegmenter:          newSegmenter,
+		NewCommandClassifier:  newCommandClassifier,
+		NewCommandInterpreter: commandInterpreterFactory(providerConfig.Command),
+		LanguageConfigurator:  languageConfigurator,
+		CommandResults:        localruntime.NewDataChannelCommandResultSink(connections, metricRegistry),
+		CommandObserver:       metricRegistry,
+		Languages:             languages,
+		FinalTurns:            finalTurns,
+		AssistantReplies:      localruntime.DataChannelAssistantReplySink{Media: connections, Failures: metricRegistry},
+		ModeChanges:           realtimemetrics.ObserveModeChangedSink(sinks.ModeChanges, metricRegistry),
+		Usage:                 usage,
+		Audio:                 audioSink,
+		PlaybackInterrupter:   playbackInterrupter,
+		Runtime:               runtimeBridge,
+		VoiceID:               voiceID,
+		Logger:                slog.Default(),
+		Latency:               slog.Default(),
+		ProviderFailures:      metricRegistry,
+		Lifecycle:             metricRegistry,
+		ModeCommands:          metricRegistry,
+		Now:                   now,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure runtime manager: %w", err)
@@ -323,6 +367,23 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	realtimemetrics.Register(mux, metricRegistry, cfg.MetricsToken)
 	mux.Handle("/", handler)
 	return mux, nil
+}
+
+func commandInterpreterFactory(cfg config.CommandConfig) runtime.CommandInterpreterFactory {
+	return func(capabilities []command.CapabilityDescriptor) (command.Interpreter, error) {
+		switch cfg.Interpreter {
+		case config.CommandInterpreterLegacy:
+			return command.LegacyInterpreter{}, nil
+		case config.CommandInterpreterQwen:
+			return commandqwen.NewInterpreter(commandqwen.Config{
+				APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model,
+				Timeout: cfg.Timeout, Capabilities: capabilities,
+			})
+		default:
+			// Fail closed for programmatic configuration even though the environment loader validates it.
+			return nil, fmt.Errorf("unsupported command interpreter %q", cfg.Interpreter)
+		}
+	}
 }
 
 func apiDatabaseEnabled(getenv func(string) string) bool {

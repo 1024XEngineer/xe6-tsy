@@ -75,6 +75,10 @@ type SegmenterFactory func() (*vad.Segmenter, error)
 // command window. It must not share a rolling classifier with ordinary VAD.
 type CommandClassifierFactory func() (vad.Classifier, error)
 
+// CommandInterpreterFactory builds one process-wide semantic boundary from the exact capability
+// descriptors backed by registered mode handlers.
+type CommandInterpreterFactory func([]command.CapabilityDescriptor) (command.Interpreter, error)
+
 // PlaybackInterrupter cancels only the active playback for one session. It
 // deliberately does not close the shared WebRTC track or connection.
 type PlaybackInterrupter interface {
@@ -90,29 +94,31 @@ type RuntimeReporter interface {
 
 // Dependencies contains member-3-owned adapters and downstream sinks.
 type Dependencies struct {
-	FrameSources         FrameSourceFactory
-	NewSegmenter         SegmenterFactory
-	NewCommandClassifier CommandClassifierFactory
-	CommandOptions       command.Options
-	Languages            session.LanguageConfigReader
-	LanguageConfigurator command.LanguageConfigurator
-	CommandResults       command.ResultSink
-	FinalTurns           recordsv1.FinalTurnSink
-	AssistantReplies     pipeline.AssistantReplySink
-	ModeChanges          ModeChangedSink
-	Usage                pipeline.UsageFactSink
-	Audio                pipeline.AudioChunkSink
-	PlaybackInterrupter  PlaybackInterrupter
-	Runtime              RuntimeReporter
-	Allocator            pipeline.TurnAllocator
-	VoiceID              string
-	Logger               *slog.Logger
-	Latency              *slog.Logger
-	ProviderFailures     pipeline.ProviderFailureObserver
-	Lifecycle            LifecycleObserver
-	ModeCommands         ModeCommandObserver
-	Now                  func() time.Time
-	NewRuntimeInstanceID RuntimeInstanceIDFactory
+	FrameSources          FrameSourceFactory
+	NewSegmenter          SegmenterFactory
+	NewCommandClassifier  CommandClassifierFactory
+	NewCommandInterpreter CommandInterpreterFactory
+	CommandOptions        command.Options
+	Languages             session.LanguageConfigReader
+	LanguageConfigurator  command.LanguageConfigurator
+	CommandResults        command.ResultSink
+	CommandObserver       command.Observer
+	FinalTurns            recordsv1.FinalTurnSink
+	AssistantReplies      pipeline.AssistantReplySink
+	ModeChanges           ModeChangedSink
+	Usage                 pipeline.UsageFactSink
+	Audio                 pipeline.AudioChunkSink
+	PlaybackInterrupter   PlaybackInterrupter
+	Runtime               RuntimeReporter
+	Allocator             pipeline.TurnAllocator
+	VoiceID               string
+	Logger                *slog.Logger
+	Latency               *slog.Logger
+	ProviderFailures      pipeline.ProviderFailureObserver
+	Lifecycle             LifecycleObserver
+	ModeCommands          ModeCommandObserver
+	Now                   func() time.Time
+	NewRuntimeInstanceID  RuntimeInstanceIDFactory
 }
 
 // LifecycleObserver receives process-local lifecycle counters without session
@@ -247,8 +253,8 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		Speech:     speech,
 		Latency:    latency,
 	})
-	// Router 注册表是模式能力的单一来源：Coordinator 会复用同一份模式列表，
-	// 从而保证“允许切换”的模式一定存在对应 Handler，不会出现状态切换成功但没有业务处理器的半配置状态。
+	// The router registry is the capability source of truth. The coordinator and command
+	// interpreter therefore expose only modes backed by an actual handler.
 	handlers := map[realtimev1.Mode]pipeline.ASRFinalHandler{
 		realtimev1.ModeInterpretation: service,
 	}
@@ -274,8 +280,18 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	if err != nil {
 		return nil, fmt.Errorf("create command capability registry: %w", err)
 	}
-	manager.commandInterpreter = command.LegacyInterpreter{}
 	manager.commandValidator = registry
+	if deps.NewCommandInterpreter == nil {
+		manager.commandInterpreter = command.LegacyInterpreter{}
+	} else {
+		manager.commandInterpreter, err = deps.NewCommandInterpreter(registry.Descriptors())
+		if err != nil {
+			return nil, fmt.Errorf("create command interpreter: %w", err)
+		}
+		if manager.commandInterpreter == nil {
+			return nil, fmt.Errorf("%w: command interpreter", ErrDependencyRequired)
+		}
+	}
 	manager.playback = service
 	manager.speech = speech
 	manager.router = router
@@ -454,6 +470,9 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			},
 			Results:  m.deps.CommandResults,
 			Feedback: feedback,
+			Observer: m.deps.CommandObserver,
+			Logger:   m.logger,
+			Now:      m.deps.Now,
 		}, options)
 		if gateErr != nil {
 			closeErr := owned.closeContext(ctx)

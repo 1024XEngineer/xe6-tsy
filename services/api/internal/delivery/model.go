@@ -217,6 +217,13 @@ const (
 
 const maxAutomaticTargetAttempts = 2
 
+type AutomaticTurnTrigger string
+
+const (
+	AutomaticTurnTriggerConfiguredRoute AutomaticTurnTrigger = "configured_route"
+	AutomaticTurnTriggerLongSentence    AutomaticTurnTrigger = "long_sentence"
+)
+
 // AutomaticTurnRun keeps the immutable fallback snapshot and target aggregate.
 type AutomaticTurnRun struct {
 	AccountID             string                 `json:"account_id"`
@@ -226,6 +233,7 @@ type AutomaticTurnRun struct {
 	TargetLanguage        string                 `json:"target_language"`
 	TranslatedText        string                 `json:"translated_text"`
 	LanguageConfigVersion int64                  `json:"language_config_version"`
+	Trigger               AutomaticTurnTrigger   `json:"delivery_trigger"`
 	Status                AutomaticTurnRunStatus `json:"status"`
 	TargetCount           int                    `json:"target_count"`
 	SettledCount          int                    `json:"settled_count"`

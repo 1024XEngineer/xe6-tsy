@@ -336,7 +336,7 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 	run := AutomaticTurnRun{
 		AccountID: accountID, TurnID: event.TurnID, SessionID: event.SessionID, TraceID: event.TraceID,
 		TargetLanguage: event.TargetLanguage, TranslatedText: event.TranslatedText,
-		LanguageConfigVersion: event.LanguageConfigVersion, Status: AutomaticTurnRunPending,
+		LanguageConfigVersion: event.LanguageConfigVersion, Trigger: AutomaticTurnTriggerConfiguredRoute, Status: AutomaticTurnRunPending,
 		TargetCount: len(targets), FallbackOperationID: "fallback_" + event.TurnID,
 		CreatedAt: now, UpdatedAt: now,
 	}

@@ -135,6 +135,23 @@ func TestAutomaticPostgresScheduleIsIdempotentAndDetectsConflict(t *testing.T) {
 	if err := (&PostgresRepository{pool: conflictPool}).ScheduleAutomaticTurn(t.Context(), record); !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("conflicting replay ScheduleAutomaticTurn() error = %v, want conflict", err)
 	}
+	triggerConflict := run
+	triggerConflict.Trigger = AutomaticTurnTriggerLongSentence
+	triggerConflictPool := &automaticPostgresPoolFake{tx: &automaticTxFake{
+		execTags: []pgconn.CommandTag{pgconn.NewCommandTag("INSERT 0 0")},
+		row:      []*automaticRowFake{{values: automaticRunValues(triggerConflict)}},
+	}}
+	if err := (&PostgresRepository{pool: triggerConflictPool}).ScheduleAutomaticTurn(t.Context(), record); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("trigger-conflicting replay ScheduleAutomaticTurn() error = %v, want conflict", err)
+	}
+}
+
+func TestAutomaticPostgresScheduleRejectsUnknownTrigger(t *testing.T) {
+	run := testAutomaticRun()
+	run.Trigger = ""
+	if err := (&PostgresRepository{pool: &automaticPostgresPoolFake{}}).ScheduleAutomaticTurn(t.Context(), AutomaticTurnScheduleRecord{Run: run}); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("ScheduleAutomaticTurn() error = %v, want invalid argument", err)
+	}
 }
 
 func TestAutomaticPostgresFallbackMarksAreIdempotent(t *testing.T) {
@@ -307,13 +324,13 @@ func testAutomaticRun() AutomaticTurnRun {
 	return AutomaticTurnRun{
 		AccountID: "account-1", TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1",
 		TargetLanguage: "zh-CN", TranslatedText: "译文", LanguageConfigVersion: 3,
-		Status: AutomaticTurnRunFailed, TargetCount: 1, SettledCount: 1, FailedCount: 1,
+		Trigger: AutomaticTurnTriggerConfiguredRoute, Status: AutomaticTurnRunFailed, TargetCount: 1, SettledCount: 1, FailedCount: 1,
 		FallbackOperationID: "fallback-turn-1", CreatedAt: now, UpdatedAt: now,
 	}
 }
 
 func automaticRunValues(run AutomaticTurnRun) []any {
-	return []any{run.AccountID, run.TurnID, run.SessionID, run.TraceID, run.TargetLanguage, run.TranslatedText, run.LanguageConfigVersion, run.Status, run.TargetCount, run.SettledCount, run.SucceededCount, run.FailedCount, run.FallbackOperationID, run.CreatedAt, run.UpdatedAt}
+	return []any{run.AccountID, run.TurnID, run.SessionID, run.TraceID, run.TargetLanguage, run.TranslatedText, run.LanguageConfigVersion, run.Trigger, run.Status, run.TargetCount, run.SettledCount, run.SucceededCount, run.FailedCount, run.FallbackOperationID, run.CreatedAt, run.UpdatedAt}
 }
 
 func automaticSettlementValues(settlement AutomaticTurnSettlement) []any {

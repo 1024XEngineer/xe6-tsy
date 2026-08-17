@@ -1,11 +1,10 @@
 /**
- * Always-on microphone capture feeding sherpa-onnx keyword spotting.
- * Owns a persistent MediaStream that can be cloned for WebRTC uplink.
+ * Session-scoped microphone capture feeding sherpa-onnx keyword spotting.
+ * Owns a MediaStream that can be cloned for WebRTC uplink.
  */
 
 import {
   resolveWakePhrase,
-  type WakeCommand,
 } from "./keywords";
 import {
   createKeywordSpotter,
@@ -26,7 +25,7 @@ export type WakeListenerStatus =
 
 export type WakeListenerHandlers = {
   /** Second arg is the exact catalog phrase matched in the KWS result. */
-  onCommand: (command: WakeCommand, keyword: string) => void;
+  onWake: (keyword: string) => void;
   onStatus?: (status: WakeListenerStatus, detail?: string) => void;
 };
 
@@ -71,8 +70,8 @@ export class WakeWordListener {
   private spotter: SherpaKwsSpotter | null = null;
   private kwsStream: SherpaKwsStream | null = null;
   private running = false;
+  private startGeneration = 0;
   private lastFireAt = 0;
-  private lastCommand: WakeCommand | null = null;
   private status: WakeListenerStatus = "idle";
 
   constructor(handlers: WakeListenerHandlers) {
@@ -94,18 +93,13 @@ export class WakeWordListener {
 
   async start(): Promise<void> {
     if (this.running) return;
-    // Playwright / automated browsers: skip WASM download to keep e2e fast.
-    if (typeof navigator !== "undefined" && navigator.webdriver) {
-      this.setStatus("error", "自动化环境已跳过唤醒词");
-      return;
-    }
     this.running = true;
+    const generation = ++this.startGeneration;
     this.lastFireAt = 0;
-    this.lastCommand = null;
 
     try {
       this.setStatus("requesting_mic");
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
@@ -113,13 +107,28 @@ export class WakeWordListener {
         },
         video: false,
       });
+      if (!this.isActiveStart(generation)) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
+      this.stream = stream;
 
       this.setStatus("loading_model", "正在加载唤醒模型…");
       const ready = await ensureSherpaKwsRuntime();
+      if (!this.isActiveStart(generation)) return;
       if (!ready) {
         throw new Error("sherpa-onnx WASM 加载失败");
       }
-      this.spotter = await createKeywordSpotter();
+      const spotter = await createKeywordSpotter();
+      if (!this.isActiveStart(generation)) {
+        try {
+          spotter.free();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      this.spotter = spotter;
       this.kwsStream = this.spotter.createStream();
 
       this.audioCtx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
@@ -157,33 +166,35 @@ export class WakeWordListener {
       if (this.audioCtx.state === "suspended") {
         await this.audioCtx.resume();
       }
+      if (!this.isActiveStart(generation)) return;
 
       this.setStatus("listening");
     } catch (error) {
+      // stop() invalidates in-flight starts. Their late completion must not
+      // resurrect the microphone or overwrite the idle UI with an error.
+      if (!this.isActiveStart(generation)) return;
       this.running = false;
       const message =
         error instanceof Error ? error.message : "唤醒词监听启动失败";
+      this.releaseResources();
       this.setStatus("error", message);
-      this.stopMicGraph();
       throw error;
     }
+  }
+
+  private isActiveStart(generation: number): boolean {
+    return this.running && this.startGeneration === generation;
   }
 
   private emitKeyword(keyword: string): void {
     const now = Date.now();
     const match = resolveWakePhrase(keyword);
     if (!match) return;
-    // Keep duplicate detections quiet, while allowing a different command to
-    // follow the attention phrase inside the local command window.
-    if (
-      this.lastCommand === match.trigger.command &&
-      now - this.lastFireAt < COOLDOWN_MS
-    ) {
+    if (now - this.lastFireAt < COOLDOWN_MS) {
       return;
     }
     this.lastFireAt = now;
-    this.lastCommand = match.trigger.command;
-    this.handlers.onCommand(match.trigger.command, match.phrase);
+    this.handlers.onWake(match.phrase);
   }
 
   /** Clone mic tracks for WebRTC so TTS mute / session close won't stop KWS. */
@@ -194,6 +205,12 @@ export class WakeWordListener {
 
   stop(): void {
     this.running = false;
+    this.startGeneration += 1;
+    this.releaseResources();
+    this.setStatus("idle");
+  }
+
+  private releaseResources(): void {
     this.stopMicGraph();
     if (this.kwsStream) {
       try {
@@ -217,7 +234,6 @@ export class WakeWordListener {
       }
       this.stream = null;
     }
-    this.setStatus("idle");
   }
 
   private stopMicGraph(): void {

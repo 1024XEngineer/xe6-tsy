@@ -40,6 +40,16 @@ import { parseTranslationFinal } from "../lib/translation-events";
 import { ModeSnapshotTracker } from "../lib/realtime-state";
 import { RealtimeTicketCache, withRealtimeTicket } from "../lib/realtime-ticket-cache";
 import { parseAssistantReply } from "../lib/assistant-replies";
+import {
+  effectiveVoiceInteractionPolicy,
+  loadVoiceInteractionPolicy,
+  saveVoiceInteractionPolicy,
+  type VoiceInteractionPolicy,
+} from "../lib/interaction-policy";
+import {
+  parseCommandResult,
+  type CommandResultEvent,
+} from "../lib/command-results";
 import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
 import { sendWakeWordDetectedSignal } from "../lib/wake-word-signal";
 import {
@@ -56,10 +66,6 @@ import {
   type WakeListenerStatus,
 } from "../lib/wake-word/wake-listener";
 import {
-  LocalCommandWindow,
-  type CommandWindowSnapshot,
-} from "../lib/wake-word/command-window";
-import {
   initialSession,
   sessionReducer,
   type TranslationTurn,
@@ -67,6 +73,7 @@ import {
 
 const POLL_INTERVAL_MS = 1200;
 const TTS_INPUT_RESUME_DELAY_MS = 300;
+export const COMMAND_UPLINK_TIMEOUT_MS = 15_000;
 
 export type SessionDebugInfo = {
   accountId: string | null;
@@ -80,6 +87,12 @@ export type SessionDebugInfo = {
 };
 
 export type ConfigSyncStatus = "idle" | "saving" | "applied" | "failed";
+
+export type CommandFeedback = {
+  commandId: string;
+  status: "listening" | CommandResultEvent["status"];
+  message: string;
+};
 
 function automaticOutputStatusMessage(
   status: AutomaticOutputStatus["status"],
@@ -190,11 +203,22 @@ function idleHintForWake(status: WakeListenerStatus, mode: VoiceInitialMode): st
     case "loading_model":
       return "正在加载本地唤醒模型（首次约十几 MB）…";
     case "listening":
-      return mode === "assistant"
-        ? "可说「小灵，开始翻译」开启助手，或轻触开始。"
-        : "可说「小灵，开始翻译」或轻触开始。";
+      return `轻触开始${mode === "assistant" ? "助手" : "传译"}；会话中说「小灵小灵」后可下达语义指令。`;
     case "error":
       return `唤醒词不可用，仍可用按钮开始${mode === "assistant" ? "对话" : "传译"}。`;
+    default:
+      return null;
+  }
+}
+
+function activeHintForWake(status: WakeListenerStatus): string | null {
+  switch (status) {
+    case "requesting_mic":
+      return "正在申请麦克风权限，唤醒词暂不可用。";
+    case "loading_model":
+      return "正在加载本地唤醒模型，加载完成后可说「小灵小灵」。";
+    case "error":
+      return "唤醒词启动失败，当前只能使用页面按钮切换模式。";
     default:
       return null;
   }
@@ -203,7 +227,9 @@ function idleHintForWake(status: WakeListenerStatus, mode: VoiceInitialMode): st
 export function useVoiceSession() {
   const [state, dispatch] = useReducer(sessionReducer, initialSession);
   const initialMode = resolveVoiceInitialMode();
-  const [statusMessage, setStatusMessage] = useState("正在准备麦克风");
+  const [statusMessage, setStatusMessage] = useState(
+    initialMode === "assistant" ? "轻触开启助手" : "轻触开启传译",
+  );
   const [hintMessage, setHintMessage] = useState<string | null>(null);
   const [automaticOutputMessage, setAutomaticOutputMessage] = useState<string | null>(null);
   const [configSyncStatus, setConfigSyncStatus] = useState<ConfigSyncStatus>("idle");
@@ -211,6 +237,9 @@ export function useVoiceSession() {
     loadVoiceConfig(DEFAULT_VOICE_CONFIG),
   );
   const [wakeStatus, setWakeStatus] = useState<WakeListenerStatus>("idle");
+  const [interactionPolicy, setInteractionPolicyState] =
+    useState<VoiceInteractionPolicy>(loadVoiceInteractionPolicy);
+  const [commandFeedback, setCommandFeedback] = useState<CommandFeedback | null>(null);
   const [debug, setDebug] = useState<SessionDebugInfo>({
     accountId: null,
     sessionId: null,
@@ -222,6 +251,10 @@ export function useVoiceSession() {
     wakeStatus: "idle",
   });
   const activeMode = debug.modeState?.active_mode ?? initialMode;
+  const effectiveInteractionPolicy = effectiveVoiceInteractionPolicy(
+    activeMode,
+    interactionPolicy,
+  );
 
   const configRef = useRef<VoiceSessionConfig>(voiceConfig);
   const runningRef = useRef(false);
@@ -232,26 +265,8 @@ export function useVoiceSession() {
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
   const realtimeTicketCacheRef = useRef<RealtimeTicketCache | null>(null);
-  const modeStateRef = useRef<ModeStateSnapshot | null>(null);
-  const modeSnapshotTrackerRef = useRef(new ModeSnapshotTracker());
-  const modeOperationRef = useRef<string | null>(null);
-  const activeLanguageConfigVersionRef = useRef<number | null>(null);
-  const lastAppliedVoiceConfigRef = useRef<VoiceSessionConfig>(voiceConfig);
-  const activeConfigUpdateChainRef = useRef<Promise<void>>(Promise.resolve());
-  const configRevisionRef = useRef(0);
-  const pendingConfigUpdatesRef = useRef(0);
-  const latestAutomaticOutputStatusRef = useRef<string | null>(null);
-  const wakeRef = useRef<WakeWordListener | null>(null);
-  const [commandWindow, setCommandWindow] = useState<CommandWindowSnapshot>({
-    state: "closed",
-    expiresAt: null,
-  });
-  const commandWindowRef = useRef<LocalCommandWindow | null>(null);
-  const startRef = useRef<() => Promise<void>>(async () => undefined);
-  const endRef = useRef<() => Promise<void>>(async () => undefined);
-
-  if (!realtimeTicketCacheRef.current) {
-    realtimeTicketCacheRef.current = new RealtimeTicketCache({
+  useEffect(() => {
+    const cache = new RealtimeTicketCache({
       mint: async () => {
         const token = accessTokenRef.current;
         const sessionId = sessionIdRef.current;
@@ -265,7 +280,30 @@ export function useVoiceSession() {
         return ticket;
       },
     });
-  }
+    realtimeTicketCacheRef.current = cache;
+    return () => {
+      cache.clear();
+      if (realtimeTicketCacheRef.current === cache) {
+        realtimeTicketCacheRef.current = null;
+      }
+    };
+  }, []);
+  const modeStateRef = useRef<ModeStateSnapshot | null>(null);
+  const modeSnapshotTrackerRef = useRef(new ModeSnapshotTracker());
+  const modeOperationRef = useRef<string | null>(null);
+  const activeLanguageConfigVersionRef = useRef<number | null>(null);
+  const lastAppliedVoiceConfigRef = useRef<VoiceSessionConfig>(voiceConfig);
+  const activeConfigUpdateChainRef = useRef<Promise<void>>(Promise.resolve());
+  const configRevisionRef = useRef(0);
+  const pendingConfigUpdatesRef = useRef(0);
+  const latestAutomaticOutputStatusRef = useRef<string | null>(null);
+  const wakeRef = useRef<WakeWordListener | null>(null);
+  const activeCommandIdRef = useRef<string | null>(null);
+  const interactionPolicyRef = useRef<VoiceInteractionPolicy>(interactionPolicy);
+  const setUplinkEnabledRef = useRef<(enabled: boolean) => void>(() => undefined);
+  const commandUplinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startRef = useRef<() => Promise<void>>(async () => undefined);
+  const endRef = useRef<() => Promise<void>>(async () => undefined);
 
   const applyModeSnapshot = useCallback((snapshot: ModeStateSnapshot): boolean => {
     if (!modeSnapshotTrackerRef.current.observe(snapshot)) return false;
@@ -274,6 +312,7 @@ export function useVoiceSession() {
       previous && previous.runtime_instance_id !== snapshot.runtime_instance_id,
     );
     modeStateRef.current = snapshot;
+    const modeChanged = !previous || previous.active_mode !== snapshot.active_mode;
     if (runtimeChanged) modeOperationRef.current = null;
     setDebug((prev) => ({
       ...prev,
@@ -282,6 +321,18 @@ export function useVoiceSession() {
     }));
     if (runtimeChanged) {
       setHintMessage("realtime runtime 已更换，模式快照已刷新，请重新发送模式命令。");
+    }
+    if (runningRef.current && (modeChanged || runtimeChanged)) {
+      if (commandUplinkTimerRef.current) {
+        clearTimeout(commandUplinkTimerRef.current);
+        commandUplinkTimerRef.current = null;
+      }
+      setUplinkEnabledRef.current(
+        effectiveVoiceInteractionPolicy(
+          snapshot.active_mode,
+          interactionPolicyRef.current,
+        ) === "continuous",
+      );
     }
     return true;
   }, []);
@@ -400,10 +451,74 @@ export function useVoiceSession() {
     }
   }, []);
 
+  const clearCommandUplinkTimer = useCallback(() => {
+    if (!commandUplinkTimerRef.current) return;
+    clearTimeout(commandUplinkTimerRef.current);
+    commandUplinkTimerRef.current = null;
+  }, []);
+
+  const closeCommandUplink = useCallback(() => {
+    clearCommandUplinkTimer();
+    const mode = modeStateRef.current?.active_mode ?? initialMode;
+    if (
+      effectiveVoiceInteractionPolicy(mode, interactionPolicyRef.current) ===
+      "wake_word"
+    ) {
+      setUplinkEnabledRef.current(false);
+    }
+  }, [clearCommandUplinkTimer, initialMode]);
+
+  const armCommandUplinkTimeout = useCallback(
+    (commandId: string) => {
+      clearCommandUplinkTimer();
+      commandUplinkTimerRef.current = setTimeout(() => {
+        commandUplinkTimerRef.current = null;
+        if (activeCommandIdRef.current !== commandId) return;
+        activeCommandIdRef.current = null;
+        const mode = modeStateRef.current?.active_mode ?? initialMode;
+        if (
+          effectiveVoiceInteractionPolicy(mode, interactionPolicyRef.current) ===
+          "wake_word"
+        ) {
+          setUplinkEnabledRef.current(false);
+        }
+        setCommandFeedback(null);
+        setHintMessage("本轮唤醒已超时，麦克风上行已关闭，请再次说「小灵小灵」。");
+      }, COMMAND_UPLINK_TIMEOUT_MS);
+    },
+    [clearCommandUplinkTimer, initialMode],
+  );
+
   const cleanupMedia = useCallback(() => {
+    clearCommandUplinkTimer();
+    setUplinkEnabledRef.current = () => undefined;
     webrtcRef.current?.close();
     webrtcRef.current = null;
-  }, []);
+  }, [clearCommandUplinkTimer]);
+
+  const setInteractionPolicy = useCallback((policy: VoiceInteractionPolicy) => {
+    if (
+      modeStateRef.current?.active_mode === "interpretation" &&
+      policy !== "continuous"
+    ) {
+      setHintMessage("同声传译仅支持常驻模式；仍可说「小灵小灵」发送退出指令。");
+      return;
+    }
+    clearCommandUplinkTimer();
+    interactionPolicyRef.current = policy;
+    setInteractionPolicyState(policy);
+    saveVoiceInteractionPolicy(policy);
+    if (!runningRef.current) return;
+
+    setUplinkEnabledRef.current(policy === "continuous");
+    activeCommandIdRef.current = null;
+    setCommandFeedback(null);
+    setHintMessage(
+      policy === "continuous"
+        ? "已切换到常驻模式，可以直接对话。"
+        : "已切换到唤醒词模式；只有说「小灵小灵」后才会开放一轮语音。",
+    );
+  }, [clearCommandUplinkTimer]);
 
   const syncAutomaticOutputStatus = useCallback(
     async (
@@ -515,12 +630,11 @@ export function useVoiceSession() {
 
   const end = useCallback(async () => {
     runningRef.current = false;
-    commandWindowRef.current?.close();
-    setCommandWindow({ state: "closed", expiresAt: null });
     startAbortRef.current?.abort();
     startAbortRef.current = null;
     stopPolling();
     cleanupMedia();
+    wakeRef.current?.stop();
 
     const token = accessTokenRef.current;
     const sessionId = sessionIdRef.current;
@@ -539,17 +653,13 @@ export function useVoiceSession() {
     modeOperationRef.current = null;
     activeLanguageConfigVersionRef.current = null;
     latestAutomaticOutputStatusRef.current = null;
+    activeCommandIdRef.current = null;
+    setCommandFeedback(null);
     setAutomaticOutputMessage(null);
     setConfigSyncStatus("idle");
     dispatch({ type: "END" });
-    setStatusMessage(
-      wakeRef.current?.getStatus() === "listening"
-        ? initialMode === "assistant"
-          ? "轻触或说「小灵，开始翻译」开启助手"
-          : "轻触或说「小灵，开始翻译」"
-        : "轻触开始",
-    );
-    setHintMessage(idleHintForWake(wakeRef.current?.getStatus() ?? "idle", initialMode));
+    setStatusMessage(initialMode === "assistant" ? "轻触开启助手" : "轻触开启传译");
+    setHintMessage(null);
     setDebug((prev) => ({
       accountId: accountIdRef.current,
       sessionId: null,
@@ -637,8 +747,6 @@ export function useVoiceSession() {
   const start = useCallback(async () => {
     if (runningRef.current) return;
 
-    commandWindowRef.current?.close();
-    setCommandWindow({ state: "closed", expiresAt: null });
     runningRef.current = true;
     const startAbort = new AbortController();
     startAbortRef.current = startAbort;
@@ -646,6 +754,8 @@ export function useVoiceSession() {
     setStatusMessage(initialMode === "assistant" ? "正在启动助手" : "正在启动传译");
     setHintMessage("连接 xe6-tsy API…");
     latestAutomaticOutputStatusRef.current = null;
+    activeCommandIdRef.current = null;
+    setCommandFeedback(null);
     setAutomaticOutputMessage(null);
     setDebug((prev) => ({
       accountId: null,
@@ -658,8 +768,30 @@ export function useVoiceSession() {
       wakeStatus: prev.wakeStatus,
     }));
 
+    let startupAccessToken: string | null = null;
+    let startupSessionId: string | null = null;
+    const startupResources: {
+      webrtc: WebRTCSessionHandles | null;
+      ownsSession: boolean;
+    } = {
+      webrtc: null,
+      ownsSession: false,
+    };
+    const ensureStartupActive = () => {
+      if (
+        startAbort.signal.aborted ||
+        startAbortRef.current !== startAbort ||
+        !runningRef.current
+      ) {
+        throw new DOMException("语音会话启动已取消", "AbortError");
+      }
+    };
+
     try {
+      const wakeStart = wakeRef.current?.start().catch(() => undefined);
       const auth = await getOrCreateAuthSession();
+      ensureStartupActive();
+      startupAccessToken = auth.tokens.access_token;
       accessTokenRef.current = auth.tokens.access_token;
       accountIdRef.current = auth.account.id;
       setDebug((prev) => ({ ...prev, accountId: auth.account.id }));
@@ -667,6 +799,7 @@ export function useVoiceSession() {
         const ready = await hasReadyAutomaticTarget(
           auth.tokens.access_token,
         ).catch(() => false);
+        ensureStartupActive();
         if (!ready) {
           const fallbackConfig = {
             ...configRef.current,
@@ -681,7 +814,11 @@ export function useVoiceSession() {
       setStatusMessage("正在创建会话");
 
       const session = await createVoiceSession(auth.tokens.access_token);
+      startupSessionId = session.id;
+      startupResources.ownsSession = true;
+      ensureStartupActive();
       sessionIdRef.current = session.id;
+      startupResources.ownsSession = false;
       setDebug((prev) => ({ ...prev, sessionId: session.id }));
       setHintMessage(`session: ${session.id}`);
 
@@ -691,6 +828,7 @@ export function useVoiceSession() {
         session.id,
         configRef.current,
       );
+      ensureStartupActive();
       activeLanguageConfigVersionRef.current = languageConfig.version;
       lastAppliedVoiceConfigRef.current = configRef.current;
       setHintMessage(
@@ -702,6 +840,7 @@ export function useVoiceSession() {
         auth.tokens.access_token,
         session.id,
       );
+      ensureStartupActive();
       const ticket = ticketResponse.ticket;
       realtimeTicketCacheRef.current?.seed(ticketResponse);
 
@@ -729,20 +868,57 @@ export function useVoiceSession() {
           ttsResumeTimer = null;
         }, TTS_INPUT_RESUME_DELAY_MS);
       };
+      setUplinkEnabledRef.current = (enabled) => {
+        if (sessionIdRef.current !== session.id) return;
+        if (ttsResumeTimer) {
+          clearTimeout(ttsResumeTimer);
+          ttsResumeTimer = null;
+        }
+        for (const track of sessionStream?.getAudioTracks() ?? []) {
+          track.enabled = enabled;
+        }
+      };
 
       setStatusMessage("正在建立 WebRTC");
       setHintMessage("复用已授权麦克风，交换 SDP/ICE。");
+      await wakeStart;
+      ensureStartupActive();
       const wakeTracks = wakeRef.current?.cloneAudioTracksForPeer() ?? [];
       try {
-        webrtcRef.current = await openWebRTCSession({
+        startupResources.webrtc = await openWebRTCSession({
           ticket,
           sessionId: session.id,
           audioTracks: wakeTracks.length > 0 ? wakeTracks : undefined,
           onDataMessage: (payload) => {
+            const commandResult = parseCommandResult(payload);
+            if (commandResult && commandResult.session_id === session.id) {
+              if (activeCommandIdRef.current !== commandResult.command_id) return;
+              setCommandFeedback({
+                commandId: commandResult.command_id,
+                status: commandResult.status,
+                message: commandResult.message,
+              });
+              activeCommandIdRef.current = null;
+              closeCommandUplink();
+              if (
+                commandResult.status === "applied" ||
+                commandResult.status === "unchanged"
+              ) {
+                void refreshModeSnapshot();
+              }
+              return;
+            }
             const audio = parseTTSAudioEvent(payload);
             if (audio) {
               enqueueTTSAudio(audio, (playing) => {
-                setMicrophoneInputEnabled(!playing);
+                const mode = modeStateRef.current?.active_mode ?? initialMode;
+                setMicrophoneInputEnabled(
+                  !playing &&
+                    effectiveVoiceInteractionPolicy(
+                      mode,
+                      interactionPolicyRef.current,
+                    ) === "continuous",
+                );
               });
               return;
             }
@@ -785,7 +961,16 @@ export function useVoiceSession() {
             }
           },
         });
-        sessionStream = webrtcRef.current.localStream;
+        ensureStartupActive();
+        webrtcRef.current = startupResources.webrtc;
+        sessionStream = startupResources.webrtc.localStream;
+        setUplinkEnabledRef.current(
+          effectiveVoiceInteractionPolicy(
+            initialMode,
+            interactionPolicyRef.current,
+          ) === "continuous",
+        );
+        startupResources.webrtc = null;
       } catch (webrtcError) {
         const detail = errorMessage(webrtcError, "WebRTC 信令失败");
         throw new Error(
@@ -806,6 +991,7 @@ export function useVoiceSession() {
           startAbort.signal,
           initialMode,
         );
+        ensureStartupActive();
       } catch (startError) {
         const detail = errorMessage(startError, "启动失败");
         throw new Error(
@@ -818,15 +1004,49 @@ export function useVoiceSession() {
 
       dispatch({ type: "ACTIVATE" });
       setStatusMessage("正在聆听");
+      const wakeHint = activeHintForWake(
+        wakeRef.current?.getStatus() ?? "error",
+      );
       setHintMessage(
-        initialMode === "assistant"
-          ? "助手已开启 · 可直接提问 · 说「小灵，停止翻译」或轻触结束"
-          : `传译已开启 · ${formatActivePair(configRef.current)} · 可说「小灵，停止翻译」或轻触结束`,
+        wakeHint ??
+          (effectiveVoiceInteractionPolicy(
+            initialMode,
+            interactionPolicyRef.current,
+          ) === "wake_word"
+            ? "唤醒词模式 · 说「小灵小灵」后开放一轮对话"
+            : initialMode === "assistant"
+              ? "助手已开启 · 可直接提问 · 说「小灵小灵」后可用自然语言切换模式"
+              : `传译已开启 · ${formatActivePair(configRef.current)} · 说「小灵小灵」后可用自然语言切换模式`),
       );
       setDebug((prev) => ({ ...prev, connectionState: "connected" }));
       startPolling();
     } catch (error) {
-      if (startAbort.signal.aborted) return;
+      const startupCancelled =
+        startAbort.signal.aborted ||
+        startAbortRef.current !== startAbort ||
+        !runningRef.current;
+      if (startupCancelled) {
+        const unclaimedWebRTC = startupResources.webrtc;
+        unclaimedWebRTC?.close();
+        if (webrtcRef.current === unclaimedWebRTC) {
+          webrtcRef.current = null;
+        }
+        if (sessionIdRef.current === startupSessionId) {
+          sessionIdRef.current = null;
+        }
+        if (
+          startupResources.ownsSession &&
+          startupAccessToken &&
+          startupSessionId
+        ) {
+          void endVoiceSession(
+            startupAccessToken,
+            startupSessionId,
+            "operator_cancelled",
+          ).catch(() => undefined);
+        }
+        return;
+      }
       const message = errorMessage(error, "无法启动会话");
       dispatch({ type: "ERROR", message });
       setStatusMessage("联调失败");
@@ -841,6 +1061,7 @@ export function useVoiceSession() {
       const failedSessionId = sessionIdRef.current;
       const failedAccessToken = accessTokenRef.current;
       cleanupMedia();
+      wakeRef.current?.stop();
       stopPolling();
       sessionIdRef.current = null;
       realtimeTicketCacheRef.current?.clear();
@@ -849,6 +1070,8 @@ export function useVoiceSession() {
       modeOperationRef.current = null;
       activeLanguageConfigVersionRef.current = null;
       latestAutomaticOutputStatusRef.current = null;
+      activeCommandIdRef.current = null;
+      setCommandFeedback(null);
       setAutomaticOutputMessage(null);
       setConfigSyncStatus("idle");
       setDebug((prev) => ({
@@ -873,7 +1096,15 @@ export function useVoiceSession() {
         startAbortRef.current = null;
       }
     }
-  }, [cleanupMedia, initialMode, refreshControlSnapshots, startPolling, stopPolling]);
+  }, [
+    cleanupMedia,
+    closeCommandUplink,
+    initialMode,
+    refreshControlSnapshots,
+    refreshModeSnapshot,
+    startPolling,
+    stopPolling,
+  ]);
 
   useEffect(() => {
     startRef.current = start;
@@ -889,63 +1120,48 @@ export function useVoiceSession() {
   }, [end, start]);
 
   useEffect(() => {
-    const localCommandWindow = new LocalCommandWindow({
-      onExpire: () => setCommandWindow({ state: "closed", expiresAt: null }),
-    });
-    commandWindowRef.current = localCommandWindow;
     const listener = new WakeWordListener({
-      onCommand: (command, keyword) => {
-        const acceptedByWindow = localCommandWindow.consume(command);
-        if (acceptedByWindow) {
-          setCommandWindow(localCommandWindow.snapshot());
-        }
-        if (command === "start") {
-          if (runningRef.current || sessionIdRef.current) return;
-          setHintMessage(
-            acceptedByWindow
-              ? `已确认「${keyword}」，正在开启${initialMode === "assistant" ? "助手" : "传译"}…`
-              : `已识别「${keyword}」，正在开启${initialMode === "assistant" ? "助手" : "传译"}…`,
-          );
-          void startRef.current();
-          return;
-        }
-        if (command === "stop") {
-          if (!runningRef.current && !sessionIdRef.current) return;
-          const currentMode = modeStateRef.current?.active_mode ?? initialMode;
-          setHintMessage(
-            acceptedByWindow
-              ? `已确认「${keyword}」，正在停止${currentMode === "assistant" ? "对话" : "传译"}…`
-              : `已识别「${keyword}」，正在停止${currentMode === "assistant" ? "对话" : "传译"}…`,
-          );
-          void endRef.current();
-          return;
-        }
-        if (command === "listen") {
-          const session = webrtcRef.current;
-          if (!runningRef.current || !sessionIdRef.current || !session) return;
-
-          const result = sendWakeWordDetectedSignal(session);
-          if (result.ok) {
-            const snapshot = localCommandWindow.open();
-            setCommandWindow(snapshot);
-            setHintMessage(
-              `已识别「${keyword}」，请在 5 秒内说「小灵，开始翻译」或「小灵，停止翻译」。`,
-            );
-            return;
+      onWake: (keyword) => {
+        const session = webrtcRef.current;
+        if (!runningRef.current || !sessionIdRef.current || !session) return;
+        const result = sendWakeWordDetectedSignal(session);
+        if (result.ok) {
+          const mode = modeStateRef.current?.active_mode ?? initialMode;
+          if (
+            effectiveVoiceInteractionPolicy(mode, interactionPolicyRef.current) ===
+            "wake_word"
+          ) {
+            setUplinkEnabledRef.current(true);
+            armCommandUplinkTimeout(result.signal.signal_id);
           }
-          setHintMessage(
-            result.reason === "data_channel_not_open"
-              ? "已识别唤醒词，但实时控制通道尚未就绪，请重试。"
-              : "已识别唤醒词，但发送失败，请重试。",
-          );
+          activeCommandIdRef.current = result.signal.signal_id;
+          setCommandFeedback({
+            commandId: result.signal.signal_id,
+            status: "listening",
+            message: `已识别「${keyword}」，正在听取指令`,
+          });
+          return;
         }
+        setHintMessage(
+          result.reason === "data_channel_not_open"
+            ? "已识别唤醒词，但实时控制通道尚未就绪，请重试。"
+            : "已识别唤醒词，但发送失败，请重试。",
+        );
       },
       onStatus: (status, detail) => {
         setWakeStatus(status);
         setDebug((prev) => ({ ...prev, wakeStatus: status }));
-        if (runningRef.current) return;
+        if (runningRef.current) {
+          const activeHint = activeHintForWake(status);
+          if (activeHint) {
+            setHintMessage(detail ? `${activeHint} ${detail}` : activeHint);
+          } else if (status === "listening") {
+            setHintMessage("说「小灵小灵」后，可用自然语言切换模式。");
+          }
+          return;
+        }
         if (status === "listening") {
-          setStatusMessage(initialMode === "assistant" ? "轻触或说「小灵，开始翻译」开启助手" : "轻触或说「小灵，开始翻译」");
+          setStatusMessage(initialMode === "assistant" ? "轻触开启助手" : "轻触开启传译");
           setHintMessage(idleHintForWake(status, initialMode));
           return;
         }
@@ -963,19 +1179,12 @@ export function useVoiceSession() {
       },
     });
     wakeRef.current = listener;
-    void listener.start().catch(() => {
-      // Status callback already reports the error; button path remains available.
-    });
 
     return () => {
       wakeRef.current = null;
       listener.stop();
-      localCommandWindow.dispose();
-      if (commandWindowRef.current === localCommandWindow) {
-        commandWindowRef.current = null;
-      }
     };
-  }, [initialMode]);
+  }, [armCommandUplinkTimeout, initialMode]);
 
   useEffect(
     () => () => {
@@ -984,6 +1193,7 @@ export function useVoiceSession() {
       startAbortRef.current = null;
       stopPolling();
       cleanupMedia();
+      wakeRef.current?.stop();
     },
     [cleanupMedia, stopPolling],
   );
@@ -1002,7 +1212,13 @@ export function useVoiceSession() {
       updateConfig,
       debug,
       wakeStatus,
-      commandWindow,
+      // Removed by the following UI commit; keeps this Hook migration
+      // independently compatible with the previous VoiceExperience tree.
+      commandWindow: { state: "closed" as const, expiresAt: null },
+      commandFeedback,
+      interactionPolicy: effectiveInteractionPolicy,
+      interactionPolicyLocked: activeMode === "interpretation",
+      setInteractionPolicy,
       switchMode,
       toggle,
     }),
@@ -1011,15 +1227,17 @@ export function useVoiceSession() {
       activeMode,
       automaticOutputMessage,
       configSyncStatus,
+      commandFeedback,
+      effectiveInteractionPolicy,
       hintMessage,
       state,
       statusMessage,
       switchMode,
+      setInteractionPolicy,
       toggle,
       updateConfig,
       voiceConfig,
       wakeStatus,
-      commandWindow,
     ],
   );
 }

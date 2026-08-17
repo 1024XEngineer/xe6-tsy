@@ -21,7 +21,7 @@ Go 实时音频服务。
 - 每个会话只支持一组双语语言对，默认 `zh-CN <-> en-US`
 - 只支持两方面对面
 - partial 结果只用于后台纠偏
-- 句末 final 译文才进入 TTS
+- 只有句末 final 译文可进入 TTS；原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
 - TTS / 渠道输出可按 target_language 单独关闭
 - TTS 播放中检测到对方发言时，发送 `playback.stop`
 
@@ -183,6 +183,12 @@ Local adapters live under `localruntime/` (`TrustSessionReader`, `StaticLanguage
 `pipeline.NewPostgresFinalTurnSink(pool)` is the production final-turn sink adapter. It writes the
 validated immutable event into the API service's PostgreSQL `final_turn_outbox`; the API consumer
 worker owns receipt settlement and persistence into `voice_turns`.
+
+长句判断在 FinalTurn 提交前使用本轮固定事实完成：去除首尾空白后的 `source_text` 按 Unicode
+code point 计数，超过 50 个字符即命中；`ended_at - started_at >= 20s` 也命中，两者为 OR
+关系。命中后事件记录 `tts_enabled=false`、`delivery_enabled=true`，realtime 不发起初始 TTS；
+API 只创建企业微信字幕投递。企业微信不可用或最终投递失败时，API 通过已有 fallback playback
+接口请求 TTS 回放，且不修改会话的输出配置。
 
 Speaker evidence: the pipeline copies a non-empty `asr.FinalResult.ProviderSpeakerID` into the
 FinalTurn event as `provider_speaker_id`. When the ASR/diarization provider returns no speaker key,

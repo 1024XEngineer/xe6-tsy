@@ -20,6 +20,8 @@ lingow_accounts
     │   └── delivery_attempts
     │       └── delivery_outbox
     ├── delivery_retry_requests
+    ├── automatic_turn_runs
+    │   └── automatic_turn_settlements -> outbound_messages
     └── voice_sessions
         ├── voice_session_create_requests
         ├── voice_session_start_operations
@@ -587,6 +589,31 @@ Final Turn 入站事件的 PostgreSQL 持久化表及消费状态表。当前仓
 | `message_id` | `TEXT` | 否 |  | 消息 ID |
 | `attempt_id` | `TEXT` | 否 |  | 新建的尝试 ID |
 | `created_at` | `TIMESTAMPTZ` | 否 | `CURRENT_TIMESTAMP` | 创建时间 |
+
+### 4.21 `automatic_turn_runs`
+
+每个 Final Turn 的自动投递聚合与不可变 fallback 快照。`delivery_trigger=configured_route` 表示由
+会话输出路由触发；`delivery_trigger=long_sentence` 表示原文超过 50 个 Unicode 字符或原声音频
+时长达到 20 秒触发的企业微信字幕降级。长句没有可用企业微信目标时允许 `target_count=0`，由
+fallback worker 回放 TTS；回放完成后直接结束恢复，不改写会话输出配置。
+
+| 字段 | 类型 | 空 | 默认值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `account_id` / `turn_id` | `TEXT` | 否 |  | 账户内自动投递 run 主键 |
+| `session_id` / `trace_id` | `TEXT` | 否 |  | 会话和链路追踪身份 |
+| `target_language` / `translated_text` | `TEXT` | 否 |  | fallback 使用的不可变译文快照 |
+| `language_config_version` | `BIGINT` | 否 |  | Turn 开始时固定的配置版本 |
+| `delivery_trigger` | `TEXT` | 否 | `configured_route` | `configured_route` / `long_sentence` |
+| `status` | `TEXT` | 否 |  | 投递聚合、fallback 与恢复状态 |
+| `target_count` / `settled_count` / `succeeded_count` / `failed_count` | `INTEGER` | 否 | `0` | 目标结算计数 |
+| `fallback_operation_id` | `TEXT` | 否 |  | realtime fallback playback 幂等键 |
+| `created_at` / `updated_at` | `TIMESTAMPTZ` | 否 | `CURRENT_TIMESTAMP` | 创建和更新时间 |
+
+### 4.22 `automatic_turn_settlements`
+
+自动投递的目标级结算表，通过 `(account_id, turn_id)` 关联 run，通过 `message_id` 关联复用的
+`outbound_messages`、`delivery_attempts` 和 `delivery_outbox` 链路。长句 run 只创建 `wechat`
+settlement；投递成功不回放，全部目标最终失败才进入 fallback。
 
 ## 5. Redis/Valkey 数据设计
 

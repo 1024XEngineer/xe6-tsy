@@ -119,6 +119,13 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 语言配置的单向输出只有在 delivery runtime 已启用且目标 channel provider 已配置时才会接受；
 否则返回 `delivery_target_required`，保持反向译文不被静默丢弃。
 
+FinalTurn 的长句降级复用同一套 Message、Attempt、delivery outbox 和 Worker。去除首尾空白后的
+原文超过 50 个 Unicode 字符，或 `ended_at - started_at >= 20s` 时，即使会话路由未开启普通
+delivery，也会建立 `delivery_trigger=long_sentence` 的自动投递 run，并且只选择已启用、已验证且
+Provider 已配置的企业微信目标，不创建 Email 消息。未绑定、未配置、目标已失效或企业微信最终
+投递失败时，fallback worker 请求 realtime 回放 TTS；长句恢复完成后不会调用双向输出恢复器，
+因此不会改变会话输出配置。投递成功的 run 不进入 fallback 候选。
+
 ## 语音记录 HTTP 装配
 
 API 启动语音记录和 Session 路由需要 `DATABASE_URL` 和至少 32 字节的 `JWT_SECRET`。缺少配置或数据库

@@ -13,6 +13,8 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
+const commandUsagePublishTimeout = time.Second
+
 type commandSpeechFeedbackDependencies struct {
 	Speech    *pipeline.SpeechOutput
 	Usage     pipeline.UsageFactSink
@@ -97,13 +99,14 @@ func (f *commandSpeechFeedback) play(ctx context.Context, attempt uint64, event 
 		ID: "command_" + event.CommandID, SessionID: event.SessionID,
 		AccountID: f.deps.AccountID, TraceID: f.deps.TraceID, StartedAt: event.OccurredAt,
 	}
+	playbackID := "command_playback_" + event.CommandID
 	result, err := f.deps.Speech.Play(ctx, pipeline.SpeechOutputRequest{
 		Turn: turn, Language: "zh-CN", Text: event.Message,
-		PlaybackID: "command_playback_" + event.CommandID,
+		PlaybackID: playbackID,
 	})
 	if err != nil {
 		f.logFailure(event, "tts", err)
-		f.restoreListeningIfCurrent(attempt, event.SessionID)
+		f.restoreListeningIfCurrent(attempt, event, turn.ID, playbackID)
 		return
 	}
 	if f.deps.Usage != nil {
@@ -111,14 +114,26 @@ func (f *commandSpeechFeedback) play(ctx context.Context, attempt uint64, event 
 			result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency, f.deps.Now())
 		if factErr != nil {
 			f.logFailure(event, "usage_build", factErr)
-		} else if publishErr := f.deps.Usage.Publish(context.WithoutCancel(ctx), fact); publishErr != nil {
-			f.logFailure(event, "usage_publish", publishErr)
+		} else {
+			// A completed synthesis remains billable after a newer wake cancels playback feedback,
+			// but a stalled sink must not keep Runtime shutdown waiting indefinitely.
+			usageCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandUsagePublishTimeout)
+			publishErr := f.deps.Usage.Publish(usageCtx, fact)
+			cancel()
+			if publishErr != nil {
+				f.logFailure(event, "usage_publish", publishErr)
+			}
 		}
 	}
-	f.restoreListeningIfCurrent(attempt, event.SessionID)
+	f.restoreListeningIfCurrent(attempt, event, turn.ID, playbackID)
 }
 
-func (f *commandSpeechFeedback) restoreListeningIfCurrent(attempt uint64, sessionID string) {
+func (f *commandSpeechFeedback) restoreListeningIfCurrent(
+	attempt uint64,
+	event realtimev1.CommandResultEvent,
+	turnID string,
+	playbackID string,
+) {
 	f.mu.Lock()
 	current := !f.closed && f.attempt == attempt
 	f.mu.Unlock()
@@ -131,14 +146,16 @@ func (f *commandSpeechFeedback) restoreListeningIfCurrent(attempt uint64, sessio
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := f.deps.Runtime.SetProcessingState(ctx, session.ProcessingStateUpdate{
-		SessionID: sessionID, RuntimeState: session.RuntimeListening,
+		SessionID: event.SessionID, RuntimeState: session.RuntimeListening,
+		ExpectedTurnID: &turnID, ExpectedPlaybackID: &playbackID,
 	}); err != nil {
-		f.deps.Logger.Warn("command feedback failed", "stage", "restore_listening", "error", err)
+		f.logFailure(event, "restore_listening", err)
 	}
 }
 
 func (f *commandSpeechFeedback) logFailure(event realtimev1.CommandResultEvent, stage string, err error) {
 	f.deps.Logger.Warn("command feedback failed",
+		"session_id", event.SessionID, "command_id", event.CommandID,
 		"stage", stage, "command_status", event.Status, "error", fmt.Errorf("command feedback: %w", err))
 }
 

@@ -79,8 +79,9 @@ func TestCommandSpeechFeedbackUsageFailureDoesNotRetrySpeech(t *testing.T) {
 	feedback.wg.Wait()
 	feedback.Close()
 
-	if len(ttsProvider.Requests()) != 1 || usage.calls != 1 {
-		t.Fatalf("TTS requests = %d, usage calls = %d; want one each", len(ttsProvider.Requests()), usage.calls)
+	if len(ttsProvider.Requests()) != 1 || usage.calls != 1 || !usage.hadDeadline {
+		t.Fatalf("TTS requests = %d, usage calls = %d, deadline = %t; want one each with deadline",
+			len(ttsProvider.Requests()), usage.calls, usage.hadDeadline)
 	}
 	if !runtimeReporter.recordedState(session.RuntimeListening) {
 		t.Fatalf("runtime states = %#v, want listening", runtimeReporter.states)
@@ -113,12 +114,14 @@ type failingCommandTTS struct {
 }
 
 type failingCommandUsageSink struct {
-	calls int
-	err   error
+	calls       int
+	err         error
+	hadDeadline bool
 }
 
-func (s *failingCommandUsageSink) Publish(context.Context, pipeline.UsageFact) error {
+func (s *failingCommandUsageSink) Publish(ctx context.Context, _ pipeline.UsageFact) error {
 	s.calls++
+	_, s.hadDeadline = ctx.Deadline()
 	return s.err
 }
 

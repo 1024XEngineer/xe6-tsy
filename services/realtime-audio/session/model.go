@@ -76,6 +76,10 @@ type ProcessingStateUpdate struct {
 	RuntimeState      RuntimeState
 	CurrentTurnID     *string
 	CurrentPlaybackID *string
+	// Expected identities are compare-only cleanup preconditions and are never persisted.
+	// A mismatch means a newer Turn or playback already owns the Runtime state.
+	ExpectedTurnID     *string
+	ExpectedPlaybackID *string
 }
 
 // StartRealtimeCommand binds one durable control-plane operation to startup.

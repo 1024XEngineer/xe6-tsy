@@ -26,6 +26,10 @@ func (s *LifecycleService) SetProcessingState(ctx context.Context, update Proces
 	if current.SessionID != update.SessionID {
 		return fmt.Errorf("%w: runtime belongs to %q", ErrRuntimeIdentityConflict, current.SessionID)
 	}
+	if !matchesExpectedIdentity(current.CurrentTurnID, update.ExpectedTurnID) ||
+		!matchesExpectedIdentity(current.CurrentPlaybackID, update.ExpectedPlaybackID) {
+		return ErrRuntimeIdentityConflict
+	}
 	if !validRuntimeProgressTransition(current.RuntimeState, update.RuntimeState) {
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidRuntimeTransition, current.RuntimeState, update.RuntimeState)
 	}
@@ -94,6 +98,10 @@ func validateRuntimeUpdate(update ProcessingStateUpdate) error {
 	if update.SessionID == "" {
 		return ErrSessionIDRequired
 	}
+	if invalidExpectedIdentity(update.ExpectedTurnID) || invalidExpectedIdentity(update.ExpectedPlaybackID) ||
+		(update.ExpectedPlaybackID != nil && update.ExpectedTurnID == nil) {
+		return ErrInvalidRuntimeUpdate
+	}
 	turnRequired := func() bool { return update.CurrentTurnID != nil && *update.CurrentTurnID != "" }
 	playbackRequired := func() bool { return update.CurrentPlaybackID != nil && *update.CurrentPlaybackID != "" }
 
@@ -112,6 +120,14 @@ func validateRuntimeUpdate(update ProcessingStateUpdate) error {
 		}
 	}
 	return ErrInvalidRuntimeUpdate
+}
+
+func invalidExpectedIdentity(identity *string) bool {
+	return identity != nil && *identity == ""
+}
+
+func matchesExpectedIdentity(current, expected *string) bool {
+	return expected == nil || current != nil && *current == *expected
 }
 
 func validRuntimeProgressTransition(current, next RuntimeState) bool {

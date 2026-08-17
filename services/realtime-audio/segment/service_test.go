@@ -225,6 +225,9 @@ func TestOpenCommandWindowLeavesStateUntouchedForDuplicateSignal(t *testing.T) {
 	base := time.Unix(33, 0).UTC()
 	gate := &recordingGate{openErr: command.ErrDuplicateOpen}
 	service := newTestServiceWithDeps(t, &fakeSource{}, &fakeProcessor{}, gate, nil, func() time.Time { return base })
+	if _, err := service.segmenter.Push(t.Context(), testFrame(t, 1, base)); err != nil {
+		t.Fatalf("Push(active ordinary speech) error = %v", err)
+	}
 	if service.openCommandWindow(t.Context(), Request{SessionID: "session-1"}, receivedWakeWord{
 		signal: realtimev1.WakeWordDetectedSignal{
 			Type: realtimev1.WakeWordDetectedType, EventVersion: 1,
@@ -237,8 +240,12 @@ func TestOpenCommandWindowLeavesStateUntouchedForDuplicateSignal(t *testing.T) {
 	if gate.openCalls != 1 || gate.active {
 		t.Fatalf("duplicate signal changed gate state: %#v", gate)
 	}
-	if events, err := service.segmenter.Push(t.Context(), testFrame(t, 1, base.Add(time.Second))); err != nil || len(events) != 2 {
-		t.Fatalf("ordinary segmenter after duplicate = %#v, %v; want untouched usable state", events, err)
+	events, err := service.segmenter.Push(t.Context(), testFrame(t, 0, base.Add(300*time.Millisecond)))
+	if err != nil || len(events) != 1 || events[0].Type != vad.EventFinal || len(events[0].Frames) != 2 {
+		t.Fatalf("ordinary segmenter after duplicate = %#v, %v; want original utterance Final", events, err)
+	}
+	if len(gate.replayed) != 0 {
+		t.Fatalf("duplicate signal replayed ordinary audio: %#v", gate.replayed)
 	}
 }
 

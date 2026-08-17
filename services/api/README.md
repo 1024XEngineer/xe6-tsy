@@ -107,8 +107,10 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 和 Delivery Worker。未接入真实 Email Provider 的发送仍保持 fail-closed。
 生产组合必须先基于最新鉴权迁移（包括账户 lineage 函数）完成，再启用异步投递。
 
-运行时启用还要求 `DATABASE_URL`、`REDIS_URL`、至少 32 字节的 `JWT_SECRET` 和
-`LINGOW_DELIVERY_DESTINATION_KEY`。enabled 路径还会启动 usage stream consumer，
+运行时启用还要求 `DATABASE_URL`、`REDIS_URL`、至少 32 字节的 `JWT_SECRET`、
+`LINGOW_DELIVERY_DESTINATION_KEY`、`REALTIME_BASE_URL` 和至少 32 字节的
+`REALTIME_TICKET_SECRET`；后两项用于企业微信不可用或最终失败时认证调用 realtime fallback
+playback，即使 `LINGOW_SESSION_RUNTIME` 未启用也必须配置。enabled 路径还会启动 usage stream consumer，
 并暴露 `/api/v1/account/message-targets/*`（email bind 在 local 环境支持 `dev:` token；
 非 local 环境通过 `POST /api/v1/account/message-targets/email/verification-codes` 发送一次性
 验证 token，再调用 bind）。`LINGOW_DELIVERY_PROVIDER` 默认是

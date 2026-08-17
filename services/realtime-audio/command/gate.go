@@ -409,9 +409,8 @@ func (g *Gate) startRecognitionLocked(ctx context.Context) Result {
 }
 
 type recognitionOutcome struct {
-	event    realtimev1.CommandResultEvent
-	failure  Failure
-	executed *Command
+	event   realtimev1.CommandResultEvent
+	failure Failure
 }
 
 func (g *Gate) recognize(
@@ -433,11 +432,7 @@ func (g *Gate) recognize(
 	g.abandonLocked()
 	g.mu.Unlock()
 
-	g.publishResult(outcome.event)
-	g.recordOutcome(outcome.event.Status, outcome.failure)
-	if g.deps.Feedback != nil && outcome.executed != nil && outcome.executed.Action != ActionAssistantQuery {
-		g.deps.Feedback.Publish(outcome.event)
-	}
+	g.publishTerminalOutcome(outcome.event, outcome.failure)
 	g.completeRecognitionTask(attempt, done)
 }
 
@@ -495,10 +490,8 @@ func (g *Gate) runRecognition(
 		status, message := executionFailureFeedback(parsed, err)
 		return failureOutcome(request, classifyAttemptFailure(caller, processingCtx, FailureExecution), status, message, parsed, g.now())
 	}
-	executed := parsed
 	return recognitionOutcome{
-		event:    commandResultEvent(request, parsed, execution, commandSuccessMessage(parsed, execution.Status), g.now()),
-		executed: &executed,
+		event: commandResultEvent(request, parsed, execution, commandSuccessMessage(parsed, execution.Status), g.now()),
 	}
 }
 
@@ -563,8 +556,18 @@ func (g *Gate) publishResultLocked(event realtimev1.CommandResultEvent) {
 }
 
 func (g *Gate) publishTerminalResultLocked(event realtimev1.CommandResultEvent, failure Failure) {
+	g.publishTerminalOutcome(event, failure)
+}
+
+// publishTerminalOutcome keeps typed results, observations, and audible feedback aligned for every
+// completed attempt. Cancellation remains silent because a replacement wake or Runtime shutdown
+// owns the audio path; assistant queries produce their own answer audio and must not be duplicated.
+func (g *Gate) publishTerminalOutcome(event realtimev1.CommandResultEvent, failure Failure) {
 	g.publishResult(event)
 	g.recordOutcome(event.Status, failure)
+	if g.deps.Feedback != nil && failure != FailureCanceled && event.Action != string(ActionAssistantQuery) {
+		g.deps.Feedback.Publish(event)
+	}
 }
 
 func (g *Gate) publishResult(event realtimev1.CommandResultEvent) {

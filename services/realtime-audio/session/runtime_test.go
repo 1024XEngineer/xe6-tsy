@@ -91,6 +91,51 @@ func TestLifecycleRejectsInvalidRuntimeProgress(t *testing.T) {
 	}
 }
 
+func TestLifecycleListeningCleanupRequiresExpectedPlaybackOwner(t *testing.T) {
+	t.Parallel()
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
+	if err := service.deps.Runtimes.Save(t.Context(), RuntimeSnapshot{
+		SessionID: "session-1", RuntimeState: RuntimePlaying,
+		CurrentTurnID: stringPointer("command_wake-1"), CurrentPlaybackID: stringPointer("command_playback_wake-1"),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	turnID, playbackID := "command_wake-1", "command_playback_wake-1"
+	if err := service.SetProcessingState(t.Context(), ProcessingStateUpdate{
+		SessionID: "session-1", RuntimeState: RuntimeListening,
+		ExpectedTurnID: &turnID, ExpectedPlaybackID: &playbackID,
+	}); err != nil {
+		t.Fatalf("SetProcessingState() error = %v", err)
+	}
+	got, err := service.GetRuntimeState(t.Context(), "session-1")
+	if err != nil || got.RuntimeState != RuntimeListening || got.CurrentTurnID != nil || got.CurrentPlaybackID != nil {
+		t.Fatalf("runtime after conditional cleanup = %#v, %v", got, err)
+	}
+}
+
+func TestLifecycleListeningCleanupRejectsNewTurnOwner(t *testing.T) {
+	t.Parallel()
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
+	if err := service.deps.Runtimes.Save(t.Context(), RuntimeSnapshot{
+		SessionID: "session-1", RuntimeState: RuntimeASRProcessing,
+		CurrentTurnID: stringPointer("turn-2"),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	turnID, playbackID := "command_wake-1", "command_playback_wake-1"
+	err := service.SetProcessingState(t.Context(), ProcessingStateUpdate{
+		SessionID: "session-1", RuntimeState: RuntimeListening,
+		ExpectedTurnID: &turnID, ExpectedPlaybackID: &playbackID,
+	})
+	if !errors.Is(err, ErrRuntimeIdentityConflict) {
+		t.Fatalf("SetProcessingState() error = %v, want identity conflict", err)
+	}
+	got, getErr := service.GetRuntimeState(t.Context(), "session-1")
+	if getErr != nil || got.RuntimeState != RuntimeASRProcessing || got.CurrentTurnID == nil || *got.CurrentTurnID != "turn-2" {
+		t.Fatalf("new Turn state was overwritten: runtime=%#v error=%v", got, getErr)
+	}
+}
+
 func TestLifecycleSetRuntimeFailedPersistsTerminalState(t *testing.T) {
 	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
 	if err := service.deps.Runtimes.Save(context.Background(), RuntimeSnapshot{

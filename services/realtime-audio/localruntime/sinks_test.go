@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,15 @@ import (
 type recordingDataChannelFailures struct{ calls int }
 
 func (r *recordingDataChannelFailures) RecordDataChannelFailure() { r.calls++ }
+
+type notifyingDataChannelFailures struct {
+	once   sync.Once
+	called chan struct{}
+}
+
+func (n *notifyingDataChannelFailures) RecordDataChannelFailure() {
+	n.once.Do(func() { close(n.called) })
+}
 
 func TestFrontendTranslationFinalJSONShape(t *testing.T) {
 	event := recordsv1.FinalTurnEvent{
@@ -206,6 +216,105 @@ func TestDataChannelAssistantReplySinkReportsDeliveryFailures(t *testing.T) {
 			t.Fatalf("Publish error = %v, want channel unavailable", err)
 		}
 	})
+}
+
+func TestDataChannelCommandResultSinkReportsUnavailableMedia(t *testing.T) {
+	t.Parallel()
+	failures := &notifyingDataChannelFailures{called: make(chan struct{})}
+	sink := NewDataChannelCommandResultSink(nil, failures)
+	event := realtimev1.CommandResultEvent{
+		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
+		CommandID: "wake-1", SessionID: "session-1", Status: realtimev1.CommandResultFailed,
+		Message: "命令未执行，原模式保持不变", OccurredAt: time.Unix(2, 0).UTC(),
+	}
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	select {
+	case <-failures.called:
+	case <-time.After(time.Second):
+		t.Fatal("missing media failure was not observed")
+	}
+}
+
+func TestDataChannelCommandResultSinkQueuesWithoutWaitingForTransport(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	sink := NewDataChannelCommandResultSink(mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) {
+		startedOnce.Do(func() { close(started) })
+		<-release
+		return nil, errors.New("closed")
+	}), nil)
+	event := realtimev1.CommandResultEvent{
+		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
+		CommandID: "wake-1", SessionID: "session-1", Status: realtimev1.CommandResultFailed,
+		Message: "命令未执行，原模式保持不变", OccurredAt: time.Unix(2, 0).UTC(),
+	}
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("delivery worker did not receive event")
+	}
+	if err := sink.Publish(context.Background(), func() realtimev1.CommandResultEvent {
+		next := event
+		next.CommandID = "wake-2"
+		return next
+	}()); err != nil {
+		t.Fatalf("second Publish() blocked or failed: %v", err)
+	}
+	close(release)
+}
+
+func TestDataChannelCommandResultSinkIsolatesSlowSessions(t *testing.T) {
+	t.Parallel()
+	slowStarted := make(chan struct{})
+	fastStarted := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	var slowOnce sync.Once
+	var fastOnce sync.Once
+	sink := NewDataChannelCommandResultSink(mediaLookupFunc(func(ctx context.Context, sessionID string) (webrtc.MediaTransport, error) {
+		switch sessionID {
+		case "session-slow":
+			slowOnce.Do(func() { close(slowStarted) })
+			select {
+			case <-releaseSlow:
+			case <-ctx.Done():
+			}
+		case "session-fast":
+			fastOnce.Do(func() { close(fastStarted) })
+		}
+		return nil, errors.New("unavailable")
+	}), nil)
+	event := realtimev1.CommandResultEvent{
+		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
+		CommandID: "wake-slow", SessionID: "session-slow", Status: realtimev1.CommandResultFailed,
+		Message: "命令未执行，原模式保持不变", OccurredAt: time.Unix(2, 0).UTC(),
+	}
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish(slow) error = %v", err)
+	}
+	select {
+	case <-slowStarted:
+	case <-time.After(time.Second):
+		t.Fatal("slow session worker did not start")
+	}
+
+	event.CommandID = "wake-fast"
+	event.SessionID = "session-fast"
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish(fast) error = %v", err)
+	}
+	select {
+	case <-fastStarted:
+	case <-time.After(time.Second):
+		t.Fatal("fast session was blocked behind the slow session")
+	}
+	close(releaseSlow)
 }
 
 func TestEnergySpeechClassifierDetectsLoudFrame(t *testing.T) {

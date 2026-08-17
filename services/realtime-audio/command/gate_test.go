@@ -136,13 +136,14 @@ func TestGateReportsEmptyPostWakeASRWithoutSendingItToInterpreter(t *testing.T) 
 func TestGatePublishesClarificationAndKeepsRuntimeUsable(t *testing.T) {
 	executor := &recordingExecutor{err: ErrClarificationRequired}
 	results := &recordingResultSink{}
+	feedback := &recordingFeedbackSink{}
 	classifier := speechSequence{true, false}
 	gate, err := NewGate(Dependencies{
 		Classifier: &classifier, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
 			Final: asr.FinalResult{Text: "开始同声传译"},
 		}),
 		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t), Executor: executor,
-		Results: results, Now: func() time.Time { return testStart.Add(time.Second) },
+		Results: results, Feedback: feedback, Now: func() time.Time { return testStart.Add(time.Second) },
 	}, Options{
 		WindowTTL: 1500 * time.Millisecond, NoSpeechTimeout: 500 * time.Millisecond,
 		MaxAudioDuration: 500 * time.Millisecond, EndSilence: 250 * time.Millisecond,
@@ -161,8 +162,32 @@ func TestGatePublishesClarificationAndKeepsRuntimeUsable(t *testing.T) {
 		results.events[0].Status != realtimev1.CommandResultClarificationRequired {
 		t.Fatalf("result=%#v state=%q events=%#v", result, gate.State(), results.events)
 	}
+	if len(feedback.events) != 1 || feedback.events[0] != results.events[0] {
+		t.Fatalf("feedback = %#v, want clarification result %#v", feedback.events, results.events[0])
+	}
 	if gate.Consume(t.Context(), testFrame(t, testStart.Add(time.Second), 100*time.Millisecond)).Consumed {
 		t.Fatal("single-command failure left ordinary audio quarantined")
+	}
+}
+
+func TestGateSpeechFeedbackExcludesCanceledAttemptsAndAssistantQueries(t *testing.T) {
+	feedback := &recordingFeedbackSink{}
+	gate := &Gate{deps: Dependencies{Feedback: feedback}}
+
+	gate.publishTerminalOutcome(realtimev1.CommandResultEvent{
+		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
+		CommandID: "command-canceled", SessionID: "session-1", Status: realtimev1.CommandResultFailed,
+		Message: "上一条命令已被新的唤醒取消", OccurredAt: testStart,
+	}, FailureCanceled)
+	gate.publishTerminalOutcome(realtimev1.CommandResultEvent{
+		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
+		CommandID: "command-query", SessionID: "session-1", Status: realtimev1.CommandResultApplied,
+		Action: string(ActionAssistantQuery), TargetMode: realtimev1.ModeAssistant,
+		Message: "助手已处理本轮提问", OccurredAt: testStart,
+	}, FailureNone)
+
+	if len(feedback.events) != 0 {
+		t.Fatalf("feedback = %#v, want canceled and assistant outcomes to remain silent", feedback.events)
 	}
 }
 
@@ -970,6 +995,12 @@ type recordingResultSink struct {
 	err    error
 }
 
+type recordingFeedbackSink struct {
+	events     []realtimev1.CommandResultEvent
+	interrupts int
+	closed     bool
+}
+
 type synchronizedResultSink struct {
 	published chan realtimev1.CommandResultEvent
 }
@@ -1002,6 +1033,14 @@ func (s *recordingResultSink) Publish(_ context.Context, event realtimev1.Comman
 	s.events = append(s.events, event)
 	return s.err
 }
+
+func (s *recordingFeedbackSink) Publish(event realtimev1.CommandResultEvent) {
+	s.events = append(s.events, event)
+}
+
+func (s *recordingFeedbackSink) Interrupt() { s.interrupts++ }
+
+func (s *recordingFeedbackSink) Close() { s.closed = true }
 
 func (e *recordingExecutor) ExecuteCommand(_ context.Context, request ExecuteRequest) (ExecutionResult, error) {
 	e.requests = append(e.requests, request)

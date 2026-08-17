@@ -95,6 +95,8 @@ type Dependencies struct {
 	NewCommandClassifier CommandClassifierFactory
 	CommandOptions       command.Options
 	Languages            session.LanguageConfigReader
+	LanguageConfigurator command.LanguageConfigurator
+	CommandResults       command.ResultSink
 	FinalTurns           recordsv1.FinalTurnSink
 	AssistantReplies     pipeline.AssistantReplySink
 	ModeChanges          ModeChangedSink
@@ -130,6 +132,8 @@ type Manager struct {
 	commandASR         asr.Provider
 	commandInterpreter command.Interpreter
 	commandValidator   command.Validator
+	commandOpener      *pipeline.TurnOpener
+	speech             *pipeline.SpeechOutput
 	playback           *pipeline.PipelineService
 	router             *modeRouter
 	failure            session.RuntimeFailureReporter
@@ -226,6 +230,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
 	}
 	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages, managerTurnModeReader{manager: manager})
+	manager.commandOpener = opener
 	latency := pipeline.LatencyLogger{Logger: deps.Latency, Observer: deps.ProviderFailures}
 	speech := pipeline.NewSpeechOutput(pipeline.SpeechOutputDependencies{
 		TTS: providers.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
@@ -272,6 +277,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	manager.commandInterpreter = command.LegacyInterpreter{}
 	manager.commandValidator = registry
 	manager.playback = service
+	manager.speech = speech
 	manager.router = router
 	return manager, nil
 }
@@ -434,12 +440,20 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		if options == (command.Options{}) {
 			options = defaultCommandOptions
 		}
+		feedback := newCommandSpeechFeedback(commandSpeechFeedbackDependencies{
+			Speech: m.speech, Usage: m.deps.Usage, Runtime: m.deps.Runtime,
+			AccountID: snapshot.AccountID, TraceID: snapshot.TraceID, Logger: m.logger, Now: m.deps.Now,
+		})
 		gate, gateErr := command.NewGate(command.Dependencies{
 			Classifier:  classifier,
 			ASR:         m.commandASR,
 			Interpreter: m.commandInterpreter,
 			Validator:   m.commandValidator,
-			Executor:    commandExecutor{manager: m},
+			Executor: commandExecutor{
+				manager: m, languages: m.deps.Languages, configurator: m.deps.LanguageConfigurator,
+			},
+			Results:  m.deps.CommandResults,
+			Feedback: feedback,
 		}, options)
 		if gateErr != nil {
 			closeErr := owned.closeContext(ctx)
@@ -644,12 +658,15 @@ func (m *Manager) playbackInterrupter() PlaybackInterrupter {
 }
 
 func (g runtimeCommandGate) Open(request command.OpenRequest) error {
+	if err := g.gate.Open(request); err != nil {
+		return err
+	}
 	if g.interrupter != nil {
 		interruptCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		_ = g.interrupter.InterruptCurrent(interruptCtx, request.SessionID, "wake_word_detected")
 		cancel()
 	}
-	return g.gate.Open(request)
+	return nil
 }
 
 func (g runtimeCommandGate) Consume(ctx context.Context, frame audio.Frame) command.Result {
@@ -662,31 +679,6 @@ func (g runtimeCommandGate) Replay(ctx context.Context, frames []audio.Frame) co
 
 func (g runtimeCommandGate) Cancel() {
 	g.gate.Cancel()
-}
-
-// commandExecutor converts an allowlisted command into the existing CAS mode
-// transition path. It intentionally does not parse text or maintain a second
-// mode state machine.
-type commandExecutor struct{ manager *Manager }
-
-func (e commandExecutor) ExecuteCommand(ctx context.Context, request command.ExecuteRequest) (command.ExecutionResult, error) {
-	if e.manager == nil || request.SessionID == "" || request.CommandID == "" || !request.Command.TargetMode.Valid() {
-		return command.ExecutionResult{}, ErrModeCommandInvalid
-	}
-	state, err := e.manager.GetModeState(ctx, request.SessionID)
-	if err != nil {
-		return command.ExecutionResult{}, err
-	}
-	modeCommand := realtimev1.SwitchModeCommand{
-		SessionID:          request.SessionID,
-		RuntimeInstanceID:  state.RuntimeInstanceID,
-		OperationID:        "wake_word_" + request.CommandID,
-		TraceID:            "wake_word_" + request.CommandID,
-		ExpectedGeneration: state.Generation,
-		TargetMode:         request.Command.TargetMode,
-	}
-	result, err := e.manager.SwitchMode(ctx, modeCommand)
-	return command.ExecutionResult{Status: result.Status, State: result.State}, err
 }
 
 // Stop cancels processing, closes the input source, and waits for the loop.

@@ -114,6 +114,8 @@ func TestConfiguredRuntimeCompositionExposesDeliveryAndRecordsRoutes(t *testing.
 	t.Setenv("DATABASE_URL", databaseURL)
 	t.Setenv("REDIS_URL", "redis://"+server.Addr())
 	t.Setenv("JWT_SECRET", strings.Repeat("j", 36))
+	t.Setenv("REALTIME_BASE_URL", "http://127.0.0.1:8090")
+	t.Setenv("REALTIME_TICKET_SECRET", strings.Repeat("r", 36))
 	t.Setenv("AUTH_PEPPER", strings.Repeat("p", 36))
 	t.Setenv("VERIFICATION_SENDER", "log")
 	t.Setenv("LINGOW_DELIVERY_RUNTIME", "enabled")

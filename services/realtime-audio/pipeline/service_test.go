@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,62 @@ func TestPipelineSkipsTTSAcrossDisabledOutputRoute(t *testing.T) {
 	}
 	if len(usageSink.facts) != 1 || usageSink.facts[0].ServiceType != "translation" {
 		t.Fatalf("usage facts = %#v, want translation only", usageSink.facts)
+	}
+}
+
+func TestPipelineRoutesLongSourcesToDeliveryBeforeTTS(t *testing.T) {
+	tests := []struct {
+		name          string
+		sourceText    string
+		audioDuration time.Duration
+		wantLong      bool
+	}{
+		{name: "text threshold", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold+1), audioDuration: time.Second, wantLong: true},
+		{name: "audio threshold", sourceText: "短句", audioDuration: recordsv1.LongSourceAudioThreshold, wantLong: true},
+		{name: "below thresholds", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold), audioDuration: recordsv1.LongSourceAudioThreshold - time.Millisecond},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}})
+			finalSink := &recordingFinalSink{}
+			usageSink := &recordingUsageSink{}
+			audioSink := &recordingAudioSink{}
+			service := newTestPipelineService(PipelineDependencies{
+				Translator: &translate.FakeProvider{Result: translate.Result{Text: "translation", Provider: "mock-translate", Model: "v1"}},
+				TTS:        ttsProvider, FinalTurns: finalSink, Usage: usageSink, Audio: audioSink,
+				Runtime: &recordingRuntimeReporter{},
+			})
+
+			if err := service.HandleASRFinal(t.Context(), testTurn(), asr.FinalResult{
+				Text: test.sourceText, SourceLanguage: "zh-CN", AudioDuration: test.audioDuration,
+			}); err != nil {
+				t.Fatalf("HandleASRFinal() error = %v", err)
+			}
+
+			if len(finalSink.events) != 1 {
+				t.Fatalf("FinalTurn events = %d, want 1", len(finalSink.events))
+			}
+			event := finalSink.events[0]
+			if event.TTSEnabled == test.wantLong || event.DeliveryEnabled != test.wantLong {
+				t.Fatalf("FinalTurn output = tts:%v delivery:%v, want long:%v", event.TTSEnabled, event.DeliveryEnabled, test.wantLong)
+			}
+			wantTTSRequests := 1
+			wantUsageFacts := 2
+			if test.wantLong {
+				wantTTSRequests = 0
+				wantUsageFacts = 1
+			}
+			if got := len(ttsProvider.Requests()); got != wantTTSRequests {
+				t.Fatalf("TTS requests = %d, want %d", got, wantTTSRequests)
+			}
+			if got := len(usageSink.facts); got != wantUsageFacts {
+				t.Fatalf("usage facts = %#v, want %d", usageSink.facts, wantUsageFacts)
+			}
+			if len(audioSink.chunks) != 0 {
+				t.Fatalf("audio chunks = %#v, want none", audioSink.chunks)
+			}
+		})
 	}
 }
 

@@ -52,6 +52,24 @@ func TestLoadProviderConfigReadsQwenSettings(t *testing.T) {
 	}
 }
 
+func TestLoadProviderConfigReadsIndependentCommandSettings(t *testing.T) {
+	values := map[string]string{
+		"LLM_API_KEY":          "shared-key",
+		"LLM_BASE_URL":         "https://shared.example/v1",
+		"COMMAND_LLM_API_KEY":  "command-key",
+		"COMMAND_LLM_BASE_URL": "https://command.example/v1",
+		"COMMAND_LLM_MODEL":    "command-model",
+	}
+	config, err := LoadProviderConfig(mapLookup(values))
+	if err != nil {
+		t.Fatalf("LoadProviderConfig() error = %v", err)
+	}
+	if config.Command.APIKey != "command-key" || config.Command.BaseURL != "https://command.example/v1" ||
+		config.Command.Model != "command-model" {
+		t.Fatalf("command config = %+v", config.Command)
+	}
+}
+
 func TestLoadProviderConfigRejectsInvalidValues(t *testing.T) {
 	tests := []struct {
 		name   string

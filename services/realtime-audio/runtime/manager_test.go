@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,158 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 )
+
+func TestManagerDefaultsToLegacyCommandInterpreter(t *testing.T) {
+	deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.NewCommandInterpreter = nil
+	manager, err := newManager(testProviders(), deps)
+	if err != nil {
+		t.Fatalf("newManager() error = %v", err)
+	}
+	if _, ok := manager.commandInterpreter.(command.LegacyInterpreter); !ok {
+		t.Fatalf("command interpreter = %T, want command.LegacyInterpreter", manager.commandInterpreter)
+	}
+}
+
+func TestManagerRejectsNilCommandInterpreterFromFactory(t *testing.T) {
+	deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.NewCommandInterpreter = func([]command.CapabilityDescriptor) (command.Interpreter, error) {
+		return nil, nil
+	}
+	_, err := newManager(testProviders(), deps)
+	if !errors.Is(err, ErrDependencyRequired) || !strings.Contains(err.Error(), "command interpreter") {
+		t.Fatalf("newManager() error = %v, want command interpreter dependency error", err)
+	}
+}
+
+func TestManagerBuildsCommandInterpreterFromRegisteredHandlers(t *testing.T) {
+	tests := []struct {
+		name          string
+		withAssistant bool
+		wantModes     map[realtimev1.Mode][]command.Action
+	}{
+		{
+			name: "interpretation only",
+			wantModes: map[realtimev1.Mode][]command.Action{
+				realtimev1.ModeInterpretation: {command.ActionActivateMode},
+			},
+		},
+		{
+			name:          "registered assistant and interpretation",
+			withAssistant: true,
+			wantModes: map[realtimev1.Mode][]command.Action{
+				realtimev1.ModeInterpretation: {command.ActionActivateMode},
+				realtimev1.ModeAssistant:      {command.ActionReturnToAssistant, command.ActionAssistantQuery},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+			var got []command.CapabilityDescriptor
+			deps.NewCommandInterpreter = func(descriptors []command.CapabilityDescriptor) (command.Interpreter, error) {
+				got = descriptors
+				return command.LegacyInterpreter{}, nil
+			}
+			providers := testProviders()
+			if test.withAssistant {
+				providers.Assistant = assistant.NewFakeProvider(assistant.FakeProviderConfig{})
+				deps.AssistantReplies = &recordingAssistantReplySink{}
+			}
+			if _, err := newManager(providers, deps); err != nil {
+				t.Fatalf("newManager() error = %v", err)
+			}
+			if len(got) != len(test.wantModes) {
+				t.Fatalf("capability descriptors = %#v, want modes %#v", got, test.wantModes)
+			}
+			for _, descriptor := range got {
+				wantActions, ok := test.wantModes[descriptor.Mode]
+				if !ok {
+					t.Fatalf("unexpected capability descriptor = %#v", descriptor)
+				}
+				if !slices.Equal(descriptor.Actions, wantActions) {
+					t.Fatalf("actions for %q = %#v, want %#v", descriptor.Mode, descriptor.Actions, wantActions)
+				}
+			}
+		})
+	}
+}
+
+func TestManagerWiresCommandResultsAndObserverIntoGate(t *testing.T) {
+	base := time.Date(2026, 8, 17, 10, 0, 0, 0, time.UTC)
+	results := &channelCommandResultSink{events: make(chan realtimev1.CommandResultEvent, 1)}
+	observer := &channelCommandObserver{
+		interpretations: make(chan bool, 1),
+		outcomes:        make(chan commandOutcomeObservation, 1),
+	}
+	deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.FrameSources = FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
+		return AudioInput{Source: &fakeFrameSource{}, SourceLanguage: "zh-CN", WakeWords: blockingWakeWordSource{}}, nil
+	})
+	deps.NewCommandClassifier = func() (vad.Classifier, error) { return speechClassifier{}, nil }
+	deps.CommandOptions = command.Options{
+		WindowTTL: 2 * time.Second, NoSpeechTimeout: time.Second,
+		MaxAudioDuration: time.Second, EndSilence: 250 * time.Millisecond,
+	}
+	deps.CommandResults = results
+	deps.CommandObserver = observer
+	deps.Now = func() time.Time { return base }
+	manager, err := newManager(config.Providers{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+			Text: "开始同声传译", SourceLanguage: "zh-CN",
+		}}),
+		Translation: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("newManager() error = %v", err)
+	}
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "start-1", TraceID: "trace-1",
+	}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background(), snapshot.SessionID) })
+
+	manager.mu.Lock()
+	gate := manager.entries[snapshot.SessionID].command
+	manager.mu.Unlock()
+	if gate == nil {
+		t.Fatal("Manager did not construct command gate")
+	}
+	if err := gate.Open(command.OpenRequest{
+		SessionID: snapshot.SessionID, CommandID: "command-1", SourceLanguage: "zh-CN", OpenedAt: base,
+	}); err != nil {
+		t.Fatalf("Gate.Open() error = %v", err)
+	}
+	gate.Consume(t.Context(), mustFrame(t, []byte{1, 0}, base.Add(100*time.Millisecond)))
+	gate.Consume(t.Context(), mustFrame(t, []byte{0, 0}, base.Add(400*time.Millisecond)))
+
+	select {
+	case event := <-results.events:
+		if event.CommandID != "command-1" || event.Status != realtimev1.CommandResultUnchanged {
+			t.Fatalf("command result = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("command result was not published")
+	}
+	select {
+	case failed := <-observer.interpretations:
+		if failed {
+			t.Fatal("successful interpretation was observed as failed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("command interpretation was not observed")
+	}
+	select {
+	case observation := <-observer.outcomes:
+		if observation.status != realtimev1.CommandResultUnchanged || observation.failure != command.FailureNone {
+			t.Fatalf("outcome observation = %#v", observation)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("command outcome was not observed")
+	}
+}
 
 func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) {
 	var output bytes.Buffer
@@ -1115,6 +1268,48 @@ func testDependencies(source segment.FrameSource, languages session.LanguageConf
 		Languages: languages, FinalTurns: &recordingFinalSink{}, ModeChanges: &recordingModeChangedSink{}, Usage: &recordingUsageSink{},
 		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	}
+}
+
+func testProviders() config.Providers {
+	return config.Providers{
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Translation: &translate.FakeProvider{},
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{}),
+	}
+}
+
+type blockingWakeWordSource struct{}
+
+func (blockingWakeWordSource) Receive(ctx context.Context) (realtimev1.WakeWordDetectedSignal, error) {
+	<-ctx.Done()
+	return realtimev1.WakeWordDetectedSignal{}, ctx.Err()
+}
+
+type channelCommandResultSink struct {
+	events chan realtimev1.CommandResultEvent
+}
+
+func (s *channelCommandResultSink) Publish(_ context.Context, event realtimev1.CommandResultEvent) error {
+	s.events <- event
+	return nil
+}
+
+type commandOutcomeObservation struct {
+	status  realtimev1.CommandResultStatus
+	failure command.Failure
+}
+
+type channelCommandObserver struct {
+	interpretations chan bool
+	outcomes        chan commandOutcomeObservation
+}
+
+func (o *channelCommandObserver) RecordCommandInterpretation(_ time.Duration, failed bool) {
+	o.interpretations <- failed
+}
+
+func (o *channelCommandObserver) RecordCommandOutcome(status realtimev1.CommandResultStatus, failure command.Failure) {
+	o.outcomes <- commandOutcomeObservation{status: status, failure: failure}
 }
 
 type atomicLifecycleObserver struct {

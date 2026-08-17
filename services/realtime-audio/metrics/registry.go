@@ -234,7 +234,7 @@ func (r *Registry) Current() Snapshot {
 		RuntimesStopped:     r.runtimesStopped.Load(),
 		SemanticCommands: SemanticCommandSnapshot{
 			Interpretations: r.commandInterpretations.Load(), InterpretationFailures: r.commandInterpretationFailures.Load(),
-			InterpretationDurationMilliseconds: uint64(time.Duration(r.commandInterpretationNanos.Load()) / time.Millisecond),
+			InterpretationDurationMilliseconds: r.commandInterpretationNanos.Load() / uint64(time.Millisecond),
 			Applied:                            r.commandOutcomesApplied.Load(), Unchanged: r.commandOutcomesUnchanged.Load(),
 			ClarificationRequired: r.commandOutcomesClarification.Load(), Unsupported: r.commandOutcomesUnsupported.Load(),
 			Failed: r.commandOutcomesFailed.Load(), CaptureFailures: r.commandFailuresCapture.Load(),

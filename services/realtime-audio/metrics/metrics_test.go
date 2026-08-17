@@ -147,6 +147,17 @@ func TestRegistryCountsBoundedSemanticCommandSignals(t *testing.T) {
 	}
 }
 
+func TestRegistryConvertsLargeSemanticCommandDurationWithoutSignedOverflow(t *testing.T) {
+	registry := NewRegistry()
+	nanoseconds := uint64(1)<<63 + uint64(time.Millisecond)
+	registry.commandInterpretationNanos.Store(nanoseconds)
+
+	got := registry.Current().SemanticCommands.InterpretationDurationMilliseconds
+	if want := nanoseconds / uint64(time.Millisecond); got != want {
+		t.Fatalf("interpretation duration milliseconds = %d, want %d", got, want)
+	}
+}
+
 func TestRegistryClassifiesSemanticCommandFailures(t *testing.T) {
 	tests := []struct {
 		name    string

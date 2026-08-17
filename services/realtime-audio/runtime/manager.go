@@ -253,8 +253,8 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		Speech:     speech,
 		Latency:    latency,
 	})
-	// Router 注册表是模式能力的单一来源：Coordinator 会复用同一份模式列表，
-	// 从而保证“允许切换”的模式一定存在对应 Handler，不会出现状态切换成功但没有业务处理器的半配置状态。
+	// The router registry is the capability source of truth. The coordinator and command
+	// interpreter therefore expose only modes backed by an actual handler.
 	handlers := map[realtimev1.Mode]pipeline.ASRFinalHandler{
 		realtimev1.ModeInterpretation: service,
 	}
@@ -281,10 +281,15 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		return nil, fmt.Errorf("create command capability registry: %w", err)
 	}
 	manager.commandValidator = registry
-	if deps.NewCommandInterpreter != nil {
+	if deps.NewCommandInterpreter == nil {
+		manager.commandInterpreter = command.LegacyInterpreter{}
+	} else {
 		manager.commandInterpreter, err = deps.NewCommandInterpreter(registry.Descriptors())
 		if err != nil {
 			return nil, fmt.Errorf("create command interpreter: %w", err)
+		}
+		if manager.commandInterpreter == nil {
+			return nil, fmt.Errorf("%w: command interpreter", ErrDependencyRequired)
 		}
 	}
 	manager.playback = service

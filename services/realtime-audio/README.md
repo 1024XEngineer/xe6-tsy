@@ -107,6 +107,19 @@ RTP 与 SCTP 之间没有跨协议全序，边界以服务端提交切换并返�
 打开时的 mode/generation；切换后旧 generation 未提交结果由 gate 丢弃，已提交 FinalTurn 不回滚。
 若必须保证下一句话进入新模式，客户端应暂停新语句、等待成功 ACK，再发送下一段音频。
 
+语义命令复用现有 PeerConnection 和 WebRTC 音轨；`wake_word.detected` 通过双向的
+`translation-events` DataChannel 上行，`lingow-control-v1` 仍只承载显式模式控制协议。KWS 始终在
+客户端或设备本地运行：Web 使用 sherpa-onnx，ESP32-S3 可使用板载 KWS，后端不加载或托管唤醒词
+模型。命中固定唤醒词「小灵小灵」后，客户端只发送唤醒事件，随后自然语言继续走当前上行音轨。
+服务端以绑定的 Session 和自身接收时间打开 Command Gate，经 Command ASR、AI Interpreter、
+Capability Registry/Validator 和 Executor 执行，最终通过 `command.result` 返回结果。新的
+`signal_id` 会取消尚未完成的旧命令，同 ID 网络重试不会重复执行；模式切换不重建 PeerConnection。
+设备字段、时钟和重试要求见 [`docs/DEVICE_KWS_INTEGRATION.md`](../../docs/DEVICE_KWS_INTEGRATION.md)。
+客户端可以独立选择持续上行或唤醒后单轮上行；该交互策略不进入 realtime 的 ModeState。语义解释器
+可把普通问题归一为 `assistant_query`，Executor 复用已注册的 Assistant Handler、TurnOpener、TTS 和
+回复事件，且不改变 mode generation。`assistant_query` 只在当前助手模式执行；同传模式会返回需要
+澄清，要求用户先明确切回助手，防止助手音频与翻译音频混流。
+
 ## Local utterance VAD
 
 The realtime entrypoint segments microphone audio with **Silero VAD** before ASR:
@@ -156,6 +169,14 @@ Required env:
 | `REALTIME_ADDR` | `:8090` | Listen address |
 | `REALTIME_TICKET_SECRET` | _(required)_ | Raw secret (≥32 bytes), must match API `REALTIME_TICKET_SECRET` |
 | `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun` (same wiring; offline fakes injected for mock) |
+| `COMMAND_INTERPRETER` | `legacy` | `legacy` 仅供离线兼容；`qwen` 启用通用 AI 语义命令入口 |
+| `COMMAND_LLM_API_KEY` | 回退到 `LLM_API_KEY` | Command Interpreter 凭证，不得写入日志 |
+| `COMMAND_LLM_BASE_URL` | 回退到 `LLM_BASE_URL` | OpenAI-compatible Command Interpreter 地址 |
+| `COMMAND_LLM_MODEL` | 回退到 `LLM_MODEL` | 语义命令模型 |
+| `COMMAND_LLM_TIMEOUT_MS` | provider 默认值 | 单次语义解释超时（毫秒），建议真实 Qwen 环境至少 10000 |
+| `LINGOW_API_BASE_URL` | _(off)_ | API 内部地址；启用 `qwen` 命令入口时必须与命令令牌同时配置 |
+| `LINGOW_COMMAND_SYSTEM_TOKEN` | _(off)_ | realtime 调用 API 语言配置端点的共享令牌，至少 32 bytes |
+| `COMMAND_CONFIG_TIMEOUT_MS` | `3000` | 命令更新 API 语言配置的超时（毫秒） |
 | `REALTIME_TTS_DOWNLINK` | `none` | `none` = subtitles only (forces mock TTS); `pcm` = whole-clip TTS PCM over DataChannel; `opus` = 120ms-buffered, 20ms-paced WebRTC Opus at 32kbps |
 | `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Fallback pair when API DB link is off |
 | `REALTIME_API_DATABASE` | _(off)_ | `enabled` + `DATABASE_URL` → Postgres session/language readers + FinalTurn outbox |
@@ -233,6 +254,14 @@ DataChannel、Track 和 PeerConnection。连接租约或空闲超时负责兜底
 `session_id`、`turn_id`、`operation_id` 或 provider 名称，因此不会把高基数标识放入指标标签。
 配置非空 `REALTIME_METRICS_TOKEN` 后才会注册 `GET /metrics`；采集请求必须携带
 `Authorization: Bearer <token>`。生产 ingress 仍应限制该路径只允许内部监控访问。采集器应按 5 分钟窗口计算 counter delta；进程重启会将计数器归零，不能把累计值直接当作速率。
+
+`semantic_commands` 统计由客户端 KWS 打开的语义命令链路，不记录唤醒词模型、原始命令文本、
+`session_id` 或 `signal_id`。`interpretations` 是 AI Interpreter 调用次数，
+`interpretation_failures` 是其中失败次数，`interpretation_duration_milliseconds` 是累计耗时；监控系统
+应使用同一窗口内的耗时增量除以调用次数增量计算平均延迟。终态结果
+`applied`、`unchanged`、`clarification_required`、`unsupported`、`failed` 互斥。失败阶段使用
+`capture_failures`、`asr_failures`、`interpretation_stage_failures`、`not_allowed_failures`、
+`execution_failures` 和 `canceled` 定位，不以客户端或模型名称作为指标维度。
 
 `mode_commands.total` 是已经通过鉴权、幂等键和请求校验并进入 runtime Coordinator 的命令数，以下结果字段互斥且总和必须等于 `total`：
 

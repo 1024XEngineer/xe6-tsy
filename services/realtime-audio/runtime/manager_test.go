@@ -17,6 +17,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
@@ -1102,6 +1103,9 @@ func TestManagerStopTimeoutBoundsBlockingSourceClose(t *testing.T) {
 
 func testDependencies(source segment.FrameSource, languages session.LanguageConfigReader) Dependencies {
 	return Dependencies{
+		NewCommandInterpreter: func([]command.CapabilityDescriptor) (command.Interpreter, error) {
+			return command.LegacyInterpreter{}, nil
+		},
 		FrameSources: FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
 			return AudioInput{Source: source, SourceLanguage: "zh-CN"}, nil
 		}),

@@ -8,6 +8,7 @@ import (
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 )
 
@@ -68,6 +69,35 @@ func TestRuntimeCommandGateInterruptsPlaybackBeforeArming(t *testing.T) {
 	}
 	if got := gate.State(); got != command.StateArmed {
 		t.Fatalf("gate state = %q, want armed", got)
+	}
+}
+
+func TestRuntimeCommandGateForwardsReplay(t *testing.T) {
+	t.Parallel()
+	gate, err := command.NewGate(command.Dependencies{
+		Classifier: speechClassifier{}, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Interpreter: command.LegacyInterpreter{}, Validator: commandRegistryForTest(t), Executor: commandExecutor{},
+	}, command.Options{
+		WindowTTL: 2 * time.Second, NoSpeechTimeout: time.Second,
+		MaxAudioDuration: time.Second, EndSilence: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	t.Cleanup(gate.Cancel)
+	openedAt := time.Unix(21, 0).UTC()
+	if err := gate.Open(command.OpenRequest{
+		SessionID: "session-1", CommandID: "signal-1", OpenedAt: openedAt,
+		CaptureFrom: openedAt.Add(-time.Second),
+	}); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	result := newRuntimeCommandGate(gate, nil).Replay(t.Context(), []audio.Frame{
+		mustFrame(t, []byte{1, 0}, openedAt.Add(-500*time.Millisecond)),
+	})
+	if !result.Consumed || result.State != command.StateCapturing {
+		t.Fatalf("Replay() result = %#v, want consumed capturing", result)
 	}
 }
 

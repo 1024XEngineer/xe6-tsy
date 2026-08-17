@@ -96,6 +96,7 @@ type Dependencies struct {
 	CommandOptions       command.Options
 	Languages            session.LanguageConfigReader
 	LanguageConfigurator command.LanguageConfigurator
+	CommandResults       command.ResultSink
 	FinalTurns           recordsv1.FinalTurnSink
 	AssistantReplies     pipeline.AssistantReplySink
 	ModeChanges          ModeChangedSink
@@ -445,6 +446,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			Executor: commandExecutor{
 				manager: m, languages: m.deps.Languages, configurator: m.deps.LanguageConfigurator,
 			},
+			Results: m.deps.CommandResults,
 		}, options)
 		if gateErr != nil {
 			closeErr := owned.closeContext(ctx)

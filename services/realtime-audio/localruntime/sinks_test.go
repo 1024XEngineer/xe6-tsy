@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -206,6 +207,56 @@ func TestDataChannelAssistantReplySinkReportsDeliveryFailures(t *testing.T) {
 			t.Fatalf("Publish error = %v, want channel unavailable", err)
 		}
 	})
+}
+
+func TestDataChannelCommandResultSinkReportsUnavailableMedia(t *testing.T) {
+	t.Parallel()
+	failures := &recordingDataChannelFailures{}
+	event := realtimev1.CommandResultEvent{
+		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
+		CommandID: "wake-1", SessionID: "session-1", Status: realtimev1.CommandResultFailed,
+		Message: "命令未执行，原模式保持不变", OccurredAt: time.Unix(2, 0).UTC(),
+	}
+	err := (DataChannelCommandResultSink{Failures: failures}).Publish(context.Background(), event)
+	if !errors.Is(err, ErrCommandResultMediaUnavailable) {
+		t.Fatalf("Publish() error = %v, want media unavailable", err)
+	}
+	if failures.calls != 1 {
+		t.Fatalf("failure observations = %d, want 1", failures.calls)
+	}
+}
+
+func TestDataChannelCommandResultSinkQueuesWithoutWaitingForTransport(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	sink := NewDataChannelCommandResultSink(mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) {
+		startedOnce.Do(func() { close(started) })
+		<-release
+		return nil, errors.New("closed")
+	}), nil)
+	event := realtimev1.CommandResultEvent{
+		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
+		CommandID: "wake-1", SessionID: "session-1", Status: realtimev1.CommandResultFailed,
+		Message: "命令未执行，原模式保持不变", OccurredAt: time.Unix(2, 0).UTC(),
+	}
+	if err := sink.Publish(context.Background(), event); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("delivery worker did not receive event")
+	}
+	if err := sink.Publish(context.Background(), func() realtimev1.CommandResultEvent {
+		next := event
+		next.CommandID = "wake-2"
+		return next
+	}()); err != nil {
+		t.Fatalf("second Publish() blocked or failed: %v", err)
+	}
+	close(release)
 }
 
 func TestEnergySpeechClassifierDetectsLoudFrame(t *testing.T) {

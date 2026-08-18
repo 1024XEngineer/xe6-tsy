@@ -211,6 +211,41 @@ describe("WakeWordListener", () => {
     ]);
   });
 
+  it("preserves an active replay while TTS output is suppressed", () => {
+    const listener = new WakeWordListener({ onWake: vi.fn() });
+    const harness = listener as unknown as {
+      recordSampleRate: number;
+      audioFrame: number;
+      replayChunks: Float32Array[];
+      appendPreRoll(input: Float32Array): void;
+      writeUplinkFrame(
+        input: Float32Array,
+        output: Float32Array,
+        frame: number,
+      ): void;
+    };
+    harness.recordSampleRate = 1000;
+    harness.audioFrame = 1;
+    harness.appendPreRoll(new Float32Array(2500).fill(0.25));
+
+    listener.openCommandUplink();
+    harness.replayChunks = [new Float32Array([0.25, 0.25])];
+    listener.setOutputSuppressed(true);
+    const suppressed = new Float32Array(4).fill(1);
+    harness.writeUplinkFrame(new Float32Array(4).fill(0.8), suppressed, 2);
+    expect([...suppressed]).toEqual([0, 0, 0, 0]);
+
+    listener.setOutputSuppressed(false);
+    const resumed = new Float32Array(4);
+    harness.writeUplinkFrame(new Float32Array(4).fill(0.9), resumed, 3);
+    expect([...resumed]).toEqual([
+      expect.closeTo(0.25),
+      expect.closeTo(0.25),
+      expect.closeTo(0.8),
+      expect.closeTo(0.8),
+    ]);
+  });
+
   it("initializes KWS when the browser exposes webdriver", async () => {
     const { stream } = fakeStream();
     const getUserMedia = vi.fn(async () => stream);

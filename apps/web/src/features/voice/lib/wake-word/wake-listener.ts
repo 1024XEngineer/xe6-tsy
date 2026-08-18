@@ -118,6 +118,7 @@ export class WakeWordListener {
   private replayOffset = 0;
   private audioFrame = 0;
   private replayOpenedFrame = -1;
+  private outputSuppressed = false;
   private running = false;
   private startGeneration = 0;
   private lastFireAt = 0;
@@ -264,6 +265,11 @@ export class WakeWordListener {
     this.clearReplay();
   }
 
+  /** Temporarily emit silence without changing the active uplink turn. */
+  setOutputSuppressed(suppressed: boolean): void {
+    this.outputSuppressed = suppressed;
+  }
+
   /** Start one delayed uplink turn with the buffered wake phrase included. */
   openCommandUplink(): void {
     const preRoll = selectWakePreRoll(
@@ -296,9 +302,9 @@ export class WakeWordListener {
     ) {
       this.preRollSampleCount -= this.preRollChunks.shift()!.length;
     }
-    if (this.preRollSampleCount > capacity && this.preRollChunks[0]) {
+    if (this.preRollSampleCount > capacity) {
       const excess = this.preRollSampleCount - capacity;
-      this.preRollChunks[0] = this.preRollChunks[0].slice(excess);
+      this.preRollChunks[0] = this.preRollChunks[0]!.slice(excess);
       this.preRollSampleCount = capacity;
     }
   }
@@ -319,12 +325,15 @@ export class WakeWordListener {
     frame: number,
   ): void {
     output.fill(0);
+    if (this.uplinkMode === "replay" && this.replayOpenedFrame !== frame) {
+      this.replayChunks.push(input);
+    }
+    if (this.outputSuppressed) return;
     if (this.uplinkMode === "continuous") {
       output.set(input.subarray(0, output.length));
       return;
     }
     if (this.uplinkMode !== "replay") return;
-    if (this.replayOpenedFrame !== frame) this.replayChunks.push(input);
 
     let written = 0;
     while (written < output.length && this.replayChunks[0]) {
@@ -361,6 +370,7 @@ export class WakeWordListener {
 
   private releaseResources(): void {
     this.uplinkMode = "closed";
+    this.outputSuppressed = false;
     this.clearReplay();
     this.preRollChunks = [];
     this.preRollSampleCount = 0;

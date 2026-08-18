@@ -848,17 +848,31 @@ export function useVoiceSession() {
 
       let sessionStream: MediaStream | null = null;
       let sessionUsesWakeUplink = false;
+      let sessionUplinkEnabled = false;
+      let sessionOutputSuppressed = false;
       let ttsResumeTimer: ReturnType<typeof setTimeout> | null = null;
+      const applyRawTrackState = () => {
+        for (const track of sessionStream?.getAudioTracks() ?? []) {
+          track.enabled = sessionUplinkEnabled && !sessionOutputSuppressed;
+        }
+      };
       const setSessionUplinkEnabled = (enabled: boolean) => {
+        sessionUplinkEnabled = enabled;
         if (sessionUsesWakeUplink) {
           wakeRef.current?.setUplinkEnabled(enabled);
           return;
         }
-        for (const track of sessionStream?.getAudioTracks() ?? []) {
-          track.enabled = enabled;
-        }
+        applyRawTrackState();
       };
-      const setMicrophoneInputEnabled = (enabled: boolean) => {
+      const setSessionOutputSuppressed = (suppressed: boolean) => {
+        sessionOutputSuppressed = suppressed;
+        if (sessionUsesWakeUplink) {
+          wakeRef.current?.setOutputSuppressed(suppressed);
+          return;
+        }
+        applyRawTrackState();
+      };
+      const setTTSOutputSuppressed = (suppressed: boolean) => {
         if (sessionIdRef.current !== session.id) return;
         const stream = sessionStream;
         if (!stream) return;
@@ -866,22 +880,18 @@ export function useVoiceSession() {
           clearTimeout(ttsResumeTimer);
           ttsResumeTimer = null;
         }
-        if (!enabled) {
-          setSessionUplinkEnabled(false);
+        if (suppressed) {
+          setSessionOutputSuppressed(true);
           return;
         }
         ttsResumeTimer = setTimeout(() => {
-          if (sessionIdRef.current !== session.id) return;
-          setSessionUplinkEnabled(true);
           ttsResumeTimer = null;
+          if (sessionIdRef.current !== session.id) return;
+          setSessionOutputSuppressed(false);
         }, TTS_INPUT_RESUME_DELAY_MS);
       };
       setUplinkEnabledRef.current = (enabled) => {
         if (sessionIdRef.current !== session.id) return;
-        if (ttsResumeTimer) {
-          clearTimeout(ttsResumeTimer);
-          ttsResumeTimer = null;
-        }
         setSessionUplinkEnabled(enabled);
       };
 
@@ -893,13 +903,12 @@ export function useVoiceSession() {
       sessionUsesWakeUplink = wakeTracks.length > 0;
       openCommandUplinkRef.current = () => {
         if (sessionIdRef.current !== session.id) return;
+        sessionUplinkEnabled = true;
         if (sessionUsesWakeUplink) {
           wakeRef.current?.openCommandUplink();
           return;
         }
-        for (const track of sessionStream?.getAudioTracks() ?? []) {
-          track.enabled = true;
-        }
+        applyRawTrackState();
       };
       try {
         startupResources.webrtc = await openWebRTCSession({
@@ -928,14 +937,7 @@ export function useVoiceSession() {
             const audio = parseTTSAudioEvent(payload);
             if (audio) {
               enqueueTTSAudio(audio, (playing) => {
-                const mode = modeStateRef.current?.active_mode ?? initialMode;
-                setMicrophoneInputEnabled(
-                  !playing &&
-                    effectiveVoiceInteractionPolicy(
-                      mode,
-                      interactionPolicyRef.current,
-                    ) === "continuous",
-                );
+                setTTSOutputSuppressed(playing);
               });
               return;
             }

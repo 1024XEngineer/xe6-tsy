@@ -142,12 +142,17 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 	if err := validateCore(config); err != nil {
 		return Config{}, err
 	}
-	if config.SessionRuntimeEnabled {
+	if config.SessionRuntimeEnabled || config.DeliveryEnabled {
 		realtimeHTTPTimeout, err := parseDuration(value("REALTIME_HTTP_TIMEOUT", defaultRealtimeHTTPTimeout.String()))
 		if err != nil {
 			return Config{}, fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be a valid duration", domain.ErrInvalidArgument)
 		}
 		config.RealtimeHTTPTimeout = realtimeHTTPTimeout
+		if config.RealtimeHTTPTimeout > maxRealtimeHTTPTimeout {
+			return Config{}, fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be between 1ns and %s", domain.ErrInvalidArgument, maxRealtimeHTTPTimeout)
+		}
+	}
+	if config.SessionRuntimeEnabled {
 		if err := validateSessionRuntime(config); err != nil {
 			return Config{}, err
 		}
@@ -206,9 +211,6 @@ func validateSessionRuntime(config Config) error {
 	if err := validateRealtimeBaseURL(config.RealtimeBaseURL); err != nil {
 		return err
 	}
-	if config.RealtimeHTTPTimeout <= 0 || config.RealtimeHTTPTimeout > maxRealtimeHTTPTimeout {
-		return fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be between 1ns and %s", domain.ErrInvalidArgument, maxRealtimeHTTPTimeout)
-	}
 	if strings.EqualFold(config.AppEnv, "production") && config.ModeChangedConsumer == "" {
 		return fmt.Errorf("%w: LINGOW_MODE_CHANGED_CONSUMER is required in production when session runtime is enabled", domain.ErrInvalidArgument)
 	}
@@ -239,6 +241,8 @@ func validateEnabled(config Config) error {
 	for key, value := range map[string]string{
 		"DATABASE_URL":                    config.DatabaseURL,
 		"REDIS_URL":                       config.RedisURL,
+		"REALTIME_BASE_URL":               config.RealtimeBaseURL,
+		"REALTIME_TICKET_SECRET":          config.RealtimeTicketSecret,
 		"JWT_SECRET":                      config.JWTSecret,
 		"LINGOW_DELIVERY_DESTINATION_KEY": config.DestinationKey,
 		"JWT_ISSUER":                      config.JWTIssuer,
@@ -250,6 +254,12 @@ func validateEnabled(config Config) error {
 	}
 	if len([]byte(config.JWTSecret)) < 32 {
 		return fmt.Errorf("%w: JWT_SECRET must contain at least 32 bytes", domain.ErrInvalidArgument)
+	}
+	if len([]byte(config.RealtimeTicketSecret)) < minRealtimeTicketSecretSize {
+		return fmt.Errorf("%w: REALTIME_TICKET_SECRET must contain at least 32 bytes", domain.ErrInvalidArgument)
+	}
+	if err := validateRealtimeBaseURL(config.RealtimeBaseURL); err != nil {
+		return err
 	}
 	switch config.DeliveryProvider {
 	case providerUnconfigured:

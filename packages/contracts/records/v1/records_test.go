@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,6 +36,32 @@ var (
 	_ TurnReader         = turnReaderStub{}
 	_ SessionOwnerReader = sessionOwnerReaderStub{}
 )
+
+func TestIsLongSourceTurn(t *testing.T) {
+	tests := []struct {
+		name          string
+		sourceText    string
+		audioDuration time.Duration
+		want          bool
+	}{
+		{name: "short source", sourceText: strings.Repeat("a", 49), audioDuration: 19 * time.Second},
+		{name: "text boundary", sourceText: strings.Repeat("a", LongSourceTextThreshold), audioDuration: 19 * time.Second},
+		{name: "text exceeds boundary", sourceText: strings.Repeat("a", LongSourceTextThreshold+1), want: true},
+		{name: "audio reaches boundary", sourceText: "short", audioDuration: LongSourceAudioThreshold, want: true},
+		{name: "both thresholds", sourceText: strings.Repeat("a", LongSourceTextThreshold+1), audioDuration: LongSourceAudioThreshold, want: true},
+		{name: "unicode counts characters", sourceText: strings.Repeat("字", LongSourceTextThreshold+1), want: true},
+		{name: "trim surrounding whitespace", sourceText: " \t" + strings.Repeat("字", LongSourceTextThreshold) + "\n ", audioDuration: 19 * time.Second},
+		{name: "zero duration", sourceText: "short"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsLongSourceTurn(test.sourceText, test.audioDuration); got != test.want {
+				t.Fatalf("IsLongSourceTurn(%q, %s) = %v, want %v", test.sourceText, test.audioDuration, got, test.want)
+			}
+		})
+	}
+}
 
 func TestFinalTurnEventJSONPreservesNullableAttribution(t *testing.T) {
 	event := validFinalTurnEvent()
@@ -103,6 +130,13 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid FinalTurnEvent error = %v", err)
 	}
+	longSentence := validFinalTurnEvent()
+	longSentence.SourceText = strings.Repeat("x", LongSourceTextThreshold+1)
+	longSentence.DeliveryEnabled = true
+	longSentence.DeliveryTrigger = FinalTurnDeliveryTriggerLongSentence
+	if err := longSentence.Validate(); err != nil {
+		t.Fatalf("valid long-sentence FinalTurnEvent error = %v", err)
+	}
 
 	tests := []struct {
 		name   string
@@ -118,6 +152,21 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 		{name: "target language", mutate: func(event *FinalTurnEvent) { event.TargetLanguage = "" }},
 		{name: "source text", mutate: func(event *FinalTurnEvent) { event.SourceText = "" }},
 		{name: "translated text", mutate: func(event *FinalTurnEvent) { event.TranslatedText = "" }},
+		{name: "delivery trigger", mutate: func(event *FinalTurnEvent) { event.DeliveryTrigger = "unknown" }},
+		{name: "long delivery trigger on short turn", mutate: func(event *FinalTurnEvent) {
+			event.DeliveryTrigger = FinalTurnDeliveryTriggerLongSentence
+			event.DeliveryEnabled = true
+		}},
+		{name: "long delivery trigger with initial TTS", mutate: func(event *FinalTurnEvent) {
+			event.SourceText = strings.Repeat("x", LongSourceTextThreshold+1)
+			event.DeliveryTrigger = FinalTurnDeliveryTriggerLongSentence
+			event.DeliveryEnabled = true
+			event.TTSEnabled = true
+		}},
+		{name: "long delivery trigger without delivery", mutate: func(event *FinalTurnEvent) {
+			event.SourceText = strings.Repeat("x", LongSourceTextThreshold+1)
+			event.DeliveryTrigger = FinalTurnDeliveryTriggerLongSentence
+		}},
 		{name: "speaker code", mutate: func(event *FinalTurnEvent) { event.SpeakerCode = "" }},
 		{name: "language config version", mutate: func(event *FinalTurnEvent) { event.LanguageConfigVersion = 0 }},
 		{name: "attribution status", mutate: func(event *FinalTurnEvent) { event.AttributionStatus = "unknown" }},
@@ -223,6 +272,41 @@ func TestFinalTurnEventPayloadHashMatchesLegacyRoutePayload(t *testing.T) {
 	}
 	if matched {
 		t.Fatal("changed payload unexpectedly matched legacy hash")
+	}
+}
+
+func TestFinalTurnEventPayloadHashMatchesLegacyPayloadWithoutDeliveryTrigger(t *testing.T) {
+	event := validFinalTurnEvent()
+	event.SourceText = strings.Repeat("x", LongSourceTextThreshold+1)
+	event.DeliveryTrigger = FinalTurnDeliveryTriggerLongSentence
+	event.DeliveryEnabled = true
+	for _, test := range []struct {
+		name   string
+		legacy func(FinalTurnEvent) FinalTurnEvent
+	}{
+		{name: "trigger", legacy: func(legacy FinalTurnEvent) FinalTurnEvent {
+			legacy.DeliveryTrigger = ""
+			return legacy
+		}},
+		{name: "trigger and route flags", legacy: func(legacy FinalTurnEvent) FinalTurnEvent {
+			legacy.DeliveryTrigger = ""
+			legacy.DeliveryEnabled = false
+			return legacy
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			legacyHash, err := FinalTurnEventPayloadHash(test.legacy(event))
+			if err != nil {
+				t.Fatalf("legacy hash error = %v", err)
+			}
+			matched, err := FinalTurnEventPayloadHashMatches(event, legacyHash[:])
+			if err != nil {
+				t.Fatalf("hash compatibility check error = %v", err)
+			}
+			if !matched {
+				t.Fatal("legacy payload without delivery trigger was not accepted")
+			}
+		})
 	}
 }
 

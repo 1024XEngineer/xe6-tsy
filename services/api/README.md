@@ -107,8 +107,10 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 和 Delivery Worker。未接入真实 Email Provider 的发送仍保持 fail-closed。
 生产组合必须先基于最新鉴权迁移（包括账户 lineage 函数）完成，再启用异步投递。
 
-运行时启用还要求 `DATABASE_URL`、`REDIS_URL`、至少 32 字节的 `JWT_SECRET` 和
-`LINGOW_DELIVERY_DESTINATION_KEY`。enabled 路径还会启动 usage stream consumer，
+运行时启用还要求 `DATABASE_URL`、`REDIS_URL`、至少 32 字节的 `JWT_SECRET`、
+`LINGOW_DELIVERY_DESTINATION_KEY`、`REALTIME_BASE_URL` 和至少 32 字节的
+`REALTIME_TICKET_SECRET`；后两项用于企业微信不可用或最终失败时认证调用 realtime fallback
+playback，即使 `LINGOW_SESSION_RUNTIME` 未启用也必须配置。enabled 路径还会启动 usage stream consumer，
 并暴露 `/api/v1/account/message-targets/*`（email bind 在 local 环境支持 `dev:` token；
 非 local 环境通过 `POST /api/v1/account/message-targets/email/verification-codes` 发送一次性
 验证 token，再调用 bind）。`LINGOW_DELIVERY_PROVIDER` 默认是
@@ -118,6 +120,14 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 出站投递在配置 `LINGOW_WECOM_*` 后由 `WeComProvider` 发送应用消息。
 语言配置的单向输出只有在 delivery runtime 已启用且目标 channel provider 已配置时才会接受；
 否则返回 `delivery_target_required`，保持反向译文不被静默丢弃。
+
+FinalTurn 的长句降级复用同一套 Message、Attempt、delivery outbox 和 Worker。API 优先使用显式
+`delivery_trigger=long_sentence` 建立长句自动投递 run；为兼容旧 realtime，缺少 trigger 但同时为
+`tts_enabled=false`、`delivery_enabled=true` 且正文超过 50 字或音频至少 20 秒的事件，也按长句处理。
+其他缺少 trigger 的旧事件保持原有 `delivery_enabled` 路由。长句 run 只选择已启用、已验证且
+Provider 已配置的企业微信目标，不创建 Email 消息。未绑定、未配置、目标已失效或企业微信最终
+投递失败时，fallback worker 请求 realtime 回放 TTS；长句恢复完成后不会调用双向输出恢复器，
+因此不会改变会话输出配置。投递成功的 run 不进入 fallback 候选。
 
 ## 语音记录 HTTP 装配
 

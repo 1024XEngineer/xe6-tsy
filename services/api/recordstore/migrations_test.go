@@ -10,8 +10,22 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 28 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 28", len(migrations))
+	if len(migrations) != 29 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 29", len(migrations))
+	}
+
+	longSentenceTrigger := migrations[28]
+	if longSentenceTrigger.Version != 29 || longSentenceTrigger.Name != "long_sentence_delivery_trigger" {
+		t.Fatalf("migration = %#v, want version 29 named long_sentence_delivery_trigger", longSentenceTrigger)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN delivery_trigger TEXT NOT NULL DEFAULT 'configured_route'",
+		"automatic_turn_runs_delivery_trigger_valid",
+		"delivery_trigger IN ('configured_route', 'long_sentence')",
+	} {
+		if !strings.Contains(longSentenceTrigger.SQL, expected) {
+			t.Fatalf("long-sentence trigger migration does not contain %q", expected)
+		}
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {

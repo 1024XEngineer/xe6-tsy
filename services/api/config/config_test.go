@@ -171,6 +171,41 @@ func TestLoadValidatesRealtimeHTTPTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadDeliveryRuntimeValidatesRealtimeHTTPTimeout(t *testing.T) {
+	tests := []struct {
+		value  string
+		want   time.Duration
+		wantOK bool
+	}{
+		{value: "3s", want: 3 * time.Second, wantOK: true},
+		{value: "soon"},
+		{value: "0s"},
+		{value: "6s"},
+	}
+	for _, test := range tests {
+		t.Run(test.value, func(t *testing.T) {
+			config, err := LoadFrom(mapCoreEnv(map[string]string{
+				"LINGOW_DELIVERY_RUNTIME":         "enabled",
+				"REDIS_URL":                       "redis://localhost:6379/0",
+				"LINGOW_DELIVERY_DESTINATION_KEY": "base64-key",
+				"REALTIME_HTTP_TIMEOUT":           test.value,
+			}))
+			if !test.wantOK {
+				if !errors.Is(err, domain.ErrInvalidArgument) {
+					t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom() error = %v", err)
+			}
+			if config.RealtimeHTTPTimeout != test.want {
+				t.Fatalf("RealtimeHTTPTimeout = %s, want %s", config.RealtimeHTTPTimeout, test.want)
+			}
+		})
+	}
+}
+
 func TestConfigFormattingRedactsSecrets(t *testing.T) {
 	config := Config{
 		DatabaseURL:          "postgres://user:pass@localhost/db",
@@ -248,6 +283,29 @@ func TestLoadEnabledRequiresInfrastructureAndSecrets(t *testing.T) {
 	_, err := LoadFrom(mapEnv(map[string]string{"LINGOW_DELIVERY_RUNTIME": "enabled"}))
 	if !errors.Is(err, domain.ErrInvalidArgument) {
 		t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+	}
+}
+
+func TestLoadEnabledRequiresRealtimeFallbackConfiguration(t *testing.T) {
+	base := map[string]string{
+		"APP_ENV":                         "local",
+		"LINGOW_DELIVERY_RUNTIME":         "enabled",
+		"REDIS_URL":                       "redis://localhost:6379/0",
+		"LINGOW_DELIVERY_DESTINATION_KEY": "base64-key",
+	}
+	for _, key := range []string{"REALTIME_BASE_URL", "REALTIME_TICKET_SECRET"} {
+		t.Run(key, func(t *testing.T) {
+			values := map[string]string{}
+			for name, value := range base {
+				values[name] = value
+			}
+			values["REALTIME_BASE_URL"] = "http://127.0.0.1:8090"
+			values["REALTIME_TICKET_SECRET"] = "realtime-ticket-secret-123456789012"
+			values[key] = ""
+			if _, err := LoadFrom(mapCoreEnv(values)); !errors.Is(err, domain.ErrInvalidArgument) {
+				t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+			}
+		})
 	}
 }
 
@@ -387,8 +445,10 @@ func TestLoadEnabledRejectsPartialWeComConfig(t *testing.T) {
 
 func mapCoreEnv(values map[string]string) func(string) (string, bool) {
 	env := map[string]string{
-		"DATABASE_URL": "postgres://localhost/lingow",
-		"JWT_SECRET":   "01234567890123456789012345678901",
+		"DATABASE_URL":           "postgres://localhost/lingow",
+		"JWT_SECRET":             "01234567890123456789012345678901",
+		"REALTIME_BASE_URL":      "http://127.0.0.1:8090",
+		"REALTIME_TICKET_SECRET": "realtime-ticket-secret-123456789012",
 	}
 	for key, value := range values {
 		env[key] = value

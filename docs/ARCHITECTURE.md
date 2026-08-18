@@ -6,7 +6,7 @@
 - 首期是面对面双向传译，不做多人会议同传。
 - 产品交互是句级轮流传译，不做边听边播。
 - 你们做 SDK 与后端能力，不做硬件制造。
-- 产品名为 Lingow，首期只有语音识别和语音同传，没有字幕和管理后台。
+- 产品名为 Lingow，首期提供语音识别、语音同传和字幕预览，不做独立字幕产品和管理后台。
 - 硬件接入方案需要预设降噪、弱网重连和基础遥测。
 
 ## 2. 模块边界
@@ -153,8 +153,8 @@ Web / Mobile / Device SDK
   -> ASR final
   -> translation draft
   -> context correction
-  -> TTS
-  -> playback.command
+  -> ordinary turn: TTS -> playback.command
+  -> long turn: WeCom subtitle delivery -> fallback TTS when unavailable or finally failed
   -> Lingow UI state update
   -> api: state snapshot query
 ```
@@ -196,7 +196,8 @@ idle
 关键规则：
 
 - partial 识别结果可以用于后台纠偏，但不能直接播音。
-- 只有句末确认后的 final 译文才能进入 TTS。
+- 只有句末确认后的 final 译文才能进入 TTS。去除首尾空白后的原文超过 50 个 Unicode 字符，或原声音频时长达到 20 秒时，跳过初始 TTS，仅投递企业微信字幕。
+- 长句企业微信未绑定、未配置、目标无效或最终投递失败时，通过已有 fallback playback 回放 TTS；该恢复不修改会话输出配置。
 - 如果对方在 TTS 播放时开始说话，realtime-audio 发送 `playback.stop` 并进入 `interrupted`。
 - 每个会话只允许两个语言槽，由用户在语言选择页确定，默认 `source=zh-CN,target=en-US` 或反向。
 - `services/realtime-audio` 是 WebRTC 连接和运行时状态机事实来源；`services/api` 只负责业务会话、配置、实时连接票据和状态快照查询。

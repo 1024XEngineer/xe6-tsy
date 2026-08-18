@@ -26,6 +26,7 @@ type UseCases struct {
 	outputSessions      AutomaticOutputSessionReader
 	fallback            AutomaticTurnFallbackPlayer
 	restorer            AutomaticTurnOutputRestorer
+	channelRouter       *ChannelRouter
 }
 
 func NewUseCases() *UseCases { return &UseCases{} }
@@ -60,6 +61,10 @@ func (u *UseCases) ConfigureAutomaticFallback(player AutomaticTurnFallbackPlayer
 
 func (u *UseCases) ConfigureAutomaticOutputRestorer(restorer AutomaticTurnOutputRestorer) {
 	u.restorer = restorer
+}
+
+func (u *UseCases) ConfigureChannelRouter(router *ChannelRouter) {
+	u.channelRouter = router
 }
 
 // Create accepts selected final Turns and creates an asynchronous delivery task.
@@ -253,11 +258,21 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 	if u == nil || u.repository == nil {
 		return domain.ErrNotImplemented
 	}
-	if accountID == "" || event.TurnID == "" || !event.DeliveryEnabled {
+	longSentence := event.DeliveryTrigger == recordsv1.FinalTurnDeliveryTriggerLongSentence
+	if event.DeliveryTrigger == "" && !event.TTSEnabled && event.DeliveryEnabled {
+		longSentence = recordsv1.IsLongSourceTurn(event.SourceText, event.EndedAt.Sub(event.StartedAt))
+	}
+	if event.DeliveryTrigger != "" && !longSentence {
+		return domain.ErrInvalidArgument
+	}
+	if accountID == "" || event.TurnID == "" || (!event.DeliveryEnabled && !longSentence) {
 		return nil
 	}
 	if scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository); ok {
-		return u.scheduleAutomaticTurnAtomically(ctx, scheduler, accountID, event)
+		return u.scheduleAutomaticTurnAtomically(ctx, scheduler, accountID, event, longSentence)
+	}
+	if longSentence {
+		return domain.ErrNotImplemented
 	}
 	preferences, err := u.Preferences(ctx, accountID)
 	if err != nil {
@@ -278,17 +293,29 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 	return nil
 }
 
-func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, scheduler AutomaticTurnSchedulerRepository, accountID string, event recordsv1.FinalTurnEvent) error {
+func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, scheduler AutomaticTurnSchedulerRepository, accountID string, event recordsv1.FinalTurnEvent, longSentence bool) error {
 	if event.SessionID == "" || event.TraceID == "" || event.TargetLanguage == "" || event.TranslatedText == "" || event.LanguageConfigVersion < 1 {
 		return domain.ErrInvalidArgument
 	}
 	if u.turns == nil || u.destinations == nil {
 		return domain.ErrInvalidArgument
 	}
+	trigger := AutomaticTurnTriggerConfiguredRoute
+	if longSentence {
+		trigger = AutomaticTurnTriggerLongSentence
+	}
 	existing, err := scheduler.GetAutomaticTurnRun(ctx, accountID, event.TurnID)
 	if err == nil {
 		if existing.SessionID != event.SessionID || existing.TraceID != event.TraceID || existing.TargetLanguage != event.TargetLanguage ||
 			existing.TranslatedText != event.TranslatedText || existing.LanguageConfigVersion != event.LanguageConfigVersion {
+			return domain.ErrConflict
+		}
+		switch existing.Trigger {
+		case AutomaticTurnTriggerConfiguredRoute, AutomaticTurnTriggerLongSentence:
+		default:
+			return domain.ErrConflict
+		}
+		if event.DeliveryTrigger != "" && existing.Trigger != trigger {
 			return domain.ErrConflict
 		}
 		return nil
@@ -313,7 +340,13 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 		if !preference.Enabled || !preference.Verified || preference.DestinationRef == "" || !IsSupportedChannel(preference.Channel) {
 			continue
 		}
+		if longSentence && (preference.Channel != ChannelWeChat || u.channelRouter == nil || !u.channelRouter.SupportsChannel(ChannelWeChat)) {
+			continue
+		}
 		if _, err := u.destinations.ResolveVerifiedDestination(ctx, accountID, preference.Channel, preference.DestinationRef); err != nil {
+			if longSentence && isPermanentDestinationError(err) {
+				continue
+			}
 			return err
 		}
 		message := Message{
@@ -336,7 +369,7 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 	run := AutomaticTurnRun{
 		AccountID: accountID, TurnID: event.TurnID, SessionID: event.SessionID, TraceID: event.TraceID,
 		TargetLanguage: event.TargetLanguage, TranslatedText: event.TranslatedText,
-		LanguageConfigVersion: event.LanguageConfigVersion, Status: AutomaticTurnRunPending,
+		LanguageConfigVersion: event.LanguageConfigVersion, Trigger: trigger, Status: AutomaticTurnRunPending,
 		TargetCount: len(targets), FallbackOperationID: "fallback_" + event.TurnID,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -455,10 +488,10 @@ func (u *UseCases) RecoverAutomaticTurns(ctx context.Context, limit int) error {
 	return nil
 }
 
-// RestoreAutomaticTurn restores bidirectional output for one completed fallback.
+// RestoreAutomaticTurn completes recovery for one played fallback.
 func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID string) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
-	if !ok || u.restorer == nil {
+	if !ok {
 		return domain.ErrNotImplemented
 	}
 	scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository)
@@ -472,8 +505,18 @@ func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID s
 	if run.Status != AutomaticTurnRunFallbackPlayed {
 		return domain.ErrConflict
 	}
-	if err := u.restorer.RestoreBidirectionalOutput(ctx, run.AccountID, run.SessionID, int(run.LanguageConfigVersion), "restore_"+run.FallbackOperationID); err != nil {
-		return fmt.Errorf("restore bidirectional output: %w", err)
+	switch run.Trigger {
+	case AutomaticTurnTriggerLongSentence:
+		return repository.MarkAutomaticTurnRestored(ctx, accountID, turnID)
+	case AutomaticTurnTriggerConfiguredRoute:
+		if u.restorer == nil {
+			return domain.ErrNotImplemented
+		}
+		if err := u.restorer.RestoreBidirectionalOutput(ctx, run.AccountID, run.SessionID, int(run.LanguageConfigVersion), "restore_"+run.FallbackOperationID); err != nil {
+			return fmt.Errorf("restore bidirectional output: %w", err)
+		}
+	default:
+		return domain.ErrConflict
 	}
 	return repository.MarkAutomaticTurnRestored(ctx, accountID, turnID)
 }
@@ -481,7 +524,7 @@ func (u *UseCases) RestoreAutomaticTurn(ctx context.Context, accountID, turnID s
 // RestoreAutomaticTurns processes a bounded batch of output-restore candidates.
 func (u *UseCases) RestoreAutomaticTurns(ctx context.Context, limit int) error {
 	repository, ok := u.repository.(AutomaticTurnFallbackRepository)
-	if !ok || u.restorer == nil {
+	if !ok {
 		return domain.ErrNotImplemented
 	}
 	if limit <= 0 {

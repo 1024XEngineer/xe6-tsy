@@ -90,9 +90,9 @@ func TestNewSessionHTTPDependenciesBuildsRealHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newSessionHTTPDependencies() error = %v", err)
 	}
-	if dependencies == nil || dependencies.service == nil || dependencies.handler == nil ||
+	if dependencies == nil || dependencies.service == nil || dependencies.handler == nil || dependencies.realtime == nil ||
 		dependencies.endRecovery == nil {
-		t.Fatalf("dependencies = %#v, want service, handler, and end recovery worker", dependencies)
+		t.Fatalf("dependencies = %#v, want service, handler, realtime client, and end recovery worker", dependencies)
 	}
 }
 

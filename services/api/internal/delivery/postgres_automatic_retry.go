@@ -17,7 +17,7 @@ func (r *PostgresRepository) ListAutomaticTurnRetryCandidates(ctx context.Contex
 	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT account_id,turn_id,session_id,trace_id,target_language,translated_text,
-		language_config_version,status,target_count,settled_count,succeeded_count,
+		language_config_version,delivery_trigger,status,target_count,settled_count,succeeded_count,
 		failed_count,fallback_operation_id,created_at,updated_at
 		FROM automatic_turn_runs
 		WHERE status='partially_succeeded' AND failed_count>0
@@ -36,7 +36,7 @@ func (r *PostgresRepository) ListAutomaticTurnRetryCandidates(ctx context.Contex
 	result := make([]AutomaticTurnRun, 0)
 	for rows.Next() {
 		var run AutomaticTurnRun
-		if err := rows.Scan(&run.AccountID, &run.TurnID, &run.SessionID, &run.TraceID, &run.TargetLanguage, &run.TranslatedText, &run.LanguageConfigVersion, &run.Status, &run.TargetCount, &run.SettledCount, &run.SucceededCount, &run.FailedCount, &run.FallbackOperationID, &run.CreatedAt, &run.UpdatedAt); err != nil {
+		if err := rows.Scan(&run.AccountID, &run.TurnID, &run.SessionID, &run.TraceID, &run.TargetLanguage, &run.TranslatedText, &run.LanguageConfigVersion, &run.Trigger, &run.Status, &run.TargetCount, &run.SettledCount, &run.SucceededCount, &run.FailedCount, &run.FallbackOperationID, &run.CreatedAt, &run.UpdatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, run)

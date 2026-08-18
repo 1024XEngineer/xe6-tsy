@@ -119,6 +119,7 @@ type Dependencies struct {
 	ModeCommands          ModeCommandObserver
 	Now                   func() time.Time
 	NewRuntimeInstanceID  RuntimeInstanceIDFactory
+	LongDeliveryEnabled   bool
 }
 
 // LifecycleObserver receives process-local lifecycle counters without session
@@ -245,13 +246,14 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	commitGate := managerTurnCommitGate{manager: manager}
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
 		Translator: providers.Translation, TranslationProvider: labels.translation,
-		FinalTurns: deps.FinalTurns,
-		FinalGate:  commitGate,
-		Usage:      deps.Usage,
-		Runtime:    deps.Runtime,
-		Now:        deps.Now,
-		Speech:     speech,
-		Latency:    latency,
+		FinalTurns:          deps.FinalTurns,
+		FinalGate:           commitGate,
+		Usage:               deps.Usage,
+		Runtime:             deps.Runtime,
+		Now:                 deps.Now,
+		Speech:              speech,
+		Latency:             latency,
+		LongDeliveryEnabled: deps.LongDeliveryEnabled,
 	})
 	// The router registry is the capability source of truth. The coordinator and command
 	// interpreter therefore expose only modes backed by an actual handler.

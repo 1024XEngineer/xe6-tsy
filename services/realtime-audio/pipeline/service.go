@@ -72,6 +72,7 @@ type PipelineDependencies struct {
 	Now                 func() time.Time
 	Latency             LatencyLogger
 	Speech              *SpeechOutput
+	LongDeliveryEnabled bool
 }
 
 // PipelineService orchestrates one final ASR result through translation and TTS.
@@ -85,6 +86,7 @@ type PipelineService struct {
 	speech              *SpeechOutput
 	now                 func() time.Time
 	latency             LatencyLogger
+	longDeliveryEnabled bool
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
@@ -108,6 +110,7 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 		usage: deps.Usage, runtime: deps.Runtime,
 		speech: speech,
 		now:    now, latency: deps.Latency,
+		longDeliveryEnabled: deps.LongDeliveryEnabled,
 	}
 }
 
@@ -187,6 +190,13 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("prepare translation usage: %w", err)
 	}
 	startedAt, endedAt := turnBounds(turn, result, s.now())
+	longSource := s.longDeliveryEnabled && recordsv1.IsLongSourceTurn(result.Text, endedAt.Sub(startedAt))
+	ttsEnabled := route.TTSEnabled && !longSource
+	deliveryEnabled := route.DeliveryEnabled || longSource
+	var deliveryTrigger recordsv1.FinalTurnDeliveryTrigger
+	if longSource {
+		deliveryTrigger = recordsv1.FinalTurnDeliveryTriggerLongSentence
+	}
 	var providerSpeakerID *string
 	if id := strings.TrimSpace(result.ProviderSpeakerID); id != "" {
 		providerSpeakerID = &id
@@ -195,8 +205,8 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		EventVersion: recordsv1.FinalTurnEventVersion,
 		EventID:      "final_" + turn.ID, TraceID: turn.TraceID, SessionID: turn.SessionID, TurnID: turn.ID,
 		SequenceNo: turn.SequenceNo, SourceLanguage: result.SourceLanguage, TargetLanguage: target,
-		SourceText: result.Text, TranslatedText: translationResult.Text, TTSEnabled: route.TTSEnabled,
-		DeliveryEnabled: route.DeliveryEnabled, SpeakerCode: recordsv1.PendingSpeakerCode,
+		SourceText: result.Text, TranslatedText: translationResult.Text, TTSEnabled: ttsEnabled,
+		DeliveryEnabled: deliveryEnabled, DeliveryTrigger: deliveryTrigger, SpeakerCode: recordsv1.PendingSpeakerCode,
 		AttributionStatus: recordsv1.AttributionPending, LanguageConfigVersion: turn.LanguageConfig.Version,
 		StartedAt: startedAt, EndedAt: endedAt, OccurredAt: s.now(),
 		ProviderSpeakerID: providerSpeakerID,
@@ -227,7 +237,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err := s.usage.Publish(ctx, translationUsage); err != nil {
 		return finalTurnAcceptedError("publish translation usage", err)
 	}
-	if !route.TTSEnabled {
+	if !ttsEnabled {
 		return nil
 	}
 	playbackID := "playback_" + turn.ID

@@ -1,10 +1,21 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { VoiceExperience } from "./voice-experience";
 
 const closeWebRTC = vi.fn();
+const wakeWordSend = vi.fn();
+const uplinkTrack = { enabled: true };
 let dataMessageHandler: ((payload: unknown) => void) | undefined;
+let wakeHandler: ((keyword: string) => void) | undefined;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 vi.mock("../lib/webrtc-session", () => ({
   openWebRTCSession: vi.fn(async (options: { onDataMessage: (payload: unknown) => void }) => {
@@ -14,10 +25,16 @@ vi.mock("../lib/webrtc-session", () => ({
       peerConnection: {} as RTCPeerConnection,
       localStream: {
         getTracks: () => [],
-        getAudioTracks: () => [],
+        getAudioTracks: () => [uplinkTrack],
       } as unknown as MediaStream,
       remoteAudio: document.createElement("audio"),
-      dataChannel: null,
+      wakeWordChannel: {
+        readyState: "open",
+        send: wakeWordSend,
+      } as unknown as RTCDataChannel,
+      controlDataChannel: {
+        readyState: "open",
+      } as unknown as RTCDataChannel,
       close: closeWebRTC,
     };
   }),
@@ -34,10 +51,12 @@ vi.mock("../lib/wake-word/wake-listener", () => {
     cloneAudioTracksForPeer = vi.fn(() => []);
     constructor(
       private readonly handlers: {
-        onCommand: (command: "start" | "stop", keyword: string) => void;
+        onWake: (keyword: string) => void;
         onStatus?: (status: string, detail?: string) => void;
       },
-    ) {}
+    ) {
+      wakeHandler = handlers.onWake;
+    }
   }
   return { WakeWordListener };
 });
@@ -54,6 +73,8 @@ describe("VoiceExperience", () => {
   let startRequests = 0;
   let startInitialModes: Array<string | undefined> = [];
   let createdSessions = 0;
+  let endRequests = 0;
+  let sessionCreationGate: Promise<Response> | null = null;
   let anonymousRequests = 0;
   let modeRequests = 0;
   let activeMode: "assistant" | "interpretation" = "interpretation";
@@ -79,11 +100,16 @@ describe("VoiceExperience", () => {
   beforeEach(() => {
     vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "assistant");
     closeWebRTC.mockClear();
+    wakeWordSend.mockClear();
+    uplinkTrack.enabled = true;
     dataMessageHandler = undefined;
+    wakeHandler = undefined;
     failFirstStart = false;
     startRequests = 0;
     startInitialModes = [];
     createdSessions = 0;
+    endRequests = 0;
+    sessionCreationGate = null;
     anonymousRequests = 0;
     modeRequests = 0;
     activeMode = "interpretation";
@@ -122,6 +148,7 @@ describe("VoiceExperience", () => {
 
         if (url.endsWith("/api/v1/voice-sessions") && method === "POST") {
           createdSessions += 1;
+          if (sessionCreationGate) return sessionCreationGate;
           return jsonResponse(
             {
               id: `vs-${createdSessions}`,
@@ -321,6 +348,7 @@ describe("VoiceExperience", () => {
         }
 
         if (url.includes("/end") && method === "POST") {
+          endRequests += 1;
           return jsonResponse({
             id: "vs-1",
             account_id: "acc-1",
@@ -336,6 +364,7 @@ describe("VoiceExperience", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     vi.clearAllMocks();
@@ -349,7 +378,7 @@ describe("VoiceExperience", () => {
     expect(screen.getByRole("button", { name: "设置" })).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /对话/ })).toHaveLength(1);
     expect(
-      screen.getByText("轻触或说「小灵，开始翻译」开启助手"),
+      screen.getByText("轻触开启助手"),
     ).toBeInTheDocument();
     const idleVideo = screen.getByTestId("idle-voice-video");
     expect(idleVideo).toHaveAttribute("src", "/media/loop.mp4");
@@ -455,7 +484,7 @@ describe("VoiceExperience", () => {
     expect(
       screen.getByText(/反向译文自动投递，并保留 Final Turn/),
     ).toBeInTheDocument();
-    expect(screen.getByText("单向播报 · 中文 → English")).toBeInTheDocument();
+    expect(screen.queryByText("单向播报 · 中文 → English")).toBeNull();
   });
 
   it("swaps the single broadcast direction before starting a session", async () => {
@@ -467,7 +496,7 @@ describe("VoiceExperience", () => {
     fireEvent.click(singleMode);
     fireEvent.click(screen.getByRole("button", { name: "交换播报方向" }));
 
-    expect(screen.getByText("单向播报 · English → 中文")).toBeInTheDocument();
+    expect(screen.queryByText("单向播报 · English → 中文")).toBeNull();
     expect(JSON.parse(localStorage.getItem("lingow-voice-config-v2") ?? "{}")).toMatchObject({
       sourceLanguage: "en-US",
       targetLanguage: "zh-CN",
@@ -499,7 +528,7 @@ describe("VoiceExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
 
-    expect(screen.getByText("双向播报 · 中文 ⇄ English")).toBeInTheDocument();
+    expect(screen.queryByText("双向播报 · 中文 ⇄ English")).toBeNull();
     expect(JSON.parse(localStorage.getItem("lingow-voice-config-v2") ?? "{}")).toMatchObject({
       outputMode: "bidirectional",
     });
@@ -550,7 +579,6 @@ describe("VoiceExperience", () => {
       await screen.findByText("自动投递失败，已恢复双向播报。"),
     ).toBeInTheDocument();
     await waitFor(() => {
-      expect(screen.getByText("双向播报 · 中文 ⇄ English")).toBeInTheDocument();
       expect(JSON.parse(localStorage.getItem("lingow-voice-config-v2") ?? "{}")).toMatchObject({
         outputMode: "bidirectional",
       });
@@ -616,6 +644,172 @@ describe("VoiceExperience", () => {
       expect(modeRequests).toBe(1);
       expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
     });
+  });
+
+  it("sends a wake signal and applies only the matching semantic command result", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(wakeHandler).toBeDefined();
+    });
+
+    wakeHandler?.("小灵小灵");
+    await waitFor(() => expect(wakeWordSend).toHaveBeenCalledTimes(1));
+    const firstSignal = JSON.parse(String(wakeWordSend.mock.calls[0]?.[0])) as {
+      signal_id: string;
+    };
+
+    wakeHandler?.("小灵小灵");
+    await waitFor(() => expect(wakeWordSend).toHaveBeenCalledTimes(2));
+    const currentSignal = JSON.parse(String(wakeWordSend.mock.calls[1]?.[0])) as {
+      signal_id: string;
+    };
+    expect(currentSignal.signal_id).not.toBe(firstSignal.signal_id);
+    expect(screen.getByText(/正在听取指令/)).toBeInTheDocument();
+
+    dataMessageHandler?.({
+      type: "command.result",
+      event_version: 1,
+      command_id: firstSignal.signal_id,
+      session_id: "vs-1",
+      runtime_instance_id: "rt-1",
+      generation: 2,
+      status: "applied",
+      action: "activate_mode",
+      target_mode: "interpretation",
+      message: "不应显示的迟到结果",
+      occurred_at: "2026-08-13T10:00:00Z",
+    });
+    expect(screen.queryByText("不应显示的迟到结果")).not.toBeInTheDocument();
+
+    activeMode = "interpretation";
+    modeGeneration = 2;
+    dataMessageHandler?.({
+      type: "command.result",
+      event_version: 1,
+      command_id: currentSignal.signal_id,
+      session_id: "vs-1",
+      runtime_instance_id: "rt-1",
+      generation: 2,
+      status: "applied",
+      action: "activate_mode",
+      target_mode: "interpretation",
+      message: "已进入同声传译模式",
+      occurred_at: "2026-08-13T10:00:01Z",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("已进入同声传译模式")).toBeInTheDocument();
+      expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+    });
+  });
+
+  it("gates WebRTC uplink to one bounded turn in wake-word mode", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+
+    const continuous = await screen.findByRole("button", { name: "常驻模式" });
+    const wakeWord = screen.getByRole("button", { name: "唤醒词模式" });
+    expect(continuous).toHaveAttribute("aria-pressed", "true");
+    expect(uplinkTrack.enabled).toBe(true);
+
+    fireEvent.click(wakeWord);
+    expect(wakeWord).toHaveAttribute("aria-pressed", "true");
+    expect(uplinkTrack.enabled).toBe(false);
+    expect(localStorage.getItem("lingow.voice.interaction-policy")).toBe("wake_word");
+
+    wakeHandler?.("小灵小灵");
+    await waitFor(() => expect(wakeWordSend).toHaveBeenCalledTimes(1));
+    expect(uplinkTrack.enabled).toBe(true);
+    const signal = JSON.parse(String(wakeWordSend.mock.calls[0]?.[0])) as {
+      signal_id: string;
+    };
+
+    dataMessageHandler?.({
+      type: "command.result",
+      event_version: 1,
+      command_id: signal.signal_id,
+      session_id: "vs-1",
+      runtime_instance_id: "rt-1",
+      generation: 1,
+      status: "unchanged",
+      action: "assistant_query",
+      target_mode: "assistant",
+      message: "助手请求已处理",
+      occurred_at: "2026-08-13T10:00:01Z",
+    });
+    await waitFor(() => expect(uplinkTrack.enabled).toBe(false));
+  });
+
+  it("forces continuous uplink in interpretation and restores wake-word policy after voice exit", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+
+    const wakeWord = await screen.findByRole("button", { name: "唤醒词模式" });
+    fireEvent.click(wakeWord);
+    expect(uplinkTrack.enabled).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "同声传译" }));
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "常驻模式" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      expect(wakeWord).toBeDisabled();
+      expect(uplinkTrack.enabled).toBe(true);
+    });
+
+    wakeHandler?.("小灵小灵");
+    await waitFor(() => expect(wakeWordSend).toHaveBeenCalledTimes(1));
+    const signal = JSON.parse(String(wakeWordSend.mock.calls[0]?.[0])) as {
+      signal_id: string;
+    };
+    activeMode = "assistant";
+    modeGeneration += 1;
+    dataMessageHandler?.({
+      type: "command.result",
+      event_version: 1,
+      command_id: signal.signal_id,
+      session_id: "vs-1",
+      runtime_instance_id: "runtime-1",
+      generation: modeGeneration,
+      status: "applied",
+      action: "return_to_assistant",
+      target_mode: "assistant",
+      message: "已返回通用助手模式",
+      occurred_at: "2026-08-13T10:00:02Z",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(wakeWord).toBeEnabled();
+      expect(wakeWord).toHaveAttribute("aria-pressed", "true");
+      expect(uplinkTrack.enabled).toBe(false);
+    });
+  });
+
+  it("closes a wake-word uplink turn when no command result arrives", async () => {
+    localStorage.setItem("lingow.voice.interaction-policy", "wake_word");
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+
+    await waitFor(() => expect(uplinkTrack.enabled).toBe(false));
+    vi.useFakeTimers();
+    await act(async () => {
+      wakeHandler?.("小灵小灵");
+    });
+    expect(uplinkTrack.enabled).toBe(true);
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+    });
+
+    expect(uplinkTrack.enabled).toBe(false);
+    expect(
+      screen.getByText("本轮唤醒已超时，麦克风上行已关闭，请再次说「小灵小灵」。"),
+    ).toBeInTheDocument();
   });
 
   it("uses the runtime mode for controls and output after switching to interpretation", async () => {
@@ -739,9 +933,39 @@ describe("VoiceExperience", () => {
       expect(screen.getByRole("button", { name: "开始对话" })).toBeVisible();
     });
     expect(
-      screen.getByText("轻触或说「小灵，开始翻译」开启助手"),
+      screen.getByText("轻触开启助手"),
     ).toBeInTheDocument();
     expect(closeWebRTC).toHaveBeenCalled();
+  });
+
+  it("keeps the UI idle and closes a session created after startup cancellation", async () => {
+    const pendingSession = deferred<Response>();
+    sessionCreationGate = pendingSession.promise;
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => expect(createdSessions).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "停止对话" }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "开始对话" })).toBeVisible();
+    });
+
+    pendingSession.resolve(
+      jsonResponse(
+        {
+          id: "vs-cancelled",
+          account_id: "acc-1",
+          status: "created",
+          created_at: "2026-07-31T00:00:00Z",
+        },
+        201,
+      ),
+    );
+
+    await waitFor(() => expect(endRequests).toBe(1));
+    expect(startRequests).toBe(0);
+    expect(closeWebRTC).not.toHaveBeenCalled();
+    expect(screen.getByText("轻触开启助手")).toBeInTheDocument();
   });
 
   it("reuses the same anonymous account for later sessions", async () => {

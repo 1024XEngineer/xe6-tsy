@@ -7,7 +7,7 @@
 | 路径 | 说明 | 是否入库 |
 |------|------|----------|
 | `encoder.onnx` / `decoder.onnx` / `joiner.onnx` | int8 模型权重 | 否（自动下载） |
-| `tokens.txt` / `keywords.txt` | 词表与正式触发词「小灵，开始翻译/对话」「小灵，停止翻译/对话」「小灵小灵」（另含「小林」拼音兼容行） | 是 |
+| `tokens.txt` / `keywords.txt` | 词表与唯一固定唤醒词「小灵小灵」 | 是 |
 | `wasm/*.js` | sherpa-onnx 胶水脚本 | 是 |
 | `wasm/*.wasm` | WASM 二进制（约 13MB） | 否（自动下载） |
 

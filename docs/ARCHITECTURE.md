@@ -117,6 +117,8 @@ Web 是 Lingow 对话入口，负责极简产品交互，不做管理后台。
 - 打断/停止播放指令处理
 - 弱网重连和断点恢复
 - 设备遥测：麦克风状态、音量、网络、延迟
+- 在设备本地运行 KWS；ESP32-S3 等硬件可使用自己的板载模型
+- 检测固定唤醒词后只发送统一 `wake_word.detected`，业务语义交由 realtime 处理
 
 ### packages/contracts
 
@@ -156,6 +158,27 @@ Web / Mobile / Device SDK
   -> Lingow UI state update
   -> api: state snapshot query
 ```
+
+客户端唤醒与模式命令复用同一 PeerConnection：
+
+```text
+客户端/设备本地 KWS（Web sherpa-onnx、ESP32-S3 板载模型等）
+  -> wake_word.detected（可靠有序 DataChannel）
+  -> 同一 WebRTC 音轨中的自然语言命令
+  -> Command ASR -> AI Interpreter -> Registry/Validator -> Executor
+  -> 模式动作：Mode Coordinator -> command.result
+  -> 普通提问：Assistant Handler -> assistant.reply -> command.result
+```
+
+后端不运行或分发 KWS 模型。设备只报告固定唤醒结果，不判断开始/停止、Mode 或语言方向；Session
+身份来自已鉴权 PeerConnection。详见 [客户端与设备侧 KWS 接入规范](DEVICE_KWS_INTEGRATION.md)。
+
+`assistant / interpretation` 是后端权威业务模式；`continuous / wake_word` 是客户端交互策略，两者
+正交。常驻策略持续发送当前业务模式的语音；唤醒词策略默认关闭 WebRTC 上行，只让本地 KWS 工作，
+命中唤醒词后通过同一音频桥接轨补发本地有界 pre-roll，再开放一个有界语音轮次；收到对应结果或
+客户端兜底超时后重新关闭。pre-roll 只存在客户端内存中，未唤醒时不会上传环境音频。切换交互策略
+不重建 WebRTC，也不改变业务模式。普通助手问题通过 `assistant_query` 复用现有 Assistant Handler，
+且仅在助手模式执行；同传时要求先切回助手，避免两类输出混流。
 
 ## 4. 会话状态机
 

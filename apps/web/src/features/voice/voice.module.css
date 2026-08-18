@@ -242,17 +242,6 @@
   text-align: center;
 }
 
-.outputModeText {
-  position: relative;
-  z-index: 3;
-  margin: 0.8rem 0 0;
-  color: rgb(255 255 255 / 72%);
-  font-size: clamp(0.68rem, 0.82vw, 0.76rem);
-  font-weight: 520;
-  line-height: 1.45;
-  text-align: center;
-}
-
 .runtimeStatus {
   position: relative;
   z-index: 3;
@@ -315,6 +304,56 @@
   font-size: clamp(0.66rem, 0.8vw, 0.72rem);
   line-height: 1.45;
   text-align: center;
+}
+
+.commandFeedback {
+  position: relative;
+  z-index: 3;
+  margin: 0.4rem 0 0;
+  max-width: 26rem;
+  color: rgb(255 255 255 / 82%);
+  font-size: clamp(0.68rem, 0.82vw, 0.74rem);
+  line-height: 1.45;
+  text-align: center;
+}
+
+.commandFeedback[data-status="listening"] {
+  color: #d8c79d;
+}
+
+.commandFeedback[data-status="clarification_required"],
+.commandFeedback[data-status="unsupported"],
+.commandFeedback[data-status="failed"] {
+  color: #f1d79a;
+}
+
+.interactionPolicyControls {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(20rem, calc(100vw - 3rem));
+  margin-top: 0.6rem;
+  padding: 0.2rem;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 6px;
+  background: rgb(12 15 18 / 72%);
+}
+
+.interactionPolicyControls button {
+  min-height: 2rem;
+  border: 0;
+  border-radius: 4px;
+  color: rgb(255 255 255 / 58%);
+  background: transparent;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.interactionPolicyControls button[aria-pressed="true"] {
+  color: #f7f4ed;
+  background: rgb(255 255 255 / 12%);
 }
 
 .latestSlot {

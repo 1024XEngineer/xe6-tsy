@@ -386,6 +386,43 @@ func TestServiceContinuesAfterUnsupportedSourceLanguage(t *testing.T) {
 	}
 }
 
+func TestServiceInterruptsPlaybackWhenVADOpens(t *testing.T) {
+	interrupter := &recordingPlaybackInterrupter{}
+	service := &Service{playback: interrupter}
+
+	service.interruptPlayback("session-1", vad.Event{Type: vad.EventOpened})
+	if interrupter.calls != 1 || interrupter.sessionID != "session-1" || interrupter.reason != "user_speaking" {
+		t.Fatalf("playback interruption = %#v, want opened speech interruption", interrupter)
+	}
+
+	service.interruptPlayback("session-1", vad.Event{Type: vad.EventFinal})
+	service.interruptPlayback("", vad.Event{Type: vad.EventOpened})
+	if interrupter.calls != 1 {
+		t.Fatalf("non-open event or empty session interrupted playback: %#v", interrupter)
+	}
+
+	interrupter.err = errors.New("downlink unavailable")
+	service.interruptPlayback("session-1", vad.Event{Type: vad.EventOpened})
+	if interrupter.calls != 2 {
+		t.Fatalf("best-effort interruption was not attempted after downlink failure: %#v", interrupter)
+	}
+}
+
+func TestRecoverableTurnErrorOnlySkipsSupportedRecoveryCases(t *testing.T) {
+	if !isRecoverableTurnError(fmt.Errorf("finish: %w", pipeline.ErrUnsupportedSourceLanguage)) {
+		t.Fatal("unsupported language should be recoverable")
+	}
+	if !isRecoverableTurnError(fmt.Errorf("ownership: %w", pipeline.ErrTurnSuperseded)) {
+		t.Fatal("superseded turn should be recoverable")
+	}
+	if isRecoverableTurnError(errors.Join(pipeline.ErrUnsupportedSourceLanguage, errors.New("restore failed"))) {
+		t.Fatal("joined recovery failure must not be discarded")
+	}
+	if isRecoverableTurnError(errors.New("provider unavailable")) {
+		t.Fatal("unrelated failure must not be recoverable")
+	}
+}
+
 func TestServicePropagatesUnsupportedLanguageRuntimeRecoveryFailure(t *testing.T) {
 	base := time.Unix(43, 0)
 	source := &fakeSource{frames: []audio.Frame{
@@ -589,6 +626,20 @@ func (s *fakeSource) Close() error {
 type fakeProcessor struct {
 	requests []pipeline.TurnProcessRequest
 	err      error
+}
+
+type recordingPlaybackInterrupter struct {
+	calls     int
+	sessionID string
+	reason    string
+	err       error
+}
+
+func (r *recordingPlaybackInterrupter) InterruptCurrent(_ context.Context, sessionID, reason string) error {
+	r.calls++
+	r.sessionID = sessionID
+	r.reason = reason
+	return r.err
 }
 
 type blockingProcessor struct {

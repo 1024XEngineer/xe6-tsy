@@ -142,12 +142,17 @@ func LoadFrom(getenv func(string) (string, bool)) (Config, error) {
 	if err := validateCore(config); err != nil {
 		return Config{}, err
 	}
-	if config.SessionRuntimeEnabled {
+	if config.SessionRuntimeEnabled || config.DeliveryEnabled {
 		realtimeHTTPTimeout, err := parseDuration(value("REALTIME_HTTP_TIMEOUT", defaultRealtimeHTTPTimeout.String()))
 		if err != nil {
 			return Config{}, fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be a valid duration", domain.ErrInvalidArgument)
 		}
 		config.RealtimeHTTPTimeout = realtimeHTTPTimeout
+		if config.RealtimeHTTPTimeout > maxRealtimeHTTPTimeout {
+			return Config{}, fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be between 1ns and %s", domain.ErrInvalidArgument, maxRealtimeHTTPTimeout)
+		}
+	}
+	if config.SessionRuntimeEnabled {
 		if err := validateSessionRuntime(config); err != nil {
 			return Config{}, err
 		}
@@ -205,9 +210,6 @@ func validateSessionRuntime(config Config) error {
 	}
 	if err := validateRealtimeBaseURL(config.RealtimeBaseURL); err != nil {
 		return err
-	}
-	if config.RealtimeHTTPTimeout <= 0 || config.RealtimeHTTPTimeout > maxRealtimeHTTPTimeout {
-		return fmt.Errorf("%w: REALTIME_HTTP_TIMEOUT must be between 1ns and %s", domain.ErrInvalidArgument, maxRealtimeHTTPTimeout)
 	}
 	if strings.EqualFold(config.AppEnv, "production") && config.ModeChangedConsumer == "" {
 		return fmt.Errorf("%w: LINGOW_MODE_CHANGED_CONSUMER is required in production when session runtime is enabled", domain.ErrInvalidArgument)

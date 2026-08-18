@@ -171,6 +171,41 @@ func TestLoadValidatesRealtimeHTTPTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadDeliveryRuntimeValidatesRealtimeHTTPTimeout(t *testing.T) {
+	tests := []struct {
+		value  string
+		want   time.Duration
+		wantOK bool
+	}{
+		{value: "3s", want: 3 * time.Second, wantOK: true},
+		{value: "soon"},
+		{value: "0s"},
+		{value: "6s"},
+	}
+	for _, test := range tests {
+		t.Run(test.value, func(t *testing.T) {
+			config, err := LoadFrom(mapCoreEnv(map[string]string{
+				"LINGOW_DELIVERY_RUNTIME":         "enabled",
+				"REDIS_URL":                       "redis://localhost:6379/0",
+				"LINGOW_DELIVERY_DESTINATION_KEY": "base64-key",
+				"REALTIME_HTTP_TIMEOUT":           test.value,
+			}))
+			if !test.wantOK {
+				if !errors.Is(err, domain.ErrInvalidArgument) {
+					t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom() error = %v", err)
+			}
+			if config.RealtimeHTTPTimeout != test.want {
+				t.Fatalf("RealtimeHTTPTimeout = %s, want %s", config.RealtimeHTTPTimeout, test.want)
+			}
+		})
+	}
+}
+
 func TestConfigFormattingRedactsSecrets(t *testing.T) {
 	config := Config{
 		DatabaseURL:          "postgres://user:pass@localhost/db",

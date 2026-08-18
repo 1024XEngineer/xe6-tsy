@@ -20,9 +20,17 @@ func (s *PipelineService) reportRuntime(ctx context.Context, turn TurnContext, s
 }
 
 func (s *PipelineService) reportListening(ctx context.Context, turn TurnContext) error {
-	return s.runtime.SetProcessingState(ctx, session.ProcessingStateUpdate{
+	turnID := turn.ID
+	err := s.runtime.SetProcessingState(ctx, session.ProcessingStateUpdate{
 		SessionID: turn.SessionID, RuntimeState: session.RuntimeListening,
+		ExpectedTurnID: &turnID,
 	})
+	if errors.Is(err, session.ErrRuntimeIdentityConflict) {
+		// A later barge-in Turn already owns the runtime. The earlier TTS/ASR
+		// cleanup must not overwrite that active recognition state.
+		return nil
+	}
+	return err
 }
 
 func (s *PipelineService) finishASRWithError(ctx context.Context, turn TurnContext, processingErr error) error {

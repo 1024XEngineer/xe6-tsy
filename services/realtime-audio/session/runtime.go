@@ -33,8 +33,13 @@ func (s *LifecycleService) SetProcessingState(ctx context.Context, update Proces
 	if !validRuntimeProgressTransition(current.RuntimeState, update.RuntimeState) {
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidRuntimeTransition, current.RuntimeState, update.RuntimeState)
 	}
-	if conflictingIdentity(current.CurrentTurnID, update.CurrentTurnID) ||
-		conflictingIdentity(current.CurrentPlaybackID, update.CurrentPlaybackID) {
+	// A new ordinary utterance may start while the previous reply is still
+	// audible. Its EventOpened is the explicit barge-in boundary: replace the
+	// old playback owner atomically instead of treating playing -> ASR as a
+	// pipeline failure. All other owner changes remain conflicts.
+	bargeIn := current.RuntimeState == RuntimePlaying && update.RuntimeState == RuntimeASRProcessing
+	if !bargeIn && (conflictingIdentity(current.CurrentTurnID, update.CurrentTurnID) ||
+		conflictingIdentity(current.CurrentPlaybackID, update.CurrentPlaybackID)) {
 		return ErrRuntimeIdentityConflict
 	}
 	if sameRuntimeState(current, update) {
@@ -148,7 +153,7 @@ func validRuntimeProgressTransition(current, next RuntimeState) bool {
 	case RuntimeTTSProcessing:
 		return next == RuntimePlaying || next == RuntimeListening
 	case RuntimePlaying:
-		return next == RuntimeListening
+		return next == RuntimeListening || next == RuntimeASRProcessing
 	default:
 		return false
 	}

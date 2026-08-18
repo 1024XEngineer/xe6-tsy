@@ -256,20 +256,17 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	return loopErr
 }
 
-// interruptPlayback intentionally detaches cancellation from microphone
-// ingestion. A slow or unavailable downlink must neither delay the next VAD
-// frame nor turn a successfully detected ordinary utterance into a pipeline
-// failure. The VAD emits EventOpened once per utterance, and the playback
-// implementation remains idempotent for concurrent/retried calls.
+// interruptPlayback is ordered with EventOpened. Starting ASR before sending
+// the interruption can leave runtime in playing and lets a delayed goroutine
+// stop a newer TTS response. A short timeout bounds a broken downlink without
+// losing this ordering guarantee.
 func (s *Service) interruptPlayback(sessionID string, event vad.Event) {
 	if s == nil || s.playback == nil || event.Type != vad.EventOpened || sessionID == "" {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = s.playback.InterruptCurrent(ctx, sessionID, "user_speaking")
-	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_ = s.playback.InterruptCurrent(ctx, sessionID, "user_speaking")
 }
 
 func (s *Service) receiveWakeWords(

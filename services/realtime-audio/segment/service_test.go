@@ -126,7 +126,7 @@ func TestServiceIgnoresSilenceOnlyInput(t *testing.T) {
 	}
 }
 
-func TestServiceInterruptsPlaybackOnOrdinarySpeechStartWithoutBlockingTurnProcessing(t *testing.T) {
+func TestServiceInterruptsPlaybackBeforeContinuingOrdinaryTurn(t *testing.T) {
 	base := time.Unix(30, 0)
 	interrupter := &blockingPlaybackInterrupter{entered: make(chan playbackInterrupt, 1), release: make(chan struct{})}
 	source := &fakeSource{frames: []audio.Frame{
@@ -153,13 +153,18 @@ func TestServiceInterruptsPlaybackOnOrdinarySpeechStartWithoutBlockingTurnProces
 	}
 	select {
 	case err := <-runDone:
+		t.Fatalf("Run() completed before ordered playback interruption: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(interrupter.release)
+	select {
+	case err := <-runDone:
 		if err != nil {
 			t.Fatalf("Run() error = %v", err)
 		}
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("Run() waited for playback interruption")
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not resume after playback interruption")
 	}
-	close(interrupter.release)
 }
 
 func TestServiceDoesNotInterruptPlaybackForWakeClaimedAudio(t *testing.T) {

@@ -40,6 +40,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (VoiceSession, 
 	session, _, err := s.deps.Repository.Create(ctx, CreateParams{
 		ID:             sessionID,
 		AccountID:      input.AccountID,
+		DeviceID:       input.DeviceID,
 		AudioConfig:    audioConfig,
 		Capabilities:   input.Capabilities,
 		IdempotencyKey: input.IdempotencyKey,

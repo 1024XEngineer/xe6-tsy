@@ -13,6 +13,8 @@
 - `Reconnector` 通过注入的 `ReconnectPolicy` 和 `Connect` 函数执行平台自定义重连。
 - `WakeCommandController` 将 `WakeWordEngine` 的板载 KWS 结果转换为统一 `wake_word.detected`，并通过平台实现的 `WakeWordSignalSender` 写入现有可靠有序 DataChannel；设备不解析业务命令，也不管理服务端命令窗口。
 - `SessionStartClient` 向 API Start 发送类型化 `initial_mode`；省略时显式使用 `interpretation`。
+- 硬件认证使用 `device_id` 和出厂 Ed25519 私钥；设备先与登录账户配对，再以挑战签名获得短期 device token。
+- `DeviceAuthClient` 实现 `AccessTokenSource`；配合 `SessionStartClient{SessionPath: "api/v1/device/voice-sessions"}` 调用受限设备会话路由。
 
 从仓库根目录运行测试会自动通过 `go.work` 覆盖本 SDK；也可以在 SDK 目录独立运行：
 
@@ -36,6 +38,7 @@ go vet ./sdks/device/...
 
 ```text
 device -> api:
+  device.pair / device-auth.challenge / device-auth.token
   session.start
   realtime_ticket.request
   session.end
@@ -58,3 +61,6 @@ ESP32-S3 等平台应让同一份麦克风 PCM 持续进入板载 KWS 和既有 
 
 设备结束会话时只向 API 发送 `session.end`，随后停止采集并关闭本地 PeerConnection。API 负责幂等调用
 realtime `Stop`；realtime 完成 Pipeline 和连接清理后，API 才把业务会话标记为 `ended`。
+
+设备不能保存用户 Access Token 或 Refresh Token，也不能只凭 `product_id` 或 `device_id` 访问服务。
+生产固件应使用 `/api/v1/device/voice-sessions/*`，并仅在短期 device token 有效时请求 realtime ticket。

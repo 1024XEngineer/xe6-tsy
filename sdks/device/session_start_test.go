@@ -65,6 +65,20 @@ func TestSessionStartClientDefaultsToInterpretation(t *testing.T) {
 	}
 }
 
+func TestSessionStartClientSupportsDeviceSessionPath(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/device/voice-sessions/session-1/start" {
+			t.Fatalf("path = %q, want device session path", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(VoiceSessionStartResult{ID: "session-1", AccountID: "account-1", Status: VoiceSessionActive, CreatedAt: time.Now().UTC()})
+	}))
+	defer server.Close()
+	client := &SessionStartClient{BaseURL: server.URL, SessionPath: "api/v1/device/voice-sessions", AccessToken: AccessTokenSourceFunc(func(context.Context) (string, error) { return "device-token", nil })}
+	if _, err := client.Start(t.Context(), "session-1", ModeInterpretation, "device-start-1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionStartClientRejectsErrorsAndMismatchedResponse(t *testing.T) {
 	for _, test := range []struct {
 		name string

@@ -12,6 +12,7 @@ import (
 type CreateParams struct {
 	ID             string
 	AccountID      string
+	DeviceID       string
 	AudioConfig    AudioConfig
 	Capabilities   Capabilities
 	IdempotencyKey string

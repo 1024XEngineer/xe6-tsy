@@ -52,6 +52,14 @@ type RealtimeTicketMinter interface {
 	MintRealtimeTicket(ctx context.Context, accountID, sessionID string) (RealtimeTicket, error)
 }
 
+// DeviceSessionAccess supplies the device identity already validated by the
+// route middleware and enforces the device-to-session relation. It deliberately
+// has no account-management capability.
+type DeviceSessionAccess struct {
+	DeviceID func(*http.Request) (string, bool)
+	Owns     func(context.Context, string, string, string) error
+}
+
 // Handler exposes Issue #86's public voice-session HTTP contract.
 type Handler struct {
 	service   UseCases
@@ -108,6 +116,71 @@ func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) h
 	}
 	mux.Handle("GET /api/v1/voice-sessions/{id}/mode", authenticate(http.HandlerFunc(h.modeState)))
 	mux.Handle("POST /api/v1/voice-sessions/{id}/mode", authenticate(http.HandlerFunc(h.switchMode)))
+}
+
+// RegisterDevice attaches the constrained device lifecycle surface. The
+// passed authenticator must inject the bound account identity before this
+// handler runs; device ownership is checked again for existing sessions.
+func (h *Handler) RegisterDevice(mux *http.ServeMux, authenticate func(http.Handler) http.Handler, access DeviceSessionAccess) {
+	if authenticate == nil || access.DeviceID == nil || access.Owns == nil {
+		panic("device session authentication is required")
+	}
+	mux.Handle("POST /api/v1/device/voice-sessions", authenticate(http.HandlerFunc(h.deviceCreate(access))))
+	mux.Handle("POST /api/v1/device/voice-sessions/{id}/start", authenticate(http.HandlerFunc(h.deviceExisting(access, h.start))))
+	mux.Handle("POST /api/v1/device/voice-sessions/{id}/end", authenticate(http.HandlerFunc(h.deviceExisting(access, h.end))))
+	if h.tickets != nil {
+		mux.Handle("POST /api/v1/device/voice-sessions/{id}/realtime-ticket", authenticate(http.HandlerFunc(h.deviceExisting(access, h.mintRealtimeTicket))))
+	}
+}
+
+func (h *Handler) deviceCreate(access DeviceSessionAccess) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		accountID, err := h.requireAccount(r)
+		if err != nil {
+			writeHTTPError(w, r, err)
+			return
+		}
+		deviceID, ok := access.DeviceID(r)
+		if !ok || deviceID == "" {
+			writeHTTPError(w, r, ErrUnauthorized)
+			return
+		}
+		if h.service == nil {
+			writeHTTPError(w, r, ErrNotImplemented)
+			return
+		}
+		var body createRequest
+		if err := decodeHTTPJSON(r, &body); err != nil {
+			writeHTTPError(w, r, err)
+			return
+		}
+		session, err := h.service.Create(r.Context(), CreateInput{AccountID: accountID, DeviceID: deviceID, AudioConfig: body.AudioConfig, Capabilities: body.Capabilities, IdempotencyKey: r.Header.Get("Idempotency-Key"), RequestHash: canonicalHash("voice-sessions.create", body)})
+		if err != nil {
+			writeHTTPError(w, r, err)
+			return
+		}
+		writeHTTPJSON(w, http.StatusCreated, session)
+	}
+}
+
+func (h *Handler) deviceExisting(access DeviceSessionAccess, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		accountID, err := h.requireAccount(r)
+		if err != nil {
+			writeHTTPError(w, r, err)
+			return
+		}
+		deviceID, ok := access.DeviceID(r)
+		if !ok || deviceID == "" {
+			writeHTTPError(w, r, ErrUnauthorized)
+			return
+		}
+		if err := access.Owns(r.Context(), deviceID, accountID, r.PathValue("id")); err != nil {
+			writeHTTPError(w, r, ErrUnauthorized)
+			return
+		}
+		next(w, r)
+	}
 }
 
 type createRequest struct {

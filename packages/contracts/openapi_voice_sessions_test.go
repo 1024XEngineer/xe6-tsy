@@ -27,6 +27,11 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 			t.Fatalf("missing voice-session path %s", path)
 		}
 	}
+	for _, path := range []string{"/account/device-pairing-codes", "/account/devices", "/account/devices/{device_id}", "/devices/pair", "/device-auth/challenges", "/device-auth/tokens", "/device/voice-sessions", "/device/voice-sessions/{id}/start", "/device/voice-sessions/{id}/end", "/device/voice-sessions/{id}/realtime-ticket"} {
+		if _, ok := paths[path]; !ok {
+			t.Fatalf("missing device path %s", path)
+		}
+	}
 
 	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
 	status := schemas["VoiceSessionStatus"].(map[string]any)

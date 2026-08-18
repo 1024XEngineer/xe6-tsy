@@ -13,9 +13,14 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 )
 
@@ -408,6 +413,27 @@ func TestServiceInterruptsPlaybackWhenVADOpens(t *testing.T) {
 	}
 }
 
+func TestServiceStreamsVADAudioAndFinalizesTurn(t *testing.T) {
+	base := time.Unix(44, 0).UTC()
+	finals := &streamingFinalHandler{}
+	processor := newStreamingProcessor(finals)
+	source := &fakeSource{frames: []audio.Frame{
+		testFrame(t, 1, base),
+		testFrame(t, 1, base.Add(100*time.Millisecond)),
+		testFrame(t, 0, base.Add(400*time.Millisecond)),
+	}}
+	service := newTestService(t, source, processor)
+
+	if err := service.Run(t.Context(), Request{
+		SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", SourceLanguage: "zh-CN",
+	}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if finals.calls != 1 || finals.turn.SessionID != "session-1" || finals.result.Text != "完整识别文本" {
+		t.Fatalf("streaming final handler = %#v, want one finalized streaming Turn", finals)
+	}
+}
+
 func TestRecoverableTurnErrorOnlySkipsSupportedRecoveryCases(t *testing.T) {
 	if !isRecoverableTurnError(fmt.Errorf("finish: %w", pipeline.ErrUnsupportedSourceLanguage)) {
 		t.Fatal("unsupported language should be recoverable")
@@ -633,6 +659,76 @@ type recordingPlaybackInterrupter struct {
 	sessionID string
 	reason    string
 	err       error
+}
+
+type streamingFinalHandler struct {
+	calls  int
+	turn   pipeline.TurnContext
+	result asr.FinalResult
+}
+
+func (h *streamingFinalHandler) HandleASRFinal(_ context.Context, turn pipeline.TurnContext, result asr.FinalResult) error {
+	h.calls++
+	h.turn = turn
+	h.result = result
+	return nil
+}
+
+type streamingLanguageReader struct{}
+
+func (streamingLanguageReader) GetCurrentConfig(_ context.Context, sessionID string) (session.LanguageConfigSnapshot, error) {
+	return session.LanguageConfigSnapshot{
+		SessionID: sessionID, Version: 1, Status: "active",
+		LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+	}, nil
+}
+
+type streamingModeReader struct{}
+
+func (streamingModeReader) GetTurnMode(_ context.Context, sessionID string) (pipeline.TurnModeSnapshot, error) {
+	return pipeline.TurnModeSnapshot{
+		SessionID: sessionID, RuntimeInstanceID: "runtime-1", Mode: realtimev1.ModeInterpretation, Generation: 1,
+	}, nil
+}
+
+type streamingRuntimeReporter struct{}
+
+func (streamingRuntimeReporter) SetProcessingState(context.Context, session.ProcessingStateUpdate) error {
+	return nil
+}
+
+type streamingFinalTurnSink struct{}
+
+func (streamingFinalTurnSink) Publish(context.Context, recordsv1.FinalTurnEvent) error { return nil }
+
+type streamingFinalTurnGate struct{}
+
+func (streamingFinalTurnGate) CommitFinalTurn(ctx context.Context, _ pipeline.TurnContext, commit pipeline.FinalTurnCommit) (bool, error) {
+	return true, commit(ctx)
+}
+
+type streamingUsageSink struct{}
+
+func (streamingUsageSink) Publish(context.Context, pipeline.UsageFact) error { return nil }
+
+type streamingAudioSink struct{}
+
+func (streamingAudioSink) Publish(context.Context, pipeline.AudioChunk) error { return nil }
+
+func newStreamingProcessor(finals pipeline.ASRFinalHandler) *pipeline.TurnProcessor {
+	runtime := streamingRuntimeReporter{}
+	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: streamingFinalTurnSink{}, FinalGate: streamingFinalTurnGate{}, Usage: streamingUsageSink{},
+		Audio: streamingAudioSink{}, Runtime: runtime,
+	})
+	return pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+			Text: "完整识别文本", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+		}}),
+		Opener:   pipeline.NewTurnOpener(pipeline.NewMemoryTurnAllocator(), streamingLanguageReader{}, streamingModeReader{}),
+		Pipeline: service, Finals: finals,
+	})
 }
 
 func (r *recordingPlaybackInterrupter) InterruptCurrent(_ context.Context, sessionID, reason string) error {

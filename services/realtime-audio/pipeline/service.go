@@ -25,6 +25,26 @@ var (
 	ErrFinalTurnAccepted = errors.New("final turn accepted")
 )
 
+// IsRecoverableUnsupportedSourceLanguage reports whether unsupported language is the only
+// failure in an error chain. A joined error means cleanup or runtime-state recovery also failed
+// and must be propagated instead of being discarded with the Turn.
+func IsRecoverableUnsupportedSourceLanguage(err error) bool {
+	for err != nil {
+		if err == ErrUnsupportedSourceLanguage {
+			return true
+		}
+		if _, joined := err.(interface{ Unwrap() []error }); joined {
+			return false
+		}
+		wrapped, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = wrapped.Unwrap()
+	}
+	return false
+}
+
 // AudioChunk is the media-plane chunk emitted to the playback boundary.
 type AudioChunk struct {
 	SessionID  string

@@ -365,6 +365,30 @@ func TestServiceContinuesAfterUnsupportedSourceLanguage(t *testing.T) {
 	}
 }
 
+func TestServicePropagatesUnsupportedLanguageRuntimeRecoveryFailure(t *testing.T) {
+	base := time.Unix(43, 0)
+	source := &fakeSource{frames: []audio.Frame{
+		testFrame(t, 1, base),
+		testFrame(t, 0, base.Add(300*time.Millisecond)),
+		testFrame(t, 1, base.Add(400*time.Millisecond)),
+		testFrame(t, 0, base.Add(700*time.Millisecond)),
+	}}
+	recoveryErr := errors.New("restore listening runtime: store unavailable")
+	processor := &sequenceProcessor{errors: []error{
+		errors.Join(fmt.Errorf("%w: en-US", pipeline.ErrUnsupportedSourceLanguage), recoveryErr),
+		nil,
+	}}
+	service := newTestService(t, source, processor)
+
+	err := service.Run(context.Background(), Request{SessionID: "session-1"})
+	if !errors.Is(err, recoveryErr) {
+		t.Fatalf("Run() error = %v, want recovery failure", err)
+	}
+	if processor.calls != 1 {
+		t.Fatalf("processor calls = %d, want worker to stop before the second Turn", processor.calls)
+	}
+}
+
 func TestNewServiceRejectsMissingDependency(t *testing.T) {
 	if _, err := NewService(Dependencies{}); !errors.Is(err, ErrDependencyRequired) {
 		t.Fatalf("NewService() error = %v, want %v", err, ErrDependencyRequired)

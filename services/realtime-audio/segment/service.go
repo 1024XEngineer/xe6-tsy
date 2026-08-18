@@ -121,10 +121,10 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		defer close(workerDone)
 		for event := range finalizedEvents {
 			if err := s.handleEvents(runCtx, request, []vad.Event{event}); err != nil {
-				if errors.Is(err, pipeline.ErrUnsupportedSourceLanguage) {
+				if pipeline.IsRecoverableUnsupportedSourceLanguage(err) {
 					// ASR can misclassify short speech, playback echo, or background noise as
 					// a third language. The pipeline rejects it before translation and durable
-					// effects, so only this Turn is dropped; the shared media runtime stays live.
+					// effects. Only a clean listening-state recovery makes the Turn discardable.
 					s.logUnsupportedSourceLanguage(request, err)
 					continue
 				}

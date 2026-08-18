@@ -82,4 +82,33 @@ describe("sessionReducer", () => {
     expect(withReply.turns).toEqual([]);
     expect(duplicate.assistantReplies).toHaveLength(1);
   });
+
+  it("replaces partial text and clears it when the matching final settles", () => {
+    const partial = sessionReducer(initialSession, {
+      type: "SET_ASR_PARTIAL",
+      partial: { turnId: "turn-1", text: "你好", sourceLanguage: "zh-CN" },
+    });
+    const replaced = sessionReducer(partial, {
+      type: "SET_ASR_PARTIAL",
+      partial: { turnId: "turn-1", text: "你好，请问", sourceLanguage: "zh-CN" },
+    });
+    const settled = sessionReducer(replaced, {
+      type: "ADD_TURN",
+      turn: {
+        id: "turn-1",
+        sourceLanguage: "中文",
+        targetLanguage: "English",
+        source: "你好，请问",
+        translation: "Hello",
+      },
+    });
+    const latePartial = sessionReducer(settled, {
+      type: "SET_ASR_PARTIAL",
+      partial: { turnId: "turn-1", text: "迟到文本", sourceLanguage: "zh-CN" },
+    });
+
+    expect(replaced.asrPartial?.text).toBe("你好，请问");
+    expect(settled.asrPartial).toBeNull();
+    expect(latePartial.asrPartial).toBeNull();
+  });
 });

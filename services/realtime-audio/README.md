@@ -20,8 +20,8 @@ Go 实时音频服务。
 
 - 每个会话只支持一组双语语言对，默认 `zh-CN <-> en-US`
 - 只支持两方面对面
-- partial 结果只用于后台纠偏
-- 只有句末 final 译文可进入 TTS；启用长句投递能力后，原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
+- `asr.partial` 在已鉴权的 `translation-events` DataChannel 上作为可丢弃、同 Turn 覆盖的临时原文字幕发送；它不持久化，也不进入翻译、TTS、FinalTurn、用量、命令或投递
+- 只有句末 final 原文才进入翻译和 TTS；`translation.final` 到达后客户端清理对应临时字幕；启用长句投递能力后，原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
 - TTS / 渠道输出可按 target_language 单独关闭
 - TTS 播放中检测到对方发言时，发送 `playback.stop`
 

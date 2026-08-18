@@ -49,6 +49,12 @@ type CommandGate interface {
 	Cancel()
 }
 
+// PlaybackInterrupter stops only the active session playback. It is optional
+// because audio-only segment consumers do not necessarily own a downlink.
+type PlaybackInterrupter interface {
+	InterruptCurrent(context.Context, string, string) error
+}
+
 // Request carries immutable session metadata used for every utterance read from a source.
 type Request struct {
 	SessionID      string
@@ -64,6 +70,7 @@ type Dependencies struct {
 	Processor TurnProcessor
 	Command   CommandGate
 	WakeWords WakeWordSource
+	Playback  PlaybackInterrupter
 	Latency   *slog.Logger
 	Now       func() time.Time
 }
@@ -75,6 +82,7 @@ type Service struct {
 	processor TurnProcessor
 	command   CommandGate
 	wakeWords WakeWordSource
+	playback  PlaybackInterrupter
 	latency   *slog.Logger
 	now       func() time.Time
 }
@@ -92,7 +100,8 @@ func NewService(deps Dependencies) (*Service, error) {
 	}
 	return &Service{
 		source: deps.Source, segmenter: deps.Segmenter, processor: deps.Processor,
-		command: deps.Command, wakeWords: deps.WakeWords, latency: deps.Latency, now: now,
+		command: deps.Command, wakeWords: deps.WakeWords, playback: deps.Playback,
+		latency: deps.Latency, now: now,
 	}, nil
 }
 
@@ -115,17 +124,37 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	finalizedEvents := make(chan vad.Event, finalizedEventQueueCapacity)
+	streamingFinals := make(chan *pipeline.AudioTurn, finalizedEventQueueCapacity)
 	processingErrors := make(chan error, 1)
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		for event := range finalizedEvents {
-			if err := s.handleEvents(runCtx, request, []vad.Event{event}); err != nil {
+		pendingFinalized := finalizedEvents
+		pendingStreaming := streamingFinals
+		for pendingFinalized != nil || pendingStreaming != nil {
+			var err error
+			select {
+			case event, ok := <-pendingFinalized:
+				if !ok {
+					pendingFinalized = nil
+					continue
+				}
+				err = s.handleEvents(runCtx, request, []vad.Event{event})
+			case audioTurn, ok := <-pendingStreaming:
+				if !ok {
+					pendingStreaming = nil
+					continue
+				}
+				_, err = audioTurn.Finish(runCtx)
+				audioTurn.Close()
+			}
+			if err != nil {
 				if pipeline.IsRecoverableUnsupportedSourceLanguage(err) {
-					// ASR can misclassify short speech, playback echo, or background noise as
-					// a third language. The pipeline rejects it before translation and durable
-					// effects. Only a clean listening-state recovery makes the Turn discardable.
 					s.logUnsupportedSourceLanguage(request, err)
+					continue
+				}
+				if errors.Is(err, pipeline.ErrTurnSuperseded) {
+					s.logRecoverableTurn(request, err)
 					continue
 				}
 				if errors.Is(err, pipeline.ErrFinalTurnAccepted) {
@@ -156,6 +185,21 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 			}
 		}
 	}
+	enqueueStreamingFinal := func(audioTurn *pipeline.AudioTurn) error {
+		select {
+		case streamingFinals <- audioTurn:
+			return nil
+		case err := <-processingErrors:
+			return err
+		case <-runCtx.Done():
+			select {
+			case err := <-processingErrors:
+				return err
+			default:
+				return runCtx.Err()
+			}
+		}
+	}
 	wakeSignals := make(chan receivedWakeWord, 1)
 	wakeDone := make(chan struct{})
 	if s.command != nil && s.wakeWords != nil {
@@ -171,17 +215,64 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		<-wakeDone
 	}()
 
+	var lastSeen time.Time
+	streaming, _ := s.processor.(pipeline.StreamingTurnProcessor)
+	var activeTurn *pipeline.AudioTurn
 	openPendingWake := func() {
 		for {
 			select {
 			case wake := <-wakeSignals:
-				s.openCommandWindow(runCtx, request, wake)
+				if s.openCommandWindow(runCtx, request, wake) && activeTurn != nil {
+					activeTurn.Close()
+					activeTurn = nil
+				}
 			default:
 				return
 			}
 		}
 	}
-	var lastSeen time.Time
+	processStreamingEvent := func(event vad.Event) error {
+		switch event.Type {
+		case vad.EventOpened:
+			if activeTurn != nil {
+				activeTurn.Close()
+			}
+			turn, err := streaming.StartAudio(runCtx, pipeline.TurnProcessRequest{
+				SessionID: request.SessionID, AccountID: request.AccountID, TraceID: request.TraceID,
+				SourceLanguage: request.SourceLanguage, StartedAt: event.StartedAt,
+			})
+			if err != nil {
+				if isRecoverableTurnError(err) {
+					s.logRecoverableTurn(request, err)
+					return nil
+				}
+				return err
+			}
+			activeTurn = turn
+			for _, frame := range event.Frames {
+				if err := activeTurn.PushAudio(runCtx, frame.PCM); err != nil {
+					activeTurn.Close()
+					activeTurn = nil
+					return nil
+				}
+			}
+		case vad.EventAudio:
+			if activeTurn == nil || event.Frame == nil {
+				return nil
+			}
+			if err := activeTurn.PushAudio(runCtx, event.Frame.PCM); err != nil {
+				activeTurn = nil
+			}
+		case vad.EventFinal:
+			if activeTurn == nil {
+				return nil
+			}
+			turn := activeTurn
+			activeTurn = nil
+			return enqueueStreamingFinal(turn)
+		}
+		return nil
+	}
 	var loopErr error
 	for {
 		openPendingWake()
@@ -194,7 +285,13 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 				} else {
 					for _, event := range events {
 						s.logVADCheckpoint(request, event)
-						if event.Type == vad.EventFinal {
+						s.interruptPlayback(request.SessionID, event)
+						if streaming != nil {
+							if err := processStreamingEvent(event); err != nil {
+								loopErr = err
+								break
+							}
+						} else if event.Type == vad.EventFinal {
 							if err := enqueueFinalized(event); err != nil {
 								loopErr = err
 								break
@@ -224,12 +321,17 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		}
 		for _, event := range events {
 			s.logVADCheckpoint(request, event)
-			if event.Type != vad.EventFinal {
-				continue
-			}
-			if err := enqueueFinalized(event); err != nil {
-				loopErr = err
-				break
+			s.interruptPlayback(request.SessionID, event)
+			if streaming != nil {
+				if err := processStreamingEvent(event); err != nil {
+					loopErr = err
+					break
+				}
+			} else if event.Type == vad.EventFinal {
+				if err := enqueueFinalized(event); err != nil {
+					loopErr = err
+					break
+				}
 			}
 		}
 		if loopErr != nil {
@@ -239,7 +341,11 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	if loopErr != nil {
 		cancel()
 	}
+	if activeTurn != nil {
+		activeTurn.Close()
+	}
 	close(finalizedEvents)
+	close(streamingFinals)
 	<-workerDone
 	select {
 	case err := <-processingErrors:
@@ -250,6 +356,19 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	default:
 	}
 	return loopErr
+}
+
+// interruptPlayback is ordered with EventOpened. Starting ASR before sending
+// the interruption can leave runtime in playing and lets a delayed goroutine
+// stop a newer TTS response. A short timeout bounds a broken downlink without
+// losing this ordering guarantee.
+func (s *Service) interruptPlayback(sessionID string, event vad.Event) {
+	if s == nil || s.playback == nil || event.Type != vad.EventOpened || sessionID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_ = s.playback.InterruptCurrent(ctx, sessionID, "user_speaking")
 }
 
 func (s *Service) receiveWakeWords(
@@ -332,6 +451,17 @@ func (s *Service) handleEvents(ctx context.Context, request Request, events []va
 		}
 	}
 	return nil
+}
+
+func isRecoverableTurnError(err error) bool {
+	return pipeline.IsRecoverableUnsupportedSourceLanguage(err) || errors.Is(err, pipeline.ErrTurnSuperseded)
+}
+
+func (s *Service) logRecoverableTurn(request Request, err error) {
+	if s == nil || s.latency == nil || err == nil {
+		return
+	}
+	s.latency.Warn("realtime turn skipped and listening restored", "session_id", request.SessionID, "trace_id", request.TraceID, "error", err)
 }
 
 func (s *Service) logVADCheckpoint(request Request, event vad.Event) {

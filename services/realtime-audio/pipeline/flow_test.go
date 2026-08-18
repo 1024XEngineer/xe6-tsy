@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
@@ -400,6 +401,104 @@ func TestMergeFinalResultPreservesFinishMetadata(t *testing.T) {
 	}
 }
 
+func TestDispatchASRPartialsDropsQueuedSnapshotsAfterFinalSettlement(t *testing.T) {
+	t.Parallel()
+	events := make(chan asr.Event, 2)
+	events <- asr.Event{Type: asr.EventPartial, Text: "first"}
+	events <- asr.Event{Type: asr.EventPartial, Text: "latest"}
+	close(events)
+	settled := make(chan struct{})
+	close(settled)
+	observer := &recordingASRPartialObserver{events: make(chan realtimev1.ASRPartialEvent, 1)}
+	done := make(chan struct{})
+	go func() {
+		dispatchASRPartials(context.Background(), observer, TurnContext{SessionID: "session-1", ID: "turn-1"}, "zh-CN", events, settled)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("partial dispatcher did not stop after final settlement")
+	}
+	select {
+	case event := <-observer.events:
+		t.Fatalf("observer received settled partial %#v", event)
+	default:
+	}
+}
+
+func TestTurnProcessorFinalPathDoesNotWaitForBlockedPartialObserver(t *testing.T) {
+	t.Parallel()
+	observerStarted := make(chan struct{})
+	provider := &pushEventProvider{stream: &pushEventStream{
+		events: make(chan asr.Event), partialSent: make(chan struct{}), beforeFinish: observerStarted,
+		result: asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"},
+	}}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: provider, Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}), Pipeline: service, Finals: service, Partials: &blockingASRPartialObserver{started: observerStarted},
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := processor.ProcessAudio(context.Background(), TurnProcessRequest{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", SourceLanguage: "zh-CN", AudioChunks: [][]byte{{1}}})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ProcessAudio() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("final path waited for blocked partial observer")
+	}
+}
+
+func TestStartAudioPublishesPartialBeforeFinish(t *testing.T) {
+	t.Parallel()
+	provider := &pushEventProvider{stream: &pushEventStream{
+		events: make(chan asr.Event), partialSent: make(chan struct{}),
+		result: asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"},
+	}}
+	observer := &recordingASRPartialObserver{events: make(chan realtimev1.ASRPartialEvent, 1)}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: provider, Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}), Pipeline: service, Finals: service, Partials: observer,
+	})
+	audioTurn, err := processor.StartAudio(t.Context(), TurnProcessRequest{
+		SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", SourceLanguage: "zh-CN",
+	})
+	if err != nil {
+		t.Fatalf("StartAudio() error = %v", err)
+	}
+	defer audioTurn.Close()
+	if err := audioTurn.PushAudio(t.Context(), []byte{1, 2}); err != nil {
+		t.Fatalf("PushAudio() error = %v", err)
+	}
+	select {
+	case partial := <-observer.events:
+		if partial.Text != "你" || partial.TurnID == "" {
+			t.Fatalf("partial = %#v", partial)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("partial was not published before Finish")
+	}
+	if _, err := audioTurn.Finish(t.Context()); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+}
+
 type pushEventProvider struct{ stream *pushEventStream }
 
 func (p *pushEventProvider) StartStream(context.Context, asr.StreamRequest) (asr.Stream, error) {
@@ -407,11 +506,12 @@ func (p *pushEventProvider) StartStream(context.Context, asr.StreamRequest) (asr
 }
 
 type pushEventStream struct {
-	events      chan asr.Event
-	partialSent chan struct{}
-	partialOnce sync.Once
-	closeOnce   sync.Once
-	result      asr.FinalResult
+	events       chan asr.Event
+	partialSent  chan struct{}
+	beforeFinish <-chan struct{}
+	partialOnce  sync.Once
+	closeOnce    sync.Once
+	result       asr.FinalResult
 }
 
 func (s *pushEventStream) PushAudio(ctx context.Context, _ []byte) error {
@@ -429,7 +529,14 @@ func (s *pushEventStream) PushAudio(ctx context.Context, _ []byte) error {
 
 func (s *pushEventStream) Events() <-chan asr.Event { return s.events }
 
-func (s *pushEventStream) Finish(context.Context) (asr.FinalResult, error) {
+func (s *pushEventStream) Finish(ctx context.Context) (asr.FinalResult, error) {
+	if s.beforeFinish != nil {
+		select {
+		case <-ctx.Done():
+			return asr.FinalResult{}, ctx.Err()
+		case <-s.beforeFinish:
+		}
+	}
 	s.closeOnce.Do(func() { close(s.events) })
 	return s.result, nil
 }
@@ -441,6 +548,27 @@ func (s *pushEventStream) Close() error {
 
 var _ asr.Provider = (*pushEventProvider)(nil)
 var _ asr.Stream = (*pushEventStream)(nil)
+
+type recordingASRPartialObserver struct {
+	events chan realtimev1.ASRPartialEvent
+}
+
+func (o *recordingASRPartialObserver) ObserveASRPartial(_ context.Context, event realtimev1.ASRPartialEvent) {
+	o.events <- event
+}
+
+type blockingASRPartialObserver struct {
+	started chan<- struct{}
+	once    sync.Once
+}
+
+func (o *blockingASRPartialObserver) ObserveASRPartial(ctx context.Context, _ realtimev1.ASRPartialEvent) {
+	o.once.Do(func() { close(o.started) })
+	<-ctx.Done()
+}
+
+var _ ASRPartialObserver = (*recordingASRPartialObserver)(nil)
+var _ ASRPartialObserver = (*blockingASRPartialObserver)(nil)
 
 type rejectingUsageSink struct{ err error }
 

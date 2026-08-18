@@ -105,6 +105,7 @@ type Dependencies struct {
 	CommandObserver       command.Observer
 	FinalTurns            recordsv1.FinalTurnSink
 	AssistantReplies      pipeline.AssistantReplySink
+	ASRPartials           pipeline.ASRPartialObserver
 	ModeChanges           ModeChangedSink
 	Usage                 pipeline.UsageFactSink
 	Audio                 pipeline.AudioChunkSink
@@ -276,6 +277,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	}
 	manager.processor = pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
 		ASR: providers.ASR, ASRProvider: labels.asr, Opener: opener, Pipeline: service, Finals: router,
+		Partials: deps.ASRPartials,
 	})
 	manager.commandASR = providers.ASR
 	registry, err := commandRegistry(router.availableModes())
@@ -490,7 +492,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	service, err := segment.NewService(segment.Dependencies{
 		Source: owned, Segmenter: segmenter, Processor: m.processor,
 		Command: newRuntimeCommandGate(commandGate, m.playbackInterrupter()), WakeWords: input.WakeWords,
-		Latency: m.deps.Latency, Now: m.deps.Now,
+		Playback: m.playbackInterrupter(), Latency: m.deps.Latency, Now: m.deps.Now,
 	})
 	if err != nil {
 		closeErr := owned.closeContext(ctx)

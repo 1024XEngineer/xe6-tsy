@@ -115,6 +115,38 @@ type MediaLookup interface {
 	CurrentMedia(ctx context.Context, sessionID string) (webrtc.MediaTransport, error)
 }
 
+// DataChannelASRPartialObserver publishes best-effort, replaceable ASR snapshots on the
+// authenticated translation-events channel. Its errors are deliberately swallowed so an
+// unavailable browser cannot affect ASR finalization, translation, TTS, or FinalTurn delivery.
+type DataChannelASRPartialObserver struct {
+	Media    MediaLookup
+	Failures DataChannelFailureObserver
+}
+
+func (s DataChannelASRPartialObserver) ObserveASRPartial(ctx context.Context, event realtimev1.ASRPartialEvent) {
+	if err := event.Validate(); err != nil || ctx.Err() != nil || s.Media == nil {
+		return
+	}
+	media, err := s.Media.CurrentMedia(ctx, event.SessionID)
+	if err != nil || media == nil || media.TranslationEvents() == nil {
+		s.recordFailure()
+		return
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	if err := media.TranslationEvents().PublishJSON(publishCtx, event); err != nil {
+		s.recordFailure()
+	}
+}
+
+func (s DataChannelASRPartialObserver) recordFailure() {
+	if s.Failures != nil {
+		s.Failures.RecordDataChannelFailure()
+	}
+}
+
+var _ pipeline.ASRPartialObserver = DataChannelASRPartialObserver{}
+
 // DataChannelFinalTurnSink publishes browser-facing translation.final events.
 type DataChannelFinalTurnSink struct {
 	Media    MediaLookup

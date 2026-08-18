@@ -24,6 +24,12 @@ channels:
     messages:
       assistantReply:
         $ref: '#/components/messages/AssistantReply'
+  asrPartial:
+    address: asr.partial
+    description: Ephemeral, replaceable ASR snapshots sent only to the authenticated realtime client.
+    messages:
+      asrPartial:
+        $ref: '#/components/messages/ASRPartial'
   controlDataChannel:
     address: lingow-control-v1
     description: Reliable ordered WebRTC DataChannel bound to the authenticated PeerConnection session.
@@ -57,6 +63,10 @@ operations:
     action: send
     channel:
       $ref: '#/channels/assistantReply'
+  sendASRPartial:
+    action: send
+    channel:
+      $ref: '#/channels/asrPartial'
   receiveControlModeSwitch:
     action: receive
     channel: { $ref: '#/channels/controlDataChannel' }
@@ -101,6 +111,13 @@ components:
       contentType: application/json
       payload:
         $ref: '#/components/schemas/AssistantReplyEvent'
+    ASRPartial:
+      name: asr.partial
+      title: Ephemeral ASR partial
+      summary: A replaceable transcription snapshot that never enters translation, TTS, FinalTurn, or delivery.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ASRPartialEvent'
     ControlModeSwitchRequest:
       name: mode.switch
       summary: Switches the runtime mode without replacing the authenticated PeerConnection.
@@ -369,3 +386,16 @@ components:
         occurred_at:
           type: string
           format: date-time
+    ASRPartialEvent:
+      type: object
+      additionalProperties: false
+      description: An ephemeral full-text ASR snapshot. Consumers replace text for the same turn_id and discard it after final settlement.
+      required: [type, event_version, session_id, turn_id, text, occurred_at]
+      properties:
+        type: { type: string, const: asr.partial }
+        event_version: { type: integer, const: 1 }
+        session_id: { type: string, minLength: 1, maxLength: 128 }
+        turn_id: { type: string, minLength: 1, maxLength: 128 }
+        text: { type: string, minLength: 1, maxLength: 4096 }
+        source_language: { type: string, minLength: 1, maxLength: 128, description: Omitted while provider language detection is incomplete. }
+        occurred_at: { type: string, format: date-time }

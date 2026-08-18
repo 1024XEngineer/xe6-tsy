@@ -21,12 +21,19 @@ export type AssistantReply = {
   language: string;
 };
 
+export type TransientASRSubtitle = {
+  turnId: string;
+  text: string;
+  sourceLanguage: string;
+};
+
 export type SessionState = {
   phase: SessionPhase;
   audioMode: AudioMode;
   notice: string | null;
   turns: TranslationTurn[];
   assistantReplies: AssistantReply[];
+  asrPartial: TransientASRSubtitle | null;
 };
 
 export const initialSession: SessionState = {
@@ -35,6 +42,7 @@ export const initialSession: SessionState = {
   notice: null,
   turns: [],
   assistantReplies: [],
+  asrPartial: null,
 };
 
 export type SessionEvent =
@@ -45,6 +53,8 @@ export type SessionEvent =
   | { type: "SET_TURNS"; turns: TranslationTurn[] }
   | { type: "ADD_TURN"; turn: TranslationTurn }
   | { type: "ADD_ASSISTANT_REPLY"; reply: AssistantReply }
+  | { type: "SET_ASR_PARTIAL"; partial: TransientASRSubtitle }
+  | { type: "CLEAR_ASR_PARTIAL" }
   | { type: "FALLBACK"; message: string }
   | { type: "ERROR"; message: string }
   | { type: "END" };
@@ -104,12 +114,16 @@ export function sessionReducer(
       };
     case "ADD_TURN":
       if (state.turns.some((turn) => turn.id === event.turn.id)) {
-        return state;
+        return state.asrPartial?.turnId === event.turn.id
+          ? { ...state, asrPartial: null }
+          : state;
       }
       return {
         ...state,
         phase: "active",
         turns: [...state.turns, event.turn],
+        asrPartial:
+          state.asrPartial?.turnId === event.turn.id ? null : state.asrPartial,
         notice: null,
       };
     case "ADD_ASSISTANT_REPLY":
@@ -122,6 +136,13 @@ export function sessionReducer(
         assistantReplies: [...state.assistantReplies, event.reply],
         notice: null,
       };
+    case "SET_ASR_PARTIAL":
+      if (state.turns.some((turn) => turn.id === event.partial.turnId)) {
+        return state;
+      }
+      return { ...state, asrPartial: event.partial };
+    case "CLEAR_ASR_PARTIAL":
+      return state.asrPartial ? { ...state, asrPartial: null } : state;
     case "FALLBACK":
       return {
         ...state,
@@ -133,6 +154,7 @@ export function sessionReducer(
       return {
         ...state,
         phase: state.phase === "idle" ? "idle" : "active",
+        asrPartial: null,
         notice: event.message,
       };
     case "END":

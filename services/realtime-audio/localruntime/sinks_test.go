@@ -94,6 +94,64 @@ func TestFrontendAssistantReplyJSONShape(t *testing.T) {
 	}
 }
 
+func TestFrontendASRPartialJSONShape(t *testing.T) {
+	payload := realtimev1.ASRPartialEvent{
+		Type: realtimev1.ASRPartialTopic, EventVersion: realtimev1.ASRPartialEventVersion,
+		SessionID: "session-1", TurnID: "turn-1", Text: "你好",
+		OccurredAt: time.Unix(2, 0).UTC(),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["type"] != realtimev1.ASRPartialTopic || decoded["event_version"] != float64(realtimev1.ASRPartialEventVersion) || decoded["text"] != "你好" {
+		t.Fatalf("payload = %#v", decoded)
+	}
+	if _, present := decoded["source_language"]; present {
+		t.Fatalf("payload unexpectedly contains unresolved source language: %#v", decoded)
+	}
+}
+
+func TestDataChannelASRPartialObserverTreatsDeliveryAsBestEffort(t *testing.T) {
+	event := realtimev1.ASRPartialEvent{
+		Type: realtimev1.ASRPartialTopic, EventVersion: realtimev1.ASRPartialEventVersion,
+		SessionID: "session-1", TurnID: "turn-1", Text: "你好", OccurredAt: time.Unix(2, 0).UTC(),
+	}
+
+	t.Run("invalid event is ignored", func(t *testing.T) {
+		failures := &recordingDataChannelFailures{}
+		DataChannelASRPartialObserver{Failures: failures}.ObserveASRPartial(context.Background(), realtimev1.ASRPartialEvent{})
+		if failures.calls != 0 {
+			t.Fatalf("invalid event recorded delivery failure: %d", failures.calls)
+		}
+	})
+
+	t.Run("unavailable media records failure without returning", func(t *testing.T) {
+		failures := &recordingDataChannelFailures{}
+		DataChannelASRPartialObserver{Media: stubMediaLookup{}, Failures: failures}.ObserveASRPartial(context.Background(), event)
+		if failures.calls != 1 {
+			t.Fatalf("media lookup failure count = %d, want 1", failures.calls)
+		}
+	})
+
+	t.Run("missing media and channel record failure", func(t *testing.T) {
+		for _, lookup := range []MediaLookup{
+			mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) { return nil, nil }),
+			mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) { return &fakeMediaTransport{}, nil }),
+		} {
+			failures := &recordingDataChannelFailures{}
+			DataChannelASRPartialObserver{Media: lookup, Failures: failures}.ObserveASRPartial(context.Background(), event)
+			if failures.calls != 1 {
+				t.Fatalf("unavailable media failure count = %d, want 1", failures.calls)
+			}
+		}
+	})
+}
+
 func TestStaticLanguageConfigReaderReturnsBilingualPairs(t *testing.T) {
 	snapshot, err := (StaticLanguageConfigReader{}).GetCurrentConfig(context.Background(), "vs_1")
 	if err != nil {

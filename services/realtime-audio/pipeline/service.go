@@ -156,6 +156,9 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	// Runtime state is a media-plane observable fact. Report each long-running
 	// stage and restore listening on every exit unless the report itself fails.
 	if err := s.reportRuntime(ctx, turn, session.RuntimeTranslating, ""); err != nil {
+		if runtimeUpdateSuperseded(err) {
+			return fmt.Errorf("%w: report translating runtime: %w", ErrTurnSuperseded, err)
+		}
 		return fmt.Errorf("report translating runtime: %w", err)
 	}
 	acceptedFinalTurn := false

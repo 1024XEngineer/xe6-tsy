@@ -15,6 +15,7 @@ import { VoiceControl } from "./voice-control";
 export function VoiceExperience() {
   const {
     state,
+    transientASRSubtitle,
     latestTurn,
     latestAssistantReply,
     activeMode,
@@ -175,6 +176,11 @@ export function VoiceExperience() {
             >
               {hintMessage}
             </motion.p>
+          ) : null}
+          {transientASRSubtitle ? (
+            <p aria-label="临时识别结果" aria-live="polite" className={styles.transientASRSubtitle}>
+              {transientASRSubtitle.text}
+            </p>
           ) : null}
         </motion.section>
 

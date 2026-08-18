@@ -145,6 +145,21 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 		{name: "target language", mutate: func(event *FinalTurnEvent) { event.TargetLanguage = "" }},
 		{name: "source text", mutate: func(event *FinalTurnEvent) { event.SourceText = "" }},
 		{name: "translated text", mutate: func(event *FinalTurnEvent) { event.TranslatedText = "" }},
+		{name: "delivery trigger", mutate: func(event *FinalTurnEvent) { event.DeliveryTrigger = "unknown" }},
+		{name: "long delivery trigger on short turn", mutate: func(event *FinalTurnEvent) {
+			event.DeliveryTrigger = FinalTurnDeliveryTriggerLongSentence
+			event.DeliveryEnabled = true
+		}},
+		{name: "long delivery trigger with initial TTS", mutate: func(event *FinalTurnEvent) {
+			event.SourceText = strings.Repeat("x", LongSourceTextThreshold+1)
+			event.DeliveryTrigger = FinalTurnDeliveryTriggerLongSentence
+			event.DeliveryEnabled = true
+			event.TTSEnabled = true
+		}},
+		{name: "long delivery trigger without delivery", mutate: func(event *FinalTurnEvent) {
+			event.SourceText = strings.Repeat("x", LongSourceTextThreshold+1)
+			event.DeliveryTrigger = FinalTurnDeliveryTriggerLongSentence
+		}},
 		{name: "speaker code", mutate: func(event *FinalTurnEvent) { event.SpeakerCode = "" }},
 		{name: "language config version", mutate: func(event *FinalTurnEvent) { event.LanguageConfigVersion = 0 }},
 		{name: "attribution status", mutate: func(event *FinalTurnEvent) { event.AttributionStatus = "unknown" }},
@@ -250,6 +265,41 @@ func TestFinalTurnEventPayloadHashMatchesLegacyRoutePayload(t *testing.T) {
 	}
 	if matched {
 		t.Fatal("changed payload unexpectedly matched legacy hash")
+	}
+}
+
+func TestFinalTurnEventPayloadHashMatchesLegacyPayloadWithoutDeliveryTrigger(t *testing.T) {
+	event := validFinalTurnEvent()
+	event.SourceText = strings.Repeat("x", LongSourceTextThreshold+1)
+	event.DeliveryTrigger = FinalTurnDeliveryTriggerLongSentence
+	event.DeliveryEnabled = true
+	for _, test := range []struct {
+		name   string
+		legacy func(FinalTurnEvent) FinalTurnEvent
+	}{
+		{name: "trigger", legacy: func(legacy FinalTurnEvent) FinalTurnEvent {
+			legacy.DeliveryTrigger = ""
+			return legacy
+		}},
+		{name: "trigger and route flags", legacy: func(legacy FinalTurnEvent) FinalTurnEvent {
+			legacy.DeliveryTrigger = ""
+			legacy.DeliveryEnabled = false
+			return legacy
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			legacyHash, err := FinalTurnEventPayloadHash(test.legacy(event))
+			if err != nil {
+				t.Fatalf("legacy hash error = %v", err)
+			}
+			matched, err := FinalTurnEventPayloadHashMatches(event, legacyHash[:])
+			if err != nil {
+				t.Fatalf("hash compatibility check error = %v", err)
+			}
+			if !matched {
+				t.Fatal("legacy payload without delivery trigger was not accepted")
+			}
+		})
 	}
 }
 

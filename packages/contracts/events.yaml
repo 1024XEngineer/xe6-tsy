@@ -286,10 +286,11 @@ components:
       additionalProperties: false
       description: >-
         A final translation event. Producers emit it after translation final succeeds and do not wait
-        for TTS acceptance or playback. Source text longer than 50 Unicode code points after trimming,
-        or source audio lasting at least 20 seconds, is a long turn: the producer disables initial TTS
-        and enables delivery so API can route the translation only to WeCom and request fallback TTS if
-        WeCom is unavailable or finally fails. Partial ASR or translation data must never use this topic.
+        for TTS acceptance or playback. When long-sentence delivery is enabled, source text longer than
+        50 Unicode code points after trimming or source audio lasting at least 20 seconds sets the
+        long_sentence delivery trigger, disables initial TTS, and enables delivery so API can route the
+        translation only to WeCom and request fallback TTS if WeCom is unavailable or finally fails.
+        Partial ASR or translation data must never use this topic.
         Consumers compare the SHA-256 hash of the complete event JSON for every idempotency-key conflict;
         only an identical payload is a replay.
       required: [event_version, event_id, trace_id, turn_id, session_id, participant_id, sequence_no, source_language, target_language, language_config_version, source_text, translated_text, speaker_code, speaker_label_snapshot, speaker_confidence, attribution_status, started_at, ended_at, occurred_at]
@@ -342,6 +343,10 @@ components:
         delivery_enabled:
           type: boolean
           description: Whether this final turn may create automatic outbound messages. Long turns set this to true and API restricts the automatic target to WeCom.
+        delivery_trigger:
+          type: string
+          enum: [long_sentence]
+          description: Optional explicit automatic-delivery behavior. Absence preserves legacy delivery_enabled routing; long_sentence routes only to WeCom and permits fallback TTS.
         speaker_code:
           type: string
           minLength: 1

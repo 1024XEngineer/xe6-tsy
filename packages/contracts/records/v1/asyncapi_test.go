@@ -58,6 +58,13 @@ func TestAsyncAPIFinalTurnContract(t *testing.T) {
 	if required["provider_speaker_id"] {
 		t.Fatal("provider_speaker_id must not be required")
 	}
+	if required["delivery_trigger"] {
+		t.Fatal("delivery_trigger must not be required for legacy events")
+	}
+	triggers := stringSet(t, mapValue(t, properties, "delivery_trigger")["enum"])
+	if len(triggers) != 1 || !triggers[string(FinalTurnDeliveryTriggerLongSentence)] {
+		t.Fatalf("delivery_trigger enum = %#v", triggers)
+	}
 	statuses := stringSet(t, mapValue(t, schemas, "AttributionStatus")["enum"])
 	if got, want := len(statuses), 4; got != want {
 		t.Fatalf("AttributionStatus enum length = %d, want %d", got, want)

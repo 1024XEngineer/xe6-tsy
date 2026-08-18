@@ -130,6 +130,13 @@ func TestFinalTurnEventValidatesRequiredFields(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid FinalTurnEvent error = %v", err)
 	}
+	longSentence := validFinalTurnEvent()
+	longSentence.SourceText = strings.Repeat("x", LongSourceTextThreshold+1)
+	longSentence.DeliveryEnabled = true
+	longSentence.DeliveryTrigger = FinalTurnDeliveryTriggerLongSentence
+	if err := longSentence.Validate(); err != nil {
+		t.Fatalf("valid long-sentence FinalTurnEvent error = %v", err)
+	}
 
 	tests := []struct {
 		name   string

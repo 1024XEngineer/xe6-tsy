@@ -495,6 +495,7 @@ func TestScheduleFinalTurnAtomicRejectsInvalidAndConflictingEvents(t *testing.T)
 		wantText   string
 	}{
 		{name: "invalid event", event: recordsv1.FinalTurnEvent{TurnID: "turn-1", DeliveryEnabled: true}, repository: &atomicScheduleRepository{}, turns: automaticTurnReaderStub{}, dest: automaticDestinationReaderStub{}, want: domain.ErrInvalidArgument},
+		{name: "unknown delivery trigger", event: recordsv1.FinalTurnEvent{TurnID: "turn-1", DeliveryEnabled: true, DeliveryTrigger: "unknown"}, repository: &atomicScheduleRepository{}, turns: automaticTurnReaderStub{}, dest: automaticDestinationReaderStub{}, want: domain.ErrInvalidArgument},
 		{name: "missing dependencies", event: validEvent, repository: &atomicScheduleRepository{}, turns: nil, dest: nil, want: domain.ErrInvalidArgument},
 		{name: "existing payload conflict", event: validEvent, repository: &atomicScheduleRepository{existing: AutomaticTurnRun{TurnID: "turn-1", SessionID: "other-session"}}, turns: automaticTurnReaderStub{}, dest: automaticDestinationReaderStub{}, want: domain.ErrConflict},
 		{name: "lookup failure", event: validEvent, repository: &atomicScheduleRepository{getErr: errors.New("lookup unavailable")}, turns: automaticTurnReaderStub{}, dest: automaticDestinationReaderStub{}, wantText: "lookup unavailable"},

@@ -94,6 +94,71 @@ func TestInterpreterDropsSpuriousLanguageArgumentsFromAssistantQuery(t *testing.
 	}
 }
 
+func TestInterpreterGeneratesSuccessFeedbackFromAuthoritativeFacts(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body chatRequest
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if len(body.Messages) != 2 || !strings.Contains(body.Messages[0].Content, "immutable execution facts") {
+			t.Errorf("feedback prompt = %#v", body.Messages)
+		}
+		var facts feedbackFacts
+		if err := json.Unmarshal([]byte(body.Messages[1].Content), &facts); err != nil {
+			t.Errorf("decode feedback facts: %v", err)
+		}
+		if facts.UserCommand != "切换为中日传译" || facts.ResponseLanguage != "zh-CN" ||
+			facts.ModeSwitchStatus != realtimev1.ModeSwitchUnchanged || facts.LanguageConfig == nil ||
+			facts.LanguageConfig.SourceLanguage != "zh-CN" || facts.LanguageConfig.TargetLanguage != "ja-JP" ||
+			facts.LanguageConfig.Version != 3 {
+			t.Errorf("feedback facts = %#v", facts)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"message\":\"好的，已切换为中文和日语同声传译。\"}"}}]}`))
+	}))
+	defer server.Close()
+	interpreter := newTestInterpreter(t, Config{APIKey: "test-key", BaseURL: server.URL, HTTPClient: server.Client()})
+
+	message, err := interpreter.GenerateSuccessFeedback(t.Context(), command.SuccessFeedbackRequest{
+		Command: command.Command{
+			Text: "切换为中日传译", Action: command.ActionActivateMode, TargetMode: realtimev1.ModeInterpretation,
+		},
+		Execution: command.ExecutionResult{
+			Status: realtimev1.ModeSwitchUnchanged,
+			State:  realtimev1.ModeStateSnapshot{ActiveMode: realtimev1.ModeInterpretation},
+			LanguageConfig: &command.AppliedLanguageConfig{
+				SourceLanguage: "zh-CN", TargetLanguage: "ja-JP", Version: 3,
+			},
+		},
+		ResponseLanguage: "zh-CN",
+	})
+	if err != nil {
+		t.Fatalf("GenerateSuccessFeedback() error = %v", err)
+	}
+	if message != "好的，已切换为中文和日语同声传译。" {
+		t.Fatalf("feedback message = %q", message)
+	}
+}
+
+func TestInterpreterRejectsInvalidSuccessFeedback(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"message\":\"第一行\\n第二行\"}"}}]}`))
+	}))
+	defer server.Close()
+	interpreter := newTestInterpreter(t, Config{APIKey: "test-key", BaseURL: server.URL, HTTPClient: server.Client()})
+	_, err := interpreter.GenerateSuccessFeedback(t.Context(), command.SuccessFeedbackRequest{
+		Command: command.Command{Action: command.ActionReturnToAssistant, TargetMode: realtimev1.ModeAssistant},
+		Execution: command.ExecutionResult{
+			Status: realtimev1.ModeSwitchApplied,
+			State:  realtimev1.ModeStateSnapshot{ActiveMode: realtimev1.ModeAssistant},
+		},
+	})
+	if !errors.Is(err, ErrFeedbackInvalid) {
+		t.Fatalf("GenerateSuccessFeedback() error = %v, want ErrFeedbackInvalid", err)
+	}
+}
+
 func TestInterpreterRejectsMalformedOrExpandedProviderOutput(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

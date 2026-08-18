@@ -460,6 +460,10 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			Speech: m.speech, Usage: m.deps.Usage, Runtime: m.deps.Runtime,
 			AccountID: snapshot.AccountID, TraceID: snapshot.TraceID, Logger: m.logger, Now: m.deps.Now,
 		})
+		var successFeedback command.SuccessFeedbackGenerator
+		if candidate, ok := m.commandInterpreter.(command.SuccessFeedbackGenerator); ok {
+			successFeedback = candidate
+		}
 		gate, gateErr := command.NewGate(command.Dependencies{
 			Classifier:  classifier,
 			ASR:         m.commandASR,
@@ -468,11 +472,12 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			Executor: commandExecutor{
 				manager: m, languages: m.deps.Languages, configurator: m.deps.LanguageConfigurator,
 			},
-			Results:  m.deps.CommandResults,
-			Feedback: feedback,
-			Observer: m.deps.CommandObserver,
-			Logger:   m.logger,
-			Now:      m.deps.Now,
+			SuccessFeedback: successFeedback,
+			Results:         m.deps.CommandResults,
+			Feedback:        feedback,
+			Observer:        m.deps.CommandObserver,
+			Logger:          m.logger,
+			Now:             m.deps.Now,
 		}, options)
 		if gateErr != nil {
 			closeErr := owned.closeContext(ctx)

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
@@ -83,17 +84,47 @@ type ExecuteRequest struct {
 	Command   Command
 }
 
+// AppliedLanguageConfig records an explicit language direction accepted by the API control plane.
+// A non-nil value is an authoritative execution fact even when the realtime mode was unchanged.
+type AppliedLanguageConfig struct {
+	SourceLanguage string `json:"source_language"`
+	TargetLanguage string `json:"target_language"`
+	Version        int    `json:"version"`
+}
+
 // ExecutionResult carries the authoritative state returned by the runtime coordinator. The Gate
 // uses it only to publish feedback and never treats feedback delivery as part of command execution.
 type ExecutionResult struct {
-	Status realtimev1.ModeSwitchStatus
-	State  realtimev1.ModeStateSnapshot
+	Status         realtimev1.ModeSwitchStatus
+	State          realtimev1.ModeStateSnapshot
+	LanguageConfig *AppliedLanguageConfig
 }
 
 // Executor is deliberately narrower than runtime.Manager, keeping mode-generation and operation
 // construction in the runtime adapter instead of leaking those details into command recognition.
 type Executor interface {
 	ExecuteCommand(context.Context, ExecuteRequest) (ExecutionResult, error)
+}
+
+// SuccessFeedbackRequest contains only validated intent and authoritative post-execution facts.
+// A generator may change wording but must not execute actions or reinterpret command success.
+type SuccessFeedbackRequest struct {
+	Command          Command
+	Execution        ExecutionResult
+	ResponseLanguage string
+}
+
+// SuccessFeedbackGenerator renders best-effort natural-language confirmation after execution.
+// Failure must never roll back or repeat the already completed command.
+type SuccessFeedbackGenerator interface {
+	GenerateSuccessFeedback(context.Context, SuccessFeedbackRequest) (string, error)
+}
+
+// SuccessFeedbackFunc adapts a function to the post-execution feedback boundary.
+type SuccessFeedbackFunc func(context.Context, SuccessFeedbackRequest) (string, error)
+
+func (f SuccessFeedbackFunc) GenerateSuccessFeedback(ctx context.Context, request SuccessFeedbackRequest) (string, error) {
+	return f(ctx, request)
 }
 
 // ResultSink accepts one best-effort acknowledgement for each terminal command attempt. Publish
@@ -121,16 +152,17 @@ type Observer interface {
 // The classifier must not be shared with ordinary Turn segmentation because its internal rolling
 // context, if any, belongs to a different input lifecycle.
 type Dependencies struct {
-	Classifier  vad.Classifier
-	ASR         asr.Provider
-	Interpreter Interpreter
-	Validator   Validator
-	Executor    Executor
-	Results     ResultSink
-	Feedback    FeedbackSink
-	Observer    Observer
-	Logger      *slog.Logger
-	Now         func() time.Time
+	Classifier      vad.Classifier
+	ASR             asr.Provider
+	Interpreter     Interpreter
+	Validator       Validator
+	Executor        Executor
+	SuccessFeedback SuccessFeedbackGenerator
+	Results         ResultSink
+	Feedback        FeedbackSink
+	Observer        Observer
+	Logger          *slog.Logger
+	Now             func() time.Time
 }
 
 // Result tells the caller whether the frame is quarantined from ordinary handlers. Recognition
@@ -491,8 +523,33 @@ func (g *Gate) runRecognition(
 		return failureOutcome(request, classifyAttemptFailure(caller, processingCtx, FailureExecution), status, message, parsed, g.now())
 	}
 	return recognitionOutcome{
-		event: commandResultEvent(request, parsed, execution, commandSuccessMessage(parsed, execution.Status), g.now()),
+		event: commandResultEvent(request, parsed, execution, g.successMessage(processingCtx, request, result.SourceLanguage, parsed, execution), g.now()),
 	}
+}
+
+func (g *Gate) successMessage(
+	ctx context.Context,
+	request OpenRequest,
+	responseLanguage string,
+	parsed Command,
+	execution ExecutionResult,
+) string {
+	fallback := commandSuccessFallback(parsed, execution)
+	if g.deps.SuccessFeedback == nil {
+		return fallback
+	}
+	message, err := g.deps.SuccessFeedback.GenerateSuccessFeedback(ctx, SuccessFeedbackRequest{
+		Command: parsed, Execution: execution, ResponseLanguage: responseLanguage,
+	})
+	message = strings.TrimSpace(message)
+	if err != nil || !validSuccessFeedback(message) {
+		if err == nil {
+			err = errors.New("generated command feedback is invalid")
+		}
+		g.logRecognitionFailure(request, "feedback_generation", err, len([]rune(parsed.Text)))
+		return fallback
+	}
+	return message
 }
 
 func (g *Gate) logRecognitionFailure(request OpenRequest, stage string, err error, textRunes int) {
@@ -613,11 +670,15 @@ func commandResultEvent(request OpenRequest, parsed Command, execution Execution
 	}
 }
 
-func commandSuccessMessage(parsed Command, status realtimev1.ModeSwitchStatus) string {
+func commandSuccessFallback(parsed Command, execution ExecutionResult) string {
 	if parsed.Action == ActionAssistantQuery {
 		return "助手已处理本轮提问"
 	}
-	if status == realtimev1.ModeSwitchUnchanged {
+	if execution.LanguageConfig != nil && parsed.TargetMode == realtimev1.ModeInterpretation {
+		return "已设置为" + spokenLanguageName(execution.LanguageConfig.SourceLanguage) + "和" +
+			spokenLanguageName(execution.LanguageConfig.TargetLanguage) + "同声传译"
+	}
+	if execution.Status == realtimev1.ModeSwitchUnchanged {
 		if parsed.TargetMode == realtimev1.ModeInterpretation {
 			return "当前已是同声传译模式"
 		}
@@ -627,6 +688,29 @@ func commandSuccessMessage(parsed Command, status realtimev1.ModeSwitchStatus) s
 		return "已进入同声传译模式"
 	}
 	return "已返回通用助手模式"
+}
+
+func validSuccessFeedback(message string) bool {
+	if message == "" || utf8.RuneCountInString(message) > 80 {
+		return false
+	}
+	for _, r := range message {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func spokenLanguageName(code string) string {
+	if name := map[string]string{
+		"zh-CN": "中文", "en-US": "英语", "ja-JP": "日语", "ko-KR": "韩语",
+		"fr-FR": "法语", "de-DE": "德语", "ru-RU": "俄语", "pt-BR": "葡萄牙语",
+		"it-IT": "意大利语", "es-ES": "西班牙语",
+	}[code]; name != "" {
+		return name
+	}
+	return code
 }
 
 func executionFailureFeedback(parsed Command, err error) (realtimev1.CommandResultStatus, string) {

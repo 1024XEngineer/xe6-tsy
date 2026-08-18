@@ -203,6 +203,54 @@ func TestExecutionFailureFeedbackDistinguishesAssistantQueries(t *testing.T) {
 	}
 }
 
+func TestGateGeneratesSuccessFeedbackFromExecutionFacts(t *testing.T) {
+	t.Parallel()
+	execution := ExecutionResult{
+		Status: realtimev1.ModeSwitchUnchanged,
+		State:  realtimev1.ModeStateSnapshot{ActiveMode: realtimev1.ModeInterpretation},
+		LanguageConfig: &AppliedLanguageConfig{
+			SourceLanguage: "zh-CN", TargetLanguage: "ja-JP", Version: 3,
+		},
+	}
+	parsed := Command{
+		Text: "切换为中日传译", Action: ActionActivateMode, TargetMode: realtimev1.ModeInterpretation,
+		Arguments: Arguments{SourceLanguage: "zh-CN", TargetLanguage: "ja-JP"},
+	}
+	var received SuccessFeedbackRequest
+	gate := &Gate{deps: Dependencies{SuccessFeedback: SuccessFeedbackFunc(func(_ context.Context, request SuccessFeedbackRequest) (string, error) {
+		received = request
+		return "好的，已切换为中文和日语同声传译。", nil
+	})}}
+
+	message := gate.successMessage(t.Context(), OpenRequest{}, "zh-CN", parsed, execution)
+	if message != "好的，已切换为中文和日语同声传译。" {
+		t.Fatalf("success message = %q", message)
+	}
+	if received.ResponseLanguage != "zh-CN" || received.Command.Text != parsed.Text ||
+		received.Execution.LanguageConfig == nil || received.Execution.LanguageConfig.TargetLanguage != "ja-JP" {
+		t.Fatalf("feedback request = %#v", received)
+	}
+}
+
+func TestGateFallsBackToConfiguredLanguageFactsWhenFeedbackGenerationFails(t *testing.T) {
+	t.Parallel()
+	execution := ExecutionResult{
+		Status: realtimev1.ModeSwitchUnchanged,
+		State:  realtimev1.ModeStateSnapshot{ActiveMode: realtimev1.ModeInterpretation},
+		LanguageConfig: &AppliedLanguageConfig{
+			SourceLanguage: "zh-CN", TargetLanguage: "ja-JP", Version: 3,
+		},
+	}
+	parsed := Command{Action: ActionActivateMode, TargetMode: realtimev1.ModeInterpretation}
+	gate := &Gate{deps: Dependencies{SuccessFeedback: SuccessFeedbackFunc(func(context.Context, SuccessFeedbackRequest) (string, error) {
+		return "", errors.New("LLM unavailable")
+	})}}
+
+	if message := gate.successMessage(t.Context(), OpenRequest{}, "zh-CN", parsed, execution); message != "已设置为中文和日语同声传译" {
+		t.Fatalf("fallback message = %q", message)
+	}
+}
+
 func TestGateBoundsRestoreDormant(t *testing.T) {
 	tests := []struct {
 		name       string

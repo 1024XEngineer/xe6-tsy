@@ -346,7 +346,7 @@ components:
         delivery_trigger:
           type: string
           enum: [long_sentence]
-          description: Optional explicit automatic-delivery behavior. Absence preserves legacy delivery_enabled routing; long_sentence routes only to WeCom and permits fallback TTS.
+          description: Optional automatic-delivery behavior. Explicit long_sentence routes only to WeCom and permits fallback TTS; for legacy events without this field, tts_enabled=false plus delivery_enabled=true and a long-source threshold is treated as long_sentence for rolling compatibility.
         speaker_code:
           type: string
           minLength: 1

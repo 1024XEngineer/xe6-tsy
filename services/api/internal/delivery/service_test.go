@@ -301,7 +301,7 @@ func TestScheduleFinalTurnUsesAtomicRepositoryForEveryEnabledTarget(t *testing.T
 	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
 	event := recordsv1.FinalTurnEvent{
 		TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1", TargetLanguage: "en-US",
-		SourceText: strings.Repeat("x", recordsv1.LongSourceTextThreshold+1), TranslatedText: "translation",
+		SourceText: "short", TranslatedText: "translation",
 		LanguageConfigVersion: 3, DeliveryEnabled: true, StartedAt: startedAt, EndedAt: startedAt.Add(time.Second),
 	}
 	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
@@ -324,12 +324,15 @@ func TestScheduleFinalTurnUsesAtomicRepositoryForEveryEnabledTarget(t *testing.T
 func TestScheduleFinalTurnRoutesLongSourceOnlyToConfiguredWeChat(t *testing.T) {
 	startedAt := time.Unix(1_700_000_000, 0).UTC()
 	tests := []struct {
-		name       string
-		sourceText string
-		endedAt    time.Time
+		name            string
+		sourceText      string
+		endedAt         time.Time
+		deliveryTrigger recordsv1.FinalTurnDeliveryTrigger
 	}{
-		{name: "text threshold", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold+1), endedAt: startedAt.Add(time.Second)},
-		{name: "audio threshold", sourceText: "short", endedAt: startedAt.Add(recordsv1.LongSourceAudioThreshold)},
+		{name: "explicit text threshold", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold+1), endedAt: startedAt.Add(time.Second), deliveryTrigger: recordsv1.FinalTurnDeliveryTriggerLongSentence},
+		{name: "explicit audio threshold", sourceText: "short", endedAt: startedAt.Add(recordsv1.LongSourceAudioThreshold), deliveryTrigger: recordsv1.FinalTurnDeliveryTriggerLongSentence},
+		{name: "legacy text threshold", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold+1), endedAt: startedAt.Add(time.Second)},
+		{name: "legacy audio threshold", sourceText: "short", endedAt: startedAt.Add(recordsv1.LongSourceAudioThreshold)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -341,7 +344,7 @@ func TestScheduleFinalTurnRoutesLongSourceOnlyToConfiguredWeChat(t *testing.T) {
 			service := NewPersistentUseCases(repository, automaticTurnReaderStub{turns: []FinalTurnSnapshot{persistedTurn}}, automaticDestinationReaderStub{}, nil)
 			service.ConfigureChannelRouter(NewChannelRouter(NewFakeEmailProvider(FakeEmailProviderConfig{}), &channelProviderStub{channel: ChannelWeChat}))
 			event := automaticScheduleEvent(tt.sourceText, startedAt, tt.endedAt)
-			event.DeliveryTrigger = recordsv1.FinalTurnDeliveryTriggerLongSentence
+			event.DeliveryTrigger = tt.deliveryTrigger
 			event.DeliveryEnabled = true
 			if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
 				t.Fatalf("ScheduleFinalTurn() error = %v", err)

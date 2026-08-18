@@ -259,6 +259,9 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 		return domain.ErrNotImplemented
 	}
 	longSentence := event.DeliveryTrigger == recordsv1.FinalTurnDeliveryTriggerLongSentence
+	if event.DeliveryTrigger == "" && !event.TTSEnabled && event.DeliveryEnabled {
+		longSentence = recordsv1.IsLongSourceTurn(event.SourceText, event.EndedAt.Sub(event.StartedAt))
+	}
 	if event.DeliveryTrigger != "" && !longSentence {
 		return domain.ErrInvalidArgument
 	}

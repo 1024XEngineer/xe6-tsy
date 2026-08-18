@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -86,6 +87,28 @@ func TestPipelineRejectsUnsupportedSourceBeforeTranslation(t *testing.T) {
 	}
 	if len(translator.Requests()) != 0 || len(ttsProvider.Requests()) != 0 {
 		t.Fatalf("providers were called for unsupported source")
+	}
+}
+
+func TestIsRecoverableUnsupportedSourceLanguage(t *testing.T) {
+	recoveryErr := errors.New("runtime store unavailable")
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "sentinel", err: ErrUnsupportedSourceLanguage, want: true},
+		{name: "single wrapped", err: fmt.Errorf("process Turn: %w", ErrUnsupportedSourceLanguage), want: true},
+		{name: "unrelated", err: recoveryErr, want: false},
+		{name: "joined recovery failure", err: errors.Join(ErrUnsupportedSourceLanguage, recoveryErr), want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsRecoverableUnsupportedSourceLanguage(test.err); got != test.want {
+				t.Fatalf("IsRecoverableUnsupportedSourceLanguage(%v) = %t, want %t", test.err, got, test.want)
+			}
+		})
 	}
 }
 

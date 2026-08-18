@@ -115,12 +115,31 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	finalizedEvents := make(chan vad.Event, finalizedEventQueueCapacity)
+	streamingFinals := make(chan *pipeline.AudioTurn, finalizedEventQueueCapacity)
 	processingErrors := make(chan error, 1)
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		for event := range finalizedEvents {
-			if err := s.handleEvents(runCtx, request, []vad.Event{event}); err != nil {
+		pendingFinalized := finalizedEvents
+		pendingStreaming := streamingFinals
+		for pendingFinalized != nil || pendingStreaming != nil {
+			var err error
+			select {
+			case event, ok := <-pendingFinalized:
+				if !ok {
+					pendingFinalized = nil
+					continue
+				}
+				err = s.handleEvents(runCtx, request, []vad.Event{event})
+			case audioTurn, ok := <-pendingStreaming:
+				if !ok {
+					pendingStreaming = nil
+					continue
+				}
+				_, err = audioTurn.Finish(runCtx)
+				audioTurn.Close()
+			}
+			if err != nil {
 				if isRecoverableTurnError(err) {
 					s.logRecoverableTurn(request, err)
 					continue
@@ -141,6 +160,21 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	enqueueFinalized := func(event vad.Event) error {
 		select {
 		case finalizedEvents <- event:
+			return nil
+		case err := <-processingErrors:
+			return err
+		case <-runCtx.Done():
+			select {
+			case err := <-processingErrors:
+				return err
+			default:
+				return runCtx.Err()
+			}
+		}
+	}
+	enqueueStreamingFinal := func(audioTurn *pipeline.AudioTurn) error {
+		select {
+		case streamingFinals <- audioTurn:
 			return nil
 		case err := <-processingErrors:
 			return err
@@ -220,16 +254,9 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 			if activeTurn == nil {
 				return nil
 			}
-			_, err := activeTurn.Finish(runCtx)
-			activeTurn.Close()
+			turn := activeTurn
 			activeTurn = nil
-			if err != nil {
-				if isRecoverableTurnError(err) {
-					s.logRecoverableTurn(request, err)
-					return nil
-				}
-				return err
-			}
+			return enqueueStreamingFinal(turn)
 		}
 		return nil
 	}
@@ -299,7 +326,11 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	if loopErr != nil {
 		cancel()
 	}
+	if activeTurn != nil {
+		activeTurn.Close()
+	}
 	close(finalizedEvents)
+	close(streamingFinals)
 	<-workerDone
 	select {
 	case err := <-processingErrors:

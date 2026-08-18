@@ -37,8 +37,8 @@ func (s *LifecycleService) SetProcessingState(ctx context.Context, update Proces
 	// audible. Its EventOpened is the explicit barge-in boundary: replace the
 	// old playback owner atomically instead of treating playing -> ASR as a
 	// pipeline failure. All other owner changes remain conflicts.
-	bargeIn := (current.RuntimeState == RuntimeTTSProcessing || current.RuntimeState == RuntimePlaying) && update.RuntimeState == RuntimeASRProcessing
-	if !bargeIn && (conflictingIdentity(current.CurrentTurnID, update.CurrentTurnID) ||
+	preemptingTurn := isActiveRuntimeState(current.RuntimeState) && update.RuntimeState == RuntimeASRProcessing
+	if !preemptingTurn && (conflictingIdentity(current.CurrentTurnID, update.CurrentTurnID) ||
 		conflictingIdentity(current.CurrentPlaybackID, update.CurrentPlaybackID)) {
 		return ErrRuntimeIdentityConflict
 	}
@@ -143,17 +143,26 @@ func validRuntimeProgressTransition(current, next RuntimeState) bool {
 	case RuntimeListening:
 		return next == RuntimeASRProcessing || next == RuntimeTranslating || next == RuntimeThinking || next == RuntimeAssistantProcessing || next == RuntimeTTSProcessing
 	case RuntimeASRProcessing:
-		return next == RuntimeTranslating || next == RuntimeThinking || next == RuntimeAssistantProcessing || next == RuntimeListening
+		return next == RuntimeASRProcessing || next == RuntimeTranslating || next == RuntimeThinking || next == RuntimeAssistantProcessing || next == RuntimeListening
 	case RuntimeTranslating:
-		return next == RuntimeTTSProcessing || next == RuntimeListening
+		return next == RuntimeASRProcessing || next == RuntimeTTSProcessing || next == RuntimeListening
 	case RuntimeAssistantProcessing:
-		return next == RuntimeTTSProcessing || next == RuntimeListening
+		return next == RuntimeASRProcessing || next == RuntimeTTSProcessing || next == RuntimeListening
 	case RuntimeThinking:
-		return next == RuntimeTTSProcessing || next == RuntimeListening
+		return next == RuntimeASRProcessing || next == RuntimeTTSProcessing || next == RuntimeListening
 	case RuntimeTTSProcessing:
 		return next == RuntimePlaying || next == RuntimeListening || next == RuntimeASRProcessing
 	case RuntimePlaying:
 		return next == RuntimeListening || next == RuntimeASRProcessing
+	default:
+		return false
+	}
+}
+
+func isActiveRuntimeState(state RuntimeState) bool {
+	switch state {
+	case RuntimeASRProcessing, RuntimeTranslating, RuntimeThinking, RuntimeAssistantProcessing, RuntimeTTSProcessing, RuntimePlaying:
+		return true
 	default:
 		return false
 	}

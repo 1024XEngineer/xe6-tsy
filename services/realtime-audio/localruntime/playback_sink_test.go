@@ -74,6 +74,37 @@ func TestPlaybackAudioSinkDiscardsLateChunksAfterBargeIn(t *testing.T) {
 	}
 }
 
+func TestPlaybackAudioSinkTreatsSupersededLifecycleAsComplete(t *testing.T) {
+	track := &playbackSinkTrack{}
+	service, err := playback.NewService(playback.Dependencies{Track: track, Events: playbackSinkEvents{}})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	sink := PlaybackAudioSink{Media: mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) {
+		return &playbackSinkMedia{service: service}, nil
+	})}
+	first := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+	if err := sink.Publish(t.Context(), first); err != nil {
+		t.Fatalf("Publish(first) error = %v", err)
+	}
+	if err := sink.InterruptCurrent(t.Context(), "session-1", "user_speaking"); err != nil {
+		t.Fatalf("InterruptCurrent() error = %v", err)
+	}
+	second := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-2", PlaybackID: "playback-2", SequenceNo: 1, Data: []byte{3, 4}}
+	if err := sink.Publish(t.Context(), second); err != nil {
+		t.Fatalf("Publish(second) error = %v", err)
+	}
+	if err := sink.Complete(t.Context(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("Complete(superseded) error = %v", err)
+	}
+	if err := sink.Cancel(t.Context(), "session-1", "playback-1", "tts_stream_failed"); err != nil {
+		t.Fatalf("Cancel(superseded) error = %v", err)
+	}
+	if got := service.Snapshot("session-1"); got.PlaybackID != "playback-2" || got.State != playback.StatePlaying {
+		t.Fatalf("superseded lifecycle changed current playback: %#v", got)
+	}
+}
+
 type playbackSinkTrack struct{}
 
 func (*playbackSinkTrack) Write(context.Context, pipeline.AudioChunk) error { return nil }

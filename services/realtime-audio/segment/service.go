@@ -351,6 +351,16 @@ func (s *Service) handleEvents(ctx context.Context, request Request, events []va
 	return nil
 }
 
+func isRecoverableTurnError(err error) bool {
+	return errors.Is(err, pipeline.ErrUnsupportedSourceLanguage) || errors.Is(err, pipeline.ErrTurnSuperseded)
+}
+
+func (s *Service) logRecoverableTurn(request Request, err error) {
+	if s == nil || s.latency == nil || err == nil {
+		return
+	}
+	s.latency.Warn("realtime turn skipped and listening restored", "session_id", request.SessionID, "trace_id", request.TraceID, "error", err)
+}
 func (s *Service) logVADCheckpoint(request Request, event vad.Event) {
 	if s == nil || s.latency == nil {
 		return

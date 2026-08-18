@@ -90,6 +90,40 @@ func TestLifecycleStartsASRWhileTTSIsBeingPrepared(t *testing.T) {
 	}
 }
 
+func TestLifecycleStartsASRByReplacingEarlierASROwner(t *testing.T) {
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
+	if err := service.deps.Runtimes.Save(t.Context(), RuntimeSnapshot{
+		SessionID: "session-1", RuntimeState: RuntimeASRProcessing, CurrentTurnID: stringPointer("turn-1"),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	newTurnID := "turn-2"
+	if err := service.SetProcessingState(t.Context(), ProcessingStateUpdate{
+		SessionID: "session-1", RuntimeState: RuntimeASRProcessing, CurrentTurnID: &newTurnID,
+	}); err != nil {
+		t.Fatalf("SetProcessingState(next ASR) error = %v", err)
+	}
+	got, err := service.GetRuntimeState(t.Context(), "session-1")
+	if err != nil || got.RuntimeState != RuntimeASRProcessing || got.CurrentTurnID == nil || *got.CurrentTurnID != newTurnID {
+		t.Fatalf("runtime after ASR replacement = %#v, %v", got, err)
+	}
+}
+
+func TestLifecycleStartsASRByReplacingTranslatingOwner(t *testing.T) {
+	service := newTestLifecycleService(t, SessionSnapshot{SessionID: "session-1", Status: "created"}, &fakePipeline{}, &fakeConnection{})
+	if err := service.deps.Runtimes.Save(t.Context(), RuntimeSnapshot{
+		SessionID: "session-1", RuntimeState: RuntimeTranslating, CurrentTurnID: stringPointer("turn-1"),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	newTurnID := "turn-2"
+	if err := service.SetProcessingState(t.Context(), ProcessingStateUpdate{
+		SessionID: "session-1", RuntimeState: RuntimeASRProcessing, CurrentTurnID: &newTurnID,
+	}); err != nil {
+		t.Fatalf("SetProcessingState(barging-in during translation) error = %v", err)
+	}
+}
+
 func TestLifecycleRejectsInvalidRuntimeProgress(t *testing.T) {
 	tests := []struct {
 		name    string

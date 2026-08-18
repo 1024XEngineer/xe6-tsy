@@ -23,11 +23,11 @@ func (s PlaybackAudioSink) Publish(ctx context.Context, chunk pipeline.AudioChun
 		return nil
 	}
 	err := service.Publish(ctx, chunk)
-	if errors.Is(err, playback.ErrPlaybackNotActive) && service.Snapshot(chunk.SessionID).State == playback.StateInterrupted {
-		// An ordinary barge-in settles the client output before the provider has
-		// necessarily stopped producing PCM. Discarding those late chunks keeps
-		// the committed FinalTurn successful instead of reporting cancellation as
-		// a pipeline failure.
+	if errors.Is(err, playback.ErrPlaybackNotActive) {
+		// A provider may emit chunks after barge-in, while settlement is still
+		// pending, or after a newer playback has taken ownership. The playback
+		// service has already rejected the stale chunk; treat that rejection as
+		// an idempotent cleanup result rather than failing the realtime session.
 		return nil
 	}
 	return err
@@ -41,7 +41,11 @@ func (s PlaybackAudioSink) Complete(ctx context.Context, sessionID, playbackID s
 	if service == nil {
 		return nil
 	}
-	return service.Complete(ctx, sessionID, playbackID)
+	err := service.Complete(ctx, sessionID, playbackID)
+	if errors.Is(err, playback.ErrPlaybackNotActive) {
+		return nil
+	}
+	return err
 }
 
 func (s PlaybackAudioSink) Cancel(ctx context.Context, sessionID, playbackID, reason string) error {
@@ -52,7 +56,11 @@ func (s PlaybackAudioSink) Cancel(ctx context.Context, sessionID, playbackID, re
 	if service == nil {
 		return nil
 	}
-	return service.Cancel(ctx, sessionID, playbackID, reason)
+	err := service.Cancel(ctx, sessionID, playbackID, reason)
+	if errors.Is(err, playback.ErrPlaybackNotActive) {
+		return nil
+	}
+	return err
 }
 
 // InterruptCurrent stops the active playback while retaining the shared

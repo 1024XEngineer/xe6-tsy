@@ -135,6 +135,9 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	// Runtime state is a media-plane observable fact. Report each long-running
 	// stage and restore listening on every exit unless the report itself fails.
 	if err := s.reportRuntime(ctx, turn, session.RuntimeTranslating, ""); err != nil {
+		if runtimeUpdateSuperseded(err) {
+			return fmt.Errorf("%w: report translating runtime: %w", ErrTurnSuperseded, err)
+		}
 		return fmt.Errorf("report translating runtime: %w", err)
 	}
 	acceptedFinalTurn := false
@@ -245,6 +248,9 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		Turn: turn, Language: target, Text: translationResult.Text, PlaybackID: playbackID,
 	})
 	if err != nil {
+		if errors.Is(err, ErrSpeechOutputSuperseded) {
+			return nil
+		}
 		return finalTurnAcceptedError("play translated text", err)
 	}
 	if err := s.publishUsage(ctx, turn, "tts", ttsResult.Provider, ttsResult.Model, ttsResult.AudioDuration.Milliseconds(), 0, 0, ttsResult.CostAmount, ttsResult.Currency); err != nil {

@@ -70,10 +70,18 @@ type SpeechOutputRequest struct {
 	Language   string
 	Text       string
 	PlaybackID string
+	// ClaimRuntime is reserved for durable fallback playback, which may start
+	// from listening without an active ASR owner. Ordinary Turns must keep the
+	// runtime owner they acquired during ASR.
+	ClaimRuntime bool
 }
 
 // ErrSpeechOutputRequestInvalid rejects an output request before runtime state or TTS side effects begin.
 var ErrSpeechOutputRequestInvalid = errors.New("speech output request is invalid")
+
+// ErrSpeechOutputSuperseded marks output that lost runtime ownership to a
+// newer VAD Turn. It is an expected barge-in outcome, not a provider failure.
+var ErrSpeechOutputSuperseded = errors.New("speech output superseded")
 
 // SpeechOutput owns only text synthesis, audio chunks, and playback lifecycle.
 // It deliberately does not publish FinalTurn, AssistantReply, or UsageFact.
@@ -118,6 +126,7 @@ func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayba
 	}()
 	ttsResult, err := s.speech.Play(ctx, SpeechOutputRequest{
 		Turn: turn, Language: input.TargetLanguage, Text: input.TranslatedText, PlaybackID: input.PlaybackID,
+		ClaimRuntime: true,
 	})
 	if err != nil {
 		var notStarted speechOutputNotStartedError
@@ -144,7 +153,16 @@ func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (t
 		strings.TrimSpace(request.PlaybackID) == "" {
 		return tts.Result{}, speechOutputNotStartedError{err: ErrSpeechOutputRequestInvalid}
 	}
-	if err := o.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID); err != nil {
+	var runtimeErr error
+	if request.ClaimRuntime {
+		runtimeErr = o.claimRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID)
+	} else {
+		runtimeErr = o.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID)
+	}
+	if err := runtimeErr; err != nil {
+		if runtimeUpdateSuperseded(err) {
+			return tts.Result{}, ErrSpeechOutputSuperseded
+		}
 		return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("report TTS runtime: %w", err)}
 	}
 	ttsStartedAt := time.Now()
@@ -186,10 +204,18 @@ func (o *SpeechOutput) validate() error {
 func (o *SpeechOutput) reportRuntime(ctx context.Context, turn TurnContext, state session.RuntimeState, playbackID string) error {
 	turnID := turn.ID
 	update := session.ProcessingStateUpdate{
-		SessionID: turn.SessionID, RuntimeState: state, CurrentTurnID: &turnID,
+		SessionID: turn.SessionID, RuntimeState: state, CurrentTurnID: &turnID, ExpectedTurnID: &turnID,
 	}
 	update.CurrentPlaybackID = &playbackID
 	return o.runtime.SetProcessingState(ctx, update)
+}
+
+func (o *SpeechOutput) claimRuntime(ctx context.Context, turn TurnContext, state session.RuntimeState, playbackID string) error {
+	turnID := turn.ID
+	playback := playbackID
+	return o.runtime.SetProcessingState(ctx, session.ProcessingStateUpdate{
+		SessionID: turn.SessionID, RuntimeState: state, CurrentTurnID: &turnID, CurrentPlaybackID: &playback,
+	})
 }
 
 func (o *SpeechOutput) publishChunks(ctx context.Context, request SpeechOutputRequest, startedAt time.Time, chunks <-chan tts.AudioChunk) (bool, error) {
@@ -206,6 +232,9 @@ func (o *SpeechOutput) publishChunks(ctx context.Context, request SpeechOutputRe
 			if !playing {
 				// A created stream becomes externally visible only with its first audio chunk.
 				if err := o.reportRuntime(ctx, request.Turn, session.RuntimePlaying, request.PlaybackID); err != nil {
+					if runtimeUpdateSuperseded(err) {
+						return false, ErrSpeechOutputSuperseded
+					}
 					return false, fmt.Errorf("report playing runtime: %w", err)
 				}
 				playing = true

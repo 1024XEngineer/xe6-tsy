@@ -88,7 +88,7 @@ func (i *Interpreter) Interpret(ctx context.Context, request command.InterpretRe
 	if request.SessionID == "" || request.CommandID == "" || strings.TrimSpace(request.Text) == "" {
 		return command.Candidate{}, command.ErrInterpretRequestInvalid
 	}
-	content, err := i.completeJSON(ctx, i.prompt, request.Text)
+	content, _, err := i.completeJSON(ctx, i.prompt, request.Text)
 	if err != nil {
 		return command.Candidate{}, err
 	}
@@ -114,17 +114,17 @@ func (i *Interpreter) Interpret(ctx context.Context, request command.InterpretRe
 
 // GenerateSuccessFeedback lets Qwen phrase an already completed command result. The JSON facts are
 // authoritative input: this method has no executor, coordinator, storage, or playback capability.
-func (i *Interpreter) GenerateSuccessFeedback(ctx context.Context, request command.SuccessFeedbackRequest) (string, error) {
+func (i *Interpreter) GenerateSuccessFeedback(ctx context.Context, request command.SuccessFeedbackRequest) (command.SuccessFeedbackResult, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return command.SuccessFeedbackResult{}, err
 	}
 	if !request.Command.Action.Valid() || !request.Execution.State.ActiveMode.Valid() ||
 		(request.Execution.Status != realtimev1.ModeSwitchApplied && request.Execution.Status != realtimev1.ModeSwitchUnchanged) {
-		return "", ErrFeedbackInvalid
+		return command.SuccessFeedbackResult{}, ErrFeedbackInvalid
 	}
 	if config := request.Execution.LanguageConfig; config != nil &&
 		(strings.TrimSpace(config.SourceLanguage) == "" || strings.TrimSpace(config.TargetLanguage) == "" || config.Version <= 0) {
-		return "", ErrFeedbackInvalid
+		return command.SuccessFeedbackResult{}, ErrFeedbackInvalid
 	}
 	facts := feedbackFacts{
 		UserCommand: request.Command.Text, ResponseLanguage: request.ResponseLanguage,
@@ -136,24 +136,35 @@ func (i *Interpreter) GenerateSuccessFeedback(ctx context.Context, request comma
 	}
 	encodedFacts, err := json.Marshal(facts)
 	if err != nil {
-		return "", fmt.Errorf("encode Qwen command feedback facts: %w", err)
+		return command.SuccessFeedbackResult{}, fmt.Errorf("encode Qwen command feedback facts: %w", err)
 	}
-	content, err := i.completeJSON(ctx, feedbackPrompt, string(encodedFacts))
+	content, metadata, err := i.completeJSON(ctx, feedbackPrompt, string(encodedFacts))
 	if err != nil {
-		return "", err
+		return command.SuccessFeedbackResult{}, err
+	}
+	result := command.SuccessFeedbackResult{
+		Provider: "aliyun", Model: metadata.Model,
+		InputTokens: metadata.InputTokens, OutputTokens: metadata.OutputTokens,
 	}
 	var decoded feedbackMessage
 	if err := decodeStrict(content, &decoded); err != nil {
-		return "", fmt.Errorf("%w: %v", ErrFeedbackInvalid, err)
+		return result, fmt.Errorf("%w: %v", ErrFeedbackInvalid, err)
 	}
 	decoded.Message = strings.TrimSpace(decoded.Message)
 	if !validFeedback(decoded.Message) {
-		return "", ErrFeedbackInvalid
+		return result, ErrFeedbackInvalid
 	}
-	return decoded.Message, nil
+	result.Message = decoded.Message
+	return result, nil
 }
 
-func (i *Interpreter) completeJSON(ctx context.Context, systemPrompt, userContent string) ([]byte, error) {
+type completionMetadata struct {
+	Model        string
+	InputTokens  int64
+	OutputTokens int64
+}
+
+func (i *Interpreter) completeJSON(ctx context.Context, systemPrompt, userContent string) ([]byte, completionMetadata, error) {
 	body, err := json.Marshal(chatRequest{
 		Model:          i.config.Model,
 		Messages:       []chatMessage{{Role: "system", Content: systemPrompt}, {Role: "user", Content: userContent}},
@@ -161,37 +172,43 @@ func (i *Interpreter) completeJSON(ctx context.Context, systemPrompt, userConten
 		EnableThinking: false,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("encode Qwen command request: %w", err)
+		return nil, completionMetadata{}, fmt.Errorf("encode Qwen command request: %w", err)
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, i.config.Timeout)
 	defer cancel()
 	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost,
 		strings.TrimRight(i.config.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create Qwen command request: %w", err)
+		return nil, completionMetadata{}, fmt.Errorf("create Qwen command request: %w", err)
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+i.config.APIKey)
 	httpRequest.Header.Set("Content-Type", "application/json")
 	response, err := i.config.HTTPClient.Do(httpRequest)
 	if err != nil {
-		return nil, fmt.Errorf("call Qwen command interpreter: %w", err)
+		return nil, completionMetadata{}, fmt.Errorf("call Qwen command interpreter: %w", err)
 	}
 	defer response.Body.Close()
 	responseBytes, err := readBounded(response.Body, i.config.MaxResponse)
 	if err != nil {
-		return nil, err
+		return nil, completionMetadata{}, err
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("Qwen command interpreter returned HTTP %d", response.StatusCode)
+		return nil, completionMetadata{}, fmt.Errorf("Qwen command interpreter returned HTTP %d", response.StatusCode)
 	}
 	var decoded chatResponse
 	if err := decodeStrict(responseBytes, &decoded); err != nil {
-		return nil, fmt.Errorf("%w: envelope: %v", ErrResponseInvalid, err)
+		return nil, completionMetadata{}, fmt.Errorf("%w: envelope: %v", ErrResponseInvalid, err)
 	}
 	if len(decoded.Choices) != 1 || strings.TrimSpace(decoded.Choices[0].Message.Content) == "" {
-		return nil, fmt.Errorf("%w: missing content", ErrResponseInvalid)
+		return nil, completionMetadata{}, fmt.Errorf("%w: missing content", ErrResponseInvalid)
 	}
-	return []byte(decoded.Choices[0].Message.Content), nil
+	model := strings.TrimSpace(decoded.Model)
+	if model == "" {
+		model = i.config.Model
+	}
+	return []byte(decoded.Choices[0].Message.Content), completionMetadata{
+		Model: model, InputTokens: decoded.Usage.PromptTokens, OutputTokens: decoded.Usage.CompletionTokens,
+	}, nil
 }
 
 func buildPrompt(capabilities []command.CapabilityDescriptor) (string, error) {

@@ -116,9 +116,12 @@ Capability Registry/Validator 和 Executor 执行，最终通过 `command.result
 `signal_id` 会取消尚未完成的旧命令，同 ID 网络重试不会重复执行；模式切换不重建 PeerConnection。
 `activate_mode` 可以同时携带显式源语言和目标语言，因此 Qwen 命令入口要求配置 API 内部地址与共享
 令牌：Executor 必须先持久化 API 所有的语言配置，再提交 realtime 模式 CAS，避免成功切换后使用旧语言对。
-命令执行成功后，Qwen 只根据 Executor 返回的实际模式、切换状态和 API 已接受的语言配置生成简短确认，
-不参与执行结果判断，也不能再次调用模式或语言配置能力。即使模式原本已经是同传，只要语言对发生更新，
-回复也必须确认实际语言对；反馈生成失败不会回滚或重试已完成的命令，而是使用包含实际语言对的动态兜底文案。
+命令执行成功后，`command.result` 立即使用 Executor 返回的实际模式、切换状态和 API 已接受的语言配置
+生成确定性文案，不等待额外模型请求。模式切换的语音确认由异步 Feedback worker 调用 Qwen 润色；Qwen
+不参与执行结果判断，也不能再次调用模式或语言配置能力。反馈模型使用独立的 1 秒上限，失败或超时后
+播报 `command.result` 的动态兜底，新唤醒会取消仍在生成或播放的旧反馈。即使模式原本已经是同传，只要
+语言对发生更新，确定性结果也必须确认实际语言对。`assistant_query` 已由 Assistant Handler 生成实际回答，
+不会再调用反馈模型或重复播报确认。反馈模型和 TTS 的已发生用量分别通过现有 UsageFact 链路记录。
 设备字段、时钟和重试要求见 [`docs/DEVICE_KWS_INTEGRATION.md`](../../docs/DEVICE_KWS_INTEGRATION.md)。
 客户端可以独立选择持续上行或唤醒后单轮上行；该交互策略不进入 realtime 的 ModeState。语义解释器
 可把普通问题归一为 `assistant_query`，Executor 复用已注册的 Assistant Handler、TurnOpener、TTS 和

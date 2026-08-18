@@ -456,14 +456,15 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		if options == (command.Options{}) {
 			options = defaultCommandOptions
 		}
-		feedback := newCommandSpeechFeedback(commandSpeechFeedbackDependencies{
-			Speech: m.speech, Usage: m.deps.Usage, Runtime: m.deps.Runtime,
-			AccountID: snapshot.AccountID, TraceID: snapshot.TraceID, Logger: m.logger, Now: m.deps.Now,
-		})
 		var successFeedback command.SuccessFeedbackGenerator
 		if candidate, ok := m.commandInterpreter.(command.SuccessFeedbackGenerator); ok {
 			successFeedback = candidate
 		}
+		feedback := newCommandSpeechFeedback(commandSpeechFeedbackDependencies{
+			Speech: m.speech, Usage: m.deps.Usage, Runtime: m.deps.Runtime,
+			SuccessFeedback: successFeedback,
+			AccountID:       snapshot.AccountID, TraceID: snapshot.TraceID, Logger: m.logger, Now: m.deps.Now,
+		})
 		gate, gateErr := command.NewGate(command.Dependencies{
 			Classifier:  classifier,
 			ASR:         m.commandASR,
@@ -472,12 +473,11 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			Executor: commandExecutor{
 				manager: m, languages: m.deps.Languages, configurator: m.deps.LanguageConfigurator,
 			},
-			SuccessFeedback: successFeedback,
-			Results:         m.deps.CommandResults,
-			Feedback:        feedback,
-			Observer:        m.deps.CommandObserver,
-			Logger:          m.logger,
-			Now:             m.deps.Now,
+			Results:  m.deps.CommandResults,
+			Feedback: feedback,
+			Observer: m.deps.CommandObserver,
+			Logger:   m.logger,
+			Now:      m.deps.Now,
 		}, options)
 		if gateErr != nil {
 			closeErr := owned.closeContext(ctx)

@@ -114,12 +114,12 @@ func TestInterpreterGeneratesSuccessFeedbackFromAuthoritativeFacts(t *testing.T)
 			facts.LanguageConfig.Version != 3 {
 			t.Errorf("feedback facts = %#v", facts)
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"message\":\"好的，已切换为中文和日语同声传译。\"}"}}]}`))
+		_, _ = w.Write([]byte(`{"model":"qwen3.6-flash","choices":[{"message":{"role":"assistant","content":"{\"message\":\"好的，已切换为中文和日语同声传译。\"}"}}],"usage":{"prompt_tokens":21,"completion_tokens":9}}`))
 	}))
 	defer server.Close()
 	interpreter := newTestInterpreter(t, Config{APIKey: "test-key", BaseURL: server.URL, HTTPClient: server.Client()})
 
-	message, err := interpreter.GenerateSuccessFeedback(t.Context(), command.SuccessFeedbackRequest{
+	result, err := interpreter.GenerateSuccessFeedback(t.Context(), command.SuccessFeedbackRequest{
 		Command: command.Command{
 			Text: "切换为中日传译", Action: command.ActionActivateMode, TargetMode: realtimev1.ModeInterpretation,
 		},
@@ -135,19 +135,20 @@ func TestInterpreterGeneratesSuccessFeedbackFromAuthoritativeFacts(t *testing.T)
 	if err != nil {
 		t.Fatalf("GenerateSuccessFeedback() error = %v", err)
 	}
-	if message != "好的，已切换为中文和日语同声传译。" {
-		t.Fatalf("feedback message = %q", message)
+	if result.Message != "好的，已切换为中文和日语同声传译。" || result.Provider != "aliyun" ||
+		result.Model != "qwen3.6-flash" || result.InputTokens != 21 || result.OutputTokens != 9 {
+		t.Fatalf("feedback result = %#v", result)
 	}
 }
 
 func TestInterpreterRejectsInvalidSuccessFeedback(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"message\":\"第一行\\n第二行\"}"}}]}`))
+		_, _ = w.Write([]byte(`{"model":"qwen3.6-flash","choices":[{"message":{"role":"assistant","content":"{\"message\":\"第一行\\n第二行\"}"}}],"usage":{"prompt_tokens":12,"completion_tokens":4}}`))
 	}))
 	defer server.Close()
 	interpreter := newTestInterpreter(t, Config{APIKey: "test-key", BaseURL: server.URL, HTTPClient: server.Client()})
-	_, err := interpreter.GenerateSuccessFeedback(t.Context(), command.SuccessFeedbackRequest{
+	result, err := interpreter.GenerateSuccessFeedback(t.Context(), command.SuccessFeedbackRequest{
 		Command: command.Command{Action: command.ActionReturnToAssistant, TargetMode: realtimev1.ModeAssistant},
 		Execution: command.ExecutionResult{
 			Status: realtimev1.ModeSwitchApplied,
@@ -156,6 +157,9 @@ func TestInterpreterRejectsInvalidSuccessFeedback(t *testing.T) {
 	})
 	if !errors.Is(err, ErrFeedbackInvalid) {
 		t.Fatalf("GenerateSuccessFeedback() error = %v, want ErrFeedbackInvalid", err)
+	}
+	if result.Model != "qwen3.6-flash" || result.InputTokens != 12 || result.OutputTokens != 4 {
+		t.Fatalf("invalid feedback lost billable metadata: %#v", result)
 	}
 }
 

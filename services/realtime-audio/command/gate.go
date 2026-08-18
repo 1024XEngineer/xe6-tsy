@@ -114,16 +114,36 @@ type SuccessFeedbackRequest struct {
 	ResponseLanguage string
 }
 
+// SuccessFeedbackResult contains the optional phrasing and billable provider metadata produced by
+// a feedback model. Execution state is intentionally absent because the generator cannot change it.
+type SuccessFeedbackResult struct {
+	Message      string
+	Provider     string
+	Model        string
+	InputTokens  int64
+	OutputTokens int64
+	CostAmount   string
+	Currency     string
+}
+
+// FeedbackRequest carries the already accepted command result and, for a successful mode
+// transition, the authoritative facts used to optionally phrase an audible confirmation. The event
+// remains the deterministic fallback; feedback generation must never delay or alter its publication.
+type FeedbackRequest struct {
+	Event   realtimev1.CommandResultEvent
+	Success *SuccessFeedbackRequest
+}
+
 // SuccessFeedbackGenerator renders best-effort natural-language confirmation after execution.
 // Failure must never roll back or repeat the already completed command.
 type SuccessFeedbackGenerator interface {
-	GenerateSuccessFeedback(context.Context, SuccessFeedbackRequest) (string, error)
+	GenerateSuccessFeedback(context.Context, SuccessFeedbackRequest) (SuccessFeedbackResult, error)
 }
 
 // SuccessFeedbackFunc adapts a function to the post-execution feedback boundary.
-type SuccessFeedbackFunc func(context.Context, SuccessFeedbackRequest) (string, error)
+type SuccessFeedbackFunc func(context.Context, SuccessFeedbackRequest) (SuccessFeedbackResult, error)
 
-func (f SuccessFeedbackFunc) GenerateSuccessFeedback(ctx context.Context, request SuccessFeedbackRequest) (string, error) {
+func (f SuccessFeedbackFunc) GenerateSuccessFeedback(ctx context.Context, request SuccessFeedbackRequest) (SuccessFeedbackResult, error) {
 	return f(ctx, request)
 }
 
@@ -136,7 +156,7 @@ type ResultSink interface {
 // FeedbackSink plays best-effort command speech after the typed result has been accepted. Publish
 // must return promptly; Interrupt cancels only active feedback, while Close also waits for release.
 type FeedbackSink interface {
-	Publish(realtimev1.CommandResultEvent)
+	Publish(FeedbackRequest)
 	Interrupt()
 	Close()
 }
@@ -152,17 +172,16 @@ type Observer interface {
 // The classifier must not be shared with ordinary Turn segmentation because its internal rolling
 // context, if any, belongs to a different input lifecycle.
 type Dependencies struct {
-	Classifier      vad.Classifier
-	ASR             asr.Provider
-	Interpreter     Interpreter
-	Validator       Validator
-	Executor        Executor
-	SuccessFeedback SuccessFeedbackGenerator
-	Results         ResultSink
-	Feedback        FeedbackSink
-	Observer        Observer
-	Logger          *slog.Logger
-	Now             func() time.Time
+	Classifier  vad.Classifier
+	ASR         asr.Provider
+	Interpreter Interpreter
+	Validator   Validator
+	Executor    Executor
+	Results     ResultSink
+	Feedback    FeedbackSink
+	Observer    Observer
+	Logger      *slog.Logger
+	Now         func() time.Time
 }
 
 // Result tells the caller whether the frame is quarantined from ordinary handlers. Recognition
@@ -441,8 +460,9 @@ func (g *Gate) startRecognitionLocked(ctx context.Context) Result {
 }
 
 type recognitionOutcome struct {
-	event   realtimev1.CommandResultEvent
-	failure Failure
+	event    realtimev1.CommandResultEvent
+	feedback *FeedbackRequest
+	failure  Failure
 }
 
 func (g *Gate) recognize(
@@ -464,7 +484,7 @@ func (g *Gate) recognize(
 	g.abandonLocked()
 	g.mu.Unlock()
 
-	g.publishTerminalOutcome(outcome.event, outcome.failure)
+	g.publishTerminalOutcome(outcome.event, outcome.failure, outcome.feedback)
 	g.completeRecognitionTask(attempt, done)
 }
 
@@ -522,34 +542,16 @@ func (g *Gate) runRecognition(
 		status, message := executionFailureFeedback(parsed, err)
 		return failureOutcome(request, classifyAttemptFailure(caller, processingCtx, FailureExecution), status, message, parsed, g.now())
 	}
+	event := commandResultEvent(request, parsed, execution, commandSuccessFallback(parsed, execution), g.now())
 	return recognitionOutcome{
-		event: commandResultEvent(request, parsed, execution, g.successMessage(processingCtx, request, result.SourceLanguage, parsed, execution), g.now()),
+		event: event,
+		feedback: &FeedbackRequest{
+			Event: event,
+			Success: &SuccessFeedbackRequest{
+				Command: parsed, Execution: execution, ResponseLanguage: result.SourceLanguage,
+			},
+		},
 	}
-}
-
-func (g *Gate) successMessage(
-	ctx context.Context,
-	request OpenRequest,
-	responseLanguage string,
-	parsed Command,
-	execution ExecutionResult,
-) string {
-	fallback := commandSuccessFallback(parsed, execution)
-	if g.deps.SuccessFeedback == nil {
-		return fallback
-	}
-	message, err := g.deps.SuccessFeedback.GenerateSuccessFeedback(ctx, SuccessFeedbackRequest{
-		Command: parsed, Execution: execution, ResponseLanguage: responseLanguage,
-	})
-	message = strings.TrimSpace(message)
-	if err != nil || !validSuccessFeedback(message) {
-		if err == nil {
-			err = errors.New("generated command feedback is invalid")
-		}
-		g.logRecognitionFailure(request, "feedback_generation", err, len([]rune(parsed.Text)))
-		return fallback
-	}
-	return message
 }
 
 func (g *Gate) logRecognitionFailure(request OpenRequest, stage string, err error, textRunes int) {
@@ -613,17 +615,20 @@ func (g *Gate) publishResultLocked(event realtimev1.CommandResultEvent) {
 }
 
 func (g *Gate) publishTerminalResultLocked(event realtimev1.CommandResultEvent, failure Failure) {
-	g.publishTerminalOutcome(event, failure)
+	g.publishTerminalOutcome(event, failure, nil)
 }
 
 // publishTerminalOutcome keeps typed results, observations, and audible feedback aligned for every
 // completed attempt. Cancellation remains silent because a replacement wake or Runtime shutdown
 // owns the audio path; assistant queries produce their own answer audio and must not be duplicated.
-func (g *Gate) publishTerminalOutcome(event realtimev1.CommandResultEvent, failure Failure) {
+func (g *Gate) publishTerminalOutcome(event realtimev1.CommandResultEvent, failure Failure, feedback *FeedbackRequest) {
 	g.publishResult(event)
 	g.recordOutcome(event.Status, failure)
 	if g.deps.Feedback != nil && failure != FailureCanceled && event.Action != string(ActionAssistantQuery) {
-		g.deps.Feedback.Publish(event)
+		if feedback == nil {
+			feedback = &FeedbackRequest{Event: event}
+		}
+		g.deps.Feedback.Publish(*feedback)
 	}
 }
 
@@ -690,7 +695,8 @@ func commandSuccessFallback(parsed Command, execution ExecutionResult) string {
 	return "已返回通用助手模式"
 }
 
-func validSuccessFeedback(message string) bool {
+// ValidSuccessFeedback bounds generated text before it is sent to speech output.
+func ValidSuccessFeedback(message string) bool {
 	if message == "" || utf8.RuneCountInString(message) > 80 {
 		return false
 	}

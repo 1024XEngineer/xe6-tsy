@@ -232,9 +232,6 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		}
 	}
 	processStreamingEvent := func(event vad.Event) error {
-		if streaming == nil {
-			return nil
-		}
 		switch event.Type {
 		case vad.EventOpened:
 			if activeTurn != nil {

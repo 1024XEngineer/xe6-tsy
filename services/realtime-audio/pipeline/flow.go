@@ -176,7 +176,7 @@ func (p *TurnProcessor) StartAudio(ctx context.Context, request TurnProcessReque
 
 // PushAudio forwards a single PCM frame without waiting for VAD final.
 func (t *AudioTurn) PushAudio(ctx context.Context, chunk []byte) error {
-	if t == nil || t.stream == nil || t.processor == nil {
+	if t.stream == nil || t.processor == nil {
 		return ErrASRStreamRequired
 	}
 	if err := t.stream.PushAudio(ctx, append([]byte(nil), chunk...)); err != nil {
@@ -189,7 +189,7 @@ func (t *AudioTurn) PushAudio(ctx context.Context, chunk []byte) error {
 
 // Finish closes ASR and dispatches only its final result to the mode handler.
 func (t *AudioTurn) Finish(ctx context.Context) (TurnContext, error) {
-	if t == nil || t.stream == nil || t.processor == nil {
+	if t.stream == nil || t.processor == nil {
 		return TurnContext{}, ErrASRStreamRequired
 	}
 	p := t.processor
@@ -244,9 +244,6 @@ func (t *AudioTurn) Finish(ctx context.Context) (TurnContext, error) {
 
 // Close is idempotent and releases the event reader on aborted turns.
 func (t *AudioTurn) Close() {
-	if t == nil {
-		return
-	}
 	t.closeOnce.Do(func() {
 		if t.settlePartials != nil {
 			t.settlePartials()

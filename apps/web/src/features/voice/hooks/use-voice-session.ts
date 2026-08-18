@@ -50,7 +50,12 @@ import {
   parseCommandResult,
   type CommandResultEvent,
 } from "../lib/command-results";
-import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
+import {
+  cancelTTSAudioPlayback,
+  enqueueTTSAudio,
+  parseTTSAudioEvent,
+  parseTTSPlaybackStopEvent,
+} from "../lib/tts-playback";
 import { sendWakeWordDetectedSignal } from "../lib/wake-word-signal";
 import {
   loadVoiceConfig,
@@ -72,7 +77,6 @@ import {
 } from "../model/session";
 
 const POLL_INTERVAL_MS = 1200;
-const TTS_INPUT_RESUME_DELAY_MS = 300;
 export const COMMAND_UPLINK_TIMEOUT_MS = 15_000;
 
 export type SessionDebugInfo = {
@@ -849,11 +853,9 @@ export function useVoiceSession() {
       let sessionStream: MediaStream | null = null;
       let sessionUsesWakeUplink = false;
       let sessionUplinkEnabled = false;
-      let sessionOutputSuppressed = false;
-      let ttsResumeTimer: ReturnType<typeof setTimeout> | null = null;
       const applyRawTrackState = () => {
         for (const track of sessionStream?.getAudioTracks() ?? []) {
-          track.enabled = sessionUplinkEnabled && !sessionOutputSuppressed;
+          track.enabled = sessionUplinkEnabled;
         }
       };
       const setSessionUplinkEnabled = (enabled: boolean) => {
@@ -863,32 +865,6 @@ export function useVoiceSession() {
           return;
         }
         applyRawTrackState();
-      };
-      const setSessionOutputSuppressed = (suppressed: boolean) => {
-        sessionOutputSuppressed = suppressed;
-        if (sessionUsesWakeUplink) {
-          wakeRef.current?.setOutputSuppressed(suppressed);
-          return;
-        }
-        applyRawTrackState();
-      };
-      const setTTSOutputSuppressed = (suppressed: boolean) => {
-        if (sessionIdRef.current !== session.id) return;
-        const stream = sessionStream;
-        if (!stream) return;
-        if (ttsResumeTimer) {
-          clearTimeout(ttsResumeTimer);
-          ttsResumeTimer = null;
-        }
-        if (suppressed) {
-          setSessionOutputSuppressed(true);
-          return;
-        }
-        ttsResumeTimer = setTimeout(() => {
-          ttsResumeTimer = null;
-          if (sessionIdRef.current !== session.id) return;
-          setSessionOutputSuppressed(false);
-        }, TTS_INPUT_RESUME_DELAY_MS);
       };
       setUplinkEnabledRef.current = (enabled) => {
         if (sessionIdRef.current !== session.id) return;
@@ -934,11 +910,16 @@ export function useVoiceSession() {
               }
               return;
             }
+            const playbackStop = parseTTSPlaybackStopEvent(payload);
+            if (playbackStop) {
+              cancelTTSAudioPlayback(playbackStop.playbackId);
+              return;
+            }
             const audio = parseTTSAudioEvent(payload);
             if (audio) {
-              enqueueTTSAudio(audio, (playing) => {
-                setTTSOutputSuppressed(playing);
-              });
+              // Keep the microphone uplink active for barge-in. Both direct
+              // capture paths request browser echo cancellation at acquisition.
+              enqueueTTSAudio(audio);
               return;
             }
             const assistantReply = parseAssistantReply(payload);

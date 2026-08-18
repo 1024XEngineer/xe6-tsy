@@ -80,7 +80,7 @@ func TestServiceInterruptsOnlyActivePlaybackAndIsIdempotent(t *testing.T) {
 	if got := service.Snapshot("session-1"); got.State != StateInterrupted {
 		t.Fatalf("snapshot = %#v", got)
 	}
-	if got := events.Types(); !reflect.DeepEqual(got, []EventType{EventStarted, EventInterrupted}) {
+	if got := events.Types(); !reflect.DeepEqual(got, []EventType{EventStarted, EventInterrupted, EventStopped}) {
 		t.Fatalf("event types = %#v", got)
 	}
 }
@@ -166,7 +166,11 @@ func TestServiceRejectsLateChunkForSettledPlayback(t *testing.T) {
 			if got := track.Chunks(); !reflect.DeepEqual(got, []pipeline.AudioChunk{first}) {
 				t.Fatalf("track chunks = %#v, want only the first chunk", got)
 			}
-			if got := events.Types(); !reflect.DeepEqual(got, []EventType{EventStarted, tt.eventType}) {
+			wantEvents := []EventType{EventStarted, tt.eventType}
+			if tt.eventType == EventInterrupted {
+				wantEvents = append(wantEvents, EventStopped)
+			}
+			if got := events.Types(); !reflect.DeepEqual(got, wantEvents) {
 				t.Fatalf("event types = %#v", got)
 			}
 		})
@@ -202,8 +206,43 @@ func TestServiceRetriesSettlementWhenEventPublishFails(t *testing.T) {
 	if got := service.Snapshot("session-1"); got.State != StateInterrupted {
 		t.Fatalf("snapshot after retry = %#v", got)
 	}
-	if got := events.Attempts(); len(got) != 3 || got[1].EventID != got[2].EventID {
+	if got := events.Attempts(); len(got) != 4 || got[1].EventID != got[2].EventID {
 		t.Fatalf("settlement event attempts = %#v, want stable event id", got)
+	}
+	if track.StopCalls() != 1 {
+		t.Fatalf("track stop calls = %d, want 1", track.StopCalls())
+	}
+}
+
+func TestServiceRetriesPlaybackStopWithoutRepeatingInterruptedEvent(t *testing.T) {
+	track := &recordingTrack{}
+	events := &eventFailureByType{failType: EventStopped, failures: 1}
+	track.beforeStop = func() {
+		types := events.Types()
+		if !reflect.DeepEqual(types, []EventType{EventStarted, EventInterrupted, EventStopped}) {
+			t.Errorf("events before track stop = %#v, want playback.stop already delivered", types)
+		}
+	}
+	service, err := NewService(Dependencies{Track: track, Events: events, Now: fixedClock})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	chunk := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+	if err := service.Publish(context.Background(), chunk); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if err := service.Interrupt(context.Background(), "session-1", "playback-1", "user_speaking"); err == nil {
+		t.Fatal("Interrupt() unexpectedly succeeded when playback.stop publish failed")
+	}
+	if err := service.Interrupt(context.Background(), "session-1", "playback-1", "user_speaking"); err != nil {
+		t.Fatalf("Interrupt(retry) error = %v", err)
+	}
+	if got := events.Types(); !reflect.DeepEqual(got, []EventType{EventStarted, EventInterrupted, EventStopped}) {
+		t.Fatalf("published event types = %#v", got)
+	}
+	attempts := events.Attempts()
+	if len(attempts) != 4 || attempts[2].Type != EventStopped || attempts[3].EventID != attempts[2].EventID {
+		t.Fatalf("playback stop attempts = %#v, want one retry with stable stop event", attempts)
 	}
 	if track.StopCalls() != 1 {
 		t.Fatalf("track stop calls = %d, want 1", track.StopCalls())
@@ -365,6 +404,7 @@ type recordingTrack struct {
 	stops         int
 	stopFailures  int
 	writeFailures map[int64]int
+	beforeStop    func()
 }
 
 type completingTrack struct {
@@ -404,6 +444,9 @@ func (t *recordingTrack) Write(_ context.Context, chunk pipeline.AudioChunk) err
 }
 
 func (t *recordingTrack) Stop(_ context.Context, _ string) error {
+	if t.beforeStop != nil {
+		t.beforeStop()
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.stops++
@@ -412,6 +455,42 @@ func (t *recordingTrack) Stop(_ context.Context, _ string) error {
 		return errors.New("injected track stop failure")
 	}
 	return nil
+}
+
+type eventFailureByType struct {
+	mu       sync.Mutex
+	failType EventType
+	failures int
+	events   []Event
+	attempts []Event
+}
+
+func (e *eventFailureByType) Publish(_ context.Context, event Event) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.attempts = append(e.attempts, event)
+	if event.Type == e.failType && e.failures > 0 {
+		e.failures--
+		return errors.New("injected playback stop event failure")
+	}
+	e.events = append(e.events, event)
+	return nil
+}
+
+func (e *eventFailureByType) Types() []EventType {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	result := make([]EventType, 0, len(e.events))
+	for _, event := range e.events {
+		result = append(result, event.Type)
+	}
+	return result
+}
+
+func (e *eventFailureByType) Attempts() []Event {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]Event(nil), e.attempts...)
 }
 
 func (t *recordingTrack) Chunks() []pipeline.AudioChunk {

@@ -49,6 +49,12 @@ type CommandGate interface {
 	Cancel()
 }
 
+// PlaybackInterrupter stops only the active session playback. It is optional
+// because audio-only segment consumers do not necessarily own a downlink.
+type PlaybackInterrupter interface {
+	InterruptCurrent(context.Context, string, string) error
+}
+
 // Request carries immutable session metadata used for every utterance read from a source.
 type Request struct {
 	SessionID      string
@@ -64,6 +70,7 @@ type Dependencies struct {
 	Processor TurnProcessor
 	Command   CommandGate
 	WakeWords WakeWordSource
+	Playback  PlaybackInterrupter
 	Latency   *slog.Logger
 	Now       func() time.Time
 }
@@ -75,6 +82,7 @@ type Service struct {
 	processor TurnProcessor
 	command   CommandGate
 	wakeWords WakeWordSource
+	playback  PlaybackInterrupter
 	latency   *slog.Logger
 	now       func() time.Time
 }
@@ -92,7 +100,8 @@ func NewService(deps Dependencies) (*Service, error) {
 	}
 	return &Service{
 		source: deps.Source, segmenter: deps.Segmenter, processor: deps.Processor,
-		command: deps.Command, wakeWords: deps.WakeWords, latency: deps.Latency, now: now,
+		command: deps.Command, wakeWords: deps.WakeWords, playback: deps.Playback,
+		latency: deps.Latency, now: now,
 	}, nil
 }
 
@@ -187,6 +196,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 				} else {
 					for _, event := range events {
 						s.logVADCheckpoint(request, event)
+						s.interruptPlayback(request.SessionID, event)
 						if event.Type == vad.EventFinal {
 							if err := enqueueFinalized(event); err != nil {
 								loopErr = err
@@ -217,6 +227,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		}
 		for _, event := range events {
 			s.logVADCheckpoint(request, event)
+			s.interruptPlayback(request.SessionID, event)
 			if event.Type != vad.EventFinal {
 				continue
 			}
@@ -243,6 +254,22 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	default:
 	}
 	return loopErr
+}
+
+// interruptPlayback intentionally detaches cancellation from microphone
+// ingestion. A slow or unavailable downlink must neither delay the next VAD
+// frame nor turn a successfully detected ordinary utterance into a pipeline
+// failure. The VAD emits EventOpened once per utterance, and the playback
+// implementation remains idempotent for concurrent/retried calls.
+func (s *Service) interruptPlayback(sessionID string, event vad.Event) {
+	if s == nil || s.playback == nil || event.Type != vad.EventOpened || sessionID == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = s.playback.InterruptCurrent(ctx, sessionID, "user_speaking")
+	}()
 }
 
 func (s *Service) receiveWakeWords(

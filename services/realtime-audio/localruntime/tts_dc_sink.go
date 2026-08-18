@@ -33,6 +33,9 @@ type DataChannelTTSAudioSink struct {
 	settled      map[ttsPlaybackKey]struct{}
 	settledOrder []ttsPlaybackKey
 	publishAudio ttsAudioPublisher
+	active       map[string]*ttsActivePlayback
+	now          func() time.Time
+	publishStop  ttsPlaybackStopPublisher
 }
 
 var _ pipeline.AudioPlaybackLifecycle = (*DataChannelTTSAudioSink)(nil)
@@ -53,6 +56,18 @@ type ttsPlaybackKey struct {
 	playbackID string
 }
 
+// ttsActivePlayback remains after Complete until its PCM duration has elapsed.
+// The DataChannel receives a complete clip before the browser starts it, so
+// removing it at Complete would make the audible clip impossible to interrupt.
+type ttsActivePlayback struct {
+	key       ttsPlaybackKey
+	turnID    string
+	delivered bool
+	sending   bool
+	stopped   bool
+	expiresAt time.Time
+}
+
 type ttsAudioPublisher func(
 	context.Context,
 	string,
@@ -63,6 +78,8 @@ type ttsAudioPublisher func(
 	string,
 	[]byte,
 ) error
+
+type ttsPlaybackStopPublisher func(context.Context, FrontendPlaybackStop) error
 
 // FrontendTTSAudio is consumed by lingow-voice-demo Web Audio playback.
 type FrontendTTSAudio struct {
@@ -77,6 +94,19 @@ type FrontendTTSAudio struct {
 	PCMBase64  string `json:"pcm_base64"`
 	SequenceNo int64  `json:"sequence"`
 	Final      bool   `json:"final"`
+}
+
+// FrontendPlaybackStop tells a DataChannel TTS client to stop and discard one
+// identified clip. TurnID references the already committed FinalTurn; it does
+// not create another durable business record.
+type FrontendPlaybackStop struct {
+	Type       string    `json:"type"`
+	Event      string    `json:"event"`
+	SessionID  string    `json:"session_id"`
+	TurnID     string    `json:"turn_id"`
+	PlaybackID string    `json:"playback_id"`
+	Reason     string    `json:"reason"`
+	OccurredAt time.Time `json:"occurred_at"`
 }
 
 func (s *DataChannelTTSAudioSink) Publish(ctx context.Context, chunk pipeline.AudioChunk) error {
@@ -109,6 +139,10 @@ func (s *DataChannelTTSAudioSink) Publish(ctx context.Context, chunk pipeline.Au
 	if chunk.Encoding != "" {
 		buf.encoding = chunk.Encoding
 	}
+	if s.active == nil {
+		s.active = make(map[string]*ttsActivePlayback)
+	}
+	s.active[key.sessionID] = &ttsActivePlayback{key: key, turnID: buf.turnID}
 	buf.pcm = append(buf.pcm, chunk.Data...)
 	return nil
 }
@@ -122,6 +156,7 @@ func (s *DataChannelTTSAudioSink) Complete(ctx context.Context, sessionID, playb
 	sessionID = key.sessionID
 	if _, interrupted := s.settled[key]; interrupted {
 		delete(s.buffers, key)
+		s.clearActiveLocked(key)
 		s.releaseSettledLocked(key)
 		s.mu.Unlock()
 		return nil
@@ -155,6 +190,9 @@ func (s *DataChannelTTSAudioSink) Complete(ctx context.Context, sessionID, playb
 			return err
 		}
 	}
+	if !s.playbackSettled(key) {
+		s.markDelivered(key, buf.turnID, audio)
+	}
 	return nil
 }
 
@@ -163,6 +201,7 @@ func (s *DataChannelTTSAudioSink) Cancel(ctx context.Context, sessionID, playbac
 	key, _ := s.bufferLocked(sessionID, playbackID)
 	delete(s.buffers, key)
 	s.markSettledLocked(key)
+	s.clearActiveLocked(key)
 	if _, publishing := s.publishing[key]; publishing {
 		s.publishing[key] = true
 	}
@@ -170,17 +209,18 @@ func (s *DataChannelTTSAudioSink) Cancel(ctx context.Context, sessionID, playbac
 	return ctx.Err()
 }
 
-// InterruptCurrent discards every not-yet-published PCM buffer for a session.
-// Browser playback is stopped by the local wake-word path; clearing these
-// buffers prevents a TTS completion racing with the wake signal from sending
-// stale audio after the command window opens.
-func (s *DataChannelTTSAudioSink) InterruptCurrent(ctx context.Context, sessionID, _ string) error {
+// InterruptCurrent discards queued PCM and sends one playback.stop for the
+// session's audible clip. It uses the FinalTurn ID already carried by the
+// playback stream and never creates another FinalTurn or delivery record.
+func (s *DataChannelTTSAudioSink) InterruptCurrent(ctx context.Context, sessionID, reason string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if s == nil || sessionID == "" {
 		return nil
 	}
+	now := s.clock()
+	var stop *FrontendPlaybackStop
 	s.mu.Lock()
 	for key := range s.buffers {
 		if key.sessionID == sessionID {
@@ -194,8 +234,81 @@ func (s *DataChannelTTSAudioSink) InterruptCurrent(ctx context.Context, sessionI
 			s.markSettledLocked(key)
 		}
 	}
+	if active := s.active[sessionID]; active != nil {
+		if !active.expiresAt.IsZero() && !now.Before(active.expiresAt) {
+			delete(s.active, sessionID)
+		} else if active.delivered && !active.stopped && !active.sending {
+			active.sending = true
+			s.markSettledLocked(active.key)
+			stop = &FrontendPlaybackStop{
+				Type: "playback.stop", Event: "playback.stop", SessionID: active.key.sessionID,
+				TurnID: active.turnID, PlaybackID: active.key.playbackID, Reason: reason, OccurredAt: now,
+			}
+		}
+	}
 	s.mu.Unlock()
+	if stop == nil {
+		return nil
+	}
+	publish := s.publishStop
+	if publish == nil {
+		publish = s.publishPlaybackStop
+	}
+	if err := publish(ctx, *stop); err != nil {
+		s.finishStopAttempt(stop.SessionID, stop.PlaybackID, false)
+		s.recordFailure()
+		return fmt.Errorf("publish playback stop: %w", err)
+	}
+	s.finishStopAttempt(stop.SessionID, stop.PlaybackID, true)
 	return nil
+}
+
+func (s *DataChannelTTSAudioSink) finishStopAttempt(sessionID, playbackID string, delivered bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	active := s.active[sessionID]
+	if active == nil || active.key.playbackID != playbackID {
+		return
+	}
+	active.sending = false
+	if delivered {
+		active.stopped = true
+	}
+}
+
+func (s *DataChannelTTSAudioSink) markDelivered(key ttsPlaybackKey, turnID string, audio normalizedTTSAudio) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	active := s.active[key.sessionID]
+	if active == nil || active.key != key || active.stopped {
+		return
+	}
+	active.delivered = true
+	if active.turnID == "" {
+		active.turnID = turnID
+	}
+	if audio.encoding != "pcm_s16le" {
+		return
+	}
+	rate := s.SampleRate
+	if rate <= 0 {
+		rate = 24000
+	}
+	duration := time.Duration(len(audio.data)*int(time.Second)) / time.Duration(rate*2)
+	active.expiresAt = s.clock().Add(duration + 250*time.Millisecond)
+}
+
+func (s *DataChannelTTSAudioSink) clearActiveLocked(key ttsPlaybackKey) {
+	if active := s.active[key.sessionID]; active != nil && active.key == key {
+		delete(s.active, key.sessionID)
+	}
+}
+
+func (s *DataChannelTTSAudioSink) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now().UTC()
 }
 
 // bufferLocked resolves legacy callers that omit sessionID only when one
@@ -382,6 +495,19 @@ func (s *DataChannelTTSAudioSink) publish(
 		return fmt.Errorf("publish TTS audio chunk seq=%d: %w", sequence, err)
 	}
 	return nil
+}
+
+func (s *DataChannelTTSAudioSink) publishPlaybackStop(ctx context.Context, payload FrontendPlaybackStop) error {
+	if s.Media == nil {
+		return nil
+	}
+	media, err := s.Media.CurrentMedia(ctx, payload.SessionID)
+	if err != nil || media == nil || media.TranslationEvents() == nil {
+		return nil
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	return media.TranslationEvents().PublishJSON(publishCtx, payload)
 }
 
 func (s *DataChannelTTSAudioSink) recordFailure() {

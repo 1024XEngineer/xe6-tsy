@@ -2,6 +2,7 @@ package localruntime
 
 import (
 	"context"
+	"errors"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
@@ -21,7 +22,15 @@ func (s PlaybackAudioSink) Publish(ctx context.Context, chunk pipeline.AudioChun
 	if service == nil {
 		return nil
 	}
-	return service.Publish(ctx, chunk)
+	err := service.Publish(ctx, chunk)
+	if errors.Is(err, playback.ErrPlaybackNotActive) && service.Snapshot(chunk.SessionID).State == playback.StateInterrupted {
+		// An ordinary barge-in settles the client output before the provider has
+		// necessarily stopped producing PCM. Discarding those late chunks keeps
+		// the committed FinalTurn successful instead of reporting cancellation as
+		// a pipeline failure.
+		return nil
+	}
+	return err
 }
 
 func (s PlaybackAudioSink) Complete(ctx context.Context, sessionID, playbackID string) error {

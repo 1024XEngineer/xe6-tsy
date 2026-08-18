@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   cancelAllTTSAudioPlayback,
+  cancelTTSAudioPlayback,
   enqueueTTSAudio,
+  parseTTSPlaybackStopEvent,
   parseTTSAudioEvent,
 } from "./tts-playback";
 
@@ -74,13 +76,14 @@ class SilentAudioContext extends FakeAudioContext {
 
 class InterruptibleAudioContext extends FakeAudioContext {
   readonly stop = vi.fn();
+  readonly start = vi.fn();
 
   createBufferSource() {
     return {
       buffer: null,
       connect: vi.fn(),
       onended: null as (() => void) | null,
-      start: vi.fn(),
+      start: this.start,
       stop: this.stop,
     } as unknown as AudioBufferSourceNode;
   }
@@ -108,6 +111,22 @@ describe("parseTTSAudioEvent", () => {
 
   it("ignores unrelated events", () => {
     expect(parseTTSAudioEvent({ type: "translation.final" })).toBeNull();
+  });
+
+  it("parses flat and payload-wrapped playback stop events", () => {
+    expect(
+      parseTTSPlaybackStopEvent({
+        type: "playback.stop",
+        playback_id: "playback-flat",
+      }),
+    ).toEqual({ playbackId: "playback-flat" });
+    expect(
+      parseTTSPlaybackStopEvent({
+        event: "playback.stop",
+        payload: { playback_id: "playback-wrapped" },
+      }),
+    ).toEqual({ playbackId: "playback-wrapped" });
+    expect(parseTTSPlaybackStopEvent({ type: "playback.stop" })).toBeNull();
   });
 
   it("treats missing final as a complete single clip", () => {
@@ -223,7 +242,66 @@ describe("parseTTSAudioEvent", () => {
     expect(states).toEqual([true, false]);
   });
 
-  it("ignores late chunks from a canceled playback until its final chunk", async () => {
+  it("stops only the matching active playback", async () => {
+    if (FakeAudioContext.last) FakeAudioContext.last.state = "closed";
+    const context = new InterruptibleAudioContext();
+    vi.stubGlobal("AudioContext", class {
+      constructor() {
+        return context;
+      }
+    });
+
+    enqueueTTSAudio(
+      {
+        playbackId: "matching-active",
+        sampleRateHz: 24000,
+        channels: 1,
+        encoding: "pcm_s16le",
+        sequence: 1,
+        final: true,
+        pcm: new Uint8Array([0, 0]).buffer,
+      },
+    );
+    await vi.waitFor(() => expect(context.start).toHaveBeenCalledOnce());
+
+    cancelTTSAudioPlayback("another-playback");
+    expect(context.stop).not.toHaveBeenCalled();
+    cancelTTSAudioPlayback("matching-active");
+    expect(context.stop).toHaveBeenCalledOnce();
+  });
+
+  it("discards only the matching pending playback", async () => {
+    if (FakeAudioContext.last) FakeAudioContext.last.state = "closed";
+    vi.stubGlobal("AudioContext", FakeAudioContext);
+    const states: boolean[] = [];
+    const pending = (final: boolean) => ({
+      playbackId: "pending-stop",
+      sampleRateHz: 24000,
+      channels: 1,
+      encoding: "pcm_s16le",
+      sequence: final ? 2 : 1,
+      final,
+      pcm: new Uint8Array([0, 0]).buffer,
+    });
+
+    enqueueTTSAudio(pending(false), (playing) => states.push(playing));
+    cancelTTSAudioPlayback("pending-stop");
+    enqueueTTSAudio(pending(true), (playing) => states.push(playing));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(states).toEqual([]);
+
+    enqueueTTSAudio(
+      {
+        ...pending(true),
+        playbackId: "unrelated-playback",
+        sequence: 1,
+      },
+      (playing) => states.push(playing),
+    );
+    await vi.waitFor(() => expect(states).toEqual([true, false]));
+  });
+
+  it("does not let late final audio restart a canceled playback", async () => {
     if (FakeAudioContext.last) FakeAudioContext.last.state = "closed";
     vi.stubGlobal("AudioContext", FakeAudioContext);
     const states: boolean[] = [];
@@ -245,7 +323,10 @@ describe("parseTTSAudioEvent", () => {
     await new Promise<void>((resolve) => queueMicrotask(() => resolve()));
     expect(states).toEqual([]);
 
-    enqueueTTSAudio(chunk(1, true), (playing) => states.push(playing));
+    enqueueTTSAudio(
+      { ...chunk(1, true), playbackId: "replacement" },
+      (playing) => states.push(playing),
+    );
     await vi.waitFor(() => expect(states).toEqual([true, false]));
   });
 });

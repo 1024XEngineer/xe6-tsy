@@ -36,7 +36,11 @@ const (
 	EventStarted     EventType = "playback.started"
 	EventFinished    EventType = "playback.finished"
 	EventInterrupted EventType = "playback.interrupted"
-	EventCancelled   EventType = "playback.cancelled"
+	// EventStopped is the client command that halts any buffered playback.
+	// EventInterrupted remains before it as the backward-compatible lifecycle
+	// observation for consumers that predate playback.stop.
+	EventStopped   EventType = "playback.stop"
+	EventCancelled EventType = "playback.cancelled"
 )
 
 // Event is the ordered local event contract shared by playback and transport adapters.
@@ -110,6 +114,8 @@ type settlement struct {
 	event        Event
 	stop         bool
 	eventSent    bool
+	stopEvent    *Event
+	stopSent     bool
 	trackStopped bool
 }
 
@@ -301,6 +307,11 @@ func (s *Service) settle(ctx context.Context, sessionID, playbackID string, stat
 		current.settlement = &settlement{
 			state: state, event: s.eventLocked(current, eventType, reason), stop: stop,
 		}
+		if eventType == EventInterrupted {
+			current.eventSeq++
+			stopEvent := s.eventLocked(current, EventStopped, reason)
+			current.settlement.stopEvent = &stopEvent
+		}
 	}
 	pending := current.settlement
 	s.mu.Unlock()
@@ -322,6 +333,14 @@ func (s *Service) settle(ctx context.Context, sessionID, playbackID string, stat
 		pending.eventSent = true
 		s.mu.Unlock()
 	}
+	if pending.stopEvent != nil && !pending.stopSent {
+		if err := s.events.Publish(ctx, *pending.stopEvent); err != nil {
+			return fmt.Errorf("publish playback stop: %w", err)
+		}
+		s.mu.Lock()
+		pending.stopSent = true
+		s.mu.Unlock()
+	}
 	if pending.stop && !pending.trackStopped {
 		if err := s.track.Stop(ctx, playbackID); err != nil {
 			return fmt.Errorf("stop playback: %w", err)
@@ -331,12 +350,16 @@ func (s *Service) settle(ctx context.Context, sessionID, playbackID string, stat
 		s.mu.Unlock()
 	}
 	s.mu.Lock()
-	if pending.eventSent && pending.trackStopped {
+	if pending.eventSent && pending.stopSentOrNotRequired() && pending.trackStopped {
 		current.snapshot.State = pending.state
 		current.settlement = nil
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *settlement) stopSentOrNotRequired() bool {
+	return s.stopEvent == nil || s.stopSent
 }
 
 func (s *Service) eventLocked(current *playback, eventType EventType, reason string) Event {

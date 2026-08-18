@@ -126,6 +126,64 @@ func TestServiceIgnoresSilenceOnlyInput(t *testing.T) {
 	}
 }
 
+func TestServiceInterruptsPlaybackOnOrdinarySpeechStartWithoutBlockingTurnProcessing(t *testing.T) {
+	base := time.Unix(30, 0)
+	interrupter := &blockingPlaybackInterrupter{entered: make(chan playbackInterrupt, 1), release: make(chan struct{})}
+	source := &fakeSource{frames: []audio.Frame{
+		testFrame(t, 1, base),
+		testFrame(t, 0, base.Add(300*time.Millisecond)),
+	}}
+	segmenter, err := vad.NewSegmenter(energyClassifier{}, vad.Options{SilenceAfter: 200 * time.Millisecond, MaxDuration: time.Second})
+	if err != nil {
+		t.Fatalf("NewSegmenter() error = %v", err)
+	}
+	service, err := NewService(Dependencies{Source: source, Segmenter: segmenter, Processor: &fakeProcessor{}, Playback: interrupter})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	runDone := make(chan error, 1)
+	go func() { runDone <- service.Run(context.Background(), Request{SessionID: "session-1"}) }()
+	select {
+	case call := <-interrupter.entered:
+		if call.sessionID != "session-1" || call.reason != "user_speaking" {
+			t.Fatalf("interrupt call = %#v", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ordinary EventOpened did not interrupt playback")
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Run() waited for playback interruption")
+	}
+	close(interrupter.release)
+}
+
+func TestServiceDoesNotInterruptPlaybackForWakeClaimedAudio(t *testing.T) {
+	base := time.Unix(31, 0)
+	wake := &fakeWakeWords{signal: realtimev1.WakeWordDetectedSignal{
+		Type: realtimev1.WakeWordDetectedType, EventVersion: realtimev1.WakeWordDetectedEventVersion,
+		SignalID: "wake-1", DetectedAt: base,
+	}, ready: make(chan struct{})}
+	interrupter := &recordingPlaybackInterrupter{calls: make(chan playbackInterrupt, 1)}
+	service := newTestServiceWithDeps(t, &wakeAwareSource{
+		ready:  wake.ready,
+		frames: []audio.Frame{testFrame(t, 9, base)},
+	}, &fakeProcessor{}, &recordingGate{}, wake, func() time.Time { return base })
+	service.playback = interrupter
+	if err := service.Run(context.Background(), Request{SessionID: "session-1", SourceLanguage: "zh-CN"}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	select {
+	case call := <-interrupter.calls:
+		t.Fatalf("wake-claimed frame interrupted ordinary playback: %#v", call)
+	default:
+	}
+}
+
 func TestServiceQuarantinesAudioAfterWakeWord(t *testing.T) {
 	base := time.Unix(31, 0)
 	wake := &fakeWakeWords{signal: realtimev1.WakeWordDetectedSignal{
@@ -443,6 +501,39 @@ type recordingGate struct {
 	active      bool
 	consumed    int
 	replayed    []audio.Frame
+}
+
+type playbackInterrupt struct {
+	sessionID string
+	reason    string
+}
+
+type recordingPlaybackInterrupter struct {
+	calls chan playbackInterrupt
+}
+
+func (i *recordingPlaybackInterrupter) InterruptCurrent(_ context.Context, sessionID, reason string) error {
+	i.calls <- playbackInterrupt{sessionID: sessionID, reason: reason}
+	return nil
+}
+
+type blockingPlaybackInterrupter struct {
+	entered chan playbackInterrupt
+	release chan struct{}
+}
+
+func (i *blockingPlaybackInterrupter) InterruptCurrent(ctx context.Context, sessionID, reason string) error {
+	select {
+	case i.entered <- playbackInterrupt{sessionID: sessionID, reason: reason}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-i.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (g *recordingGate) Replay(_ context.Context, frames []audio.Frame) command.Result {

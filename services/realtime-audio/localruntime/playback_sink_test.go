@@ -45,6 +45,35 @@ func TestPlaybackAudioSinkForwardsCompleteAndCancel(t *testing.T) {
 	}
 }
 
+func TestPlaybackAudioSinkDiscardsLateChunksAfterBargeIn(t *testing.T) {
+	track := &playbackSinkTrack{}
+	service, err := playback.NewService(playback.Dependencies{Track: track, Events: playbackSinkEvents{}})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	sink := PlaybackAudioSink{Media: mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) {
+		return &playbackSinkMedia{service: service}, nil
+	})}
+	first := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
+	if err := sink.Publish(t.Context(), first); err != nil {
+		t.Fatalf("Publish(first) error = %v", err)
+	}
+	if err := sink.InterruptCurrent(t.Context(), "session-1", "user_speaking"); err != nil {
+		t.Fatalf("InterruptCurrent() error = %v", err)
+	}
+	late := first
+	late.SequenceNo = 2
+	if err := sink.Publish(t.Context(), late); err != nil {
+		t.Fatalf("Publish(late after barge-in) error = %v, want discarded", err)
+	}
+	if err := sink.Complete(t.Context(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("Complete(interrupted) error = %v", err)
+	}
+	if got := service.Snapshot("session-1").State; got != playback.StateInterrupted {
+		t.Fatalf("playback state = %q, want %q", got, playback.StateInterrupted)
+	}
+}
+
 type playbackSinkTrack struct{}
 
 func (*playbackSinkTrack) Write(context.Context, pipeline.AudioChunk) error { return nil }

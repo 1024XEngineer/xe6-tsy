@@ -12,6 +12,10 @@ export type TTSAudioEvent = {
 
 export type TTSAudioPlaybackListener = (playing: boolean) => void;
 
+export type TTSPlaybackStopEvent = {
+  playbackId: string;
+};
+
 type PendingPlayback = {
   sampleRateHz: number;
   channels: number;
@@ -29,6 +33,7 @@ const canceledPlaybackOrder: string[] = [];
 const MAX_CANCELED_PLAYBACK_IDS = 128;
 let playbackGeneration = 0;
 let cancelActivePlayback: (() => void) | null = null;
+let activePlaybackId: string | null = null;
 
 function markCanceledPlayback(playbackId: string): void {
   if (!playbackId || canceledPlaybackIds.has(playbackId)) return;
@@ -37,12 +42,6 @@ function markCanceledPlayback(playbackId: string): void {
   if (canceledPlaybackOrder.length <= MAX_CANCELED_PLAYBACK_IDS) return;
   const oldest = canceledPlaybackOrder.shift();
   if (oldest) canceledPlaybackIds.delete(oldest);
-}
-
-function releaseCanceledPlayback(playbackId: string): void {
-  if (!canceledPlaybackIds.delete(playbackId)) return;
-  const index = canceledPlaybackOrder.indexOf(playbackId);
-  if (index >= 0) canceledPlaybackOrder.splice(index, 1);
 }
 
 function getAudioContext(sampleRateHz: number): AudioContext {
@@ -131,7 +130,7 @@ async function playAssembled(event: {
   encoding: string;
   pcm: ArrayBuffer;
 }, listener: TTSAudioPlaybackListener | undefined, generation: number): Promise<void> {
-  if (generation !== playbackGeneration) {
+  if (generation !== playbackGeneration || canceledPlaybackIds.has(event.playbackId)) {
     scheduledPlaybackIds.delete(event.playbackId);
     return;
   }
@@ -149,7 +148,7 @@ async function playAssembled(event: {
       }
     }
     const audioBuffer = await toAudioBuffer(ctx, event);
-    if (generation !== playbackGeneration) return;
+    if (generation !== playbackGeneration || canceledPlaybackIds.has(event.playbackId)) return;
     await new Promise<void>((resolve, reject) => {
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
@@ -161,6 +160,7 @@ async function playAssembled(event: {
         settled = true;
         if (cancelActivePlayback === cancel) {
           cancelActivePlayback = null;
+          activePlaybackId = null;
         }
         if (fallbackTimer !== null) {
           window.clearTimeout(fallbackTimer);
@@ -177,11 +177,13 @@ async function playAssembled(event: {
       };
       source.onended = finish;
       cancelActivePlayback = cancel;
+      activePlaybackId = event.playbackId;
       try {
         source.start();
       } catch (error) {
         if (cancelActivePlayback === cancel) {
           cancelActivePlayback = null;
+          activePlaybackId = null;
         }
         reject(error);
         return;
@@ -207,7 +209,6 @@ export function enqueueTTSAudio(
 ): void {
   const playbackId = event.playbackId || "default";
   if (canceledPlaybackIds.has(playbackId)) {
-    if (event.final) releaseCanceledPlayback(playbackId);
     return;
   }
   let pending = pendingByPlayback.get(playbackId);
@@ -245,6 +246,20 @@ export function enqueueTTSAudio(
     .then(() => playAssembled(assembled, pending.listener, generation));
 }
 
+/** Stop one identified clip while leaving unrelated queued playback intact. */
+export function cancelTTSAudioPlayback(playbackId: string): void {
+  if (!playbackId) return;
+  markCanceledPlayback(playbackId);
+  pendingByPlayback.delete(playbackId);
+  scheduledPlaybackIds.delete(playbackId);
+  if (activePlaybackId === playbackId) {
+    const cancel = cancelActivePlayback;
+    cancelActivePlayback = null;
+    activePlaybackId = null;
+    cancel?.();
+  }
+}
+
 /** Stop the current clip and discard every incomplete or queued TTS clip. */
 export function cancelAllTTSAudioPlayback(): void {
   playbackGeneration += 1;
@@ -257,7 +272,21 @@ export function cancelAllTTSAudioPlayback(): void {
   pendingByPlayback.clear();
   const cancel = cancelActivePlayback;
   cancelActivePlayback = null;
+  activePlaybackId = null;
   cancel?.();
+}
+
+export function parseTTSPlaybackStopEvent(payload: unknown): TTSPlaybackStopEvent | null {
+  if (!payload || typeof payload !== "object") return null;
+  const root = payload as Record<string, unknown>;
+  const nested =
+    root.payload && typeof root.payload === "object"
+      ? (root.payload as Record<string, unknown>)
+      : root;
+  const type = String(root.type ?? root.event ?? nested.type ?? nested.event ?? "");
+  if (type !== "playback.stop") return null;
+  const playbackId = String(nested.playback_id ?? nested.playbackId ?? root.playback_id ?? root.playbackId ?? "");
+  return playbackId ? { playbackId } : null;
 }
 
 export function parseTTSAudioEvent(payload: unknown): TTSAudioEvent | null {

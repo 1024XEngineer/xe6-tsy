@@ -485,7 +485,8 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	service, err := segment.NewService(segment.Dependencies{
 		Source: owned, Segmenter: segmenter, Processor: m.processor,
 		Command: newRuntimeCommandGate(commandGate, m.playbackInterrupter()), WakeWords: input.WakeWords,
-		Latency: m.deps.Latency, Now: m.deps.Now,
+		Playback: m.playbackInterrupter(),
+		Latency:  m.deps.Latency, Now: m.deps.Now,
 	})
 	if err != nil {
 		closeErr := owned.closeContext(ctx)

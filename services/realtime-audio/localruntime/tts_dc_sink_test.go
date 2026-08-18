@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
@@ -444,6 +445,113 @@ func TestDataChannelTTSAudioSinkInterruptCurrentStopsPublishingChunks(t *testing
 	}
 	if _, ok := sink.settled[key]; ok {
 		t.Fatal("completed playback retained its interruption tombstone")
+	}
+}
+
+func TestDataChannelTTSAudioSinkInterruptCurrentSendsOnePlaybackStopForDeliveredClip(t *testing.T) {
+	base := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	now := base
+	var stops []FrontendPlaybackStop
+	sink := &DataChannelTTSAudioSink{
+		SampleRate: 24000,
+		now:        func() time.Time { return now },
+		publishAudio: func(context.Context, string, string, string, int64, bool, string, []byte) error {
+			return nil
+		},
+		publishStop: func(_ context.Context, stop FrontendPlaybackStop) error {
+			stops = append(stops, stop)
+			return nil
+		},
+	}
+	if err := sink.Publish(t.Context(), pipeline.AudioChunk{
+		SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", Encoding: "pcm_s16le", Data: make([]byte, 24000),
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if err := sink.Complete(t.Context(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if err := sink.InterruptCurrent(t.Context(), "session-1", "user_speaking"); err != nil {
+		t.Fatalf("InterruptCurrent() error = %v", err)
+	}
+	if err := sink.InterruptCurrent(t.Context(), "session-1", "user_speaking"); err != nil {
+		t.Fatalf("InterruptCurrent(retry) error = %v", err)
+	}
+	if len(stops) != 1 {
+		t.Fatalf("playback stop events = %#v, want one", stops)
+	}
+	if got := stops[0]; got.Type != "playback.stop" || got.Event != "playback.stop" ||
+		got.SessionID != "session-1" || got.TurnID != "turn-1" || got.PlaybackID != "playback-1" ||
+		got.Reason != "user_speaking" || !got.OccurredAt.Equal(base) {
+		t.Fatalf("playback stop = %#v", got)
+	}
+}
+
+func TestDataChannelTTSAudioSinkDoesNotStopNaturallyEndedClip(t *testing.T) {
+	base := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	now := base
+	stops := 0
+	sink := &DataChannelTTSAudioSink{
+		SampleRate: 24000,
+		now:        func() time.Time { return now },
+		publishAudio: func(context.Context, string, string, string, int64, bool, string, []byte) error {
+			return nil
+		},
+		publishStop: func(context.Context, FrontendPlaybackStop) error {
+			stops++
+			return nil
+		},
+	}
+	if err := sink.Publish(t.Context(), pipeline.AudioChunk{
+		SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", Encoding: "pcm_s16le", Data: make([]byte, 4800),
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if err := sink.Complete(t.Context(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	now = base.Add(time.Second)
+	if err := sink.InterruptCurrent(t.Context(), "session-1", "user_speaking"); err != nil {
+		t.Fatalf("InterruptCurrent() error = %v", err)
+	}
+	if stops != 0 {
+		t.Fatalf("playback stops = %d, want 0 after natural completion", stops)
+	}
+}
+
+func TestDataChannelTTSAudioSinkRetriesPlaybackStopAfterPublishFailure(t *testing.T) {
+	base := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	attempts := 0
+	sink := &DataChannelTTSAudioSink{
+		SampleRate: 24000,
+		now:        func() time.Time { return base },
+		publishAudio: func(context.Context, string, string, string, int64, bool, string, []byte) error {
+			return nil
+		},
+		publishStop: func(context.Context, FrontendPlaybackStop) error {
+			attempts++
+			if attempts == 1 {
+				return errors.New("injected stop publish failure")
+			}
+			return nil
+		},
+	}
+	if err := sink.Publish(t.Context(), pipeline.AudioChunk{
+		SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", Encoding: "pcm_s16le", Data: make([]byte, 24000),
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if err := sink.Complete(t.Context(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if err := sink.InterruptCurrent(t.Context(), "session-1", "user_speaking"); err == nil {
+		t.Fatal("InterruptCurrent() unexpectedly succeeded")
+	}
+	if err := sink.InterruptCurrent(t.Context(), "session-1", "user_speaking"); err != nil {
+		t.Fatalf("InterruptCurrent(retry) error = %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("playback stop attempts = %d, want 2", attempts)
 	}
 }
 

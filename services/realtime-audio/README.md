@@ -225,6 +225,9 @@ FinalTurn 进入可靠投递后，后续 TTS、播放、用量或运行状态上
 Segment worker 会记录带有会话和 Trace 关联信息的
 `realtime turn post-commit processing failed` 日志，并继续使用现有 WebRTC Runtime；
 已经接受的 Turn 不会被重新翻译。FinalTurn 提交前的错误仍然属于终止 Worker 的错误。
+`ErrUnsupportedSourceLanguage` 是一个明确例外：它在翻译和持久化之前拒绝单个 Turn，
+Segment worker 记录 `realtime turn ignored unsupported source language` 后丢弃该 Turn，
+不终止共享的 WebRTC Runtime。
 
 Official protocol references:
 

@@ -15,7 +15,8 @@ import (
 )
 
 var (
-	// ErrUnsupportedSourceLanguage indicates that the captured Turn direction rejects the ASR source.
+	// ErrUnsupportedSourceLanguage rejects one Turn before translation or durable side effects.
+	// Long-lived media loops may discard that Turn and continue processing later audio.
 	ErrUnsupportedSourceLanguage = errors.New("unsupported source language")
 	// ErrPipelineDependencyRequired indicates that a required processing boundary is missing.
 	ErrPipelineDependencyRequired = errors.New("pipeline dependency is required")

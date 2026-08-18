@@ -122,7 +122,7 @@ func (r *PostgresRepository) Create(
 		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
 			return VoiceSession{}, false, postgresError("rollback create race", rollbackErr)
 		}
-		return r.replayCreate(ctx, params.AccountID, params.IdempotencyKey, params.RequestHash)
+		return r.replayCreate(ctx, params.AccountID, params.DeviceID, params.IdempotencyKey, params.RequestHash)
 	}
 	if err != nil {
 		return VoiceSession{}, false, postgresError("insert create request", err)
@@ -161,6 +161,7 @@ func verifyDeviceSession(ctx context.Context, db queryRower, deviceID, accountID
 func (r *PostgresRepository) replayCreate(
 	ctx context.Context,
 	accountID string,
+	deviceID string,
 	idempotencyKey string,
 	requestHash string,
 ) (VoiceSession, bool, error) {
@@ -179,6 +180,9 @@ func (r *PostgresRepository) replayCreate(
 	session, err := getSessionByOwner(
 		ctx, r.pool, accountID, stored.sessionID, false,
 	)
+	if err == nil && deviceID != "" {
+		err = verifyDeviceSession(ctx, r.pool, deviceID, accountID, stored.sessionID)
+	}
 	return session, true, postgresError("read winning session", err)
 }
 

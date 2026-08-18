@@ -961,6 +961,69 @@ func TestHandlerRegisterMountsRealtimeTicketRoute(t *testing.T) {
 	}
 }
 
+func TestHandlerDeviceRoutesBindDeviceAndEnforceOwnership(t *testing.T) {
+	useCases := &handlerUseCases{
+		createResult: VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusCreated},
+		startResult:  VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusActive},
+		endResult:    VoiceSession{ID: "vs_1", AccountID: "acct_1", Status: StatusEnded},
+	}
+	minter := &ticketMinterFake{ticket: RealtimeTicket{Ticket: "ticket", SessionID: "vs_1"}}
+	handler := NewHandler(useCases, headerAccount).WithRealtimeTickets(minter)
+	allow := true
+	ownershipCalls := 0
+	access := DeviceSessionAccess{
+		DeviceID: func(*http.Request) (string, bool) { return "dev_01", true },
+		Owns: func(_ context.Context, deviceID, accountID, sessionID string) error {
+			ownershipCalls++
+			if !allow || deviceID != "dev_01" || accountID != "acct_1" || sessionID != "vs_1" {
+				return ErrUnauthorized
+			}
+			return nil
+		},
+	}
+	mux := http.NewServeMux()
+	handler.RegisterDevice(mux, func(next http.Handler) http.Handler { return next }, access)
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("X-Test-Account", "acct_1")
+		r.Header.Set("Idempotency-Key", "device-key")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, r)
+		return w
+	}
+	if response := request(http.MethodPost, "/api/v1/device/voice-sessions", `{"capabilities":{}}`); response.Code != http.StatusCreated || useCases.createInput.DeviceID != "dev_01" {
+		t.Fatalf("create status=%d input=%#v", response.Code, useCases.createInput)
+	}
+	for _, route := range []struct{ path, body string }{
+		{"/api/v1/device/voice-sessions/vs_1/start", ""},
+		{"/api/v1/device/voice-sessions/vs_1/end", ""},
+		{"/api/v1/device/voice-sessions/vs_1/realtime-ticket", ""},
+	} {
+		if response := request(http.MethodPost, route.path, route.body); response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", route.path, response.Code, response.Body.String())
+		}
+	}
+	if ownershipCalls != 3 || minter.calls != 1 {
+		t.Fatalf("ownership calls=%d ticket calls=%d", ownershipCalls, minter.calls)
+	}
+	allow = false
+	if response := request(http.MethodPost, "/api/v1/device/voice-sessions/vs_1/start", ""); response.Code != http.StatusUnauthorized || useCases.startCalls != 1 {
+		t.Fatalf("denied status=%d start calls=%d", response.Code, useCases.startCalls)
+	}
+	badCreate := httptest.NewRequest(http.MethodPost, "/api/v1/device/voice-sessions", strings.NewReader(`{"unexpected":true}`))
+	badCreate.Header.Set("X-Test-Account", "acct_1")
+	badResponse := httptest.NewRecorder()
+	handler.deviceCreate(access)(badResponse, badCreate)
+	if badResponse.Code != http.StatusBadRequest {
+		t.Fatalf("bad device create status=%d", badResponse.Code)
+	}
+	noDevice := httptest.NewRecorder()
+	handler.deviceCreate(DeviceSessionAccess{DeviceID: func(*http.Request) (string, bool) { return "", false }})(noDevice, badCreate)
+	if noDevice.Code != http.StatusUnauthorized {
+		t.Fatalf("missing device status=%d", noDevice.Code)
+	}
+}
+
 func headerAccount(r *http.Request) (string, bool) {
 	accountID := r.Header.Get("X-Test-Account")
 	return accountID, accountID != ""

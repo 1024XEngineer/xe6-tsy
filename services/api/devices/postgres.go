@@ -245,6 +245,9 @@ func (r *PostgresRepository) BindSession(ctx context.Context, deviceID, accountI
 }
 
 func (r *PostgresRepository) ActiveBound(ctx context.Context, deviceID, accountID string) error {
+	if r == nil || r.pool == nil || deviceID == "" || accountID == "" {
+		return domain.ErrUnauthorized
+	}
 	var found string
 	err := r.pool.QueryRow(ctx, `SELECT device_id FROM lingow_devices WHERE device_id=$1 AND account_id=$2 AND status='active'`, deviceID, accountID).Scan(&found)
 	if errors.Is(err, pgx.ErrNoRows) {

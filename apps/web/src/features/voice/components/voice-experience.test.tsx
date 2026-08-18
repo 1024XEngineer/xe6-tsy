@@ -411,6 +411,33 @@ describe("VoiceExperience", () => {
       .toBeInTheDocument();
   });
 
+  it("settles the matching ASR partial when an assistant reply arrives", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+
+    dataMessageHandler?.({
+      type: "asr.partial", event_version: 1, session_id: "vs-1", turn_id: "turn-assistant-partial-1",
+      text: "临时识别文本", occurred_at: "2026-08-18T01:02:03Z",
+    });
+    expect(await screen.findByText("临时识别文本")).toBeInTheDocument();
+
+    dataMessageHandler?.({
+      type: "assistant.reply", id: "reply-1", turn_id: "turn-assistant-partial-1", text: "助手最终回复", language: "zh-CN",
+    });
+    await waitFor(() => {
+      expect(screen.queryByLabelText("临时识别结果")).not.toBeInTheDocument();
+      expect(screen.getByText("助手已回复")).toBeInTheDocument();
+    });
+
+    dataMessageHandler?.({
+      type: "asr.partial", event_version: 1, session_id: "vs-1", turn_id: "turn-assistant-partial-1",
+      text: "迟到文本", occurred_at: "2026-08-18T01:02:04Z",
+    });
+    expect(screen.queryByText("迟到文本")).not.toBeInTheDocument();
+  });
+
   it("replaces transient ASR text and ignores a late partial after final", async () => {
     vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
     render(<VoiceExperience />);

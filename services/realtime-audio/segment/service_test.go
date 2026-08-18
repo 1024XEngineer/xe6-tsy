@@ -356,6 +356,60 @@ func TestServiceContinuesAfterFinalTurnPostCommitFailure(t *testing.T) {
 	}
 }
 
+func TestServiceContinuesAfterUnsupportedSourceLanguage(t *testing.T) {
+	base := time.Unix(42, 0)
+	source := &fakeSource{frames: []audio.Frame{
+		testFrame(t, 1, base),
+		testFrame(t, 0, base.Add(300*time.Millisecond)),
+		testFrame(t, 1, base.Add(400*time.Millisecond)),
+		testFrame(t, 0, base.Add(700*time.Millisecond)),
+	}}
+	unsupportedErr := fmt.Errorf("%w: en-US", pipeline.ErrUnsupportedSourceLanguage)
+	processor := &sequenceProcessor{errors: []error{unsupportedErr, nil}}
+	service := newTestService(t, source, processor)
+	var logs bytes.Buffer
+	service.latency = slog.New(slog.NewJSONHandler(&logs, nil))
+
+	err := service.Run(context.Background(), Request{SessionID: "session-1", TraceID: "trace-1"})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if processor.calls != 2 {
+		t.Fatalf("processor calls = %d, want second Turn after unsupported source language", processor.calls)
+	}
+	for _, want := range []string{
+		"realtime turn ignored unsupported source language", "session-1", "trace-1", "en-US",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("ignored Turn log = %s, missing %q", logs.String(), want)
+		}
+	}
+}
+
+func TestServicePropagatesUnsupportedLanguageRuntimeRecoveryFailure(t *testing.T) {
+	base := time.Unix(43, 0)
+	source := &fakeSource{frames: []audio.Frame{
+		testFrame(t, 1, base),
+		testFrame(t, 0, base.Add(300*time.Millisecond)),
+		testFrame(t, 1, base.Add(400*time.Millisecond)),
+		testFrame(t, 0, base.Add(700*time.Millisecond)),
+	}}
+	recoveryErr := errors.New("restore listening runtime: store unavailable")
+	processor := &sequenceProcessor{errors: []error{
+		errors.Join(fmt.Errorf("%w: en-US", pipeline.ErrUnsupportedSourceLanguage), recoveryErr),
+		nil,
+	}}
+	service := newTestService(t, source, processor)
+
+	err := service.Run(context.Background(), Request{SessionID: "session-1"})
+	if !errors.Is(err, recoveryErr) {
+		t.Fatalf("Run() error = %v, want recovery failure", err)
+	}
+	if processor.calls != 1 {
+		t.Fatalf("processor calls = %d, want worker to stop before the second Turn", processor.calls)
+	}
+}
+
 func TestNewServiceRejectsMissingDependency(t *testing.T) {
 	if _, err := NewService(Dependencies{}); !errors.Is(err, ErrDependencyRequired) {
 		t.Fatalf("NewService() error = %v, want %v", err, ErrDependencyRequired)

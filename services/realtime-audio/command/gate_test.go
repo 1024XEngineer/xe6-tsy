@@ -162,8 +162,8 @@ func TestGatePublishesClarificationAndKeepsRuntimeUsable(t *testing.T) {
 		results.events[0].Status != realtimev1.CommandResultClarificationRequired {
 		t.Fatalf("result=%#v state=%q events=%#v", result, gate.State(), results.events)
 	}
-	if len(feedback.events) != 1 || feedback.events[0] != results.events[0] {
-		t.Fatalf("feedback = %#v, want clarification result %#v", feedback.events, results.events[0])
+	if len(feedback.requests) != 1 || feedback.requests[0].Event != results.events[0] || feedback.requests[0].Success != nil {
+		t.Fatalf("feedback = %#v, want clarification result %#v", feedback.requests, results.events[0])
 	}
 	if gate.Consume(t.Context(), testFrame(t, testStart.Add(time.Second), 100*time.Millisecond)).Consumed {
 		t.Fatal("single-command failure left ordinary audio quarantined")
@@ -178,16 +178,16 @@ func TestGateSpeechFeedbackExcludesCanceledAttemptsAndAssistantQueries(t *testin
 		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
 		CommandID: "command-canceled", SessionID: "session-1", Status: realtimev1.CommandResultFailed,
 		Message: "上一条命令已被新的唤醒取消", OccurredAt: testStart,
-	}, FailureCanceled)
+	}, FailureCanceled, nil)
 	gate.publishTerminalOutcome(realtimev1.CommandResultEvent{
 		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,
 		CommandID: "command-query", SessionID: "session-1", Status: realtimev1.CommandResultApplied,
 		Action: string(ActionAssistantQuery), TargetMode: realtimev1.ModeAssistant,
 		Message: "助手已处理本轮提问", OccurredAt: testStart,
-	}, FailureNone)
+	}, FailureNone, nil)
 
-	if len(feedback.events) != 0 {
-		t.Fatalf("feedback = %#v, want canceled and assistant outcomes to remain silent", feedback.events)
+	if len(feedback.requests) != 0 {
+		t.Fatalf("feedback = %#v, want canceled and assistant outcomes to remain silent", feedback.requests)
 	}
 }
 
@@ -200,6 +200,36 @@ func TestExecutionFailureFeedbackDistinguishesAssistantQueries(t *testing.T) {
 	status, message = executionFailureFeedback(Command{Action: ActionActivateMode}, errors.New("mode unavailable"))
 	if status != realtimev1.CommandResultFailed || message != "命令未执行，原模式保持不变" {
 		t.Fatalf("mode failure feedback = %q/%q", status, message)
+	}
+}
+
+func TestGateQueuesSuccessfulExecutionFactsAfterDeterministicResult(t *testing.T) {
+	t.Parallel()
+	execution := ExecutionResult{
+		Status: realtimev1.ModeSwitchUnchanged,
+		State: realtimev1.ModeStateSnapshot{
+			SessionID: "session-1", RuntimeInstanceID: "runtime-1",
+			ActiveMode: realtimev1.ModeInterpretation, Generation: 2,
+		},
+		LanguageConfig: &AppliedLanguageConfig{
+			SourceLanguage: "zh-CN", TargetLanguage: "ja-JP", Version: 3,
+		},
+	}
+	feedback := &recordingFeedbackSink{}
+	gate := &Gate{deps: Dependencies{Feedback: feedback}}
+	parsed := Command{
+		Text: "切换为中日传译", Action: ActionActivateMode, TargetMode: realtimev1.ModeInterpretation,
+		Arguments: Arguments{SourceLanguage: "zh-CN", TargetLanguage: "ja-JP"},
+	}
+	event := commandResultEvent(validOpenRequest(), parsed, execution, commandSuccessFallback(parsed, execution), testStart)
+	request := FeedbackRequest{Event: event, Success: &SuccessFeedbackRequest{
+		Command: parsed, Execution: execution, ResponseLanguage: "zh-CN",
+	}}
+	gate.publishTerminalOutcome(event, FailureNone, &request)
+
+	if event.Message != "已设置为中文和日语同声传译" || len(feedback.requests) != 1 ||
+		feedback.requests[0].Success == nil || feedback.requests[0].Success.Execution.LanguageConfig.TargetLanguage != "ja-JP" {
+		t.Fatalf("event = %#v, feedback = %#v", event, feedback.requests)
 	}
 }
 
@@ -996,7 +1026,7 @@ type recordingResultSink struct {
 }
 
 type recordingFeedbackSink struct {
-	events     []realtimev1.CommandResultEvent
+	requests   []FeedbackRequest
 	interrupts int
 	closed     bool
 }
@@ -1034,8 +1064,8 @@ func (s *recordingResultSink) Publish(_ context.Context, event realtimev1.Comman
 	return s.err
 }
 
-func (s *recordingFeedbackSink) Publish(event realtimev1.CommandResultEvent) {
-	s.events = append(s.events, event)
+func (s *recordingFeedbackSink) Publish(request FeedbackRequest) {
+	s.requests = append(s.requests, request)
 }
 
 func (s *recordingFeedbackSink) Interrupt() { s.interrupts++ }

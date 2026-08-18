@@ -15,7 +15,8 @@ import (
 )
 
 var (
-	// ErrUnsupportedSourceLanguage indicates that the captured Turn direction rejects the ASR source.
+	// ErrUnsupportedSourceLanguage rejects one Turn before translation or durable side effects.
+	// Long-lived media loops may discard that Turn and continue processing later audio.
 	ErrUnsupportedSourceLanguage = errors.New("unsupported source language")
 	// ErrPipelineDependencyRequired indicates that a required processing boundary is missing.
 	ErrPipelineDependencyRequired = errors.New("pipeline dependency is required")
@@ -23,6 +24,26 @@ var (
 	// Callers must not retry HandleASRFinal because doing so can rerun providers under the same ID.
 	ErrFinalTurnAccepted = errors.New("final turn accepted")
 )
+
+// IsRecoverableUnsupportedSourceLanguage reports whether unsupported language is the only
+// failure in an error chain. A joined error means cleanup or runtime-state recovery also failed
+// and must be propagated instead of being discarded with the Turn.
+func IsRecoverableUnsupportedSourceLanguage(err error) bool {
+	for err != nil {
+		if err == ErrUnsupportedSourceLanguage {
+			return true
+		}
+		if _, joined := err.(interface{ Unwrap() []error }); joined {
+			return false
+		}
+		wrapped, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = wrapped.Unwrap()
+	}
+	return false
+}
 
 // AudioChunk is the media-plane chunk emitted to the playback boundary.
 type AudioChunk struct {
@@ -135,6 +156,9 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	// Runtime state is a media-plane observable fact. Report each long-running
 	// stage and restore listening on every exit unless the report itself fails.
 	if err := s.reportRuntime(ctx, turn, session.RuntimeTranslating, ""); err != nil {
+		if runtimeUpdateSuperseded(err) {
+			return fmt.Errorf("%w: report translating runtime: %w", ErrTurnSuperseded, err)
+		}
 		return fmt.Errorf("report translating runtime: %w", err)
 	}
 	acceptedFinalTurn := false

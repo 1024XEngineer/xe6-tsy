@@ -10,7 +10,6 @@ import (
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
-	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
 var (
@@ -22,6 +21,8 @@ var (
 	ErrASRFinalRequired = errors.New("ASR final result is required")
 	// ErrDuplicateASRFinal 表示同一个 Turn 收到多个 final；公共流程只允许提交一次。
 	ErrDuplicateASRFinal = errors.New("duplicate ASR final result")
+	// ErrTurnSuperseded indicates a later VAD Turn owns the runtime now.
+	ErrTurnSuperseded = errors.New("turn superseded")
 )
 
 // TurnProcessRequest 保存一个实时 Turn 的音频和不可变元数据。
@@ -141,7 +142,7 @@ func (p *TurnProcessor) StartAudio(ctx context.Context, request TurnProcessReque
 	if err != nil {
 		return nil, fmt.Errorf("open Turn: %w", err)
 	}
-	if err := p.pipeline.reportRuntime(ctx, turn, session.RuntimeASRProcessing, ""); err != nil {
+	if err := p.pipeline.claimASRRuntime(ctx, turn); err != nil {
 		return nil, fmt.Errorf("report ASR runtime: %w", err)
 	}
 	stream, err := p.recognizer.StartStream(ctx, asr.StreamRequest{

@@ -76,9 +76,10 @@ func (h *AssistantHandler) HandleASRFinal(ctx context.Context, turn TurnContext,
 	}
 	accepted := false
 	defer func() {
+		turnID := turn.ID
 		if err := h.runtime.SetProcessingState(ctx, session.ProcessingStateUpdate{
-			SessionID: turn.SessionID, RuntimeState: session.RuntimeListening,
-		}); err != nil {
+			SessionID: turn.SessionID, RuntimeState: session.RuntimeListening, ExpectedTurnID: &turnID,
+		}); err != nil && !runtimeUpdateSuperseded(err) {
 			restoreErr := fmt.Errorf("restore listening runtime: %w", err)
 			if accepted {
 				restoreErr = assistantReplyAcceptedError("restore listening runtime", err)
@@ -91,8 +92,11 @@ func (h *AssistantHandler) HandleASRFinal(ctx context.Context, turn TurnContext,
 	}
 	turnID := turn.ID
 	if err := h.runtime.SetProcessingState(ctx, session.ProcessingStateUpdate{
-		SessionID: turn.SessionID, RuntimeState: session.RuntimeAssistantProcessing, CurrentTurnID: &turnID,
+		SessionID: turn.SessionID, RuntimeState: session.RuntimeAssistantProcessing, CurrentTurnID: &turnID, ExpectedTurnID: &turnID,
 	}); err != nil {
+		if runtimeUpdateSuperseded(err) {
+			return fmt.Errorf("%w: report assistant processing runtime: %w", ErrTurnSuperseded, err)
+		}
 		return fmt.Errorf("report assistant processing runtime: %w", err)
 	}
 

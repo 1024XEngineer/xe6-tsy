@@ -460,9 +460,14 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		if options == (command.Options{}) {
 			options = defaultCommandOptions
 		}
+		var successFeedback command.SuccessFeedbackGenerator
+		if candidate, ok := m.commandInterpreter.(command.SuccessFeedbackGenerator); ok {
+			successFeedback = candidate
+		}
 		feedback := newCommandSpeechFeedback(commandSpeechFeedbackDependencies{
 			Speech: m.speech, Usage: m.deps.Usage, Runtime: m.deps.Runtime,
-			AccountID: snapshot.AccountID, TraceID: snapshot.TraceID, Logger: m.logger, Now: m.deps.Now,
+			SuccessFeedback: successFeedback,
+			AccountID:       snapshot.AccountID, TraceID: snapshot.TraceID, Logger: m.logger, Now: m.deps.Now,
 		})
 		gate, gateErr := command.NewGate(command.Dependencies{
 			Classifier:  classifier,
@@ -487,7 +492,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	service, err := segment.NewService(segment.Dependencies{
 		Source: owned, Segmenter: segmenter, Processor: m.processor,
 		Command: newRuntimeCommandGate(commandGate, m.playbackInterrupter()), WakeWords: input.WakeWords,
-		Latency: m.deps.Latency, Now: m.deps.Now,
+		Playback: m.playbackInterrupter(), Latency: m.deps.Latency, Now: m.deps.Now,
 	})
 	if err != nil {
 		closeErr := owned.closeContext(ctx)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,16 +14,21 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
-const commandUsagePublishTimeout = time.Second
+const (
+	commandFeedbackLLMTimeout  = time.Second
+	commandUsagePublishTimeout = time.Second
+)
 
 type commandSpeechFeedbackDependencies struct {
-	Speech    *pipeline.SpeechOutput
-	Usage     pipeline.UsageFactSink
-	Runtime   session.RuntimeStateReporter
-	AccountID string
-	TraceID   string
-	Logger    *slog.Logger
-	Now       func() time.Time
+	Speech                 *pipeline.SpeechOutput
+	Usage                  pipeline.UsageFactSink
+	Runtime                session.RuntimeStateReporter
+	SuccessFeedback        command.SuccessFeedbackGenerator
+	SuccessFeedbackTimeout time.Duration
+	AccountID              string
+	TraceID                string
+	Logger                 *slog.Logger
+	Now                    func() time.Time
 }
 
 // commandSpeechFeedback isolates confirmation TTS from command execution. The typed result is
@@ -38,11 +44,14 @@ type commandSpeechFeedback struct {
 }
 
 func newCommandSpeechFeedback(deps commandSpeechFeedbackDependencies) *commandSpeechFeedback {
+	if deps.SuccessFeedbackTimeout <= 0 {
+		deps.SuccessFeedbackTimeout = commandFeedbackLLMTimeout
+	}
 	return &commandSpeechFeedback{deps: deps}
 }
 
-func (f *commandSpeechFeedback) Publish(event realtimev1.CommandResultEvent) {
-	if event.Validate() != nil || event.Message == "" {
+func (f *commandSpeechFeedback) Publish(request command.FeedbackRequest) {
+	if request.Event.Validate() != nil || request.Event.Message == "" {
 		return
 	}
 	f.mu.Lock()
@@ -59,7 +68,7 @@ func (f *commandSpeechFeedback) Publish(event realtimev1.CommandResultEvent) {
 	f.cancel = cancel
 	f.wg.Add(1)
 	f.mu.Unlock()
-	go f.play(ctx, attempt, event)
+	go f.play(ctx, attempt, request)
 }
 
 func (f *commandSpeechFeedback) Interrupt() {
@@ -81,15 +90,44 @@ func (f *commandSpeechFeedback) Close() {
 	f.wg.Wait()
 }
 
-func (f *commandSpeechFeedback) play(ctx context.Context, attempt uint64, event realtimev1.CommandResultEvent) {
+func (f *commandSpeechFeedback) play(ctx context.Context, attempt uint64, request command.FeedbackRequest) {
 	defer f.wg.Done()
+	event := request.Event
+	message := event.Message
+	if request.Success != nil && f.deps.SuccessFeedback != nil {
+		feedbackCtx, cancel := context.WithTimeout(ctx, f.deps.SuccessFeedbackTimeout)
+		generated, err := f.deps.SuccessFeedback.GenerateSuccessFeedback(feedbackCtx, *request.Success)
+		cancel()
+		// Usage publication is deferred so a slow durable sink cannot delay speech. WithoutCancel in
+		// publishFeedbackUsage preserves billable work even when a newer wake interrupts playback.
+		defer func() {
+			if usageErr := f.publishFeedbackUsage(ctx, event, generated); usageErr != nil {
+				f.logFailure(event, "feedback_usage", usageErr)
+			}
+		}()
+		if ctx.Err() != nil {
+			return
+		}
+		generated.Message = strings.TrimSpace(generated.Message)
+		if err != nil || !command.ValidSuccessFeedback(generated.Message) {
+			if err == nil {
+				err = fmt.Errorf("generated command feedback is invalid")
+			}
+			f.logFailure(event, "feedback_generation", err)
+		} else {
+			message = generated.Message
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return
+	}
 	turn := pipeline.TurnContext{
 		ID: "command_" + event.CommandID, SessionID: event.SessionID,
 		AccountID: f.deps.AccountID, TraceID: f.deps.TraceID, StartedAt: event.OccurredAt,
 	}
 	playbackID := "command_playback_" + event.CommandID
 	result, err := f.deps.Speech.Play(ctx, pipeline.SpeechOutputRequest{
-		Turn: turn, Language: "zh-CN", Text: event.Message,
+		Turn: turn, Language: feedbackLanguage(request), Text: message,
 		PlaybackID: playbackID,
 	})
 	if err != nil {
@@ -112,6 +150,35 @@ func (f *commandSpeechFeedback) play(ctx context.Context, attempt uint64, event 
 		}
 	}
 	f.restoreListeningIfCurrent(attempt, event, turn.ID, playbackID)
+}
+
+func (f *commandSpeechFeedback) publishFeedbackUsage(
+	ctx context.Context,
+	event realtimev1.CommandResultEvent,
+	result command.SuccessFeedbackResult,
+) error {
+	if result.Provider == "" || result.Model == "" || (result.InputTokens == 0 && result.OutputTokens == 0) {
+		return nil
+	}
+	turn := pipeline.TurnContext{
+		ID: "command_feedback_" + event.CommandID, SessionID: event.SessionID,
+		AccountID: f.deps.AccountID, TraceID: f.deps.TraceID, StartedAt: event.OccurredAt,
+	}
+	fact, err := pipeline.BuildUsageFact(turn, "assistant_llm", result.Provider, result.Model, 0,
+		result.InputTokens, result.OutputTokens, result.CostAmount, result.Currency, f.deps.Now())
+	if err != nil {
+		return err
+	}
+	usageCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandUsagePublishTimeout)
+	defer cancel()
+	return f.deps.Usage.Publish(usageCtx, fact)
+}
+
+func feedbackLanguage(request command.FeedbackRequest) string {
+	if request.Success != nil && strings.TrimSpace(request.Success.ResponseLanguage) != "" {
+		return request.Success.ResponseLanguage
+	}
+	return "zh-CN"
 }
 
 func (f *commandSpeechFeedback) restoreListeningIfCurrent(

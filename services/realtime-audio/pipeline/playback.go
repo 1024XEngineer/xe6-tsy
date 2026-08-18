@@ -75,6 +75,9 @@ type SpeechOutputRequest struct {
 // ErrSpeechOutputRequestInvalid rejects an output request before runtime state or TTS side effects begin.
 var ErrSpeechOutputRequestInvalid = errors.New("speech output request is invalid")
 
+// ErrSpeechOutputSuperseded marks TTS that lost its runtime owner to a newer Turn.
+var ErrSpeechOutputSuperseded = errors.New("speech output superseded")
+
 // SpeechOutput owns only text synthesis, audio chunks, and playback lifecycle.
 // It deliberately does not publish FinalTurn, AssistantReply, or UsageFact.
 type SpeechOutput struct {
@@ -145,6 +148,9 @@ func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (t
 		return tts.Result{}, speechOutputNotStartedError{err: ErrSpeechOutputRequestInvalid}
 	}
 	if err := o.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID); err != nil {
+		if runtimeUpdateSuperseded(err) {
+			return tts.Result{}, ErrSpeechOutputSuperseded
+		}
 		return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("report TTS runtime: %w", err)}
 	}
 	ttsStartedAt := time.Now()
@@ -186,7 +192,7 @@ func (o *SpeechOutput) validate() error {
 func (o *SpeechOutput) reportRuntime(ctx context.Context, turn TurnContext, state session.RuntimeState, playbackID string) error {
 	turnID := turn.ID
 	update := session.ProcessingStateUpdate{
-		SessionID: turn.SessionID, RuntimeState: state, CurrentTurnID: &turnID,
+		SessionID: turn.SessionID, RuntimeState: state, CurrentTurnID: &turnID, ExpectedTurnID: &turnID,
 	}
 	update.CurrentPlaybackID = &playbackID
 	return o.runtime.SetProcessingState(ctx, update)
@@ -206,6 +212,9 @@ func (o *SpeechOutput) publishChunks(ctx context.Context, request SpeechOutputRe
 			if !playing {
 				// A created stream becomes externally visible only with its first audio chunk.
 				if err := o.reportRuntime(ctx, request.Turn, session.RuntimePlaying, request.PlaybackID); err != nil {
+					if runtimeUpdateSuperseded(err) {
+						return false, ErrSpeechOutputSuperseded
+					}
 					return false, fmt.Errorf("report playing runtime: %w", err)
 				}
 				playing = true

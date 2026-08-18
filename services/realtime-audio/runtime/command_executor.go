@@ -38,8 +38,11 @@ func (e commandExecutor) ExecuteCommand(ctx context.Context, request command.Exe
 	if request.Command.Action == command.ActionAssistantQuery {
 		return e.executeAssistantQuery(ctx, request)
 	}
+	var languageConfig *command.AppliedLanguageConfig
 	if request.Command.Action == command.ActionActivateMode {
-		if err := e.prepareInterpretation(ctx, request); err != nil {
+		var err error
+		languageConfig, err = e.prepareInterpretation(ctx, request)
+		if err != nil {
 			return command.ExecutionResult{}, err
 		}
 	}
@@ -59,7 +62,9 @@ func (e commandExecutor) ExecuteCommand(ctx context.Context, request command.Exe
 	if err != nil {
 		return command.ExecutionResult{}, err
 	}
-	return command.ExecutionResult{Status: result.Status, State: result.State}, nil
+	return command.ExecutionResult{
+		Status: result.Status, State: result.State, LanguageConfig: languageConfig,
+	}, nil
 }
 
 func validateExecutableCommand(request command.ExecuteRequest) error {
@@ -128,49 +133,53 @@ func (e commandExecutor) executeAssistantQuery(ctx context.Context, request comm
 	return command.ExecutionResult{Status: realtimev1.ModeSwitchUnchanged, State: state}, nil
 }
 
-func (e commandExecutor) prepareInterpretation(ctx context.Context, request command.ExecuteRequest) error {
+func (e commandExecutor) prepareInterpretation(ctx context.Context, request command.ExecuteRequest) (*command.AppliedLanguageConfig, error) {
 	arguments := request.Command.Arguments
 	var snapshot session.LanguageConfigSnapshot
 	if strings.TrimSpace(arguments.SourceLanguage) == "" || strings.TrimSpace(arguments.TargetLanguage) == "" {
 		var err error
 		snapshot, err = e.languages.GetCurrentConfig(ctx, request.SessionID)
 		if err != nil {
-			return fmt.Errorf("read current command language configuration: %w", err)
+			return nil, fmt.Errorf("read current command language configuration: %w", err)
 		}
 		if snapshot.SessionID != "" && snapshot.SessionID != request.SessionID {
-			return fmt.Errorf("%w: got %q for %q", ErrCommandLanguageSession, snapshot.SessionID, request.SessionID)
+			return nil, fmt.Errorf("%w: got %q for %q", ErrCommandLanguageSession, snapshot.SessionID, request.SessionID)
 		}
 	}
 	arguments, explicit, err := resolveLanguageArguments(arguments, snapshot)
 	if err != nil {
 		if errors.Is(err, ErrCommandLanguageClarification) {
-			return errors.Join(command.ErrClarificationRequired, err)
+			return nil, errors.Join(command.ErrClarificationRequired, err)
 		}
 		if errors.Is(err, ErrCommandLanguageInvalid) {
-			return errors.Join(command.ErrUnsupported, err)
+			return nil, errors.Join(command.ErrUnsupported, err)
 		}
-		return err
+		return nil, err
 	}
 	if !explicit {
-		return nil
+		return nil, nil
 	}
 	// LanguageConfigurator is optional at Manager construction so legacy command paths remain
 	// usable; an explicit language direction cannot proceed without the API-owned writer.
 	if e.configurator == nil {
-		return ErrCommandConfiguratorRequired
+		return nil, ErrCommandConfiguratorRequired
 	}
 	result, err := e.configurator.Configure(ctx, languagesv1.CommandConfigRequest{
 		SessionID: request.SessionID, CommandID: request.CommandID,
 		SourceLanguage: arguments.SourceLanguage, TargetLanguage: arguments.TargetLanguage,
 	})
 	if err != nil {
-		return fmt.Errorf("configure command language direction: %w", err)
+		return nil, fmt.Errorf("configure command language direction: %w", err)
 	}
 	if result.SessionID != request.SessionID || result.CommandID != request.CommandID || result.Version <= 0 {
-		return fmt.Errorf("%w: got session %q command %q version %d",
+		return nil, fmt.Errorf("%w: got session %q command %q version %d",
 			ErrCommandConfigResultInvalid, result.SessionID, result.CommandID, result.Version)
 	}
-	return nil
+	return &command.AppliedLanguageConfig{
+		SourceLanguage: arguments.SourceLanguage,
+		TargetLanguage: arguments.TargetLanguage,
+		Version:        result.Version,
+	}, nil
 }
 
 // resolveLanguageArguments normalizes explicit BCP-47 slots. A complete explicit pair can

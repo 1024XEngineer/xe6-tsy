@@ -974,6 +974,13 @@ export function useVoiceSession() {
             }
             const assistantReply = parseAssistantReply(payload);
             if (assistantReply) {
+              if (assistantReply.turnId) {
+                settledPartialTurnsRef.current.add(assistantReply.turnId);
+                if (activePartialTurnRef.current === assistantReply.turnId) {
+                  activePartialTurnRef.current = null;
+                  dispatch({ type: "CLEAR_ASR_PARTIAL" });
+                }
+              }
               dispatch({
                 type: "ADD_ASSISTANT_REPLY",
                 reply: {
@@ -1187,6 +1194,12 @@ export function useVoiceSession() {
       onWake: (keyword) => {
         const session = webrtcRef.current;
         if (!runningRef.current || !sessionIdRef.current || !session) return;
+        const activeTurn = activePartialTurnRef.current;
+        if (activeTurn) {
+          settledPartialTurnsRef.current.add(activeTurn);
+          activePartialTurnRef.current = null;
+          dispatch({ type: "CLEAR_ASR_PARTIAL" });
+        }
         const result = sendWakeWordDetectedSignal(session);
         if (result.ok) {
           const mode = modeStateRef.current?.active_mode ?? initialMode;

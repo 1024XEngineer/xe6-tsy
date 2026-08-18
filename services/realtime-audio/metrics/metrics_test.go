@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 )
 
@@ -127,6 +129,67 @@ func TestRegistryCountsBoundedFailureAndLifecycleSignals(t *testing.T) {
 		got.DataChannelFailures != 1 || got.RuntimesStarted != 1 || got.RuntimesStopped != 1 {
 		t.Fatalf("snapshot = %#v", got)
 	}
+}
+
+func TestRegistryCountsBoundedSemanticCommandSignals(t *testing.T) {
+	registry := NewRegistry()
+	registry.RecordCommandInterpretation(125*time.Millisecond, false)
+	registry.RecordCommandInterpretation(75*time.Millisecond, true)
+	registry.RecordCommandOutcome(realtimev1.CommandResultApplied, command.FailureNone)
+	registry.RecordCommandOutcome(realtimev1.CommandResultClarificationRequired, command.FailureExecution)
+	registry.RecordCommandOutcome(realtimev1.CommandResultFailed, command.FailureASR)
+
+	got := registry.Current().SemanticCommands
+	if got.Interpretations != 2 || got.InterpretationFailures != 1 || got.InterpretationDurationMilliseconds != 200 ||
+		got.Applied != 1 || got.ClarificationRequired != 1 || got.Failed != 1 ||
+		got.ExecutionFailures != 1 || got.ASRFailures != 1 {
+		t.Fatalf("semantic command counters = %#v", got)
+	}
+}
+
+func TestRegistryConvertsLargeSemanticCommandDurationWithoutSignedOverflow(t *testing.T) {
+	registry := NewRegistry()
+	nanoseconds := uint64(1)<<63 + uint64(time.Millisecond)
+	registry.commandInterpretationNanos.Store(nanoseconds)
+
+	got := registry.Current().SemanticCommands.InterpretationDurationMilliseconds
+	if want := nanoseconds / uint64(time.Millisecond); got != want {
+		t.Fatalf("interpretation duration milliseconds = %d, want %d", got, want)
+	}
+}
+
+func TestRegistryClassifiesSemanticCommandFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		failure command.Failure
+		assert  func(testing.TB, SemanticCommandSnapshot)
+	}{
+		{name: "window expired", failure: command.FailureWindowExpired, assert: func(t testing.TB, got SemanticCommandSnapshot) { assertCounter(t, got.CaptureFailures) }},
+		{name: "no speech", failure: command.FailureNoSpeech, assert: func(t testing.TB, got SemanticCommandSnapshot) { assertCounter(t, got.CaptureFailures) }},
+		{name: "invalid audio", failure: command.FailureInvalidAudio, assert: func(t testing.TB, got SemanticCommandSnapshot) { assertCounter(t, got.CaptureFailures) }},
+		{name: "asr", failure: command.FailureASR, assert: func(t testing.TB, got SemanticCommandSnapshot) { assertCounter(t, got.ASRFailures) }},
+		{name: "interpretation", failure: command.FailureInterpretation, assert: func(t testing.TB, got SemanticCommandSnapshot) { assertCounter(t, got.InterpretationStageFailures) }},
+		{name: "not allowed", failure: command.FailureNotAllowed, assert: func(t testing.TB, got SemanticCommandSnapshot) { assertCounter(t, got.NotAllowedFailures) }},
+		{name: "execution", failure: command.FailureExecution, assert: func(t testing.TB, got SemanticCommandSnapshot) { assertCounter(t, got.ExecutionFailures) }},
+		{name: "canceled", failure: command.FailureCanceled, assert: func(t testing.TB, got SemanticCommandSnapshot) { assertCounter(t, got.Canceled) }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			registry := NewRegistry()
+			registry.RecordCommandOutcome(realtimev1.CommandResultFailed, test.failure)
+			got := registry.Current().SemanticCommands
+			if got.Failed != 1 || semanticCommandFailureSum(got) != 1 {
+				t.Fatalf("semantic command counters = %#v, want one classified failure", got)
+			}
+			test.assert(t, got)
+		})
+	}
+}
+
+func semanticCommandFailureSum(snapshot SemanticCommandSnapshot) uint64 {
+	return snapshot.CaptureFailures + snapshot.ASRFailures + snapshot.InterpretationStageFailures +
+		snapshot.NotAllowedFailures + snapshot.ExecutionFailures + snapshot.Canceled
 }
 
 func modeCommandOutcomeSum(snapshot ModeCommandSnapshot) uint64 {

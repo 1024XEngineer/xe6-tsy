@@ -55,17 +55,37 @@ npm run dev
 
 ## 语音唤醒
 
-打开页面后会请求麦克风并加载同域 sherpa-onnx KWS。
+点击主按钮启动会话时，页面会请求一次麦克风权限并加载同域 sherpa-onnx KWS；
+空闲页面不占用麦克风。
 
-- 说「小灵，开始翻译」或点击主按钮 → 开启助手入口（WebRTC + `/start`）；回退为 `interpretation` 时继续进入传译
-- 说「小灵，停止翻译」或再次点击 → 结束当前会话，麦克风继续监听唤醒词
+- 点击主按钮 → 开启助手入口（WebRTC + `/start`）；按钮仍可手动结束当前会话
+- 会话中只用固定唤醒词「小灵小灵」打开服务端命令窗口；后续自然语言由 Command ASR 和语义解释器处理
+- Web 的 sherpa-onnx 模型只属于浏览器本地实现；ESP32-S3 等设备可替换为自己的板载 KWS 模型
+
+活动会话可选择两种客户端交互策略，选择保存在浏览器本地：
+
+- `常驻模式`：保持 WebRTC 上行开启，当前业务模式持续接收普通语音。
+- `唤醒词模式`：只让本地 KWS 持续工作，WebRTC 上行默认关闭；命中「小灵小灵」且
+  `wake_word.detected` 发送成功后才开放一轮语音。浏览器从 2.5 秒本地环形缓存中选择最近静音边界，
+  最多补发 2 秒完整唤醒与命令开头，再衔接实时音频；收到匹配的 `command.result` 或 15 秒兜底超时后关闭。
+
+`唤醒词模式` 只适用于 AI 助手。同声传译必须持续接收双方语音，因此进入
+`interpretation` 后前端强制采用常驻上行，但本地 KWS 不停止；此时说「小灵小灵，结束同声传译」
+仍会进入通用语义命令入口。切回助手后恢复用户原先保存的监听策略。
+
+交互策略不属于 realtime 的业务 Mode，不会切换 `assistant` / `interpretation`，也不会重建
+PeerConnection。唤醒后的自然语言既可以是模式指令，也可以是普通助手问题；普通问题通过
+`assistant_query` 复用现有 Assistant Handler。为避免助手回答与译文混流，普通问题只在当前
+`assistant` 模式执行，同传期间需要先明确切回助手模式。
 
 阶段 14 的 Web 端会在 realtime 暴露模式快照时展示连接、RuntimeState 和
 ModeState，并通过带 `runtime_instance_id`、`expected_generation` 的类型化请求切换
 `assistant` / `interpretation`。发生 generation 或 runtime instance 冲突时只刷新快照，
-不会自动重放旧命令。Web 的“小灵小灵”会打开 5 秒本地有界确认窗口，窗口只接受下一条
-已有的 start/stop 兼容唤醒结果并自动关闭；它不等同于 realtime 的 Command Gate、Command
-ASR 或服务端模式解析。连接断开也不会自动创建第二条 PeerConnection。
+不会自动重放旧命令。Web 的“小灵小灵”只发送类型化 `wake_word.detected`，不在本地判断
+start/stop、模式或语言方向；realtime 的 Command Gate、Command ASR、语义解释器和 Mode
+Coordinator 负责后续执行。连接断开也不会自动创建第二条 PeerConnection。
+所有客户端统一发送同一个 `wake_word.detected` 契约；模型文件、阈值和推理运行时由客户端负责，
+后端不接收 KWS 音频流或模型。设备接入字段和重试规则见 `docs/DEVICE_KWS_INTEGRATION.md`。
 
 `npm install` / `npm run dev` / `npm run build` 会自动把缺失的 int8 模型与 `.wasm` 拉到 `public/kws/`（已存在则跳过）。首次需要能访问 GitHub Releases 与 jsDelivr；离线时可设 `LINGOW_SKIP_KWS_SYNC=1`，让下载失败不阻断命令。详见 `public/kws/README.md`。
 

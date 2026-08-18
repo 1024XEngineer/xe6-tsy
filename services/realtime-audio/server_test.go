@@ -54,6 +54,9 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	if cfg.LongDelivery {
 		t.Fatal("LongDelivery = true, want false by default")
 	}
+	if cfg.CommandConfigTimeout != defaultCommandConfigTimeout {
+		t.Fatalf("command config timeout = %s, want %s", cfg.CommandConfigTimeout, defaultCommandConfigTimeout)
+	}
 
 	if _, err := loadProcessConfig(func(string) string { return "" }); err == nil {
 		t.Fatal("loadProcessConfig() error = nil, want secret validation error")
@@ -99,6 +102,51 @@ func TestLoadProcessConfigLongSentenceDeliveryCapability(t *testing.T) {
 				t.Fatalf("LongDelivery = %v, want %v", cfg.LongDelivery, test.want)
 			}
 		})
+	}
+}
+
+func TestLoadProcessConfigReadsCommandAPISettings(t *testing.T) {
+	token := strings.Repeat("c", minCommandTokenBytes)
+	cfg, err := loadProcessConfig(func(key string) string {
+		switch key {
+		case "REALTIME_TICKET_SECRET":
+			return strings.Repeat("s", 32)
+		case "LINGOW_API_BASE_URL":
+			return "http://api:8080"
+		case "LINGOW_COMMAND_SYSTEM_TOKEN":
+			return token
+		case "COMMAND_CONFIG_TIMEOUT_MS":
+			return "1750"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("loadProcessConfig() error = %v", err)
+	}
+	if cfg.APIBaseURL != "http://api:8080" || cfg.CommandToken != token || cfg.CommandConfigTimeout != 1750*time.Millisecond {
+		t.Fatalf("command API config = %#v", cfg)
+	}
+}
+
+func TestLoadProcessConfigRejectsIncompleteCommandAPISettings(t *testing.T) {
+	tests := []map[string]string{
+		{"LINGOW_API_BASE_URL": "http://api:8080"},
+		{"LINGOW_COMMAND_SYSTEM_TOKEN": strings.Repeat("c", minCommandTokenBytes)},
+		{"LINGOW_API_BASE_URL": "http://api:8080", "LINGOW_COMMAND_SYSTEM_TOKEN": "short"},
+		{"COMMAND_CONFIG_TIMEOUT_MS": "none"},
+		{"COMMAND_CONFIG_TIMEOUT_MS": "0"},
+	}
+	for _, values := range tests {
+		_, err := loadProcessConfig(func(key string) string {
+			if key == "REALTIME_TICKET_SECRET" {
+				return strings.Repeat("s", 32)
+			}
+			return values[key]
+		})
+		if err == nil {
+			t.Fatalf("loadProcessConfig(%#v) error = nil", values)
+		}
 	}
 }
 
@@ -153,6 +201,58 @@ func setMockProviderEnv(t *testing.T) {
 	// Unit tests stay offline: Silero needs ONNX Runtime shared libs.
 	t.Setenv("LOCAL_VAD_PROVIDER", "energy")
 	t.Setenv("REALTIME_METRICS_TOKEN", "")
+	t.Setenv("COMMAND_INTERPRETER", "")
+	t.Setenv("COMMAND_LLM_API_KEY", "")
+	t.Setenv("COMMAND_LLM_BASE_URL", "")
+	t.Setenv("COMMAND_LLM_MODEL", "")
+	t.Setenv("COMMAND_LLM_TIMEOUT_MS", "")
+	t.Setenv("LINGOW_API_BASE_URL", "")
+	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", "")
+	t.Setenv("COMMAND_CONFIG_TIMEOUT_MS", "")
+}
+
+func TestNewControlPlaneHandlerWiresQwenSemanticCommands(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("COMMAND_INTERPRETER", "qwen")
+	t.Setenv("COMMAND_LLM_API_KEY", "test-command-key")
+	t.Setenv("COMMAND_LLM_BASE_URL", "https://example.invalid/v1")
+	t.Setenv("LINGOW_API_BASE_URL", "http://api:8080")
+	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", strings.Repeat("c", minCommandTokenBytes))
+
+	handler, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+	if handler == nil {
+		t.Fatal("newControlPlaneHandler() = nil")
+	}
+}
+
+func TestNewControlPlaneHandlerRejectsQwenWithoutCommandAPI(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("COMMAND_INTERPRETER", "qwen")
+	t.Setenv("COMMAND_LLM_API_KEY", "test-command-key")
+	t.Setenv("COMMAND_LLM_BASE_URL", "https://example.invalid/v1")
+
+	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err == nil || !strings.Contains(err.Error(), "LINGOW_API_BASE_URL") {
+		t.Fatalf("newControlPlaneHandler() error = %v, want missing command API configuration", err)
+	}
+}
+
+func TestNewControlPlaneHandlerLegacyDoesNotConstructUnusedCommandAPIClient(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("COMMAND_INTERPRETER", "legacy")
+	t.Setenv("LINGOW_API_BASE_URL", "://invalid-command-api")
+	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", strings.Repeat("c", minCommandTokenBytes))
+
+	handler, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+	if handler == nil {
+		t.Fatal("newControlPlaneHandler() = nil")
+	}
 }
 
 func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {

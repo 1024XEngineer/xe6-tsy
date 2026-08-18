@@ -46,6 +46,14 @@ JWT_SECRET=local-dev-only-secret-change-me-1234
 ASR_PROVIDER=mock
 LLM_PROVIDER=mock
 TTS_PROVIDER=mock
+COMMAND_INTERPRETER=legacy
+COMMAND_LLM_API_KEY=
+COMMAND_LLM_BASE_URL=
+COMMAND_LLM_MODEL=qwen3.6-flash
+COMMAND_LLM_TIMEOUT_MS=10000
+LINGOW_API_BASE_URL=http://127.0.0.1:8080
+LINGOW_COMMAND_SYSTEM_TOKEN=replace-with-the-same-32-byte-secret-in-both-services
+COMMAND_CONFIG_TIMEOUT_MS=3000
 ```
 
 本地默认使用 mock ASR/翻译/TTS，避免开发阶段被第三方额度和网络状态阻塞。
@@ -134,7 +142,8 @@ apps/mobile/
 ```text
 session.start
 language.selected
-wakeup.detected
+wake_word.detected
+command.result
 webrtc.connected
 asr.partial
 asr.final
@@ -147,6 +156,11 @@ error
 ```
 
 WebRTC 连接和运行时状态机由 `services/realtime-audio` 维护。`services/api` 只暴露业务会话、语言配置、实时连接票据和状态快照查询，不交换 SDP/ICE，也不重复维护播放状态机。
+
+唤醒词模型运行在客户端或设备侧，不属于后端模型服务。Web 当前使用 sherpa-onnx；ESP32-S3
+使用适合板载资源的 KWS 模型。所有实现命中固定「小灵小灵」后只发送
+`wake_word.detected`，自然语言命令仍通过同一 WebRTC 音轨上传。服务端负责语义理解、能力校验和
+模式切换，详细契约见 [客户端与设备侧 KWS 接入规范](DEVICE_KWS_INTEGRATION.md)。
 
 ## 7. 模型服务适配规范
 

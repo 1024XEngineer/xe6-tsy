@@ -5,7 +5,6 @@ import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { useState } from "react";
 
 import { useVoiceSession } from "../hooks/use-voice-session";
-import { formatActivePair } from "../lib/languages";
 import styles from "../voice.module.css";
 import { HistoryOverlay } from "./history-overlay";
 import { LatestAssistantReply } from "./latest-assistant-reply";
@@ -26,10 +25,12 @@ export function VoiceExperience() {
     updateConfig,
     debug,
     configSyncStatus,
-    commandWindow,
+    commandFeedback,
+    interactionPolicy,
+    interactionPolicyLocked,
+    setInteractionPolicy,
     switchMode,
     toggle,
-    wakeStatus,
   } = useVoiceSession();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -80,9 +81,6 @@ export function VoiceExperience() {
           transition={{ type: "spring", stiffness: 110, damping: 21 }}
         >
           <VoiceControl mode={activeMode} phase={state.phase} onActivate={handleToggle} />
-          <p aria-live="polite" className={styles.outputModeText}>
-            {formatActivePair(voiceConfig)}
-          </p>
           {state.phase !== "idle" ? (
             <div aria-label="实时状态" className={styles.runtimeStatus}>
               <span>连接：{debug.connectionState ?? "未知"}</span>
@@ -110,9 +108,46 @@ export function VoiceExperience() {
               ) : null}
             </div>
           ) : null}
+          {state.phase !== "idle" ? (
+            <div
+              aria-label="对话监听方式"
+              className={styles.interactionPolicyControls}
+              role="group"
+            >
+              <button
+                aria-pressed={interactionPolicy === "continuous"}
+                onClick={() => setInteractionPolicy("continuous")}
+                type="button"
+              >
+                常驻模式
+              </button>
+              <button
+                aria-pressed={interactionPolicy === "wake_word"}
+                disabled={interactionPolicyLocked}
+                onClick={() => setInteractionPolicy("wake_word")}
+                title={
+                  interactionPolicyLocked
+                    ? "同声传译保持常驻上行，唤醒词仍可用于退出指令"
+                    : undefined
+                }
+                type="button"
+              >
+                唤醒词模式
+              </button>
+            </div>
+          ) : null}
           {automaticOutputMessage ? (
             <p className={styles.automaticOutputText} role="status">
               {automaticOutputMessage}
+            </p>
+          ) : null}
+          {commandFeedback ? (
+            <p
+              className={styles.commandFeedback}
+              data-status={commandFeedback.status}
+              role="status"
+            >
+              {commandFeedback.message}
             </p>
           ) : null}
           <motion.p
@@ -140,11 +175,6 @@ export function VoiceExperience() {
             >
               {hintMessage}
             </motion.p>
-          ) : null}
-          {wakeStatus === "listening" && commandWindow.state === "open" ? (
-            <p className={styles.commandWindowNotice} role="status">
-              命令窗口已开启，请在 5 秒内说“小灵，开始翻译”或“小灵，停止翻译”。
-            </p>
           ) : null}
         </motion.section>
 

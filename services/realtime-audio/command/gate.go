@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
@@ -83,17 +84,67 @@ type ExecuteRequest struct {
 	Command   Command
 }
 
+// AppliedLanguageConfig records an explicit language direction accepted by the API control plane.
+// A non-nil value is an authoritative execution fact even when the realtime mode was unchanged.
+type AppliedLanguageConfig struct {
+	SourceLanguage string `json:"source_language"`
+	TargetLanguage string `json:"target_language"`
+	Version        int    `json:"version"`
+}
+
 // ExecutionResult carries the authoritative state returned by the runtime coordinator. The Gate
 // uses it only to publish feedback and never treats feedback delivery as part of command execution.
 type ExecutionResult struct {
-	Status realtimev1.ModeSwitchStatus
-	State  realtimev1.ModeStateSnapshot
+	Status         realtimev1.ModeSwitchStatus
+	State          realtimev1.ModeStateSnapshot
+	LanguageConfig *AppliedLanguageConfig
 }
 
 // Executor is deliberately narrower than runtime.Manager, keeping mode-generation and operation
 // construction in the runtime adapter instead of leaking those details into command recognition.
 type Executor interface {
 	ExecuteCommand(context.Context, ExecuteRequest) (ExecutionResult, error)
+}
+
+// SuccessFeedbackRequest contains only validated intent and authoritative post-execution facts.
+// A generator may change wording but must not execute actions or reinterpret command success.
+type SuccessFeedbackRequest struct {
+	Command          Command
+	Execution        ExecutionResult
+	ResponseLanguage string
+}
+
+// SuccessFeedbackResult contains the optional phrasing and billable provider metadata produced by
+// a feedback model. Execution state is intentionally absent because the generator cannot change it.
+type SuccessFeedbackResult struct {
+	Message      string
+	Provider     string
+	Model        string
+	InputTokens  int64
+	OutputTokens int64
+	CostAmount   string
+	Currency     string
+}
+
+// FeedbackRequest carries the already accepted command result and, for a successful mode
+// transition, the authoritative facts used to optionally phrase an audible confirmation. The event
+// remains the deterministic fallback; feedback generation must never delay or alter its publication.
+type FeedbackRequest struct {
+	Event   realtimev1.CommandResultEvent
+	Success *SuccessFeedbackRequest
+}
+
+// SuccessFeedbackGenerator renders best-effort natural-language confirmation after execution.
+// Failure must never roll back or repeat the already completed command.
+type SuccessFeedbackGenerator interface {
+	GenerateSuccessFeedback(context.Context, SuccessFeedbackRequest) (SuccessFeedbackResult, error)
+}
+
+// SuccessFeedbackFunc adapts a function to the post-execution feedback boundary.
+type SuccessFeedbackFunc func(context.Context, SuccessFeedbackRequest) (SuccessFeedbackResult, error)
+
+func (f SuccessFeedbackFunc) GenerateSuccessFeedback(ctx context.Context, request SuccessFeedbackRequest) (SuccessFeedbackResult, error) {
+	return f(ctx, request)
 }
 
 // ResultSink accepts one best-effort acknowledgement for each terminal command attempt. Publish
@@ -105,7 +156,7 @@ type ResultSink interface {
 // FeedbackSink plays best-effort command speech after the typed result has been accepted. Publish
 // must return promptly; Interrupt cancels only active feedback, while Close also waits for release.
 type FeedbackSink interface {
-	Publish(realtimev1.CommandResultEvent)
+	Publish(FeedbackRequest)
 	Interrupt()
 	Close()
 }
@@ -409,8 +460,9 @@ func (g *Gate) startRecognitionLocked(ctx context.Context) Result {
 }
 
 type recognitionOutcome struct {
-	event   realtimev1.CommandResultEvent
-	failure Failure
+	event    realtimev1.CommandResultEvent
+	feedback *FeedbackRequest
+	failure  Failure
 }
 
 func (g *Gate) recognize(
@@ -432,7 +484,7 @@ func (g *Gate) recognize(
 	g.abandonLocked()
 	g.mu.Unlock()
 
-	g.publishTerminalOutcome(outcome.event, outcome.failure)
+	g.publishTerminalOutcome(outcome.event, outcome.failure, outcome.feedback)
 	g.completeRecognitionTask(attempt, done)
 }
 
@@ -490,8 +542,15 @@ func (g *Gate) runRecognition(
 		status, message := executionFailureFeedback(parsed, err)
 		return failureOutcome(request, classifyAttemptFailure(caller, processingCtx, FailureExecution), status, message, parsed, g.now())
 	}
+	event := commandResultEvent(request, parsed, execution, commandSuccessFallback(parsed, execution), g.now())
 	return recognitionOutcome{
-		event: commandResultEvent(request, parsed, execution, commandSuccessMessage(parsed, execution.Status), g.now()),
+		event: event,
+		feedback: &FeedbackRequest{
+			Event: event,
+			Success: &SuccessFeedbackRequest{
+				Command: parsed, Execution: execution, ResponseLanguage: result.SourceLanguage,
+			},
+		},
 	}
 }
 
@@ -556,17 +615,20 @@ func (g *Gate) publishResultLocked(event realtimev1.CommandResultEvent) {
 }
 
 func (g *Gate) publishTerminalResultLocked(event realtimev1.CommandResultEvent, failure Failure) {
-	g.publishTerminalOutcome(event, failure)
+	g.publishTerminalOutcome(event, failure, nil)
 }
 
 // publishTerminalOutcome keeps typed results, observations, and audible feedback aligned for every
 // completed attempt. Cancellation remains silent because a replacement wake or Runtime shutdown
 // owns the audio path; assistant queries produce their own answer audio and must not be duplicated.
-func (g *Gate) publishTerminalOutcome(event realtimev1.CommandResultEvent, failure Failure) {
+func (g *Gate) publishTerminalOutcome(event realtimev1.CommandResultEvent, failure Failure, feedback *FeedbackRequest) {
 	g.publishResult(event)
 	g.recordOutcome(event.Status, failure)
 	if g.deps.Feedback != nil && failure != FailureCanceled && event.Action != string(ActionAssistantQuery) {
-		g.deps.Feedback.Publish(event)
+		if feedback == nil {
+			feedback = &FeedbackRequest{Event: event}
+		}
+		g.deps.Feedback.Publish(*feedback)
 	}
 }
 
@@ -613,11 +675,15 @@ func commandResultEvent(request OpenRequest, parsed Command, execution Execution
 	}
 }
 
-func commandSuccessMessage(parsed Command, status realtimev1.ModeSwitchStatus) string {
+func commandSuccessFallback(parsed Command, execution ExecutionResult) string {
 	if parsed.Action == ActionAssistantQuery {
 		return "助手已处理本轮提问"
 	}
-	if status == realtimev1.ModeSwitchUnchanged {
+	if execution.LanguageConfig != nil && parsed.TargetMode == realtimev1.ModeInterpretation {
+		return "已设置为" + spokenLanguageName(execution.LanguageConfig.SourceLanguage) + "和" +
+			spokenLanguageName(execution.LanguageConfig.TargetLanguage) + "同声传译"
+	}
+	if execution.Status == realtimev1.ModeSwitchUnchanged {
 		if parsed.TargetMode == realtimev1.ModeInterpretation {
 			return "当前已是同声传译模式"
 		}
@@ -627,6 +693,30 @@ func commandSuccessMessage(parsed Command, status realtimev1.ModeSwitchStatus) s
 		return "已进入同声传译模式"
 	}
 	return "已返回通用助手模式"
+}
+
+// ValidSuccessFeedback bounds generated text before it is sent to speech output.
+func ValidSuccessFeedback(message string) bool {
+	if message == "" || utf8.RuneCountInString(message) > 80 {
+		return false
+	}
+	for _, r := range message {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func spokenLanguageName(code string) string {
+	if name := map[string]string{
+		"zh-CN": "中文", "en-US": "英语", "ja-JP": "日语", "ko-KR": "韩语",
+		"fr-FR": "法语", "de-DE": "德语", "ru-RU": "俄语", "pt-BR": "葡萄牙语",
+		"it-IT": "意大利语", "es-ES": "西班牙语",
+	}[code]; name != "" {
+		return name
+	}
+	return code
 }
 
 func executionFailureFeedback(parsed Command, err error) (realtimev1.CommandResultStatus, string) {

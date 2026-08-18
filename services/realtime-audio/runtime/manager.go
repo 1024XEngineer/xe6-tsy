@@ -458,9 +458,14 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		if options == (command.Options{}) {
 			options = defaultCommandOptions
 		}
+		var successFeedback command.SuccessFeedbackGenerator
+		if candidate, ok := m.commandInterpreter.(command.SuccessFeedbackGenerator); ok {
+			successFeedback = candidate
+		}
 		feedback := newCommandSpeechFeedback(commandSpeechFeedbackDependencies{
 			Speech: m.speech, Usage: m.deps.Usage, Runtime: m.deps.Runtime,
-			AccountID: snapshot.AccountID, TraceID: snapshot.TraceID, Logger: m.logger, Now: m.deps.Now,
+			SuccessFeedback: successFeedback,
+			AccountID:       snapshot.AccountID, TraceID: snapshot.TraceID, Logger: m.logger, Now: m.deps.Now,
 		})
 		gate, gateErr := command.NewGate(command.Dependencies{
 			Classifier:  classifier,

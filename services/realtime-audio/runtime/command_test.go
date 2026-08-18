@@ -93,6 +93,27 @@ func TestCommandExecutorConfiguresLanguagesBeforeModeSwitch(t *testing.T) {
 	}
 }
 
+func TestCommandExecutorReportsConfiguredLanguagesWhenModeIsUnchanged(t *testing.T) {
+	t.Parallel()
+	manager := commandTestManager(t, realtimev1.ModeInterpretation, &recordingModeChangedSink{})
+	configurator := &recordingLanguageConfigurator{}
+
+	result, err := (commandExecutor{
+		manager: manager, languages: commandLanguageReader(), configurator: configurator,
+	}).ExecuteCommand(t.Context(), interpretationRequest(command.Arguments{
+		SourceLanguage: "zh-CN", TargetLanguage: "ja-JP",
+	}))
+	if err != nil {
+		t.Fatalf("ExecuteCommand() error = %v", err)
+	}
+	if result.Status != realtimev1.ModeSwitchUnchanged || result.LanguageConfig == nil {
+		t.Fatalf("ExecuteCommand() result = %#v, want unchanged mode with language configuration", result)
+	}
+	if got := *result.LanguageConfig; got.SourceLanguage != "zh-CN" || got.TargetLanguage != "ja-JP" || got.Version != 2 {
+		t.Fatalf("language configuration = %#v", got)
+	}
+}
+
 func TestCommandExecutorBootstrapsExplicitLanguagesWithoutSnapshot(t *testing.T) {
 	t.Parallel()
 	sink := &recordingModeChangedSink{}

@@ -121,6 +121,13 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		defer close(workerDone)
 		for event := range finalizedEvents {
 			if err := s.handleEvents(runCtx, request, []vad.Event{event}); err != nil {
+				if pipeline.IsRecoverableUnsupportedSourceLanguage(err) {
+					// ASR can misclassify short speech, playback echo, or background noise as
+					// a third language. The pipeline rejects it before translation and durable
+					// effects. Only a clean listening-state recovery makes the Turn discardable.
+					s.logUnsupportedSourceLanguage(request, err)
+					continue
+				}
 				if errors.Is(err, pipeline.ErrFinalTurnAccepted) {
 					// FinalTurn is already durable at this point. TTS, playback, usage, or
 					// runtime-reporting failures belong to this Turn and must not tear down
@@ -359,6 +366,18 @@ func (s *Service) logPostCommitFailure(request Request, err error) {
 	s.latency.Error("realtime turn post-commit processing failed",
 		"session_id", request.SessionID,
 		"trace_id", request.TraceID,
+		"error", err,
+	)
+}
+
+func (s *Service) logUnsupportedSourceLanguage(request Request, err error) {
+	if s == nil || s.latency == nil || err == nil {
+		return
+	}
+	s.latency.Warn("realtime turn ignored unsupported source language",
+		"session_id", request.SessionID,
+		"trace_id", request.TraceID,
+		"error_class", "unsupported_source_language",
 		"error", err,
 	)
 }

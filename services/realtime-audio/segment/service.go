@@ -121,6 +121,10 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		defer close(workerDone)
 		for event := range finalizedEvents {
 			if err := s.handleEvents(runCtx, request, []vad.Event{event}); err != nil {
+				if isRecoverableTurnError(err) {
+					s.logRecoverableTurn(request, err)
+					continue
+				}
 				if errors.Is(err, pipeline.ErrFinalTurnAccepted) {
 					// FinalTurn is already durable at this point. TTS, playback, usage, or
 					// runtime-reporting failures belong to this Turn and must not tear down
@@ -175,6 +179,60 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		}
 	}
 	var lastSeen time.Time
+	streaming, _ := s.processor.(pipeline.StreamingTurnProcessor)
+	var activeTurn *pipeline.AudioTurn
+	processStreamingEvent := func(event vad.Event) error {
+		if streaming == nil {
+			return nil
+		}
+		switch event.Type {
+		case vad.EventOpened:
+			if activeTurn != nil {
+				activeTurn.Close()
+			}
+			turn, err := streaming.StartAudio(runCtx, pipeline.TurnProcessRequest{
+				SessionID: request.SessionID, AccountID: request.AccountID, TraceID: request.TraceID,
+				SourceLanguage: request.SourceLanguage, StartedAt: event.StartedAt,
+			})
+			if err != nil {
+				if isRecoverableTurnError(err) {
+					s.logRecoverableTurn(request, err)
+					return nil
+				}
+				return err
+			}
+			activeTurn = turn
+			for _, frame := range event.Frames {
+				if err := activeTurn.PushAudio(runCtx, frame.PCM); err != nil {
+					activeTurn.Close()
+					activeTurn = nil
+					return nil
+				}
+			}
+		case vad.EventAudio:
+			if activeTurn == nil || event.Frame == nil {
+				return nil
+			}
+			if err := activeTurn.PushAudio(runCtx, event.Frame.PCM); err != nil {
+				activeTurn = nil
+			}
+		case vad.EventFinal:
+			if activeTurn == nil {
+				return nil
+			}
+			_, err := activeTurn.Finish(runCtx)
+			activeTurn.Close()
+			activeTurn = nil
+			if err != nil {
+				if isRecoverableTurnError(err) {
+					s.logRecoverableTurn(request, err)
+					return nil
+				}
+				return err
+			}
+		}
+		return nil
+	}
 	var loopErr error
 	for {
 		openPendingWake()
@@ -187,7 +245,12 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 				} else {
 					for _, event := range events {
 						s.logVADCheckpoint(request, event)
-						if event.Type == vad.EventFinal {
+						if streaming != nil {
+							if err := processStreamingEvent(event); err != nil {
+								loopErr = err
+								break
+							}
+						} else if event.Type == vad.EventFinal {
 							if err := enqueueFinalized(event); err != nil {
 								loopErr = err
 								break
@@ -217,12 +280,16 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		}
 		for _, event := range events {
 			s.logVADCheckpoint(request, event)
-			if event.Type != vad.EventFinal {
-				continue
-			}
-			if err := enqueueFinalized(event); err != nil {
-				loopErr = err
-				break
+			if streaming != nil {
+				if err := processStreamingEvent(event); err != nil {
+					loopErr = err
+					break
+				}
+			} else if event.Type == vad.EventFinal {
+				if err := enqueueFinalized(event); err != nil {
+					loopErr = err
+					break
+				}
 			}
 		}
 		if loopErr != nil {
@@ -325,6 +392,17 @@ func (s *Service) handleEvents(ctx context.Context, request Request, events []va
 		}
 	}
 	return nil
+}
+
+func isRecoverableTurnError(err error) bool {
+	return errors.Is(err, pipeline.ErrUnsupportedSourceLanguage)
+}
+
+func (s *Service) logRecoverableTurn(request Request, err error) {
+	if s == nil || s.latency == nil || err == nil {
+		return
+	}
+	s.latency.Warn("realtime turn skipped and listening restored", "session_id", request.SessionID, "trace_id", request.TraceID, "error", err)
 }
 
 func (s *Service) logVADCheckpoint(request Request, event vad.Event) {

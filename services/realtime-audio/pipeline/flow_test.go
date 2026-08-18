@@ -459,6 +459,46 @@ func TestTurnProcessorFinalPathDoesNotWaitForBlockedPartialObserver(t *testing.T
 	}
 }
 
+func TestStartAudioPublishesPartialBeforeFinish(t *testing.T) {
+	t.Parallel()
+	provider := &pushEventProvider{stream: &pushEventStream{
+		events: make(chan asr.Event), partialSent: make(chan struct{}),
+		result: asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"},
+	}}
+	observer := &recordingASRPartialObserver{events: make(chan realtimev1.ASRPartialEvent, 1)}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock-translate", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: provider, Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}), Pipeline: service, Finals: service, Partials: observer,
+	})
+	audioTurn, err := processor.StartAudio(t.Context(), TurnProcessRequest{
+		SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", SourceLanguage: "zh-CN",
+	})
+	if err != nil {
+		t.Fatalf("StartAudio() error = %v", err)
+	}
+	defer audioTurn.Close()
+	if err := audioTurn.PushAudio(t.Context(), []byte{1, 2}); err != nil {
+		t.Fatalf("PushAudio() error = %v", err)
+	}
+	select {
+	case partial := <-observer.events:
+		if partial.Text != "你" || partial.TurnID == "" {
+			t.Fatalf("partial = %#v", partial)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("partial was not published before Finish")
+	}
+	if _, err := audioTurn.Finish(t.Context()); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+}
+
 type pushEventProvider struct{ stream *pushEventStream }
 
 func (p *pushEventProvider) StartStream(context.Context, asr.StreamRequest) (asr.Stream, error) {

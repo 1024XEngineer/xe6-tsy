@@ -70,6 +70,28 @@ type TurnProcessorDependencies struct {
 	Partials    ASRPartialObserver
 }
 
+// StreamingTurnProcessor starts an ASR stream when VAD opens and receives
+// frames until the corresponding VAD final. The finalized-only ProcessAudio
+// method remains available for callers that do not have incremental VAD events.
+type StreamingTurnProcessor interface {
+	StartAudio(context.Context, TurnProcessRequest) (*AudioTurn, error)
+}
+
+// AudioTurn owns one live ASR stream. It is not safe for concurrent PushAudio
+// and Finish calls; segment.Service serializes VAD events for a session.
+type AudioTurn struct {
+	processor      *TurnProcessor
+	turn           TurnContext
+	request        TurnProcessRequest
+	stream         asr.Stream
+	asrStartedAt   time.Time
+	eventCancel    context.CancelFunc
+	finalEvents    chan *asr.FinalResult
+	eventErrors    chan error
+	settlePartials func()
+	closeOnce      sync.Once
+}
+
 // NewTurnProcessor 创建一个处理完整音频 Turn 的公共 Runner。
 // 构造只保存依赖，真正的 Turn、ASR 流和 Handler 副作用都在 ProcessAudio 中发生。
 func NewTurnProcessor(deps TurnProcessorDependencies) *TurnProcessor {
@@ -87,41 +109,55 @@ func NewTurnProcessor(deps TurnProcessorDependencies) *TurnProcessor {
 // gives the only final result to the Handler. Empty or filler-only text restores listening
 // without entering a mode Handler or producing translation or playback side effects.
 func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessRequest) (TurnContext, error) {
-	if err := ctx.Err(); err != nil {
+	audioTurn, err := p.StartAudio(ctx, request)
+	if err != nil {
 		return TurnContext{}, err
+	}
+	defer audioTurn.Close()
+	for _, chunk := range request.AudioChunks {
+		if err := audioTurn.PushAudio(ctx, chunk); err != nil {
+			return audioTurn.turn, err
+		}
+	}
+	return audioTurn.Finish(ctx)
+}
+
+// StartAudio allocates the Turn and starts recognition before VAD closes. This
+// makes provider partial events available during the active utterance.
+func (p *TurnProcessor) StartAudio(ctx context.Context, request TurnProcessRequest) (*AudioTurn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if p == nil || p.recognizer == nil || p.opener == nil || p.pipeline == nil || p.finals == nil {
-		return TurnContext{}, ErrTurnProcessorDependencyRequired
+		return nil, ErrTurnProcessorDependencyRequired
 	}
 	if err := p.pipeline.validate(); err != nil {
-		return TurnContext{}, err
+		return nil, err
 	}
 	turn, err := p.opener.OpenTurn(ctx, TurnOpenRequest{
 		SessionID: request.SessionID, AccountID: request.AccountID,
 		TraceID: request.TraceID, StartedAt: request.StartedAt,
 	})
 	if err != nil {
-		return TurnContext{}, fmt.Errorf("open Turn: %w", err)
+		return nil, fmt.Errorf("open Turn: %w", err)
 	}
 	if err := p.pipeline.reportRuntime(ctx, turn, session.RuntimeASRProcessing, ""); err != nil {
-		return turn, fmt.Errorf("report ASR runtime: %w", err)
+		return nil, fmt.Errorf("report ASR runtime: %w", err)
 	}
 	stream, err := p.recognizer.StartStream(ctx, asr.StreamRequest{
 		SessionID: turn.SessionID, TurnID: turn.ID, SourceLanguage: request.SourceLanguage,
 	})
 	if err != nil {
 		p.pipeline.latency.ProviderFailure("asr_start", turn, p.asrProvider, "", err)
-		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("start ASR stream: %w", err))
+		return nil, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("start ASR stream: %w", err))
 	}
 	if stream == nil {
 		p.pipeline.latency.ProviderFailure("asr_stream", turn, p.asrProvider, "", ErrASRStreamRequired)
-		return turn, p.pipeline.finishASRWithError(ctx, turn, ErrASRStreamRequired)
+		return nil, p.pipeline.finishASRWithError(ctx, turn, ErrASRStreamRequired)
 	}
 	asrStartedAt := time.Now()
 	p.pipeline.latency.ProviderCheckpoint("asr_stream_started", turn, asrStartedAt, p.asrProvider, "")
-	defer stream.Close()
 	streamCtx, stopEvents := context.WithCancel(ctx)
-	defer stopEvents()
 	finalEvents := make(chan *asr.FinalResult, 1)
 	eventErrors := make(chan error, 1)
 	var partialEvents chan asr.Event
@@ -133,25 +169,44 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		go dispatchASRPartials(streamCtx, p.partials, turn, request.SourceLanguage, partialEvents, partialSettled)
 	}
 	go collectFinalASREvent(streamCtx, p.pipeline.latency, turn, asrStartedAt, stream.Events(), finalEvents, eventErrors, partialEvents, settlePartialObserver)
-	for _, chunk := range request.AudioChunks {
-		if err := stream.PushAudio(ctx, append([]byte(nil), chunk...)); err != nil {
-			p.pipeline.latency.ProviderFailure("asr_push_audio", turn, p.asrProvider, "", err)
-			return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("push audio for Turn %s: %w", turn.ID, err))
-		}
-	}
+	return &AudioTurn{processor: p, turn: turn, request: request, stream: stream, eventCancel: stopEvents,
+		asrStartedAt: asrStartedAt, finalEvents: finalEvents, eventErrors: eventErrors, settlePartials: settlePartialObserver}, nil
+}
 
-	result, err := stream.Finish(ctx)
-	settlePartialObserver()
+// PushAudio forwards a single PCM frame without waiting for VAD final.
+func (t *AudioTurn) PushAudio(ctx context.Context, chunk []byte) error {
+	if t == nil || t.stream == nil || t.processor == nil {
+		return ErrASRStreamRequired
+	}
+	if err := t.stream.PushAudio(ctx, append([]byte(nil), chunk...)); err != nil {
+		t.processor.pipeline.latency.ProviderFailure("asr_push_audio", t.turn, t.processor.asrProvider, "", err)
+		t.Close()
+		return t.processor.pipeline.finishASRWithError(ctx, t.turn, fmt.Errorf("push audio for Turn %s: %w", t.turn.ID, err))
+	}
+	return nil
+}
+
+// Finish closes ASR and dispatches only its final result to the mode handler.
+func (t *AudioTurn) Finish(ctx context.Context) (TurnContext, error) {
+	if t == nil || t.stream == nil || t.processor == nil {
+		return TurnContext{}, ErrASRStreamRequired
+	}
+	p := t.processor
+	turn := t.turn
+	request := t.request
+
+	result, err := t.stream.Finish(ctx)
+	t.settlePartials()
 	if err != nil {
 		p.pipeline.latency.ProviderFailure("asr_finish", turn, observedProvider(p.asrProvider, result.Provider), result.Model, err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("finish ASR stream: %w", err))
 	}
-	if err := <-eventErrors; err != nil {
+	if err := <-t.eventErrors; err != nil {
 		p.pipeline.latency.ProviderFailure("asr_events", turn, observedProvider(p.asrProvider, result.Provider), result.Model, err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, err)
 	}
 	select {
-	case eventResult := <-finalEvents:
+	case eventResult := <-t.finalEvents:
 		result = mergeFinalResult(*eventResult, result)
 	default:
 	}
@@ -159,7 +214,7 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		result.SourceLanguage = request.SourceLanguage
 	}
 	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
-	p.pipeline.latency.ProviderCheckpoint("asr_final", turn, asrStartedAt, observedProvider(p.asrProvider, result.Provider), result.Model,
+	p.pipeline.latency.ProviderCheckpoint("asr_final", turn, t.asrStartedAt, observedProvider(p.asrProvider, result.Provider), result.Model,
 		"source_language", result.SourceLanguage,
 		"text_bytes", len(result.Text),
 	)
@@ -184,6 +239,24 @@ func (p *TurnProcessor) ProcessAudio(ctx context.Context, request TurnProcessReq
 		return turn, err
 	}
 	return turn, nil
+}
+
+// Close is idempotent and releases the event reader on aborted turns.
+func (t *AudioTurn) Close() {
+	if t == nil {
+		return
+	}
+	t.closeOnce.Do(func() {
+		if t.settlePartials != nil {
+			t.settlePartials()
+		}
+		if t.eventCancel != nil {
+			t.eventCancel()
+		}
+		if t.stream != nil {
+			_ = t.stream.Close()
+		}
+	})
 }
 
 func isTrivialASRText(text string) bool {

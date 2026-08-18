@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -94,6 +95,27 @@ func TestServiceKeepsReadingWhileTurnProcessingIsBusy(t *testing.T) {
 	}
 	if got := processor.calls(); got != 2 {
 		t.Fatalf("processed Turns = %d, want 2", got)
+	}
+}
+
+func TestServiceSkipsUnsupportedLanguageAndContinuesLaterTurns(t *testing.T) {
+	base := time.Unix(110, 0)
+	source := &fakeSource{frames: []audio.Frame{
+		testFrame(t, 1, base),
+		testFrame(t, 0, base.Add(300*time.Millisecond)),
+		testFrame(t, 1, base.Add(400*time.Millisecond)),
+		testFrame(t, 0, base.Add(700*time.Millisecond)),
+	}}
+	processor := &sequenceProcessor{errors: []error{
+		fmt.Errorf("process final: %w: en-US", pipeline.ErrUnsupportedSourceLanguage), nil,
+	}}
+	service := newTestService(t, source, processor)
+
+	if err := service.Run(t.Context(), Request{SessionID: "session-1"}); err != nil {
+		t.Fatalf("Run() error = %v, want unsupported Turn to be skipped", err)
+	}
+	if processor.calls != 2 {
+		t.Fatalf("processed Turns = %d, want 2", processor.calls)
 	}
 }
 

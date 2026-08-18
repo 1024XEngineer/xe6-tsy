@@ -94,6 +94,28 @@ func TestFrontendAssistantReplyJSONShape(t *testing.T) {
 	}
 }
 
+func TestFrontendASRPartialJSONShape(t *testing.T) {
+	payload := realtimev1.ASRPartialEvent{
+		Type: realtimev1.ASRPartialTopic, EventVersion: realtimev1.ASRPartialEventVersion,
+		SessionID: "session-1", TurnID: "turn-1", Text: "你好",
+		OccurredAt: time.Unix(2, 0).UTC(),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["type"] != realtimev1.ASRPartialTopic || decoded["event_version"] != float64(realtimev1.ASRPartialEventVersion) || decoded["text"] != "你好" {
+		t.Fatalf("payload = %#v", decoded)
+	}
+	if _, present := decoded["source_language"]; present {
+		t.Fatalf("payload unexpectedly contains unresolved source language: %#v", decoded)
+	}
+}
+
 func TestStaticLanguageConfigReaderReturnsBilingualPairs(t *testing.T) {
 	snapshot, err := (StaticLanguageConfigReader{}).GetCurrentConfig(context.Background(), "vs_1")
 	if err != nil {

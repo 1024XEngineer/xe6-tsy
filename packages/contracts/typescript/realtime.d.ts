@@ -57,6 +57,16 @@ export interface CommandResultEvent {
   occurred_at: string;
 }
 
+export interface ASRPartialEvent {
+  type: "asr.partial";
+  event_version: 1;
+  session_id: string;
+  turn_id: string;
+  text: string;
+  source_language?: string;
+  occurred_at: string;
+}
+
 export interface RealtimeRuntimeSnapshot {
   session_id: string;
   start_operation_id: string;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTranslationFinal } from "./translation-events";
+import { parseASRPartial, parseTranslationFinal } from "./translation-events";
 
 describe("parseTranslationFinal", () => {
   it("accepts flat demo events", () => {
@@ -36,5 +36,38 @@ describe("parseTranslationFinal", () => {
 
   it("ignores unrelated events", () => {
     expect(parseTranslationFinal({ type: "asr.partial", text: "x" })).toBeNull();
+  });
+});
+
+describe("parseASRPartial", () => {
+  it("accepts a versioned ephemeral snapshot with an optional source language", () => {
+    const event = parseASRPartial({
+      type: "asr.partial",
+      event_version: 1,
+      session_id: "session-1",
+      turn_id: "turn-1",
+      text: "你好",
+      occurred_at: "2026-08-18T01:02:03Z",
+    });
+    expect(event).toMatchObject({
+      sessionId: "session-1",
+      turnId: "turn-1",
+      text: "你好",
+      sourceLanguage: "",
+    });
+  });
+
+  it("rejects invalid versions and incomplete snapshots", () => {
+    expect(parseASRPartial({ type: "asr.partial", event_version: 2 })).toBeNull();
+    expect(
+      parseASRPartial({
+        type: "asr.partial",
+        event_version: 1,
+        session_id: "session-1",
+        turn_id: "turn-1",
+        text: "你好",
+        occurred_at: "not-a-date",
+      }),
+    ).toBeNull();
   });
 });

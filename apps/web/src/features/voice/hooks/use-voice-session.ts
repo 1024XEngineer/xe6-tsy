@@ -36,7 +36,7 @@ import {
   voiceConfigFromLanguageConfig,
 } from "../lib/languages";
 import { ApiError, newIdempotencyKey } from "../lib/http";
-import { parseTranslationFinal } from "../lib/translation-events";
+import { parseASRPartial, parseTranslationFinal } from "../lib/translation-events";
 import { ModeSnapshotTracker } from "../lib/realtime-state";
 import { RealtimeTicketCache, withRealtimeTicket } from "../lib/realtime-ticket-cache";
 import { parseAssistantReply } from "../lib/assistant-replies";
@@ -303,6 +303,8 @@ export function useVoiceSession() {
   const setUplinkEnabledRef = useRef<(enabled: boolean) => void>(() => undefined);
   const openCommandUplinkRef = useRef<() => void>(() => undefined);
   const commandUplinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settledPartialTurnsRef = useRef(new Set<string>());
+  const activePartialTurnRef = useRef<string | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
 
@@ -315,6 +317,13 @@ export function useVoiceSession() {
     modeStateRef.current = snapshot;
     const modeChanged = !previous || previous.active_mode !== snapshot.active_mode;
     if (runtimeChanged) modeOperationRef.current = null;
+
+    if (modeChanged || runtimeChanged) {
+      const activeTurn = activePartialTurnRef.current;
+      if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
+      activePartialTurnRef.current = null;
+      dispatch({ type: "CLEAR_ASR_PARTIAL" });
+    }
     setDebug((prev) => ({
       ...prev,
       modeState: snapshot,
@@ -496,6 +505,10 @@ export function useVoiceSession() {
     openCommandUplinkRef.current = () => undefined;
     webrtcRef.current?.close();
     webrtcRef.current = null;
+    const activeTurn = activePartialTurnRef.current;
+    if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
+    activePartialTurnRef.current = null;
+    dispatch({ type: "CLEAR_ASR_PARTIAL" });
   }, [clearCommandUplinkTimer]);
 
   const setInteractionPolicy = useCallback((policy: VoiceInteractionPolicy) => {
@@ -655,6 +668,8 @@ export function useVoiceSession() {
     modeOperationRef.current = null;
     activeLanguageConfigVersionRef.current = null;
     latestAutomaticOutputStatusRef.current = null;
+    settledPartialTurnsRef.current = new Set();
+    activePartialTurnRef.current = null;
     activeCommandIdRef.current = null;
     setCommandFeedback(null);
     setAutomaticOutputMessage(null);
@@ -756,6 +771,8 @@ export function useVoiceSession() {
     setStatusMessage(initialMode === "assistant" ? "正在启动助手" : "正在启动传译");
     setHintMessage("连接 xe6-tsy API…");
     latestAutomaticOutputStatusRef.current = null;
+    settledPartialTurnsRef.current = new Set();
+    activePartialTurnRef.current = null;
     activeCommandIdRef.current = null;
     setCommandFeedback(null);
     setAutomaticOutputMessage(null);
@@ -916,6 +933,20 @@ export function useVoiceSession() {
           sessionId: session.id,
           audioTracks: wakeTracks.length > 0 ? wakeTracks : undefined,
           onDataMessage: (payload) => {
+            const partial = parseASRPartial(payload);
+            if (partial && partial.sessionId === session.id) {
+              if (settledPartialTurnsRef.current.has(partial.turnId)) return;
+              activePartialTurnRef.current = partial.turnId;
+              dispatch({
+                type: "SET_ASR_PARTIAL",
+                partial: {
+                  turnId: partial.turnId,
+                  text: partial.text,
+                  sourceLanguage: partial.sourceLanguage,
+                },
+              });
+              return;
+            }
             const commandResult = parseCommandResult(payload);
             if (commandResult && commandResult.session_id === session.id) {
               if (activeCommandIdRef.current !== commandResult.command_id) return;
@@ -957,6 +988,10 @@ export function useVoiceSession() {
             }
             const event = parseTranslationFinal(payload);
             if (!event) return;
+            settledPartialTurnsRef.current.add(event.turnId);
+            if (activePartialTurnRef.current === event.turnId) {
+              activePartialTurnRef.current = null;
+            }
             dispatch({
               type: "ADD_TURN",
               turn: {
@@ -972,8 +1007,16 @@ export function useVoiceSession() {
             if (sessionIdRef.current !== session.id) return;
             setDebug((prev) => ({ ...prev, connectionState }));
             if (connectionState === "disconnected") {
+              const activeTurn = activePartialTurnRef.current;
+              if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
+              activePartialTurnRef.current = null;
+              dispatch({ type: "CLEAR_ASR_PARTIAL" });
               setHintMessage("实时连接暂时中断，正在等待浏览器恢复媒体连接。");
             } else if (connectionState === "failed" || connectionState === "closed") {
+              const activeTurn = activePartialTurnRef.current;
+              if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
+              activePartialTurnRef.current = null;
+              dispatch({ type: "CLEAR_ASR_PARTIAL" });
               setHintMessage("实时媒体连接已失效，请结束当前会话后重新开始。");
             } else if (connectionState === "connected") {
               void refreshControlSnapshots();
@@ -1088,6 +1131,7 @@ export function useVoiceSession() {
       modeSnapshotTrackerRef.current.reset();
       modeOperationRef.current = null;
       activeLanguageConfigVersionRef.current = null;
+      activePartialTurnRef.current = null;
       latestAutomaticOutputStatusRef.current = null;
       activeCommandIdRef.current = null;
       setCommandFeedback(null);
@@ -1220,6 +1264,7 @@ export function useVoiceSession() {
   return useMemo(
     () => ({
       state,
+      transientASRSubtitle: state.asrPartial,
       latestTurn: state.turns.at(-1),
       latestAssistantReply: state.assistantReplies.at(-1),
       activeMode,

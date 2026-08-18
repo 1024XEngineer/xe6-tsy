@@ -317,6 +317,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		CommandObserver:       metricRegistry,
 		Languages:             languages,
 		FinalTurns:            finalTurns,
+		ASRPartials:           localruntime.DataChannelASRPartialObserver{Media: connections, Failures: metricRegistry},
 		AssistantReplies:      localruntime.DataChannelAssistantReplySink{Media: connections, Failures: metricRegistry},
 		ModeChanges:           realtimemetrics.ObserveModeChangedSink(sinks.ModeChanges, metricRegistry),
 		Usage:                 usage,

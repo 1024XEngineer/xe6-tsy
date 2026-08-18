@@ -411,6 +411,57 @@ describe("VoiceExperience", () => {
       .toBeInTheDocument();
   });
 
+  it("replaces transient ASR text and ignores a late partial after final", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    await waitFor(() => expect(startRequests).toBe(1));
+
+    dataMessageHandler?.({
+      type: "asr.partial",
+      event_version: 1,
+      session_id: "vs-1",
+      turn_id: "turn-partial-1",
+      text: "正在识别的原文",
+      occurred_at: "2026-08-18T01:02:03Z",
+    });
+    expect(await screen.findByText("正在识别的原文")).toBeInTheDocument();
+
+    dataMessageHandler?.({
+      type: "asr.partial",
+      event_version: 1,
+      session_id: "vs-1",
+      turn_id: "turn-partial-1",
+      text: "正在识别的完整原文",
+      occurred_at: "2026-08-18T01:02:04Z",
+    });
+    expect(await screen.findByText("正在识别的完整原文")).toBeInTheDocument();
+    expect(screen.queryByText("正在识别的原文")).not.toBeInTheDocument();
+
+    dataMessageHandler?.({
+      type: "translation.final",
+      turn_id: "turn-partial-1",
+      source_text: "正在识别的完整原文",
+      translated_text: "Final translation",
+      source_language: "zh-CN",
+      target_language: "en-US",
+    });
+    await waitFor(() => {
+      expect(screen.queryByLabelText("临时识别结果")).not.toBeInTheDocument();
+      expect(screen.getByText("Final translation")).toBeInTheDocument();
+    });
+
+    dataMessageHandler?.({
+      type: "asr.partial",
+      event_version: 1,
+      session_id: "vs-1",
+      turn_id: "turn-partial-1",
+      text: "不应显示的迟到文本",
+      occurred_at: "2026-08-18T01:02:05Z",
+    });
+    expect(screen.queryByText("不应显示的迟到文本")).not.toBeInTheDocument();
+  });
+
   it("starts new Web sessions in assistant mode", async () => {
     render(<VoiceExperience />);
 

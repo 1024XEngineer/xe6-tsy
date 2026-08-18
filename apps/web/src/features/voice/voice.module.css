@@ -231,6 +231,18 @@
   text-align: center;
 }
 
+.transientASRSubtitle {
+  position: relative;
+  z-index: 3;
+  max-width: min(32rem, calc(100vw - 3rem));
+  margin: 0.75rem 0 0;
+  color: rgb(255 255 255 / 84%);
+  font-size: clamp(0.82rem, 1vw, 0.96rem);
+  font-weight: 430;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .commandWindowNotice {
   position: relative;
   z-index: 3;

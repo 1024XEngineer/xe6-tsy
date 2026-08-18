@@ -21,7 +21,7 @@ Go 实时音频服务。
 - 每个会话只支持一组双语语言对，默认 `zh-CN <-> en-US`
 - 只支持两方面对面
 - partial 结果只用于后台纠偏
-- 只有句末 final 译文可进入 TTS；原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
+- 只有句末 final 译文可进入 TTS；启用长句投递能力后，原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
 - TTS / 渠道输出可按 target_language 单独关闭
 - TTS 播放中检测到对方发言时，发送 `playback.stop`
 
@@ -159,6 +159,7 @@ Required env:
 | `REALTIME_TTS_DOWNLINK` | `none` | `none` = subtitles only (forces mock TTS); `pcm` = whole-clip TTS PCM over DataChannel; `opus` = 120ms-buffered, 20ms-paced WebRTC Opus at 32kbps |
 | `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Fallback pair when API DB link is off |
 | `REALTIME_API_DATABASE` | _(off)_ | `enabled` + `DATABASE_URL` → Postgres session/language readers + FinalTurn outbox |
+| `REALTIME_LONG_SENTENCE_DELIVERY` | `disabled` | 新 API delivery/fallback 已就绪后设为 `enabled`；未启用时长句保持原 TTS 路由 |
 | `REALTIME_OUTBOX` | `memory` | `memory` 仅允许 `APP_ENV=local/test/development`；其他环境使用 `valkey`，需要 `REDIS_URL` |
 | `REALTIME_REDIS_MODE` | `standalone` | `standalone` 或 `cluster`；Cluster endpoint 必须显式选择 `cluster`，且 `REDIS_URL` 不带数据库路径 |
 | `LINGOW_MODE_CHANGED_STREAM` | `lingow:realtime:mode:changed` | `realtime.mode.changed` 的 Valkey Stream |
@@ -184,11 +185,13 @@ Local adapters live under `localruntime/` (`TrustSessionReader`, `StaticLanguage
 validated immutable event into the API service's PostgreSQL `final_turn_outbox`; the API consumer
 worker owns receipt settlement and persistence into `voice_turns`.
 
-长句判断在 FinalTurn 提交前使用本轮固定事实完成：去除首尾空白后的 `source_text` 按 Unicode
-code point 计数，超过 50 个字符即命中；`ended_at - started_at >= 20s` 也命中，两者为 OR
-关系。命中后事件记录 `tts_enabled=false`、`delivery_enabled=true`，realtime 不发起初始 TTS；
+`REALTIME_LONG_SENTENCE_DELIVERY` 默认 `disabled`。确认 API delivery runtime、企业微信 Provider
+和 realtime fallback 已就绪后设为 `enabled`。启用时，长句判断在 FinalTurn 提交前使用本轮固定事实
+完成：去除首尾空白后的 `source_text` 按 Unicode code point 计数，超过 50 个字符即命中；
+`ended_at - started_at >= 20s` 也命中，两者为 OR 关系。命中后事件记录
+`delivery_trigger=long_sentence`、`tts_enabled=false`、`delivery_enabled=true`，realtime 不发起初始 TTS；
 API 只创建企业微信字幕投递。企业微信不可用或最终投递失败时，API 通过已有 fallback playback
-接口请求 TTS 回放，且不修改会话的输出配置。
+接口请求 TTS 回放，且不修改会话的输出配置。未启用该能力时，长句保持原 TTS 和 delivery 路由。
 
 Speaker evidence: the pipeline copies a non-empty `asr.FinalResult.ProviderSpeakerID` into the
 FinalTurn event as `provider_speaker_id`. When the ASR/diarization provider returns no speaker key,

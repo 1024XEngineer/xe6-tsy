@@ -48,6 +48,7 @@ type processConfig struct {
 	SourceLanguage string
 	TargetLanguage string
 	MetricsToken   string
+	LongDelivery   bool
 }
 
 func loadProcessConfig(getenv func(string) string) (processConfig, error) {
@@ -84,11 +85,20 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 	if target == "" {
 		target = "en-US"
 	}
+	longSentenceDeliveryEnabled := false
+	switch strings.ToLower(strings.TrimSpace(getenv("REALTIME_LONG_SENTENCE_DELIVERY"))) {
+	case "", "disabled", "false", "0":
+	case "enabled", "true", "1":
+		longSentenceDeliveryEnabled = true
+	default:
+		return processConfig{}, fmt.Errorf("REALTIME_LONG_SENTENCE_DELIVERY must be enabled or disabled")
+	}
 	return processConfig{
 		Addr: addr, TicketSecret: ticketSecret, SkipTTSTrack: skipTTS, ForceMockTTS: forceMock,
 		DownlinkMode: mode, DownlinkCodec: codec,
 		SourceLanguage: source, TargetLanguage: target,
 		MetricsToken: strings.TrimSpace(getenv("REALTIME_METRICS_TOKEN")),
+		LongDelivery: longSentenceDeliveryEnabled,
 	}, nil
 }
 
@@ -276,6 +286,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		Lifecycle:            metricRegistry,
 		ModeCommands:         metricRegistry,
 		Now:                  now,
+		LongDeliveryEnabled:  cfg.LongDelivery,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("configure runtime manager: %w", err)

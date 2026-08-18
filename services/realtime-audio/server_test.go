@@ -51,6 +51,9 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	if cfg.SourceLanguage != "zh-CN" || cfg.TargetLanguage != "en-US" {
 		t.Fatalf("languages = %s→%s", cfg.SourceLanguage, cfg.TargetLanguage)
 	}
+	if cfg.LongDelivery {
+		t.Fatal("LongDelivery = true, want false by default")
+	}
 
 	if _, err := loadProcessConfig(func(string) string { return "" }); err == nil {
 		t.Fatal("loadProcessConfig() error = nil, want secret validation error")
@@ -58,6 +61,44 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	t.Setenv("REALTIME_TICKET_SECRET", "")
 	if _, err := loadProcessConfig(nil); err == nil {
 		t.Fatal("loadProcessConfig(nil) error = nil, want secret validation error")
+	}
+}
+
+func TestLoadProcessConfigLongSentenceDeliveryCapability(t *testing.T) {
+	tests := []struct {
+		value   string
+		want    bool
+		wantErr bool
+	}{
+		{value: "enabled", want: true},
+		{value: "disabled"},
+		{value: "invalid", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.value, func(t *testing.T) {
+			cfg, err := loadProcessConfig(func(key string) string {
+				switch key {
+				case "REALTIME_TICKET_SECRET":
+					return strings.Repeat("s", 32)
+				case "REALTIME_LONG_SENTENCE_DELIVERY":
+					return test.value
+				default:
+					return ""
+				}
+			})
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("loadProcessConfig() error = nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadProcessConfig() error = %v", err)
+			}
+			if cfg.LongDelivery != test.want {
+				t.Fatalf("LongDelivery = %v, want %v", cfg.LongDelivery, test.want)
+			}
+		})
 	}
 }
 

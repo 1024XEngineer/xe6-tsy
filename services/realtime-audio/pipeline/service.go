@@ -72,6 +72,7 @@ type PipelineDependencies struct {
 	Now                 func() time.Time
 	Latency             LatencyLogger
 	Speech              *SpeechOutput
+	LongDeliveryEnabled bool
 }
 
 // PipelineService orchestrates one final ASR result through translation and TTS.
@@ -85,6 +86,7 @@ type PipelineService struct {
 	speech              *SpeechOutput
 	now                 func() time.Time
 	latency             LatencyLogger
+	longDeliveryEnabled bool
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
@@ -108,6 +110,7 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 		usage: deps.Usage, runtime: deps.Runtime,
 		speech: speech,
 		now:    now, latency: deps.Latency,
+		longDeliveryEnabled: deps.LongDeliveryEnabled,
 	}
 }
 
@@ -187,9 +190,13 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("prepare translation usage: %w", err)
 	}
 	startedAt, endedAt := turnBounds(turn, result, s.now())
-	longSource := recordsv1.IsLongSourceTurn(result.Text, endedAt.Sub(startedAt))
+	longSource := s.longDeliveryEnabled && recordsv1.IsLongSourceTurn(result.Text, endedAt.Sub(startedAt))
 	ttsEnabled := route.TTSEnabled && !longSource
 	deliveryEnabled := route.DeliveryEnabled || longSource
+	var deliveryTrigger recordsv1.FinalTurnDeliveryTrigger
+	if longSource {
+		deliveryTrigger = recordsv1.FinalTurnDeliveryTriggerLongSentence
+	}
 	var providerSpeakerID *string
 	if id := strings.TrimSpace(result.ProviderSpeakerID); id != "" {
 		providerSpeakerID = &id
@@ -199,7 +206,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		EventID:      "final_" + turn.ID, TraceID: turn.TraceID, SessionID: turn.SessionID, TurnID: turn.ID,
 		SequenceNo: turn.SequenceNo, SourceLanguage: result.SourceLanguage, TargetLanguage: target,
 		SourceText: result.Text, TranslatedText: translationResult.Text, TTSEnabled: ttsEnabled,
-		DeliveryEnabled: deliveryEnabled, SpeakerCode: recordsv1.PendingSpeakerCode,
+		DeliveryEnabled: deliveryEnabled, DeliveryTrigger: deliveryTrigger, SpeakerCode: recordsv1.PendingSpeakerCode,
 		AttributionStatus: recordsv1.AttributionPending, LanguageConfigVersion: turn.LanguageConfig.Version,
 		StartedAt: startedAt, EndedAt: endedAt, OccurredAt: s.now(),
 		ProviderSpeakerID: providerSpeakerID,

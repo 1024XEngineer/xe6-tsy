@@ -136,14 +136,16 @@ func TestPipelineSkipsTTSAcrossDisabledOutputRoute(t *testing.T) {
 
 func TestPipelineRoutesLongSourcesToDeliveryBeforeTTS(t *testing.T) {
 	tests := []struct {
-		name          string
-		sourceText    string
-		audioDuration time.Duration
-		wantLong      bool
+		name                 string
+		sourceText           string
+		audioDuration        time.Duration
+		longSentenceDelivery bool
+		wantLong             bool
 	}{
-		{name: "text threshold", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold+1), audioDuration: time.Second, wantLong: true},
-		{name: "audio threshold", sourceText: "短句", audioDuration: recordsv1.LongSourceAudioThreshold, wantLong: true},
-		{name: "below thresholds", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold), audioDuration: recordsv1.LongSourceAudioThreshold - time.Millisecond},
+		{name: "text threshold", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold+1), audioDuration: time.Second, longSentenceDelivery: true, wantLong: true},
+		{name: "audio threshold", sourceText: "短句", audioDuration: recordsv1.LongSourceAudioThreshold, longSentenceDelivery: true, wantLong: true},
+		{name: "below thresholds", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold), audioDuration: recordsv1.LongSourceAudioThreshold - time.Millisecond, longSentenceDelivery: true},
+		{name: "capability disabled", sourceText: strings.Repeat("字", recordsv1.LongSourceTextThreshold+1), audioDuration: recordsv1.LongSourceAudioThreshold},
 	}
 
 	for _, test := range tests {
@@ -155,7 +157,7 @@ func TestPipelineRoutesLongSourcesToDeliveryBeforeTTS(t *testing.T) {
 			service := newTestPipelineService(PipelineDependencies{
 				Translator: &translate.FakeProvider{Result: translate.Result{Text: "translation", Provider: "mock-translate", Model: "v1"}},
 				TTS:        ttsProvider, FinalTurns: finalSink, Usage: usageSink, Audio: audioSink,
-				Runtime: &recordingRuntimeReporter{},
+				Runtime: &recordingRuntimeReporter{}, LongDeliveryEnabled: test.longSentenceDelivery,
 			})
 
 			if err := service.HandleASRFinal(t.Context(), testTurn(), asr.FinalResult{
@@ -170,6 +172,9 @@ func TestPipelineRoutesLongSourcesToDeliveryBeforeTTS(t *testing.T) {
 			event := finalSink.events[0]
 			if event.TTSEnabled == test.wantLong || event.DeliveryEnabled != test.wantLong {
 				t.Fatalf("FinalTurn output = tts:%v delivery:%v, want long:%v", event.TTSEnabled, event.DeliveryEnabled, test.wantLong)
+			}
+			if got := event.DeliveryTrigger == recordsv1.FinalTurnDeliveryTriggerLongSentence; got != test.wantLong {
+				t.Fatalf("long-sentence trigger = %v, want %v", got, test.wantLong)
 			}
 			wantTTSRequests := 1
 			wantUsageFacts := 2

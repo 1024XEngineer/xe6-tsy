@@ -292,6 +292,7 @@ func TestScheduleFinalTurnCreatesOneIdempotentMessagePerPreference(t *testing.T)
 }
 
 func TestScheduleFinalTurnUsesAtomicRepositoryForEveryEnabledTarget(t *testing.T) {
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
 	repository := &atomicScheduleRepository{retryRepositoryStub: retryRepositoryStub{preferences: []Preference{
 		{AccountID: "account-1", Channel: ChannelEmail, DestinationRef: "primary-email", Enabled: true, Verified: true},
 		{AccountID: "account-1", Channel: ChannelWeChat, DestinationRef: "primary-wechat", Enabled: true, Verified: true},
@@ -300,7 +301,8 @@ func TestScheduleFinalTurnUsesAtomicRepositoryForEveryEnabledTarget(t *testing.T
 	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
 	event := recordsv1.FinalTurnEvent{
 		TurnID: "turn-1", SessionID: "session-1", TraceID: "trace-1", TargetLanguage: "en-US",
-		TranslatedText: "translation", LanguageConfigVersion: 3, DeliveryEnabled: true,
+		SourceText: strings.Repeat("x", recordsv1.LongSourceTextThreshold+1), TranslatedText: "translation",
+		LanguageConfigVersion: 3, DeliveryEnabled: true, StartedAt: startedAt, EndedAt: startedAt.Add(time.Second),
 	}
 	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
 		t.Fatalf("ScheduleFinalTurn() error = %v", err)
@@ -339,6 +341,8 @@ func TestScheduleFinalTurnRoutesLongSourceOnlyToConfiguredWeChat(t *testing.T) {
 			service := NewPersistentUseCases(repository, automaticTurnReaderStub{turns: []FinalTurnSnapshot{persistedTurn}}, automaticDestinationReaderStub{}, nil)
 			service.ConfigureChannelRouter(NewChannelRouter(NewFakeEmailProvider(FakeEmailProviderConfig{}), &channelProviderStub{channel: ChannelWeChat}))
 			event := automaticScheduleEvent(tt.sourceText, startedAt, tt.endedAt)
+			event.DeliveryTrigger = recordsv1.FinalTurnDeliveryTriggerLongSentence
+			event.DeliveryEnabled = true
 			if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
 				t.Fatalf("ScheduleFinalTurn() error = %v", err)
 			}
@@ -377,6 +381,8 @@ func TestScheduleFinalTurnPersistsZeroTargetForUnavailableLongSourceWeChat(t *te
 			service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{err: tt.destErr}, nil)
 			service.ConfigureChannelRouter(tt.router)
 			event := automaticScheduleEvent(strings.Repeat("x", recordsv1.LongSourceTextThreshold+1), startedAt, startedAt.Add(time.Second))
+			event.DeliveryTrigger = recordsv1.FinalTurnDeliveryTriggerLongSentence
+			event.DeliveryEnabled = true
 			if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
 				t.Fatalf("ScheduleFinalTurn() error = %v", err)
 			}
@@ -394,6 +400,8 @@ func TestScheduleFinalTurnLongSourcePropagatesTransientDestinationFailure(t *tes
 	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{err: destinationErr}, nil)
 	service.ConfigureChannelRouter(NewChannelRouter(nil, &channelProviderStub{channel: ChannelWeChat}))
 	event := automaticScheduleEvent(strings.Repeat("x", recordsv1.LongSourceTextThreshold+1), startedAt, startedAt.Add(time.Second))
+	event.DeliveryTrigger = recordsv1.FinalTurnDeliveryTriggerLongSentence
+	event.DeliveryEnabled = true
 	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); !errors.Is(err, destinationErr) {
 		t.Fatalf("ScheduleFinalTurn() error = %v, want %v", err, destinationErr)
 	}
@@ -404,7 +412,10 @@ func TestScheduleFinalTurnLongSourcePropagatesTransientDestinationFailure(t *tes
 
 func TestScheduleFinalTurnLongSourceFailsClosedWithoutAtomicRepository(t *testing.T) {
 	service := NewPersistentUseCases(&retryRepositoryStub{}, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
-	event := recordsv1.FinalTurnEvent{TurnID: "turn-1", SourceText: strings.Repeat("x", recordsv1.LongSourceTextThreshold+1)}
+	event := recordsv1.FinalTurnEvent{
+		TurnID: "turn-1", SourceText: strings.Repeat("x", recordsv1.LongSourceTextThreshold+1),
+		DeliveryEnabled: true, DeliveryTrigger: recordsv1.FinalTurnDeliveryTriggerLongSentence,
+	}
 	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); !errors.Is(err, domain.ErrNotImplemented) {
 		t.Fatalf("ScheduleFinalTurn() error = %v, want not implemented", err)
 	}
@@ -426,12 +437,33 @@ func TestScheduleFinalTurnSkipsShortSourceWithoutConfiguredDelivery(t *testing.T
 func TestScheduleFinalTurnLongSourceReplayDoesNotCreateTargetsAgain(t *testing.T) {
 	startedAt := time.Unix(1_700_000_000, 0).UTC()
 	event := automaticScheduleEvent(strings.Repeat("x", recordsv1.LongSourceTextThreshold+1), startedAt, startedAt.Add(time.Second))
+	event.DeliveryTrigger = recordsv1.FinalTurnDeliveryTriggerLongSentence
+	event.DeliveryEnabled = true
 	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
 		AccountID: "account-1", TurnID: event.TurnID, SessionID: event.SessionID, TraceID: event.TraceID,
 		TargetLanguage: event.TargetLanguage, TranslatedText: event.TranslatedText,
 		LanguageConfigVersion: event.LanguageConfigVersion, Trigger: AutomaticTurnTriggerLongSentence,
 	}}
 	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
+	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
+		t.Fatalf("ScheduleFinalTurn() error = %v", err)
+	}
+	if repository.record.Run.TurnID != "" {
+		t.Fatalf("automatic schedule = %#v, want replay no-op", repository.record)
+	}
+}
+
+func TestScheduleFinalTurnLegacyLongSourceReplayKeepsConfiguredRoute(t *testing.T) {
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	event := automaticScheduleEvent(strings.Repeat("x", recordsv1.LongSourceTextThreshold+1), startedAt, startedAt.Add(time.Second))
+	event.DeliveryEnabled = true
+	repository := &atomicScheduleRepository{existing: AutomaticTurnRun{
+		AccountID: "account-1", TurnID: event.TurnID, SessionID: event.SessionID, TraceID: event.TraceID,
+		TargetLanguage: event.TargetLanguage, TranslatedText: event.TranslatedText,
+		LanguageConfigVersion: event.LanguageConfigVersion, Trigger: AutomaticTurnTriggerConfiguredRoute,
+	}}
+	service := NewPersistentUseCases(repository, automaticTurnReaderStub{}, automaticDestinationReaderStub{}, nil)
+
 	if err := service.ScheduleFinalTurn(t.Context(), "account-1", event); err != nil {
 		t.Fatalf("ScheduleFinalTurn() error = %v", err)
 	}

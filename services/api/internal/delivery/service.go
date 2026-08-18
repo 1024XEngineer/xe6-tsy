@@ -258,14 +258,17 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 	if u == nil || u.repository == nil {
 		return domain.ErrNotImplemented
 	}
-	longSource := recordsv1.IsLongSourceTurn(event.SourceText, event.EndedAt.Sub(event.StartedAt))
-	if accountID == "" || event.TurnID == "" || (!event.DeliveryEnabled && !longSource) {
+	longSentence := event.DeliveryTrigger == recordsv1.FinalTurnDeliveryTriggerLongSentence
+	if event.DeliveryTrigger != "" && !longSentence {
+		return domain.ErrInvalidArgument
+	}
+	if accountID == "" || event.TurnID == "" || (!event.DeliveryEnabled && !longSentence) {
 		return nil
 	}
 	if scheduler, ok := u.repository.(AutomaticTurnSchedulerRepository); ok {
-		return u.scheduleAutomaticTurnAtomically(ctx, scheduler, accountID, event, longSource)
+		return u.scheduleAutomaticTurnAtomically(ctx, scheduler, accountID, event, longSentence)
 	}
-	if longSource {
+	if longSentence {
 		return domain.ErrNotImplemented
 	}
 	preferences, err := u.Preferences(ctx, accountID)
@@ -287,7 +290,7 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 	return nil
 }
 
-func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, scheduler AutomaticTurnSchedulerRepository, accountID string, event recordsv1.FinalTurnEvent, longSource bool) error {
+func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, scheduler AutomaticTurnSchedulerRepository, accountID string, event recordsv1.FinalTurnEvent, longSentence bool) error {
 	if event.SessionID == "" || event.TraceID == "" || event.TargetLanguage == "" || event.TranslatedText == "" || event.LanguageConfigVersion < 1 {
 		return domain.ErrInvalidArgument
 	}
@@ -295,13 +298,21 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 		return domain.ErrInvalidArgument
 	}
 	trigger := AutomaticTurnTriggerConfiguredRoute
-	if longSource {
+	if longSentence {
 		trigger = AutomaticTurnTriggerLongSentence
 	}
 	existing, err := scheduler.GetAutomaticTurnRun(ctx, accountID, event.TurnID)
 	if err == nil {
 		if existing.SessionID != event.SessionID || existing.TraceID != event.TraceID || existing.TargetLanguage != event.TargetLanguage ||
-			existing.TranslatedText != event.TranslatedText || existing.LanguageConfigVersion != event.LanguageConfigVersion || existing.Trigger != trigger {
+			existing.TranslatedText != event.TranslatedText || existing.LanguageConfigVersion != event.LanguageConfigVersion {
+			return domain.ErrConflict
+		}
+		switch existing.Trigger {
+		case AutomaticTurnTriggerConfiguredRoute, AutomaticTurnTriggerLongSentence:
+		default:
+			return domain.ErrConflict
+		}
+		if event.DeliveryTrigger != "" && existing.Trigger != trigger {
 			return domain.ErrConflict
 		}
 		return nil
@@ -326,11 +337,11 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 		if !preference.Enabled || !preference.Verified || preference.DestinationRef == "" || !IsSupportedChannel(preference.Channel) {
 			continue
 		}
-		if longSource && (preference.Channel != ChannelWeChat || u.channelRouter == nil || !u.channelRouter.SupportsChannel(ChannelWeChat)) {
+		if longSentence && (preference.Channel != ChannelWeChat || u.channelRouter == nil || !u.channelRouter.SupportsChannel(ChannelWeChat)) {
 			continue
 		}
 		if _, err := u.destinations.ResolveVerifiedDestination(ctx, accountID, preference.Channel, preference.DestinationRef); err != nil {
-			if longSource && isPermanentDestinationError(err) {
+			if longSentence && isPermanentDestinationError(err) {
 				continue
 			}
 			return err

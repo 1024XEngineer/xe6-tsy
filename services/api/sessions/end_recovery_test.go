@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -505,6 +506,36 @@ func TestEndRecoveryWorkerRecoverClaimedStopsAfterSessionReadFailure(t *testing.
 		fixture.realtime.stopCalls != 0 {
 		t.Fatalf(
 			"side effects = get %d, clock %d, transition %d, complete %d, stop %d; want 1, 0, 0, 0, 0",
+			fixture.repository.startRepository.getCalls,
+			clock.calls,
+			fixture.repository.transitionCalls,
+			fixture.repository.completeCalls,
+			fixture.realtime.stopCalls,
+		)
+	}
+}
+
+func TestEndRecoveryWorkerRecoverClaimedStopsAfterEndTimestampFailure(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	clock := &fakeClock{}
+	fixture.worker.service.deps.Clock = clock
+	owner := fixture.worker.config.WorkerID
+	leaseExpiresAt := fixture.now.Add(fixture.worker.config.LeaseDuration)
+	intent := fixture.repository.intent
+	intent.RecoveryOwner = &owner
+	intent.LeaseExpiresAt = &leaseExpiresAt
+
+	err := fixture.worker.recoverClaimed(t.Context(), intent)
+	if !errors.Is(err, ErrInvalidDependency) ||
+		!strings.Contains(err.Error(), "recovered session end") {
+		t.Fatalf("recoverClaimed() error = %v, want recovered-session-end clock failure", err)
+	}
+	if fixture.repository.startRepository.getCalls != 1 || clock.calls != 1 ||
+		fixture.repository.transitionCalls != 0 ||
+		fixture.repository.completeCalls != 0 ||
+		fixture.realtime.stopCalls != 0 {
+		t.Fatalf(
+			"side effects = get %d, clock %d, transition %d, complete %d, stop %d; want 1, 1, 0, 0, 0",
 			fixture.repository.startRepository.getCalls,
 			clock.calls,
 			fixture.repository.transitionCalls,

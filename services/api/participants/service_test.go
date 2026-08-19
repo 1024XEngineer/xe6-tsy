@@ -74,6 +74,26 @@ func TestUpdatePassesExplicitClearWithoutTouchingTurns(t *testing.T) {
 	}
 }
 
+func TestUpdatePreservesOnlyExplicitDisplayName(t *testing.T) {
+	displayName := "Speaker One"
+	repository := &fakeRepository{updated: recordsv1.Participant{ID: "p_01", SessionID: "vs_01"}}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+
+	_, err := service.Update(context.Background(), "acct_01", "vs_01", "p_01", Update{
+		DisplayName:    &displayName,
+		DisplayNameSet: true,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !repository.update.DisplayNameSet || repository.update.DisplayName == nil || *repository.update.DisplayName != displayName {
+		t.Fatalf("Update() display name update = %#v", repository.update)
+	}
+	if repository.update.ProviderSpeakerIDSet || repository.update.VoiceProfileIDSet {
+		t.Fatalf("Update() changed unrelated fields: %#v", repository.update)
+	}
+}
+
 func TestUpdateDoesNotCallRepositoryForAnotherAccount(t *testing.T) {
 	repository := &fakeRepository{}
 	service := NewService(repository, fakeSessionOwners{ownerID: "acct_owner"}, nil)

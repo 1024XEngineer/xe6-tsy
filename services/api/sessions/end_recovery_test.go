@@ -33,6 +33,35 @@ func TestEndRecoveryWorkerRejectsNilContext(t *testing.T) {
 	}
 }
 
+func TestEndRecoveryWorkerProcessNextRejectsCancelledContextWithoutSideEffects(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	clock := fixture.worker.service.deps.Clock.(*fakeClock)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	processed, err := fixture.worker.ProcessNext(ctx)
+	if processed || !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProcessNext() = %t, %v, want false, context.Canceled", processed, err)
+	}
+	if clock.calls != 0 || fixture.repository.claimCalls != 0 ||
+		fixture.repository.startRepository.getCalls != 0 ||
+		fixture.repository.transitionCalls != 0 ||
+		fixture.repository.retryCalls != 0 ||
+		fixture.repository.completeCalls != 0 ||
+		fixture.realtime.stopCalls != 0 {
+		t.Fatalf(
+			"side effects = clock %d, claim %d, get %d, transition %d, retry %d, complete %d, stop %d; want all 0",
+			clock.calls,
+			fixture.repository.claimCalls,
+			fixture.repository.startRepository.getCalls,
+			fixture.repository.transitionCalls,
+			fixture.repository.retryCalls,
+			fixture.repository.completeCalls,
+			fixture.realtime.stopCalls,
+		)
+	}
+}
+
 func TestEndRecoveryWorkerEndsActiveSessionAfterConfirmedStop(t *testing.T) {
 	fixture := newEndRecoveryFixture(t, StatusActive)
 
@@ -274,8 +303,23 @@ func TestEndRecoveryWorkerRejectsInvalidClaim(t *testing.T) {
 	if !processed || !errors.Is(err, ErrInvalidDependency) {
 		t.Fatalf("ProcessNext() = %t, %v, want invalid claim", processed, err)
 	}
-	if fixture.realtime.stopCalls != 0 {
-		t.Fatalf("Stop() calls = %d, want 0", fixture.realtime.stopCalls)
+	if fixture.repository.retryCalls != 0 || fixture.repository.completeCalls != 0 ||
+		fixture.repository.transitionCalls != 0 || fixture.realtime.stopCalls != 0 {
+		t.Fatalf(
+			"side effects = retry %d, complete %d, transition %d, stop %d; want all 0",
+			fixture.repository.retryCalls,
+			fixture.repository.completeCalls,
+			fixture.repository.transitionCalls,
+			fixture.realtime.stopCalls,
+		)
+	}
+	leaseExpiresAt := fixture.now.Add(fixture.worker.config.LeaseDuration)
+	if fixture.repository.intent.RetryCount != 0 ||
+		fixture.repository.intent.RecoveryOwner == nil ||
+		*fixture.repository.intent.RecoveryOwner != fixture.worker.config.WorkerID ||
+		fixture.repository.intent.LeaseExpiresAt == nil ||
+		!fixture.repository.intent.LeaseExpiresAt.Equal(leaseExpiresAt) {
+		t.Fatalf("intent = %#v, want unchanged claimed lease", fixture.repository.intent)
 	}
 }
 
@@ -572,12 +616,15 @@ type endRecoveryRepository struct {
 	*endRepository
 	intent          EndIntent
 	transitionErr   error
+	transitionCalls int
 	completeErr     error
+	completeCalls   int
 	claimErr        error
 	claimCalls      int
 	claimHook       func(int)
 	claimResultHook func(*EndIntent)
 	retryErr        error
+	retryCalls      int
 	retryAfter      time.Duration
 	storageNow      time.Time
 }
@@ -595,6 +642,7 @@ func (r *endRecoveryRepository) TransitionToEnded(
 	ctx context.Context,
 	params EndTransitionParams,
 ) (VoiceSession, error) {
+	r.transitionCalls++
 	if r.transitionErr != nil {
 		return VoiceSession{}, r.transitionErr
 	}
@@ -631,6 +679,7 @@ func (r *endRecoveryRepository) RetryClaimedEndIntent(
 	_ context.Context,
 	params RetryEndIntentParams,
 ) error {
+	r.retryCalls++
 	if r.retryErr != nil {
 		return r.retryErr
 	}
@@ -651,6 +700,7 @@ func (r *endRecoveryRepository) CompleteClaimedEndIntent(
 	_ context.Context,
 	params CompleteClaimedEndIntentParams,
 ) error {
+	r.completeCalls++
 	if r.completeErr != nil {
 		return r.completeErr
 	}

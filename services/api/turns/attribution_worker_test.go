@@ -387,6 +387,28 @@ func TestAttributionWorkerAcksEmptyParticipantDecision(t *testing.T) {
 	}
 }
 
+// TestAttributionWorkerPreservesFinalAckFailure covers the ack right after a successful apply:
+// a settlement error must still surface through ErrAttributionSettlement with the cause kept.
+func TestAttributionWorkerPreservesFinalAckFailure(t *testing.T) {
+	delivery := &attributionDeliveryStub{task: taskFixture(), ackErr: errors.New("ack down")}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{decision: &AttributionDecision{ParticipantID: "p_02"}},
+		&attributionApplierStub{},
+	)
+
+	err := worker.Process(ctx, delivery)
+	if !errors.Is(err, ErrAttributionSettlement) {
+		t.Fatalf("Process() error = %v, want ErrAttributionSettlement", err)
+	}
+	if !strings.Contains(err.Error(), "ack down") {
+		t.Fatalf("Process() error = %v, want underlying ack error preserved", err)
+	}
+	if delivery.acked {
+		t.Fatal("delivery acked despite ack error")
+	}
+}
+
 func TestNewAttributionWorkerValidatesDependencies(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tests := []struct {

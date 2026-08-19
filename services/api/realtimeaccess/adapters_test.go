@@ -364,6 +364,58 @@ func TestRealtimeLifecycleRejectsOversizedModeMetadata(t *testing.T) {
 	}
 }
 
+func TestRealtimeLifecycleRejectsInvalidModeCommands(t *testing.T) {
+	lifecycle, err := NewRealtimeLifecycle(&lifecycleClientFake{})
+	if err != nil {
+		t.Fatalf("NewRealtimeLifecycle() error = %v", err)
+	}
+	tests := []struct {
+		name string
+		edit func(*sessions.SwitchModeCommand)
+	}{
+		{name: "session missing", edit: func(command *sessions.SwitchModeCommand) { command.SessionID = "" }},
+		{name: "runtime missing", edit: func(command *sessions.SwitchModeCommand) { command.RuntimeInstanceID = "" }},
+		{name: "operation missing", edit: func(command *sessions.SwitchModeCommand) { command.OperationID = "" }},
+		{name: "trace missing", edit: func(command *sessions.SwitchModeCommand) { command.TraceID = "" }},
+		{name: "generation missing", edit: func(command *sessions.SwitchModeCommand) { command.ExpectedGeneration = 0 }},
+		{name: "target invalid", edit: func(command *sessions.SwitchModeCommand) { command.TargetMode = "future" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := validAdapterModeCommand()
+			test.edit(&command)
+			if _, err := lifecycle.SwitchMode(t.Context(), command); !errors.Is(err, sessions.ErrInvalidRequest) {
+				t.Fatalf("SwitchMode() error = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+}
+
+func TestRealtimeLifecycleAcceptsModeMetadataAtMaximumLength(t *testing.T) {
+	operationID := strings.Repeat("o", maxModeControlMetadataLength)
+	traceID := strings.Repeat("t", maxModeControlMetadataLength)
+	command := validAdapterModeCommand()
+	command.OperationID = operationID
+	command.TraceID = traceID
+	result := realtimev1.SwitchModeResult{
+		OperationID: operationID,
+		Status:      realtimev1.ModeSwitchUnchanged,
+		State: realtimev1.ModeStateSnapshot{
+			SessionID: command.SessionID, RuntimeInstanceID: command.RuntimeInstanceID,
+			ActiveMode: command.TargetMode, Generation: command.ExpectedGeneration,
+			Phase: realtimev1.ModePhaseActive, LastOperationID: &operationID,
+			UpdatedAt: time.Unix(1700000000, 0).UTC(),
+		},
+	}
+	lifecycle, err := NewRealtimeLifecycle(&lifecycleClientFake{modeResult: result})
+	if err != nil {
+		t.Fatalf("NewRealtimeLifecycle() error = %v", err)
+	}
+	if _, err := lifecycle.SwitchMode(t.Context(), command); err != nil {
+		t.Fatalf("SwitchMode() error = %v, want success", err)
+	}
+}
+
 func TestRealtimeLifecycleMapsModeErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -390,6 +442,33 @@ func TestRealtimeLifecycleMapsModeErrors(t *testing.T) {
 			_, err = lifecycle.SwitchMode(t.Context(), validAdapterModeCommand())
 			if !errors.Is(err, test.want) {
 				t.Fatalf("SwitchMode() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestRealtimeLifecycleMapsGetModeStateClientErrors(t *testing.T) {
+	want := errors.New("mode client failed")
+	for _, test := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{name: "request", err: controlplane.ErrClientRequest, want: sessions.ErrInvalidRequest},
+		{name: "not found", err: controlplane.ErrRuntimeNotFound, want: sessions.ErrModeUnavailable},
+		{name: "unknown", err: want, want: sessions.ErrModeUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lifecycle, err := NewRealtimeLifecycle(&lifecycleClientFake{modeErr: test.err})
+			if err != nil {
+				t.Fatalf("NewRealtimeLifecycle() error = %v", err)
+			}
+			_, err = lifecycle.GetModeState(t.Context(), "session-1")
+			if !errors.Is(err, test.want) {
+				t.Fatalf("GetModeState() error = %v, want %v", err, test.want)
+			}
+			if test.name == "unknown" && !errors.Is(err, test.err) {
+				t.Fatalf("GetModeState() error = %v, want cause %v", err, test.err)
 			}
 		})
 	}
@@ -448,6 +527,7 @@ func TestRealtimeLifecycleRejectsInvalidModeSwitchResponses(t *testing.T) {
 		edit func(*realtimev1.SwitchModeResult)
 	}{
 		{name: "operation mismatch", edit: func(result *realtimev1.SwitchModeResult) { result.OperationID = "other" }},
+		{name: "status invalid", edit: func(result *realtimev1.SwitchModeResult) { result.Status = "future" }},
 		{name: "last operation missing", edit: func(result *realtimev1.SwitchModeResult) { result.State.LastOperationID = nil }},
 		{name: "last operation mismatch", edit: func(result *realtimev1.SwitchModeResult) {
 			other := "other"
@@ -457,6 +537,7 @@ func TestRealtimeLifecycleRejectsInvalidModeSwitchResponses(t *testing.T) {
 		{name: "target mismatch", edit: func(result *realtimev1.SwitchModeResult) { result.State.ActiveMode = realtimev1.ModeInterpretation }},
 		{name: "generation mismatch", edit: func(result *realtimev1.SwitchModeResult) { result.State.Generation = command.ExpectedGeneration }},
 		{name: "phase switching", edit: func(result *realtimev1.SwitchModeResult) { result.State.Phase = realtimev1.ModePhaseSwitching }},
+		{name: "timestamp missing", edit: func(result *realtimev1.SwitchModeResult) { result.State.UpdatedAt = time.Time{} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result := base

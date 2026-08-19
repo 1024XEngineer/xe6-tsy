@@ -243,6 +243,18 @@
   text-align: center;
 }
 
+.stablePhraseSubtitle {
+  position: relative;
+  z-index: 3;
+  max-width: min(32rem, calc(100vw - 3rem));
+  margin: 0.45rem 0 0;
+  color: rgb(255 255 255 / 96%);
+  font-size: clamp(0.86rem, 1vw, 1rem);
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .commandWindowNotice {
   position: relative;
   z-index: 3;

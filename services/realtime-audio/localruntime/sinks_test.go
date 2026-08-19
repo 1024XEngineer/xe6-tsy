@@ -152,6 +152,29 @@ func TestDataChannelASRPartialObserverTreatsDeliveryAsBestEffort(t *testing.T) {
 	})
 }
 
+func TestDataChannelPhraseSubtitleObserverTreatsDeliveryAsBestEffort(t *testing.T) {
+	event := realtimev1.PhraseSubtitleEvent{
+		Type: realtimev1.PhraseSubtitleTopic, EventVersion: realtimev1.PhraseSubtitleEventVersion,
+		SessionID: "session-1", UtteranceID: "turn-1", PhraseSequence: 1,
+		SourceText: "你好", Status: realtimev1.PhraseSubtitleSourceStable, OccurredAt: time.Unix(2, 0).UTC(),
+	}
+
+	t.Run("invalid event is ignored", func(t *testing.T) {
+		failures := &recordingDataChannelFailures{}
+		DataChannelPhraseSubtitleObserver{Failures: failures}.ObservePhraseSubtitle(context.Background(), realtimev1.PhraseSubtitleEvent{})
+		if failures.calls != 0 {
+			t.Fatalf("invalid event recorded delivery failure: %d", failures.calls)
+		}
+	})
+	t.Run("unavailable media records failure", func(t *testing.T) {
+		failures := &recordingDataChannelFailures{}
+		DataChannelPhraseSubtitleObserver{Media: stubMediaLookup{}, Failures: failures}.ObservePhraseSubtitle(context.Background(), event)
+		if failures.calls != 1 {
+			t.Fatalf("unavailable media failure count = %d, want 1", failures.calls)
+		}
+	})
+}
+
 func TestStaticLanguageConfigReaderReturnsBilingualPairs(t *testing.T) {
 	snapshot, err := (StaticLanguageConfigReader{}).GetCurrentConfig(context.Background(), "vs_1")
 	if err != nil {

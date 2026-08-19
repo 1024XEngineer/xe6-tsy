@@ -106,6 +106,7 @@ type Dependencies struct {
 	FinalTurns            recordsv1.FinalTurnSink
 	AssistantReplies      pipeline.AssistantReplySink
 	ASRPartials           pipeline.ASRPartialObserver
+	PhraseSubtitles       pipeline.PhraseSubtitleObserver
 	ModeChanges           ModeChangedSink
 	Usage                 pipeline.UsageFactSink
 	Audio                 pipeline.AudioChunkSink
@@ -277,7 +278,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	}
 	manager.processor = pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
 		ASR: providers.ASR, ASRProvider: labels.asr, Opener: opener, Pipeline: service, Finals: router,
-		Partials: deps.ASRPartials,
+		Partials: deps.ASRPartials, Phrases: pipeline.NewPhraseSubtitleProcessor(deps.PhraseSubtitles, pipeline.PhraseStabilizerOptions{}),
 	})
 	manager.commandASR = providers.ASR
 	registry, err := commandRegistry(router.availableModes())

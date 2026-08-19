@@ -412,7 +412,7 @@ func TestDispatchASRPartialsDropsQueuedSnapshotsAfterFinalSettlement(t *testing.
 	observer := &recordingASRPartialObserver{events: make(chan realtimev1.ASRPartialEvent, 1)}
 	done := make(chan struct{})
 	go func() {
-		dispatchASRPartials(context.Background(), observer, TurnContext{SessionID: "session-1", ID: "turn-1"}, "zh-CN", events, settled)
+		dispatchASRPartials(context.Background(), observer, nil, TurnContext{SessionID: "session-1", ID: "turn-1"}, "zh-CN", events, settled)
 		close(done)
 	}()
 	select {
@@ -496,6 +496,31 @@ func TestStartAudioPublishesPartialBeforeFinish(t *testing.T) {
 	}
 	if _, err := audioTurn.Finish(t.Context()); err != nil {
 		t.Fatalf("Finish() error = %v", err)
+	}
+}
+
+func TestStartAudioDiscardsPhraseStateWhenASRStartupFails(t *testing.T) {
+	wantErr := errors.New("ASR unavailable")
+	phrases := NewPhraseSubtitleProcessor(&recordingPhraseSubtitleObserver{}, PhraseStabilizerOptions{})
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{StartErr: wantErr}),
+		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}),
+		Pipeline: service, Finals: service, Phrases: phrases,
+	})
+
+	if _, err := processor.StartAudio(t.Context(), TurnProcessRequest{SessionID: "session-1"}); !errors.Is(err, wantErr) {
+		t.Fatalf("StartAudio() error = %v, want %v", err, wantErr)
+	}
+	phrases.mu.Lock()
+	defer phrases.mu.Unlock()
+	if len(phrases.utterances) != 0 {
+		t.Fatalf("phrase state = %#v, want no retained utterances", phrases.utterances)
 	}
 }
 

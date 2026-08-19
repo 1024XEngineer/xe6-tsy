@@ -54,6 +54,9 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	if cfg.LongDelivery {
 		t.Fatal("LongDelivery = true, want false by default")
 	}
+	if cfg.PhraseSubtitles {
+		t.Fatal("PhraseSubtitles = true, want false by default")
+	}
 	if cfg.CommandConfigTimeout != defaultCommandConfigTimeout {
 		t.Fatalf("command config timeout = %s, want %s", cfg.CommandConfigTimeout, defaultCommandConfigTimeout)
 	}
@@ -100,6 +103,39 @@ func TestLoadProcessConfigLongSentenceDeliveryCapability(t *testing.T) {
 			}
 			if cfg.LongDelivery != test.want {
 				t.Fatalf("LongDelivery = %v, want %v", cfg.LongDelivery, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadProcessConfigPhraseSubtitleCapability(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  bool
+		err   bool
+	}{
+		{value: "enabled", want: true},
+		{value: "disabled"},
+		{value: "invalid", err: true},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			cfg, err := loadProcessConfig(func(key string) string {
+				if key == "REALTIME_TICKET_SECRET" {
+					return strings.Repeat("s", 32)
+				}
+				if key == "REALTIME_PHRASE_SUBTITLES" {
+					return test.value
+				}
+				return ""
+			})
+			if test.err {
+				if err == nil {
+					t.Fatal("loadProcessConfig() error = nil")
+				}
+				return
+			}
+			if err != nil || cfg.PhraseSubtitles != test.want {
+				t.Fatalf("config = %#v, error = %v", cfg, err)
 			}
 		})
 	}

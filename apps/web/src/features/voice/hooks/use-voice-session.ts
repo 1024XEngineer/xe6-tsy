@@ -36,7 +36,7 @@ import {
   voiceConfigFromLanguageConfig,
 } from "../lib/languages";
 import { ApiError, newIdempotencyKey } from "../lib/http";
-import { parseASRPartial, parseTranslationFinal } from "../lib/translation-events";
+import { parseASRPartial, parsePhraseSubtitle, parseTranslationFinal } from "../lib/translation-events";
 import { ModeSnapshotTracker } from "../lib/realtime-state";
 import { RealtimeTicketCache, withRealtimeTicket } from "../lib/realtime-ticket-cache";
 import { parseAssistantReply } from "../lib/assistant-replies";
@@ -933,6 +933,19 @@ export function useVoiceSession() {
           sessionId: session.id,
           audioTracks: wakeTracks.length > 0 ? wakeTracks : undefined,
           onDataMessage: (payload) => {
+            const phraseSubtitle = parsePhraseSubtitle(payload);
+            if (phraseSubtitle && phraseSubtitle.sessionId === session.id) {
+              if (settledPartialTurnsRef.current.has(phraseSubtitle.utteranceId)) return;
+              dispatch({
+                type: "ADD_PHRASE_SUBTITLE",
+                subtitle: {
+                  utteranceId: phraseSubtitle.utteranceId,
+                  phraseSequence: phraseSubtitle.phraseSequence,
+                  sourceText: phraseSubtitle.sourceText,
+                },
+              });
+              return;
+            }
             const partial = parseASRPartial(payload);
             if (partial && partial.sessionId === session.id) {
               if (settledPartialTurnsRef.current.has(partial.turnId)) return;
@@ -1278,6 +1291,7 @@ export function useVoiceSession() {
     () => ({
       state,
       transientASRSubtitle: state.asrPartial,
+      transientPhraseSubtitles: state.phraseSubtitles,
       latestTurn: state.turns.at(-1),
       latestAssistantReply: state.assistantReplies.at(-1),
       activeMode,

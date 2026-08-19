@@ -29,6 +29,55 @@ func TestTicketSourceIssuesTicketForSessionOwner(t *testing.T) {
 	}
 }
 
+func TestNewTicketSourceRejectsMissingDependencies(t *testing.T) {
+	tests := []struct {
+		name   string
+		reader sessions.SessionReader
+		issuer ticketIssuer
+	}{
+		{name: "reader", issuer: issuerFake{}},
+		{name: "issuer", reader: sessionReaderFake{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := NewTicketSource(test.reader, test.issuer); !errors.Is(err, ErrInvalidDependency) {
+				t.Fatalf("NewTicketSource() error = %v, want ErrInvalidDependency", err)
+			}
+		})
+	}
+}
+
+func TestTicketSourceTokenRejectsInvalidInputsAndFacts(t *testing.T) {
+	readerErr := errors.New("reader failed")
+	issuerErr := errors.New("issuer failed")
+	tests := []struct {
+		name      string
+		sessionID string
+		snapshot  sessions.SessionSnapshot
+		readerErr error
+		issuerErr error
+		want      error
+	}{
+		{name: "empty session", snapshot: validTicketSession(), want: sessions.ErrInvalidRequest},
+		{name: "reader failure", sessionID: "session-1", readerErr: readerErr, want: readerErr},
+		{name: "empty account", sessionID: "session-1", snapshot: sessions.SessionSnapshot{SessionID: "session-1", Status: sessions.StatusActive}, want: sessions.ErrInvalidDependency},
+		{name: "invalid status", sessionID: "session-1", snapshot: sessions.SessionSnapshot{SessionID: "session-1", AccountID: "account-1", Status: "invalid"}, want: sessions.ErrInvalidDependency},
+		{name: "issuer failure", sessionID: "session-1", snapshot: validTicketSession(), issuerErr: issuerErr, want: issuerErr},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source, err := NewTicketSource(sessionReaderFake{snapshot: test.snapshot, err: test.readerErr}, issuerErrorFake{err: test.issuerErr})
+			if err != nil {
+				t.Fatalf("NewTicketSource() error = %v", err)
+			}
+			_, err = source.Token(t.Context(), test.sessionID)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Token() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
 func TestTicketSourceTokenForAccountEnforcesOwner(t *testing.T) {
 	source, err := NewTicketSource(sessionReaderFake{snapshot: sessions.SessionSnapshot{
 		SessionID: "session-1",
@@ -114,6 +163,30 @@ func TestTicketSourceTokenForAccountRejectsInvalidStatus(t *testing.T) {
 	}
 }
 
+func TestTicketSourceTokenForAccountRejectsMismatchedSnapshotSession(t *testing.T) {
+	source, err := NewTicketSource(sessionReaderFake{snapshot: sessions.SessionSnapshot{
+		SessionID: "other", AccountID: "account-1", Status: sessions.StatusActive,
+	}}, issuerFake{})
+	if err != nil {
+		t.Fatalf("NewTicketSource() error = %v", err)
+	}
+	if _, err := source.TokenForAccount(t.Context(), "account-1", "session-1"); !errors.Is(err, sessions.ErrInvalidDependency) {
+		t.Fatalf("TokenForAccount() error = %v, want ErrInvalidDependency", err)
+	}
+}
+
+func TestTicketSourceTokenForAccountRejectsEmptySnapshotAccount(t *testing.T) {
+	source, err := NewTicketSource(sessionReaderFake{snapshot: sessions.SessionSnapshot{
+		SessionID: "session-1", Status: sessions.StatusActive,
+	}}, issuerFake{})
+	if err != nil {
+		t.Fatalf("NewTicketSource() error = %v", err)
+	}
+	if _, err := source.TokenForAccount(t.Context(), "account-1", "session-1"); !errors.Is(err, sessions.ErrInvalidDependency) {
+		t.Fatalf("TokenForAccount() error = %v, want ErrInvalidDependency", err)
+	}
+}
+
 func TestSessionTicketMinterIssuesTicketWithValidatorExpiry(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
 	codec, err := realtimev1.NewHMACTicketCodec(realtimev1.TicketConfig{
@@ -147,6 +220,29 @@ func TestSessionTicketMinterRequiresSource(t *testing.T) {
 	_, err := (SessionTicketMinter{}).MintRealtimeTicket(t.Context(), "account-1", "session-1")
 	if !errors.Is(err, ErrInvalidDependency) {
 		t.Fatalf("error = %v, want ErrInvalidDependency", err)
+	}
+}
+
+func TestSessionTicketMinterPropagatesSourceFailure(t *testing.T) {
+	want := errors.New("source failed")
+	source, err := NewTicketSource(sessionReaderFake{err: want}, issuerFake{})
+	if err != nil {
+		t.Fatalf("NewTicketSource() error = %v", err)
+	}
+	if _, err := (SessionTicketMinter{Source: source}).MintRealtimeTicket(t.Context(), "account-1", "session-1"); !errors.Is(err, want) {
+		t.Fatalf("MintRealtimeTicket() error = %v, want %v", err, want)
+	}
+}
+
+func TestSessionTicketMinterRejectsValidatorFailure(t *testing.T) {
+	want := errors.New("invalid ticket")
+	source, err := NewTicketSource(sessionReaderFake{snapshot: validTicketSession()}, issuerFake{})
+	if err != nil {
+		t.Fatalf("NewTicketSource() error = %v", err)
+	}
+	_, err = (SessionTicketMinter{Source: source, Validator: ticketValidatorFake{err: want}}).MintRealtimeTicket(t.Context(), "account-1", "session-1")
+	if !errors.Is(err, want) {
+		t.Fatalf("MintRealtimeTicket() error = %v, want %v", err, want)
 	}
 }
 
@@ -223,4 +319,21 @@ type issuerErrorFake struct{ err error }
 
 func (f issuerErrorFake) Issue(string, string) (string, error) {
 	return "", f.err
+}
+
+type ticketValidatorFake struct {
+	claims realtimev1.TicketClaims
+	err    error
+}
+
+func (f ticketValidatorFake) Validate(string, string) (realtimev1.TicketClaims, error) {
+	return f.claims, f.err
+}
+
+func validTicketSession() sessions.SessionSnapshot {
+	return sessions.SessionSnapshot{
+		SessionID: "session-1",
+		AccountID: "account-1",
+		Status:    sessions.StatusActive,
+	}
 }

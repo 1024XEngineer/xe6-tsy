@@ -543,6 +543,24 @@ func TestLoadEnabledRejectsPartialWeComConfig(t *testing.T) {
 	}
 }
 
+func TestLoadEnabledAcceptsCompleteWeComConfigAndParsesAgentID(t *testing.T) {
+	config, err := LoadFrom(mapCoreEnv(map[string]string{
+		"LINGOW_DELIVERY_RUNTIME":  "enabled",
+		"REDIS_URL":                "redis://localhost:6379/0",
+		"LINGOW_DELIVERY_DESTINATION_KEY": "base64-key",
+		"LINGOW_DELIVERY_PROVIDER": "fake_email",
+		"LINGOW_WECOM_CORP_ID":     "corp-id",
+		"LINGOW_WECOM_CORP_SECRET": "corp-secret",
+		"LINGOW_WECOM_AGENT_ID":    "42",
+	}))
+	if err != nil {
+		t.Fatalf("LoadFrom() error = %v", err)
+	}
+	if config.WeComAgentIDInt() != 42 {
+		t.Fatalf("WeComAgentIDInt() = %d, want 42", config.WeComAgentIDInt())
+	}
+}
+
 func mapCoreEnv(values map[string]string) func(string) (string, bool) {
 	env := map[string]string{
 		"DATABASE_URL":           "postgres://localhost/lingow",

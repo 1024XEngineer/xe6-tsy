@@ -111,4 +111,33 @@ describe("sessionReducer", () => {
     expect(settled.asrPartial).toBeNull();
     expect(latePartial.asrPartial).toBeNull();
   });
+
+  it("keeps stable phrase subtitles in order and clears them after the final", () => {
+    const first = sessionReducer(initialSession, {
+      type: "ADD_PHRASE_SUBTITLE",
+      subtitle: { utteranceId: "turn-1", phraseSequence: 2, sourceText: "世界" },
+    });
+    const ordered = sessionReducer(first, {
+      type: "ADD_PHRASE_SUBTITLE",
+      subtitle: { utteranceId: "turn-1", phraseSequence: 1, sourceText: "你好，" },
+    });
+    const duplicate = sessionReducer(ordered, {
+      type: "ADD_PHRASE_SUBTITLE",
+      subtitle: { utteranceId: "turn-1", phraseSequence: 1, sourceText: "重复" },
+    });
+    const settled = sessionReducer(duplicate, {
+      type: "ADD_TURN",
+      turn: {
+        id: "turn-1",
+        sourceLanguage: "中文",
+        targetLanguage: "English",
+        source: "你好，世界",
+        translation: "Hello, world",
+      },
+    });
+
+    expect(ordered.phraseSubtitles.map((subtitle) => subtitle.sourceText)).toEqual(["你好，", "世界"]);
+    expect(duplicate.phraseSubtitles).toHaveLength(2);
+    expect(settled.phraseSubtitles).toEqual([]);
+  });
 });

@@ -27,6 +27,12 @@ export type TransientASRSubtitle = {
   sourceLanguage: string;
 };
 
+export type TransientPhraseSubtitle = {
+  utteranceId: string;
+  phraseSequence: number;
+  sourceText: string;
+};
+
 export type SessionState = {
   phase: SessionPhase;
   audioMode: AudioMode;
@@ -34,6 +40,7 @@ export type SessionState = {
   turns: TranslationTurn[];
   assistantReplies: AssistantReply[];
   asrPartial: TransientASRSubtitle | null;
+  phraseSubtitles: TransientPhraseSubtitle[];
 };
 
 export const initialSession: SessionState = {
@@ -43,6 +50,7 @@ export const initialSession: SessionState = {
   turns: [],
   assistantReplies: [],
   asrPartial: null,
+  phraseSubtitles: [],
 };
 
 export type SessionEvent =
@@ -54,6 +62,7 @@ export type SessionEvent =
   | { type: "ADD_TURN"; turn: TranslationTurn }
   | { type: "ADD_ASSISTANT_REPLY"; reply: AssistantReply }
   | { type: "SET_ASR_PARTIAL"; partial: TransientASRSubtitle }
+  | { type: "ADD_PHRASE_SUBTITLE"; subtitle: TransientPhraseSubtitle }
   | { type: "CLEAR_ASR_PARTIAL" }
   | { type: "FALLBACK"; message: string }
   | { type: "ERROR"; message: string }
@@ -124,6 +133,9 @@ export function sessionReducer(
         turns: [...state.turns, event.turn],
         asrPartial:
           state.asrPartial?.turnId === event.turn.id ? null : state.asrPartial,
+        phraseSubtitles: state.phraseSubtitles.filter(
+          (subtitle) => subtitle.utteranceId !== event.turn.id,
+        ),
         notice: null,
       };
     case "ADD_ASSISTANT_REPLY":
@@ -141,8 +153,29 @@ export function sessionReducer(
         return state;
       }
       return { ...state, asrPartial: event.partial };
+    case "ADD_PHRASE_SUBTITLE": {
+      if (state.turns.some((turn) => turn.id === event.subtitle.utteranceId)) {
+        return state;
+      }
+      const existing = state.phraseSubtitles.find(
+        (subtitle) =>
+          subtitle.utteranceId === event.subtitle.utteranceId &&
+          subtitle.phraseSequence === event.subtitle.phraseSequence,
+      );
+      if (existing) return state;
+      return {
+        ...state,
+        phraseSubtitles: [...state.phraseSubtitles, event.subtitle].sort(
+          (left, right) =>
+            left.utteranceId.localeCompare(right.utteranceId) ||
+            left.phraseSequence - right.phraseSequence,
+        ),
+      };
+    }
     case "CLEAR_ASR_PARTIAL":
-      return state.asrPartial ? { ...state, asrPartial: null } : state;
+      return state.asrPartial || state.phraseSubtitles.length > 0
+        ? { ...state, asrPartial: null, phraseSubtitles: [] }
+        : state;
     case "FALLBACK":
       return {
         ...state,

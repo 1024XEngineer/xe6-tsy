@@ -16,6 +16,7 @@ export function VoiceExperience() {
   const {
     state,
     transientASRSubtitle,
+    transientPhraseSubtitles,
     latestTurn,
     latestAssistantReply,
     activeMode,
@@ -180,6 +181,11 @@ export function VoiceExperience() {
           {transientASRSubtitle ? (
             <p aria-label="临时识别结果" aria-live="polite" className={styles.transientASRSubtitle}>
               {transientASRSubtitle.text}
+            </p>
+          ) : null}
+          {transientPhraseSubtitles.length > 0 ? (
+            <p aria-label="稳定识别短语" aria-live="polite" className={styles.stablePhraseSubtitle}>
+              {transientPhraseSubtitles.map((subtitle) => subtitle.sourceText).join(" ")}
             </p>
           ) : null}
         </motion.section>

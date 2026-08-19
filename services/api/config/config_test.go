@@ -26,6 +26,43 @@ func TestLoadDefaultsToDisabledFailClosedMode(t *testing.T) {
 	}
 }
 
+func TestLoadRuntimeModesAcceptDocumentedBooleanAliases(t *testing.T) {
+	tests := []struct {
+		name         string
+		sessionMode  string
+		deliveryMode string
+		wantSession  bool
+		wantDelivery bool
+	}{
+		{name: "session true alias", sessionMode: "TRUE", wantSession: true},
+		{name: "session one alias", sessionMode: "1", wantSession: true},
+		{name: "delivery false alias", deliveryMode: "FALSE", wantDelivery: false},
+		{name: "delivery zero alias", deliveryMode: "0", wantDelivery: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := map[string]string{}
+			if tt.sessionMode != "" {
+				env["LINGOW_SESSION_RUNTIME"] = tt.sessionMode
+			}
+			if tt.deliveryMode != "" {
+				env["LINGOW_DELIVERY_RUNTIME"] = tt.deliveryMode
+			}
+			getenv := mapCoreEnv(env)
+			if tt.wantSession {
+				getenv = mapSessionRuntimeEnv(env)
+			}
+			config, err := LoadFrom(getenv)
+			if err != nil {
+				t.Fatalf("LoadFrom() error = %v", err)
+			}
+			if config.SessionRuntimeEnabled != tt.wantSession || config.DeliveryEnabled != tt.wantDelivery {
+				t.Fatalf("runtime flags = (%t, %t), want (%t, %t)", config.SessionRuntimeEnabled, config.DeliveryEnabled, tt.wantSession, tt.wantDelivery)
+			}
+		})
+	}
+}
+
 func TestLoadDisabledSessionRuntimeDoesNotRequireRealtimeConfig(t *testing.T) {
 	config, err := LoadFrom(mapCoreEnv(map[string]string{
 		"LINGOW_SESSION_RUNTIME": "disabled",
@@ -56,6 +93,33 @@ func TestLoadRequiresRealtimeSessionConfigWhenEnabled(t *testing.T) {
 			_, err := LoadFrom(mapSessionRuntimeEnv(test.env))
 			if !errors.Is(err, domain.ErrInvalidArgument) {
 				t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+			}
+		})
+	}
+}
+
+func TestLoadSecretMinimumBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "jwt secret 31 bytes", env: map[string]string{"JWT_SECRET": strings.Repeat("j", 31)}, want: "invalid"},
+		{name: "jwt secret 32 bytes", env: map[string]string{"JWT_SECRET": strings.Repeat("j", 32)}},
+		{name: "realtime ticket secret 31 bytes", env: map[string]string{"REALTIME_TICKET_SECRET": strings.Repeat("r", 31)}, want: "invalid"},
+		{name: "realtime ticket secret 32 bytes", env: map[string]string{"REALTIME_TICKET_SECRET": strings.Repeat("r", 32)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := LoadFrom(mapSessionRuntimeEnv(tt.env))
+			if tt.want == "invalid" {
+				if !errors.Is(err, domain.ErrInvalidArgument) {
+					t.Fatalf("LoadFrom() error = %v, want invalid argument", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFrom() error = %v, want nil", err)
 			}
 		})
 	}
@@ -426,6 +490,42 @@ func TestLoadEnabledAcceptsSMTPProvider(t *testing.T) {
 	}
 	if config.DeliveryProvider != providerSMTP {
 		t.Fatalf("DeliveryProvider = %q, want %q", config.DeliveryProvider, providerSMTP)
+	}
+	if config.SMTPPortInt(25) != 587 {
+		t.Fatalf("SMTPPortInt() = %d, want configured default 587", config.SMTPPortInt(25))
+	}
+}
+
+func TestConfigNumericFieldsUseExplicitPositiveSemantics(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{name: "smtp port", value: "2525", want: 2525},
+		{name: "invalid smtp port falls back", value: "not-a-port", want: 25},
+		{name: "zero smtp port falls back", value: "0", want: 25},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (Config{SMTPPort: tt.value}).SMTPPortInt(25); got != tt.want {
+				t.Fatalf("SMTPPortInt() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+	for _, tt := range []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{name: "positive agent", value: "42", want: 42},
+		{name: "invalid agent", value: "abc", want: 0},
+		{name: "zero agent", value: "0", want: 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (Config{WeComAgentID: tt.value}).WeComAgentIDInt(); got != tt.want {
+				t.Fatalf("WeComAgentIDInt() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 

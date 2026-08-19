@@ -91,10 +91,11 @@ func (s *Service) CreateChallenge(ctx context.Context, deviceID string) (Challen
 	}
 	now := s.now().UTC()
 	challenge := Challenge{ID: "dac_" + ulid.Make().String(), DeviceID: deviceID, Nonce: base64.RawURLEncoding.EncodeToString(raw), ExpiresAt: now.Add(challengeTTL), CreatedAt: now}
-	if err := s.repository.CreateChallenge(ctx, challenge); err != nil {
+	stored, err := s.repository.CreateChallenge(ctx, challenge)
+	if err != nil {
 		return Challenge{}, err
 	}
-	return challenge, nil
+	return stored, nil
 }
 
 func (s *Service) ExchangeChallenge(ctx context.Context, deviceID, challengeID string, signature []byte) (Token, error) {

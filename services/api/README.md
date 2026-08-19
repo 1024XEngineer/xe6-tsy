@@ -70,6 +70,8 @@ WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webr
 随后设备通过 `POST /api/v1/device-auth/challenges` 获取 2 分钟、一次性的 nonce，对
 `lingow-device-auth-v1\n{challenge_id}\n{device_id}\n{nonce}` 签名，并在
 `POST /api/v1/device-auth/tokens` 换取 15 分钟 device token。
+同一设备在存在未过期、未消费 challenge 时重复请求会获得该 challenge；服务端会清理该设备
+已消费和已过期的 challenge，并且数据库约束最多保留一个可用 challenge。
 
 device token 不能调用账户、用量、历史或普通 `/voice-sessions` 路由；只能调用
 `/api/v1/device/voice-sessions/*`。设备创建会话时，API 在同一事务中记录该设备与会话的关联，

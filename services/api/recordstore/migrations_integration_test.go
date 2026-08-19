@@ -62,6 +62,7 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{28, "realtime_mode_projection"},
 		{29, "long_sentence_delivery_trigger"},
 		{30, "devices"},
+		{31, "device_auth_challenge_retention"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))

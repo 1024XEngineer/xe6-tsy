@@ -168,12 +168,27 @@ func (r *PostgresRepository) BindWithPairingCode(ctx context.Context, deviceID s
 	return device, nil
 }
 
-func (r *PostgresRepository) CreateChallenge(ctx context.Context, challenge Challenge) error {
+// CreateChallenge keeps one usable challenge per device. Retrying a request
+// returns that challenge instead of accumulating database rows; consumed and
+// expired rows are removed as part of the same statement.
+func (r *PostgresRepository) CreateChallenge(ctx context.Context, challenge Challenge) (Challenge, error) {
 	if r == nil || r.pool == nil || challenge.ID == "" || challenge.DeviceID == "" || challenge.Nonce == "" || !challenge.ExpiresAt.After(challenge.CreatedAt) {
-		return domain.ErrInvalidArgument
+		return Challenge{}, domain.ErrInvalidArgument
 	}
-	_, err := r.pool.Exec(ctx, `INSERT INTO lingow_device_auth_challenges (id, device_id, nonce, expires_at, created_at) VALUES ($1,$2,$3,$4,$5)`, challenge.ID, challenge.DeviceID, challenge.Nonce, challenge.ExpiresAt.UTC(), challenge.CreatedAt.UTC())
-	return deviceError(err)
+	var stored Challenge
+	err := r.pool.QueryRow(ctx, `
+		WITH removed AS (
+			DELETE FROM lingow_device_auth_challenges
+			WHERE device_id = $1 AND (used_at IS NOT NULL OR expires_at <= clock_timestamp())
+		)
+		INSERT INTO lingow_device_auth_challenges (id, device_id, nonce, expires_at, created_at)
+		VALUES ($2, $1, $3, $4, $5)
+		ON CONFLICT (device_id) WHERE used_at IS NULL
+		DO UPDATE SET device_id = EXCLUDED.device_id
+		RETURNING id, device_id, nonce, expires_at, created_at`,
+		challenge.DeviceID, challenge.ID, challenge.Nonce, challenge.ExpiresAt.UTC(), challenge.CreatedAt.UTC(),
+	).Scan(&stored.ID, &stored.DeviceID, &stored.Nonce, &stored.ExpiresAt, &stored.CreatedAt)
+	return stored, deviceError(err)
 }
 
 func (r *PostgresRepository) GetChallenge(ctx context.Context, challengeID, deviceID string) (Challenge, error) {

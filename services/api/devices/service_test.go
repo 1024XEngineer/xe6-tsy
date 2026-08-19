@@ -65,6 +65,34 @@ func TestServicePairsAndAuthenticatesBoundDevice(t *testing.T) {
 	}
 }
 
+func TestServiceReusesActiveChallenge(t *testing.T) {
+	repository := newMemoryRepository()
+	issuer, err := NewHMACIssuer("device-token-secret-must-be-at-least-32-bytes", "issuer", "device", repository.ActiveBound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(repository, issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository.devices["dev_01"] = Device{DeviceID: "dev_01", ProductID: "lingow-s3", Status: StatusActive, AccountID: stringPointer("acct_registered")}
+
+	first, err := service.CreateChallenge(t.Context(), "dev_01")
+	if err != nil {
+		t.Fatalf("first CreateChallenge() error = %v", err)
+	}
+	second, err := service.CreateChallenge(t.Context(), "dev_01")
+	if err != nil {
+		t.Fatalf("second CreateChallenge() error = %v", err)
+	}
+	if second.ID != first.ID || second.Nonce != first.Nonce {
+		t.Fatalf("second challenge = %#v, want existing %#v", second, first)
+	}
+	if len(repository.challenges) != 1 {
+		t.Fatalf("stored challenges = %d, want 1", len(repository.challenges))
+	}
+}
+
 func TestServiceRejectsInvalidPairingSignatureWithoutConsumingCode(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -231,7 +259,7 @@ func TestPostgresRepositoryRejectsMissingPool(t *testing.T) {
 		{"revoke", repository.Revoke(t.Context(), "acct_01", "dev_01"), domain.ErrInvalidArgument},
 		{"create code", repository.CreatePairingCode(t.Context(), pairing), domain.ErrInvalidArgument},
 		{"bind", errorOf(repository.BindWithPairingCode(t.Context(), "dev_01", make([]byte, 32))), domain.ErrInvalidArgument},
-		{"create challenge", repository.CreateChallenge(t.Context(), challenge), domain.ErrInvalidArgument},
+		{"create challenge", errorOf(repository.CreateChallenge(t.Context(), challenge)), domain.ErrInvalidArgument},
 		{"get challenge", errorOf(repository.GetChallenge(t.Context(), "challenge_01", "dev_01")), domain.ErrInvalidArgument},
 		{"consume challenge", errorOf(repository.ConsumeChallenge(t.Context(), "challenge_01", "dev_01")), domain.ErrInvalidArgument},
 		{"owns", repository.OwnsSession(t.Context(), "dev_01", "acct_01", "vs_01"), domain.ErrUnauthorized},
@@ -275,7 +303,7 @@ func TestPostgresRepositoryMapsUnavailableDatabaseErrors(t *testing.T) {
 		{"revoke", repository.Revoke(t.Context(), "acct_01", "dev_01")},
 		{"create code", repository.CreatePairingCode(t.Context(), pairing)},
 		{"bind", errorOf(repository.BindWithPairingCode(t.Context(), "dev_01", make([]byte, 32)))},
-		{"create challenge", repository.CreateChallenge(t.Context(), challenge)},
+		{"create challenge", errorOf(repository.CreateChallenge(t.Context(), challenge))},
 		{"get challenge", errorOf(repository.GetChallenge(t.Context(), "challenge_01", "dev_01"))},
 		{"consume challenge", errorOf(repository.ConsumeChallenge(t.Context(), "challenge_01", "dev_01"))},
 		{"owns", repository.OwnsSession(t.Context(), "dev_01", "acct_01", "vs_01")},
@@ -416,11 +444,16 @@ func (r *memoryRepository) BindWithPairingCode(_ context.Context, deviceID strin
 	delete(r.codes, code.ID)
 	return device, nil
 }
-func (r *memoryRepository) CreateChallenge(_ context.Context, challenge Challenge) error {
+func (r *memoryRepository) CreateChallenge(_ context.Context, challenge Challenge) (Challenge, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	for _, existing := range r.challenges {
+		if existing.DeviceID == challenge.DeviceID {
+			return existing, nil
+		}
+	}
 	r.challenges[challenge.ID] = challenge
-	return nil
+	return challenge, nil
 }
 func (r *memoryRepository) GetChallenge(_ context.Context, id, deviceID string) (Challenge, error) {
 	r.mu.Lock()

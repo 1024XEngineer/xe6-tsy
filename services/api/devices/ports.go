@@ -12,7 +12,7 @@ type Repository interface {
 	Revoke(context.Context, string, string) error
 	CreatePairingCode(context.Context, PairingCode) error
 	BindWithPairingCode(context.Context, string, []byte) (Device, error)
-	CreateChallenge(context.Context, Challenge) error
+	CreateChallenge(context.Context, Challenge) (Challenge, error)
 	GetChallenge(context.Context, string, string) (Challenge, error)
 	ConsumeChallenge(context.Context, string, string) (Device, error)
 	OwnsSession(context.Context, string, string, string) error

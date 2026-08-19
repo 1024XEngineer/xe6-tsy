@@ -74,6 +74,26 @@ func TestMemoryRepositoryIgnoresOutOfOrderEventsWithinRuntime(t *testing.T) {
 	}
 }
 
+func TestMemoryRepositoryIgnoresEqualGenerationWithinRuntime(t *testing.T) {
+	repository := NewMemoryRepository()
+	first := modeEvent("event-first", "runtime-1", 3, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time.Unix(10, 0))
+	equal := modeEvent("event-equal", "runtime-1", 3, realtimev1.ModeInterpretation, realtimev1.ModeAssistant, time.Unix(20, 0))
+
+	for _, event := range []realtimev1.ModeChangedEvent{first, equal} {
+		if err := repository.Project(t.Context(), event); err != nil {
+			t.Fatalf("project %s: %v", event.EventID, err)
+		}
+	}
+
+	projection, err := repository.Latest(t.Context(), first.SessionID)
+	if err != nil {
+		t.Fatalf("Latest() = (%#v, %v)", projection, err)
+	}
+	if projection.LastEventID != first.EventID || projection.Generation != first.ResultingGeneration || projection.ActiveMode != first.ToMode {
+		t.Fatalf("projection = %#v, want first event", projection)
+	}
+}
+
 func TestMemoryRepositoryUsesOccurredAtAcrossRuntimes(t *testing.T) {
 	repository := NewMemoryRepository()
 	oldRuntime := modeEvent("event-old", "runtime-old", 4, realtimev1.ModeAssistant, realtimev1.ModeInterpretation, time.Unix(20, 0))

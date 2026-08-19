@@ -367,6 +367,51 @@ func TestInvalidRequestsReturnFieldDetails(t *testing.T) {
 	}
 }
 
+func TestQueryValidationRejectsInvalidParametersBeforeRepository(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		target string
+		field  string
+		route  string
+	}{
+		{name: "participants unknown", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/participants?unexpected=1", field: "unexpected", route: "participants"},
+		{name: "participants duplicate", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/participants?limit=2&limit=3", field: "limit", route: "participants"},
+		{name: "participants zero", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/participants?limit=0", field: "limit", route: "participants"},
+		{name: "participants negative", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/participants?limit=-1", field: "limit", route: "participants"},
+		{name: "participants non numeric", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/participants?limit=nope", field: "limit", route: "participants"},
+		{name: "participants over maximum", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/participants?limit=101", field: "limit", route: "participants"},
+		{name: "session turns unknown", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/turns?unexpected=1", field: "unexpected", route: "session turns"},
+		{name: "session turns duplicate", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/turns?limit=2&limit=3", field: "limit", route: "session turns"},
+		{name: "session turns zero", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/turns?limit=0", field: "limit", route: "session turns"},
+		{name: "session turns negative", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/turns?limit=-1", field: "limit", route: "session turns"},
+		{name: "session turns non numeric", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/turns?limit=nope", field: "limit", route: "session turns"},
+		{name: "session turns over maximum", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/turns?limit=101", field: "limit", route: "session turns"},
+		{name: "session turns invalid attribution", method: http.MethodGet, target: "/api/v1/voice-sessions/vs_01/turns?attribution_status=unknown", field: "attribution_status", route: "session turns"},
+		{name: "history unknown", method: http.MethodGet, target: "/api/v1/translation-history?unexpected=1", field: "unexpected", route: "history"},
+		{name: "history duplicate", method: http.MethodGet, target: "/api/v1/translation-history?limit=2&limit=3", field: "limit", route: "history"},
+		{name: "history zero", method: http.MethodGet, target: "/api/v1/translation-history?limit=0", field: "limit", route: "history"},
+		{name: "history negative", method: http.MethodGet, target: "/api/v1/translation-history?limit=-1", field: "limit", route: "history"},
+		{name: "history non numeric", method: http.MethodGet, target: "/api/v1/translation-history?limit=nope", field: "limit", route: "history"},
+		{name: "history over maximum", method: http.MethodGet, target: "/api/v1/translation-history?limit=101", field: "limit", route: "history"},
+		{name: "history invalid from", method: http.MethodGet, target: "/api/v1/translation-history?created_from=not-a-time", field: "created_from", route: "history"},
+		{name: "history invalid to", method: http.MethodGet, target: "/api/v1/translation-history?created_to=not-a-time", field: "created_to", route: "history"},
+		{name: "history reversed range", method: http.MethodGet, target: "/api/v1/translation-history?created_from=2026-07-24T09:00:00Z&created_to=2026-07-24T08:00:00Z", field: "created_from", route: "history"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			participantsRepository := &participantRepository{}
+			turnRepository := &turnRepository{}
+			handler := newHandler(t, participantsRepository, turnRepository, "acct_01")
+			response := serve(handler, accountRequest(test.method, test.target, nil, "acct_01", false))
+			assertErrorField(t, response, recordsv1.ErrorInvalidRequest, test.field)
+			if participantsRepository.listCalls != 0 || turnRepository.listSessionCalls != 0 || turnRepository.historyCalls != 0 {
+				t.Fatalf("invalid %s query called repository: participants=%d session turns=%d history=%d", test.route, participantsRepository.listCalls, turnRepository.listSessionCalls, turnRepository.historyCalls)
+			}
+		})
+	}
+}
+
 func TestErrorMappingReturnsNotFoundAndInternalError(t *testing.T) {
 	turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, findErr: turns.ErrTurnNotFound}
 	handler := newHandler(t, &participantRepository{}, turnRepository, "acct_01")
@@ -721,12 +766,14 @@ func equalConfidence(a, b *float64) bool {
 type participantRepository struct {
 	listResponse recordsv1.ParticipantListResponse
 	listQuery    recordsv1.ListParticipantsQuery
+	listCalls    int
 	updated      recordsv1.Participant
 	update       participants.Update
 	updateErr    error
 }
 
 func (r *participantRepository) List(_ context.Context, _, _ string, query recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
+	r.listCalls++
 	r.listQuery = query
 	return r.listResponse, nil
 }
@@ -748,9 +795,11 @@ type turnRepository struct {
 	findErr              error
 	listResponse         recordsv1.VoiceTurnListResponse
 	listQuery            recordsv1.ListTurnsQuery
+	listSessionCalls     int
 	historyResponse      recordsv1.VoiceTurnListResponse
 	historyAccountID     string
 	historyQuery         recordsv1.ListTurnsQuery
+	historyCalls         int
 	participantInSession bool
 	attributionUpdate    turns.AttributionUpdate
 }
@@ -760,6 +809,7 @@ func (*turnRepository) StoreFinalTurn(context.Context, recordsv1.FinalTurnEvent)
 }
 
 func (r *turnRepository) ListSession(_ context.Context, _, _ string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+	r.listSessionCalls++
 	r.listQuery = query
 	return r.listResponse, nil
 }
@@ -772,6 +822,7 @@ func (r *turnRepository) Find(context.Context, string, string) (recordsv1.VoiceT
 }
 
 func (r *turnRepository) ListHistory(_ context.Context, accountID string, query recordsv1.ListTurnsQuery) (recordsv1.VoiceTurnListResponse, error) {
+	r.historyCalls++
 	r.historyAccountID = accountID
 	r.historyQuery = query
 	return r.historyResponse, nil

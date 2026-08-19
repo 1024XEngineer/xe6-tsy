@@ -38,7 +38,7 @@ const failureReportTimeout = 5 * time.Second
 
 var defaultCommandOptions = command.Options{
 	WindowTTL:        15 * time.Second,
-	NoSpeechTimeout:  2 * time.Second,
+	NoSpeechTimeout:  5 * time.Second,
 	MaxAudioDuration: 12 * time.Second,
 	EndSilence:       800 * time.Millisecond,
 	PrefixPadding:    500 * time.Millisecond,
@@ -286,15 +286,14 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	}
 	manager.commandValidator = registry
 	if deps.NewCommandInterpreter == nil {
-		manager.commandInterpreter = command.LegacyInterpreter{}
-	} else {
-		manager.commandInterpreter, err = deps.NewCommandInterpreter(registry.Descriptors())
-		if err != nil {
-			return nil, fmt.Errorf("create command interpreter: %w", err)
-		}
-		if manager.commandInterpreter == nil {
-			return nil, fmt.Errorf("%w: command interpreter", ErrDependencyRequired)
-		}
+		return nil, fmt.Errorf("%w: command interpreter factory", ErrDependencyRequired)
+	}
+	manager.commandInterpreter, err = deps.NewCommandInterpreter(registry.Descriptors())
+	if err != nil {
+		return nil, fmt.Errorf("create command interpreter: %w", err)
+	}
+	if manager.commandInterpreter == nil {
+		return nil, fmt.Errorf("%w: command interpreter", ErrDependencyRequired)
 	}
 	manager.playback = service
 	manager.speech = speech

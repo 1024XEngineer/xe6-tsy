@@ -51,8 +51,8 @@ func BuildProviders(config ProviderConfig, offline Providers) (Providers, error)
 func buildAssistant(config TranslationConfig, offline assistant.Provider) (assistant.Provider, error) {
 	switch normalizedProvider(config.Provider) {
 	case ProviderMock:
-		// Assistant is an additive capability for legacy offline callers. When it
-		// is absent, runtime registers only the existing interpretation Handler.
+		// Assistant remains optional for offline callers. When it is absent, runtime registers
+		// only the interpretation Handler and the command registry reflects that capability set.
 		return offline, nil
 	case ProviderAliyun:
 		model := strings.TrimSpace(config.Model)

@@ -20,13 +20,13 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 )
 
-func TestDefaultCommandOptionsMatchOrdinaryUtteranceBounds(t *testing.T) {
+func TestDefaultCommandOptionsAllowPauseAfterWakeWord(t *testing.T) {
 	if defaultCommandOptions.WindowTTL != 15*time.Second ||
-		defaultCommandOptions.NoSpeechTimeout != 2*time.Second ||
+		defaultCommandOptions.NoSpeechTimeout != 5*time.Second ||
 		defaultCommandOptions.MaxAudioDuration != 12*time.Second ||
 		defaultCommandOptions.EndSilence != 800*time.Millisecond ||
 		defaultCommandOptions.PrefixPadding != 500*time.Millisecond {
-		t.Fatalf("default command options = %#v, want ordinary VAD sentence bounds", defaultCommandOptions)
+		t.Fatalf("default command options = %#v, want wake-word pause and ordinary VAD bounds", defaultCommandOptions)
 	}
 }
 
@@ -538,7 +538,7 @@ func TestRuntimeCommandGateInterruptsPlaybackBeforeArming(t *testing.T) {
 	interrupter := &recordingPlaybackInterrupter{}
 	gate, err := command.NewGate(command.Dependencies{
 		Classifier: speechClassifier{}, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Interpreter: command.LegacyInterpreter{}, Validator: commandRegistryForTest(t), Executor: commandExecutor{},
+		Interpreter: testCommandInterpreter(), Validator: commandRegistryForTest(t), Executor: commandExecutor{},
 	}, command.Options{
 		WindowTTL: 2 * time.Second, NoSpeechTimeout: time.Second,
 		MaxAudioDuration: time.Second, EndSilence: 100 * time.Millisecond,
@@ -563,7 +563,7 @@ func TestRuntimeCommandGateForwardsReplay(t *testing.T) {
 	t.Parallel()
 	gate, err := command.NewGate(command.Dependencies{
 		Classifier: speechClassifier{}, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Interpreter: command.LegacyInterpreter{}, Validator: commandRegistryForTest(t), Executor: commandExecutor{},
+		Interpreter: testCommandInterpreter(), Validator: commandRegistryForTest(t), Executor: commandExecutor{},
 	}, command.Options{
 		WindowTTL: 2 * time.Second, NoSpeechTimeout: time.Second,
 		MaxAudioDuration: time.Second, EndSilence: 100 * time.Millisecond,

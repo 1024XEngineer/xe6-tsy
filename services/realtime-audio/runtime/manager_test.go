@@ -28,15 +28,12 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 )
 
-func TestManagerDefaultsToLegacyCommandInterpreter(t *testing.T) {
+func TestManagerRequiresCommandInterpreterFactory(t *testing.T) {
 	deps := testDependencies(&fakeFrameSource{}, &fakeLanguageReader{snapshot: activeConfig("session-1")})
 	deps.NewCommandInterpreter = nil
-	manager, err := newManager(testProviders(), deps)
-	if err != nil {
-		t.Fatalf("newManager() error = %v", err)
-	}
-	if _, ok := manager.commandInterpreter.(command.LegacyInterpreter); !ok {
-		t.Fatalf("command interpreter = %T, want command.LegacyInterpreter", manager.commandInterpreter)
+	_, err := newManager(testProviders(), deps)
+	if !errors.Is(err, ErrDependencyRequired) || !strings.Contains(err.Error(), "command interpreter factory") {
+		t.Fatalf("newManager() error = %v, want command interpreter factory dependency error", err)
 	}
 }
 
@@ -78,7 +75,7 @@ func TestManagerBuildsCommandInterpreterFromRegisteredHandlers(t *testing.T) {
 			var got []command.CapabilityDescriptor
 			deps.NewCommandInterpreter = func(descriptors []command.CapabilityDescriptor) (command.Interpreter, error) {
 				got = descriptors
-				return command.LegacyInterpreter{}, nil
+				return testCommandInterpreter(), nil
 			}
 			providers := testProviders()
 			if test.withAssistant {
@@ -372,6 +369,9 @@ func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
 		ASR: asrProvider, Translation: translator, TTS: ttsProvider,
 	}, Dependencies{
+		NewCommandInterpreter: func([]command.CapabilityDescriptor) (command.Interpreter, error) {
+			return testCommandInterpreter(), nil
+		},
 		FrameSources: FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
 			openCalls++
 			return AudioInput{Source: source, SourceLanguage: "zh-CN"}, nil
@@ -1257,7 +1257,7 @@ func TestManagerStopTimeoutBoundsBlockingSourceClose(t *testing.T) {
 func testDependencies(source segment.FrameSource, languages session.LanguageConfigReader) Dependencies {
 	return Dependencies{
 		NewCommandInterpreter: func([]command.CapabilityDescriptor) (command.Interpreter, error) {
-			return command.LegacyInterpreter{}, nil
+			return testCommandInterpreter(), nil
 		},
 		FrameSources: FrameSourceFactoryFunc(func(context.Context, session.SessionSnapshot) (AudioInput, error) {
 			return AudioInput{Source: source, SourceLanguage: "zh-CN"}, nil
@@ -1268,6 +1268,14 @@ func testDependencies(source segment.FrameSource, languages session.LanguageConf
 		Languages: languages, FinalTurns: &recordingFinalSink{}, ModeChanges: &recordingModeChangedSink{}, Usage: &recordingUsageSink{},
 		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	}
+}
+
+func testCommandInterpreter() command.Interpreter {
+	return command.InterpreterFunc(func(_ context.Context, request command.InterpretRequest) (command.Candidate, error) {
+		return command.Candidate{
+			Text: request.Text, Action: command.ActionActivateMode, TargetMode: realtimev1.ModeInterpretation,
+		}, nil
+	})
 }
 
 func testProviders() config.Providers {

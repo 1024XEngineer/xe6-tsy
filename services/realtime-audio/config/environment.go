@@ -15,13 +15,9 @@ const defaultTranslationModel = "qwen3.6-flash"
 
 type ProviderName string
 
-type CommandInterpreterName string
-
 const (
-	ProviderMock             ProviderName           = "mock"
-	ProviderAliyun           ProviderName           = "aliyun"
-	CommandInterpreterLegacy CommandInterpreterName = "legacy"
-	CommandInterpreterQwen   CommandInterpreterName = "qwen"
+	ProviderMock   ProviderName = "mock"
+	ProviderAliyun ProviderName = "aliyun"
 )
 
 var (
@@ -71,14 +67,13 @@ type TTSConfig struct {
 	Timeout    time.Duration
 }
 
-// CommandConfig selects the semantic command boundary independently from ordinary assistant
-// replies. Qwen may reuse transport credentials while retaining its own timeout and model.
+// CommandConfig configures the mandatory semantic command boundary independently from ordinary
+// assistant replies. Qwen may reuse transport credentials while retaining its own timeout and model.
 type CommandConfig struct {
-	Interpreter CommandInterpreterName
-	APIKey      string
-	BaseURL     string
-	Model       string
-	Timeout     time.Duration
+	APIKey  string
+	BaseURL string
+	Model   string
+	Timeout time.Duration
 }
 
 type LookupEnv func(key string) (string, bool)
@@ -101,11 +96,6 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 	if err != nil {
 		return ProviderConfig{}, err
 	}
-	commandInterpreter, err := readCommandInterpreter(lookup)
-	if err != nil {
-		return ProviderConfig{}, err
-	}
-
 	sampleRate, err := readInt(lookup, "ASR_SAMPLE_RATE")
 	if err != nil {
 		return ProviderConfig{}, err
@@ -190,22 +180,9 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 			Voice: value(lookup, "TTS_VOICE"), SampleRate: ttsSampleRate, Timeout: ttsTimeout,
 		},
 		Command: CommandConfig{
-			Interpreter: commandInterpreter, APIKey: commandAPIKey, BaseURL: commandBaseURL,
-			Model: commandModel, Timeout: commandTimeout,
+			APIKey: commandAPIKey, BaseURL: commandBaseURL, Model: commandModel, Timeout: commandTimeout,
 		},
 	}, nil
-}
-
-func readCommandInterpreter(lookup LookupEnv) (CommandInterpreterName, error) {
-	raw := strings.ToLower(value(lookup, "COMMAND_INTERPRETER"))
-	if raw == "" {
-		return CommandInterpreterLegacy, nil
-	}
-	interpreter := CommandInterpreterName(raw)
-	if interpreter != CommandInterpreterLegacy && interpreter != CommandInterpreterQwen {
-		return "", fmt.Errorf("%w: COMMAND_INTERPRETER=%q", ErrUnsupportedProvider, raw)
-	}
-	return interpreter, nil
 }
 
 // LoadProviderConfigFromEnvironment reads the process environment without loading .env files.

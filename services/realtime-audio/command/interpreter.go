@@ -3,16 +3,11 @@ package command
 import (
 	"context"
 	"errors"
-	"strings"
-	"unicode"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
-var (
-	ErrCommandNotAllowed       = errors.New("voice command is not in the allowlist")
-	ErrInterpretRequestInvalid = errors.New("command interpretation request is invalid")
-)
+var ErrInterpretRequestInvalid = errors.New("command interpretation request is invalid")
 
 // Action identifies the bounded lifecycle operation requested by a spoken command. Actions are
 // vendor-neutral and remain separate from modes so future capabilities can reuse the same command
@@ -80,64 +75,4 @@ type Command struct {
 	Action     Action
 	TargetMode realtimev1.Mode
 	Arguments  Arguments
-}
-
-var commandAllowlist = map[string]Candidate{
-	"开始同声传译": {
-		Text: "开始同声传译", Action: ActionActivateMode, TargetMode: realtimev1.ModeInterpretation,
-	},
-	"停止翻译": {
-		Text: "停止翻译", Action: ActionReturnToAssistant, TargetMode: realtimev1.ModeAssistant,
-	},
-}
-
-// LegacyInterpreter preserves the two deterministic commands while the semantic provider and
-// capability registry are introduced incrementally. It must be explicitly injected and is not a
-// fallback for failed semantic interpretation.
-type LegacyInterpreter struct{}
-
-// Interpret returns a compatibility command without producing any side effects.
-func (LegacyInterpreter) Interpret(ctx context.Context, request InterpretRequest) (Candidate, error) {
-	if err := ctx.Err(); err != nil {
-		return Candidate{}, err
-	}
-	if request.SessionID == "" || request.CommandID == "" || strings.TrimSpace(request.Text) == "" {
-		return Candidate{}, ErrInterpretRequestInvalid
-	}
-	return parseLegacyCommand(request.Text)
-}
-
-// Parse accepts only the two product-approved commands. Normalization removes whitespace and
-// sentence-ending punctuation that an ASR provider may add; it never uses fuzzy or semantic
-// matching, so ordinary speech cannot expand the executable command surface.
-func Parse(text string) (Command, error) {
-	candidate, err := parseLegacyCommand(text)
-	if err != nil {
-		return Command{}, err
-	}
-	return Command{
-		Text: candidate.Text, Action: candidate.Action, TargetMode: candidate.TargetMode,
-		Arguments: candidate.Arguments,
-	}, nil
-}
-
-func parseLegacyCommand(text string) (Candidate, error) {
-	normalized := normalize(text)
-	parsed, ok := commandAllowlist[normalized]
-	if !ok {
-		return Candidate{}, ErrCommandNotAllowed
-	}
-	return parsed, nil
-}
-
-var _ Interpreter = LegacyInterpreter{}
-
-func normalize(text string) string {
-	text = strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) {
-			return -1
-		}
-		return r
-	}, text)
-	return strings.TrimRight(text, "，。！？,.!?")
 }

@@ -6,13 +6,30 @@ gateway_url="${LINGOW_REALTIME_GATEWAY_URL:-http://127.0.0.1:8090}"
 
 route_for() {
   path="$1"
-  curl --fail-with-body --silent --show-error \
+  headers="$(mktemp)"
+
+  if ! http_status="$(curl --silent --show-error \
     --output /dev/null \
-    --dump-header - \
+    --dump-header "$headers" \
+    --write-out '%{http_code}' \
     --header "X-Lingow-Route-Debug: 1" \
-    "${gateway_url}${path}" 2>/dev/null \
-    | awk -F ': ' 'tolower($1) == "x-lingow-realtime-upstream" { gsub("\r", "", $2); print $2 }' \
+    "${gateway_url}${path}")"; then
+    rm -f "$headers"
+    return 1
+  fi
+
+  case "$http_status" in
+    2??|3??|4??) ;;
+    *)
+      echo "gateway returned HTTP ${http_status} for ${path}" >&2
+      rm -f "$headers"
+      return 1
+      ;;
+  esac
+
+  awk -F ': ' 'tolower($1) == "x-lingow-realtime-upstream" { gsub("\r", "", $2); print $2 }' "$headers" \
     | sed 's/.*://'
+  rm -f "$headers"
 }
 
 assert_session_is_sticky() {

@@ -115,15 +115,15 @@ describe("sessionReducer", () => {
   it("keeps stable phrase subtitles in order and clears them after the final", () => {
     const first = sessionReducer(initialSession, {
       type: "ADD_PHRASE_SUBTITLE",
-      subtitle: { utteranceId: "turn-1", phraseSequence: 2, sourceText: "世界" },
+      subtitle: { utteranceId: "turn-1", phraseSequence: 2, sourceText: "世界", translatedText: "", status: "source_stable" },
     });
     const ordered = sessionReducer(first, {
       type: "ADD_PHRASE_SUBTITLE",
-      subtitle: { utteranceId: "turn-1", phraseSequence: 1, sourceText: "你好，" },
+      subtitle: { utteranceId: "turn-1", phraseSequence: 1, sourceText: "你好，", translatedText: "", status: "source_stable" },
     });
     const duplicate = sessionReducer(ordered, {
       type: "ADD_PHRASE_SUBTITLE",
-      subtitle: { utteranceId: "turn-1", phraseSequence: 1, sourceText: "重复" },
+      subtitle: { utteranceId: "turn-1", phraseSequence: 1, sourceText: "你好，", translatedText: "Hello,", status: "translated" },
     });
     const settled = sessionReducer(duplicate, {
       type: "ADD_TURN",
@@ -137,7 +137,10 @@ describe("sessionReducer", () => {
     });
 
     expect(ordered.phraseSubtitles.map((subtitle) => subtitle.sourceText)).toEqual(["你好，", "世界"]);
-    expect(duplicate.phraseSubtitles).toHaveLength(2);
+    expect(duplicate.phraseSubtitles).toEqual([
+      { utteranceId: "turn-1", phraseSequence: 1, sourceText: "你好，", translatedText: "Hello,", status: "translated" },
+      { utteranceId: "turn-1", phraseSequence: 2, sourceText: "世界", translatedText: "", status: "source_stable" },
+    ]);
     expect(settled.phraseSubtitles).toEqual([]);
   });
 
@@ -147,7 +150,7 @@ describe("sessionReducer", () => {
       phase: "active" as const,
       asrPartial: { turnId: "turn-1", text: "你好", sourceLanguage: "zh-CN" },
       phraseSubtitles: [
-        { utteranceId: "turn-1", phraseSequence: 1, sourceText: "你好，" },
+        { utteranceId: "turn-1", phraseSequence: 1, sourceText: "你好，", translatedText: "", status: "source_stable" as const },
       ],
     };
     const fallback = sessionReducer(active, {

@@ -31,6 +31,8 @@ export type TransientPhraseSubtitle = {
   utteranceId: string;
   phraseSequence: number;
   sourceText: string;
+  translatedText: string;
+  status: "source_stable" | "translated" | "translation_failed";
 };
 
 export type SessionState = {
@@ -162,7 +164,14 @@ export function sessionReducer(
           subtitle.utteranceId === event.subtitle.utteranceId &&
           subtitle.phraseSequence === event.subtitle.phraseSequence,
       );
-      if (existing) return state;
+      if (existing) {
+        return {
+          ...state,
+          phraseSubtitles: state.phraseSubtitles.map((subtitle) =>
+            subtitle === existing ? event.subtitle : subtitle,
+          ),
+        };
+      }
       return {
         ...state,
         phraseSubtitles: [...state.phraseSubtitles, event.subtitle].sort(

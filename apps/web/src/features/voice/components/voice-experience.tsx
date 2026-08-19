@@ -186,6 +186,12 @@ export function VoiceExperience() {
           {transientPhraseSubtitles.length > 0 ? (
             <p aria-label="稳定识别短语" aria-live="polite" className={styles.stablePhraseSubtitle}>
               {transientPhraseSubtitles.map((subtitle) => subtitle.sourceText).join(" ")}
+              {transientPhraseSubtitles.some((subtitle) => subtitle.status === "translated")
+                ? ` ${transientPhraseSubtitles
+                    .filter((subtitle) => subtitle.status === "translated")
+                    .map((subtitle) => subtitle.translatedText)
+                    .join(" ")}`
+                : ""}
             </p>
           ) : null}
         </motion.section>

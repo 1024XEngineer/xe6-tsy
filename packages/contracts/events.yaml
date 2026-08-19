@@ -30,6 +30,12 @@ channels:
     messages:
       asrPartial:
         $ref: '#/components/messages/ASRPartial'
+  phraseSubtitle:
+    address: phrase.subtitle
+    description: Ephemeral, ordered subtitle phrases sent only to the authenticated realtime client.
+    messages:
+      phraseSubtitle:
+        $ref: '#/components/messages/PhraseSubtitle'
   controlDataChannel:
     address: lingow-control-v1
     description: Reliable ordered WebRTC DataChannel bound to the authenticated PeerConnection session.
@@ -67,6 +73,10 @@ operations:
     action: send
     channel:
       $ref: '#/channels/asrPartial'
+  sendPhraseSubtitle:
+    action: send
+    channel:
+      $ref: '#/channels/phraseSubtitle'
   receiveControlModeSwitch:
     action: receive
     channel: { $ref: '#/channels/controlDataChannel' }
@@ -118,6 +128,13 @@ components:
       contentType: application/json
       payload:
         $ref: '#/components/schemas/ASRPartialEvent'
+    PhraseSubtitle:
+      name: phrase.subtitle
+      title: Ephemeral phrase subtitle
+      summary: An immutable source phrase that is stable enough for realtime subtitle display.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/PhraseSubtitleEvent'
     ControlModeSwitchRequest:
       name: mode.switch
       summary: Switches the runtime mode without replacing the authenticated PeerConnection.
@@ -398,4 +415,19 @@ components:
         turn_id: { type: string, minLength: 1, maxLength: 128 }
         text: { type: string, minLength: 1, maxLength: 4096 }
         source_language: { type: string, minLength: 1, maxLength: 128, description: Omitted while provider language detection is incomplete. }
+        occurred_at: { type: string, format: date-time }
+    PhraseSubtitleEvent:
+      type: object
+      additionalProperties: false
+      description: A best-effort subtitle phrase that never enters FinalTurn persistence by itself.
+      required: [type, event_version, session_id, utterance_id, phrase_sequence, source_text, status, occurred_at]
+      properties:
+        type: { type: string, const: phrase.subtitle }
+        event_version: { type: integer, const: 1 }
+        session_id: { type: string, minLength: 1, maxLength: 128 }
+        utterance_id: { type: string, minLength: 1, maxLength: 128 }
+        phrase_sequence: { type: integer, minimum: 1 }
+        source_text: { type: string, minLength: 1, maxLength: 4096 }
+        translated_text: { type: string, minLength: 1, maxLength: 4096 }
+        status: { type: string, enum: [source_stable, translated, translation_failed] }
         occurred_at: { type: string, format: date-time }

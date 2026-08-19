@@ -67,6 +67,23 @@ export interface ASRPartialEvent {
   occurred_at: string;
 }
 
+export type PhraseSubtitleStatus =
+  | "source_stable"
+  | "translated"
+  | "translation_failed";
+
+export interface PhraseSubtitleEvent {
+  type: "phrase.subtitle";
+  event_version: 1;
+  session_id: string;
+  utterance_id: string;
+  phrase_sequence: number;
+  source_text: string;
+  translated_text?: string;
+  status: PhraseSubtitleStatus;
+  occurred_at: string;
+}
+
 export interface RealtimeRuntimeSnapshot {
   session_id: string;
   start_operation_id: string;

@@ -23,6 +23,8 @@ type deliveryFake struct {
 	retryAccountID         string
 	retryMessageID         string
 	retryIdempotency       string
+	getAccountID           string
+	getMessageID           string
 	targets                []delivery.MessageTarget
 	messages               []delivery.Message
 	automaticStatuses      []delivery.AutomaticOutputStatus
@@ -134,8 +136,10 @@ func (f *deliveryFake) ListAutomaticOutputStatus(_ context.Context, accountID, s
 	}
 	return f.automaticStatuses, nil
 }
-func (*deliveryFake) Get(context.Context, string, string) (delivery.Message, error) {
-	return delivery.Message{}, domain.ErrNotImplemented
+func (f *deliveryFake) Get(_ context.Context, accountID, messageID string) (delivery.Message, error) {
+	f.getAccountID = accountID
+	f.getMessageID = messageID
+	return delivery.Message{ID: messageID, AccountID: accountID, Status: delivery.MessageStatusSent}, nil
 }
 func (f *deliveryFake) Retry(_ context.Context, accountID, messageID, idempotencyKey string) (delivery.Message, error) {
 	f.retryAccountID = accountID
@@ -234,6 +238,25 @@ func TestListMessagesUsesAuthenticatedAccount(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), `"id":"message-1"`) {
 		t.Fatalf("body = %s", response.Body.String())
+	}
+}
+
+func TestGetMessagePassesAuthenticatedAccountAndResourceID(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := authenticate(httptest.NewRequest(http.MethodGet, "/api/v1/outbound-messages/message-1", nil))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.getAccountID != "account-1" || fake.getMessageID != "message-1" {
+		t.Fatalf("get input = (%q, %q), want (account-1, message-1)", fake.getAccountID, fake.getMessageID)
+	}
+	if !strings.Contains(response.Body.String(), `"id":"message-1"`) {
+		t.Fatalf("body = %s, want message id", response.Body.String())
 	}
 }
 

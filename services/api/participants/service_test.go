@@ -156,6 +156,24 @@ func TestUpdateRejectsEmptyAccountForValidSession(t *testing.T) {
 	}
 }
 
+func TestUpdateUsesSystemClockWhenNowIsNil(t *testing.T) {
+	repository := &fakeRepository{updated: recordsv1.Participant{ID: "p_01", SessionID: "vs_01"}}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+	before := time.Now().UTC()
+
+	_, err := service.Update(context.Background(), "acct_01", "vs_01", "p_01", Update{DisplayNameSet: true})
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if repository.update.UpdatedAt.Before(before) || repository.update.UpdatedAt.After(after) {
+		t.Fatalf("Update() updated_at = %v, want between %v and %v", repository.update.UpdatedAt, before, after)
+	}
+	if repository.update.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("Update() updated_at location = %v, want UTC", repository.update.UpdatedAt.Location())
+	}
+}
+
 func TestUpdateReportsTheMissingParticipantField(t *testing.T) {
 	service := NewService(&fakeRepository{}, fakeSessionOwners{ownerID: "acct_01"}, nil)
 	_, err := service.Update(context.Background(), "acct_01", "vs_01", "", Update{DisplayNameSet: true})

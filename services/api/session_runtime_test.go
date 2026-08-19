@@ -134,6 +134,46 @@ func TestSessionOwnerReaderMapsMissingSession(t *testing.T) {
 	}
 }
 
+func TestSessionOwnerReaderMapsBoundaryErrors(t *testing.T) {
+	dependencyErr := errors.New("session repository unavailable")
+	tests := []struct {
+		name   string
+		reader sessions.SessionReader
+		want   error
+	}{
+		{name: "missing reader", want: languages.ErrNotImplemented},
+		{name: "invalid request", reader: sessionReaderStub{err: sessions.ErrInvalidRequest}, want: languages.ErrInvalidRequest},
+		{name: "dependency failure", reader: sessionReaderStub{err: dependencyErr}, want: dependencyErr},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := (sessionOwnerReader{reader: test.reader}).GetOwnerAccountID(t.Context(), "vs_1")
+			if !errors.Is(err, test.want) {
+				t.Fatalf("GetOwnerAccountID() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestRealtimeHTTPTimeoutUsesDefaultAndConfiguredValue(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Config
+		want time.Duration
+	}{
+		{name: "default", want: 5 * time.Second},
+		{name: "configured", cfg: config.Config{RealtimeHTTPTimeout: 1500 * time.Millisecond}, want: 1500 * time.Millisecond},
+		{name: "negative falls back", cfg: config.Config{RealtimeHTTPTimeout: -time.Second}, want: 5 * time.Second},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := realtimeHTTPTimeout(test.cfg); got != test.want {
+				t.Fatalf("realtimeHTTPTimeout() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAutomaticOutputSessionReaderRequiresOwnedSession(t *testing.T) {
 	dependencyFailure := errors.New("session repository unavailable")
 	tests := []struct {

@@ -155,10 +155,12 @@ func (p *TurnProcessor) StartAudio(ctx context.Context, request TurnProcessReque
 		SessionID: turn.SessionID, TurnID: turn.ID, SourceLanguage: request.SourceLanguage,
 	})
 	if err != nil {
+		p.phrases.Discard(turn.ID)
 		p.pipeline.latency.ProviderFailure("asr_start", turn, p.asrProvider, "", err)
 		return nil, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("start ASR stream: %w", err))
 	}
 	if stream == nil {
+		p.phrases.Discard(turn.ID)
 		p.pipeline.latency.ProviderFailure("asr_stream", turn, p.asrProvider, "", ErrASRStreamRequired)
 		return nil, p.pipeline.finishASRWithError(ctx, turn, ErrASRStreamRequired)
 	}

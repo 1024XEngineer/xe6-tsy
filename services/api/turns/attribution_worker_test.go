@@ -462,6 +462,37 @@ func TestAttributionWorkerLogsSettlementDecisions(t *testing.T) {
 	}
 }
 
+// TestAttributionWorkerExitsOnCancelWithUnsettledFailure pins that a cancellation during a
+// failed task stops the worker without settling the claim and without draining further
+// deliveries: the first failure is left for lease-expiry redelivery.
+func TestAttributionWorkerExitsOnCancelWithUnsettledFailure(t *testing.T) {
+	first := &attributionDeliveryStub{task: taskFixture()}
+	second := &attributionDeliveryStub{task: taskFixture(), ackErr: errors.New("ack down")}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	worker, err := NewAttributionWorker(
+		&twoDeliveryCancelSource{deliveries: []AttributionTaskDelivery{first, second}, cancel: cancel},
+		&fixedDecisionResolver{},
+		&failFirstOwnerStub{accountID: "acct_01"},
+		&attributionReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}},
+		&attributionApplierStub{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatalf("NewAttributionWorker() error = %v", err)
+	}
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v, want clean exit on cancel", err)
+	}
+	if first.acked || first.retried || first.failed {
+		t.Fatalf("first task settled after cancel: acked=%v retried=%v failed=%v", first.acked, first.retried, first.failed)
+	}
+	if second.acked || second.retried || second.failed {
+		t.Fatalf("second task settled: acked=%v retried=%v failed=%v", second.acked, second.retried, second.failed)
+	}
+}
+
 func TestNewAttributionWorkerValidatesDependencies(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tests := []struct {
@@ -592,6 +623,41 @@ type attributionReaderStub struct {
 func (r *attributionReaderStub) GetTurn(_ context.Context, accountID string, _ string) (recordsv1.VoiceTurn, error) {
 	r.getAccountID = accountID
 	return r.turn, r.err
+}
+
+// twoDeliveryCancelSource hands out two deliveries, cancelling the context right after the
+// first, then reports cancellation.
+type twoDeliveryCancelSource struct {
+	deliveries []AttributionTaskDelivery
+	cancel     context.CancelFunc
+	next       int
+}
+
+func (s *twoDeliveryCancelSource) Receive(ctx context.Context) (AttributionTaskDelivery, error) {
+	if s.next == 0 {
+		s.cancel()
+	}
+	if s.next < len(s.deliveries) {
+		delivery := s.deliveries[s.next]
+		s.next++
+		return delivery, nil
+	}
+	return nil, context.Canceled
+}
+
+// failFirstOwnerStub fails the first owner lookup and then succeeds, letting a later delivery
+// reach settlement even after the context was cancelled.
+type failFirstOwnerStub struct {
+	accountID string
+	failed    bool
+}
+
+func (s *failFirstOwnerStub) AccountIDForSession(context.Context, string) (string, error) {
+	if !s.failed {
+		s.failed = true
+		return "", errors.New("owner unavailable")
+	}
+	return s.accountID, nil
 }
 
 // cancelAfterDeliverySource hands out one delivery and then cancels the context, mimicking a

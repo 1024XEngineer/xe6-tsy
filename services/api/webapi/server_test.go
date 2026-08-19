@@ -14,9 +14,96 @@ import (
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 )
+
+func TestAuthenticateValidatesBearerTokenAndStopsOnFailure(t *testing.T) {
+	server := newTestServer(t)
+	type testCase struct {
+		name          string
+		authorization string
+		claims        accounts.AccessTokenClaims
+		verifyErr     error
+		wantStatus    int
+		wantAccount   string
+		wantVerify    bool
+	}
+	tests := []testCase{
+		{name: "missing", wantStatus: http.StatusUnauthorized},
+		{name: "wrong scheme", authorization: "Basic access-token", wantStatus: http.StatusUnauthorized},
+		{name: "missing token", authorization: "Bearer", wantStatus: http.StatusUnauthorized},
+		{name: "multiple tokens", authorization: "Bearer access-token extra", wantStatus: http.StatusUnauthorized},
+		{name: "verifier rejects", authorization: "Bearer rejected", verifyErr: errors.New("expired"), wantStatus: http.StatusUnauthorized, wantVerify: true},
+		{name: "empty account claim", authorization: "Bearer empty", wantStatus: http.StatusUnauthorized, wantVerify: true},
+		{name: "valid case insensitive scheme", authorization: "bEaReR access-token", claims: accounts.AccessTokenClaims{AccountID: "acct_verified"}, wantStatus: http.StatusNoContent, wantAccount: "acct_verified", wantVerify: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			verifier := &accessTokenVerifier{claims: test.claims, err: test.verifyErr}
+			nextCalls := 0
+			next := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				nextCalls++
+				accountID, ok := ContextAccountProvider{}.AccountID(request.Context())
+				if !ok || accountID != test.wantAccount {
+					t.Fatalf("account context = %q, %v; want %q, true", accountID, ok, test.wantAccount)
+				}
+				writer.WriteHeader(http.StatusNoContent)
+			})
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			request.Header.Set("Authorization", test.authorization)
+			response := serve(server.Authenticate(verifier, next), request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if nextCalls != boolToInt(test.wantStatus == http.StatusNoContent) {
+				t.Fatalf("next calls = %d, want %d", nextCalls, boolToInt(test.wantStatus == http.StatusNoContent))
+			}
+			if (verifier.calls > 0) != test.wantVerify {
+				t.Fatalf("verifier calls = %d, want called = %v", verifier.calls, test.wantVerify)
+			}
+		})
+	}
+}
+
+func TestNewHandlerAndRegisterFailFastOnMissingDependencies(t *testing.T) {
+	valid := validDependencies()
+	for _, test := range []struct {
+		name string
+		edit func(*Dependencies)
+	}{
+		{name: "participants", edit: func(dependencies *Dependencies) { dependencies.Participants = nil }},
+		{name: "turns", edit: func(dependencies *Dependencies) { dependencies.Turns = nil }},
+		{name: "accounts", edit: func(dependencies *Dependencies) { dependencies.Accounts = nil }},
+		{name: "system", edit: func(dependencies *Dependencies) { dependencies.System = nil }},
+		{name: "logger", edit: func(dependencies *Dependencies) { dependencies.Logger = nil }},
+	} {
+		t.Run("NewHandler/"+test.name, func(t *testing.T) {
+			dependencies := valid
+			test.edit(&dependencies)
+			assertPanics(t, func() { NewHandler(dependencies) })
+		})
+	}
+
+	server := NewHandler(valid)
+	for _, test := range []struct {
+		name string
+		edit func(*RouteMiddleware)
+	}{
+		{name: "account middleware", edit: func(middleware *RouteMiddleware) { middleware.Account = nil }},
+		{name: "system middleware", edit: func(middleware *RouteMiddleware) { middleware.System = nil }},
+	} {
+		t.Run("Register/"+test.name, func(t *testing.T) {
+			middleware := RouteMiddleware{
+				Account: func(next http.Handler) http.Handler { return next },
+				System:  func(next http.Handler) http.Handler { return next },
+			}
+			test.edit(&middleware)
+			assertPanics(t, func() { server.Register(http.NewServeMux(), middleware) })
+		})
+	}
+}
 
 func TestListParticipantsUsesTrustedAccountContext(t *testing.T) {
 	nextCursor := "cursor_02"
@@ -525,6 +612,50 @@ func newHandlerWithLogger(t *testing.T, participantRepository *participantReposi
 		System:  func(next http.Handler) http.Handler { return next },
 	})
 	return mux
+}
+
+func newTestServer(t *testing.T) *Server {
+	t.Helper()
+	return NewHandler(validDependencies())
+}
+
+func validDependencies() Dependencies {
+	owners := sessionOwners{ownerID: "acct_01"}
+	return Dependencies{
+		Participants: participants.NewService(&participantRepository{}, owners, nil),
+		Turns:        turns.NewService(&turnRepository{}, owners, nil),
+		Accounts:     ContextAccountProvider{},
+		System:       ContextSystemAuthorizer{},
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+}
+
+func assertPanics(t *testing.T, function func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("function did not panic")
+		}
+	}()
+	function()
+}
+
+type accessTokenVerifier struct {
+	claims accounts.AccessTokenClaims
+	err    error
+	calls  int
+}
+
+func (v *accessTokenVerifier) VerifyAccessToken(context.Context, string) (accounts.AccessTokenClaims, error) {
+	v.calls++
+	return v.claims, v.err
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func accountRequest(method, target string, body *strings.Reader, accountID string, system bool) *http.Request {

@@ -246,6 +246,11 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		VoiceID: deps.VoiceID, Provider: labels.tts, Latency: latency,
 	})
 	commitGate := managerTurnCommitGate{manager: manager}
+	phraseTranslations := pipeline.NewPhraseTranslationCoordinator(providers.Translation, labels.translation, deps.PhraseSubtitles, deps.Now)
+	phraseObserver := deps.PhraseSubtitles
+	if phraseTranslations != nil {
+		phraseObserver = phraseTranslations
+	}
 	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
 		Translator: providers.Translation, TranslationProvider: labels.translation,
 		FinalTurns:          deps.FinalTurns,
@@ -256,6 +261,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		Speech:              speech,
 		Latency:             latency,
 		LongDeliveryEnabled: deps.LongDeliveryEnabled,
+		PhraseTranslations:  phraseTranslations,
 	})
 	// The router registry is the capability source of truth. The coordinator and command
 	// interpreter therefore expose only modes backed by an actual handler.
@@ -278,7 +284,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	}
 	manager.processor = pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
 		ASR: providers.ASR, ASRProvider: labels.asr, Opener: opener, Pipeline: service, Finals: router,
-		Partials: deps.ASRPartials, Phrases: pipeline.NewPhraseSubtitleProcessor(deps.PhraseSubtitles, pipeline.PhraseStabilizerOptions{}),
+		Partials: deps.ASRPartials, Phrases: pipeline.NewPhraseSubtitleProcessor(phraseObserver, pipeline.PhraseStabilizerOptions{}),
 	})
 	manager.commandASR = providers.ASR
 	registry, err := commandRegistry(router.availableModes())

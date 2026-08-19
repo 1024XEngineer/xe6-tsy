@@ -16,7 +16,7 @@ func TestPhraseSubtitleProcessorPublishesOrderedPunctuationAndFinalTail(t *testi
 	now := time.Unix(1700000000, 0).UTC()
 	processor.now = func() time.Time { return now }
 	turn := TurnContext{ID: "turn-1", SessionID: "session-1"}
-	processor.Start(turn)
+	processor.Start(turn, "zh-CN")
 	processor.Observe(context.Background(), realtimev1.ASRPartialEvent{TurnID: turn.ID, Text: "你好，世界", OccurredAt: now})
 	processor.Flush(context.Background(), turn, "你好，世界")
 
@@ -30,7 +30,7 @@ func TestPhraseSubtitleProcessorDiscardsLatePartialsAfterFlush(t *testing.T) {
 	observer := &recordingPhraseSubtitleObserver{}
 	processor := NewPhraseSubtitleProcessor(observer, PhraseStabilizerOptions{StableAfter: time.Hour})
 	turn := TurnContext{ID: "turn-1", SessionID: "session-1"}
-	processor.Start(turn)
+	processor.Start(turn, "zh-CN")
 	processor.Flush(context.Background(), turn, "你好")
 	processor.Observe(context.Background(), realtimev1.ASRPartialEvent{TurnID: turn.ID, Text: "你好，"})
 

@@ -149,7 +149,7 @@ func (p *TurnProcessor) StartAudio(ctx context.Context, request TurnProcessReque
 		return nil, fmt.Errorf("report ASR runtime: %w", err)
 	}
 	if turn.Mode.Mode == realtimev1.ModeInterpretation {
-		p.phrases.Start(turn)
+		p.phrases.Start(turn, request.SourceLanguage)
 	}
 	stream, err := p.recognizer.StartStream(ctx, asr.StreamRequest{
 		SessionID: turn.SessionID, TurnID: turn.ID, SourceLanguage: request.SourceLanguage,

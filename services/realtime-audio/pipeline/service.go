@@ -94,6 +94,7 @@ type PipelineDependencies struct {
 	Latency             LatencyLogger
 	Speech              *SpeechOutput
 	LongDeliveryEnabled bool
+	PhraseTranslations  *PhraseTranslationCoordinator
 }
 
 // PipelineService orchestrates one final ASR result through translation and TTS.
@@ -108,6 +109,7 @@ type PipelineService struct {
 	now                 func() time.Time
 	latency             LatencyLogger
 	longDeliveryEnabled bool
+	phraseTranslations  *PhraseTranslationCoordinator
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
@@ -132,6 +134,7 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 		speech: speech,
 		now:    now, latency: deps.Latency,
 		longDeliveryEnabled: deps.LongDeliveryEnabled,
+		phraseTranslations:  deps.PhraseTranslations,
 	}
 }
 
@@ -179,18 +182,20 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
 	}
 	translateStartedAt := time.Now()
-	translationResult, err := s.translator.Translate(ctx, translate.Request{
-		SessionID: turn.SessionID, TurnID: turn.ID, Text: result.Text,
-		SourceLanguage: result.SourceLanguage, TargetLanguage: target,
-	})
-	if err != nil {
-		s.latency.ProviderFailure("translation", turn, observedProvider(s.translationProvider, translationResult.Provider), translationResult.Model, err)
-		// Providers may still return token usage on rejected attempts. Publish
-		// that consumption before failing so retries cannot hide spend.
-		if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, translationResult); usageErr != nil {
-			return errors.Join(fmt.Errorf("translate Turn %s: %w", turn.ID, err), usageErr)
+	translationResult, reusedPhrases := s.phraseTranslation(ctx, turn, result.Text)
+	if !reusedPhrases {
+		var err error
+		translationResult, err = s.translator.Translate(ctx, translate.Request{
+			SessionID: turn.SessionID, TurnID: turn.ID, Text: result.Text,
+			SourceLanguage: result.SourceLanguage, TargetLanguage: target,
+		})
+		if err != nil {
+			s.latency.ProviderFailure("translation", turn, observedProvider(s.translationProvider, translationResult.Provider), translationResult.Model, err)
+			if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, translationResult); usageErr != nil {
+				return errors.Join(fmt.Errorf("translate Turn %s: %w", turn.ID, err), usageErr)
+			}
+			return fmt.Errorf("translate Turn %s: %w", turn.ID, err)
 		}
-		return fmt.Errorf("translate Turn %s: %w", turn.ID, err)
 	}
 	s.latency.ProviderCheckpoint("translate_done", turn, translateStartedAt, observedProvider(s.translationProvider, translationResult.Provider), translationResult.Model,
 		"source_language", result.SourceLanguage,
@@ -275,6 +280,17 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return finalTurnAcceptedError("publish TTS usage", err)
 	}
 	return nil
+}
+
+func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text string) (translate.Result, bool) {
+	if s.phraseTranslations == nil {
+		return translate.Result{}, false
+	}
+	summary, ok := s.phraseTranslations.FinalizePhraseSubtitleTurn(ctx, turn, text)
+	if !ok {
+		return translate.Result{}, false
+	}
+	return translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}, true
 }
 
 func finalTurnAcceptedError(operation string, err error) error {

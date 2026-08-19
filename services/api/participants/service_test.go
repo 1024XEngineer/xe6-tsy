@@ -74,6 +74,19 @@ func TestUpdatePassesExplicitClearWithoutTouchingTurns(t *testing.T) {
 	}
 }
 
+func TestUpdateDoesNotCallRepositoryForAnotherAccount(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_owner"}, nil)
+
+	_, err := service.Update(context.Background(), "acct_other", "vs_01", "p_01", Update{DisplayNameSet: true})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("Update() error = %v, want ErrForbidden", err)
+	}
+	if repository.updateCalls != 0 {
+		t.Fatalf("Update() repository calls = %d, want 0", repository.updateCalls)
+	}
+}
+
 func TestUpdateReportsTheMissingParticipantField(t *testing.T) {
 	service := NewService(&fakeRepository{}, fakeSessionOwners{ownerID: "acct_01"}, nil)
 	_, err := service.Update(context.Background(), "acct_01", "vs_01", "", Update{DisplayNameSet: true})
@@ -153,6 +166,7 @@ type fakeRepository struct {
 	participants  map[string]recordsv1.Participant
 	listAccountID string
 	listCalls     int
+	updateCalls   int
 }
 
 func (r *fakeRepository) List(_ context.Context, accountID, _ string, _ recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
@@ -162,6 +176,7 @@ func (r *fakeRepository) List(_ context.Context, accountID, _ string, _ recordsv
 }
 
 func (r *fakeRepository) Update(_ context.Context, _ string, _ string, update Update) (recordsv1.Participant, error) {
+	r.updateCalls++
 	r.update = update
 	return r.updated, nil
 }

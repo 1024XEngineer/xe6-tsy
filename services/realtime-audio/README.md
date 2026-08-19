@@ -21,6 +21,7 @@ Go 实时音频服务。
 - 每个会话只支持一组双语语言对，默认 `zh-CN <-> en-US`
 - 只支持两方面对面
 - `asr.partial` 在已鉴权的 `translation-events` DataChannel 上作为可丢弃、同 Turn 覆盖的临时原文字幕发送；它不持久化，也不进入翻译、TTS、FinalTurn、用量、命令或投递
+- `phrase.subtitle` 仅在 `REALTIME_PHRASE_SUBTITLES=enabled` 时为同传 Turn 发送稳定原文短语；它按 utterance 内 sequence 有序、best-effort 交付，且不持久化、不进入翻译、TTS、FinalTurn 或用量
 - 只有句末 final 原文才进入翻译和 TTS；`translation.final` 到达后客户端清理对应临时字幕；启用长句投递能力后，原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
 - TTS / 渠道输出可按 target_language 单独关闭
 - TTS 播放中检测到对方发言时，发送 `playback.stop`
@@ -189,6 +190,7 @@ Required env:
 | `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Fallback pair when API DB link is off |
 | `REALTIME_API_DATABASE` | _(off)_ | `enabled` + `DATABASE_URL` → Postgres session/language readers + FinalTurn outbox |
 | `REALTIME_LONG_SENTENCE_DELIVERY` | `disabled` | 新 API delivery/fallback 已就绪后设为 `enabled`；未启用时长句保持原 TTS 路由 |
+| `REALTIME_PHRASE_SUBTITLES` | `disabled` | Enable ordered, ephemeral stable source phrases before VAD final; translation and TTS remain disabled for these events. |
 | `REALTIME_OUTBOX` | `memory` | `memory` 仅允许 `APP_ENV=local/test/development`；其他环境使用 `valkey`，需要 `REDIS_URL` |
 | `REALTIME_REDIS_MODE` | `standalone` | `standalone` 或 `cluster`；Cluster endpoint 必须显式选择 `cluster`，且 `REDIS_URL` 不带数据库路径 |
 | `LINGOW_MODE_CHANGED_STREAM` | `lingow:realtime:mode:changed` | `realtime.mode.changed` 的 Valkey Stream |

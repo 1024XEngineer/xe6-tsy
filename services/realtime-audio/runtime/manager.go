@@ -38,7 +38,7 @@ const failureReportTimeout = 5 * time.Second
 
 var defaultCommandOptions = command.Options{
 	WindowTTL:        15 * time.Second,
-	NoSpeechTimeout:  2 * time.Second,
+	NoSpeechTimeout:  5 * time.Second,
 	MaxAudioDuration: 12 * time.Second,
 	EndSilence:       800 * time.Millisecond,
 	PrefixPadding:    500 * time.Millisecond,

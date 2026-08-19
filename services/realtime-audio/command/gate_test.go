@@ -794,6 +794,33 @@ func TestGateExpiresWithoutAnotherAudioFrame(t *testing.T) {
 	}
 }
 
+func TestGateAcceptsSpeechAfterPostWakePause(t *testing.T) {
+	classifier := speechSequence{true}
+	gate, err := NewGate(Dependencies{
+		Classifier:  &classifier,
+		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t),
+		Executor: &recordingExecutor{},
+	}, Options{
+		WindowTTL: 15 * time.Second, NoSpeechTimeout: 5 * time.Second,
+		MaxAudioDuration: 12 * time.Second, EndSilence: 800 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	gate.afterFunc = func(_ time.Duration, callback func()) commandTimer {
+		return &manualTimer{callback: callback}
+	}
+	if err := gate.Open(validOpenRequest()); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	result := gate.Consume(t.Context(), testFrame(t, testStart.Add(4*time.Second), 100*time.Millisecond))
+	if !result.Consumed || result.State != StateCapturing {
+		t.Fatalf("Consume() = %#v, want consumed capturing after post-wake pause", result)
+	}
+}
+
 func TestOldCommandTimerCannotCloseReopenedWindow(t *testing.T) {
 	classifier := speechSequence{false}
 	gate, err := NewGate(Dependencies{

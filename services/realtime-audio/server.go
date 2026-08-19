@@ -58,6 +58,7 @@ type processConfig struct {
 	CommandToken         string
 	CommandConfigTimeout time.Duration
 	LongDelivery         bool
+	PhraseSubtitles      bool
 }
 
 func loadProcessConfig(getenv func(string) string) (processConfig, error) {
@@ -102,6 +103,14 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 	default:
 		return processConfig{}, fmt.Errorf("REALTIME_LONG_SENTENCE_DELIVERY must be enabled or disabled")
 	}
+	phraseSubtitlesEnabled := false
+	switch strings.ToLower(strings.TrimSpace(getenv("REALTIME_PHRASE_SUBTITLES"))) {
+	case "", "disabled", "false", "0":
+	case "enabled", "true", "1":
+		phraseSubtitlesEnabled = true
+	default:
+		return processConfig{}, fmt.Errorf("REALTIME_PHRASE_SUBTITLES must be enabled or disabled")
+	}
 	commandConfigTimeout := defaultCommandConfigTimeout
 	if raw := strings.TrimSpace(getenv("COMMAND_CONFIG_TIMEOUT_MS")); raw != "" {
 		milliseconds, err := strconv.Atoi(raw)
@@ -124,7 +133,8 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 		SourceLanguage: source, TargetLanguage: target,
 		MetricsToken: strings.TrimSpace(getenv("REALTIME_METRICS_TOKEN")),
 		APIBaseURL:   apiBaseURL, CommandToken: commandToken, CommandConfigTimeout: commandConfigTimeout,
-		LongDelivery: longSentenceDeliveryEnabled,
+		LongDelivery:    longSentenceDeliveryEnabled,
+		PhraseSubtitles: phraseSubtitlesEnabled,
 	}, nil
 }
 
@@ -300,6 +310,10 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		playbackInterrupter = candidate
 	}
 
+	var phraseSubtitles pipeline.PhraseSubtitleObserver
+	if cfg.PhraseSubtitles {
+		phraseSubtitles = localruntime.DataChannelPhraseSubtitleObserver{Media: connections, Failures: metricRegistry}
+	}
 	manager, err := runtime.NewManager(providerConfig, mockOfflineProviders(cfg.SourceLanguage), runtime.Dependencies{
 		FrameSources: localruntime.WebRTCFrameSources{
 			Media:          connections,
@@ -315,6 +329,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		Languages:             languages,
 		FinalTurns:            finalTurns,
 		ASRPartials:           localruntime.DataChannelASRPartialObserver{Media: connections, Failures: metricRegistry},
+		PhraseSubtitles:       phraseSubtitles,
 		AssistantReplies:      localruntime.DataChannelAssistantReplySink{Media: connections, Failures: metricRegistry},
 		ModeChanges:           realtimemetrics.ObserveModeChangedSink(sinks.ModeChanges, metricRegistry),
 		Usage:                 usage,

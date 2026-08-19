@@ -147,6 +147,37 @@ func (s DataChannelASRPartialObserver) recordFailure() {
 
 var _ pipeline.ASRPartialObserver = DataChannelASRPartialObserver{}
 
+// DataChannelPhraseSubtitleObserver publishes best-effort stable phrase subtitles on the
+// authenticated translation-events channel. Its failures must not affect the ASR final path.
+type DataChannelPhraseSubtitleObserver struct {
+	Media    MediaLookup
+	Failures DataChannelFailureObserver
+}
+
+func (s DataChannelPhraseSubtitleObserver) ObservePhraseSubtitle(ctx context.Context, event realtimev1.PhraseSubtitleEvent) {
+	if err := event.Validate(); err != nil || ctx.Err() != nil || s.Media == nil {
+		return
+	}
+	media, err := s.Media.CurrentMedia(ctx, event.SessionID)
+	if err != nil || media == nil || media.TranslationEvents() == nil {
+		s.recordFailure()
+		return
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	if err := media.TranslationEvents().PublishJSON(publishCtx, event); err != nil {
+		s.recordFailure()
+	}
+}
+
+func (s DataChannelPhraseSubtitleObserver) recordFailure() {
+	if s.Failures != nil {
+		s.Failures.RecordDataChannelFailure()
+	}
+}
+
+var _ pipeline.PhraseSubtitleObserver = DataChannelPhraseSubtitleObserver{}
+
 // DataChannelFinalTurnSink publishes browser-facing translation.final events.
 type DataChannelFinalTurnSink struct {
 	Media    MediaLookup

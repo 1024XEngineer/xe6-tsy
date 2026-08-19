@@ -1,6 +1,7 @@
 package turns
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -406,6 +407,58 @@ func TestAttributionWorkerPreservesFinalAckFailure(t *testing.T) {
 	}
 	if delivery.acked {
 		t.Fatal("delivery acked despite ack error")
+	}
+}
+
+// TestAttributionWorkerLogsSettlementDecisions pins the audit trail of settlement decisions:
+// permanent failures log at error level, retries at warning level, both carrying the task facts.
+func TestAttributionWorkerLogsSettlementDecisions(t *testing.T) {
+	tests := []struct {
+		name     string
+		resolver *fixedDecisionResolver
+		wantLog  string
+		wantFail bool
+	}{
+		{"permanent failure logs error", &fixedDecisionResolver{err: ErrAttributionNoEvidence}, "attribution task failed permanently", true},
+		{"retry logs warning", &fixedDecisionResolver{err: errors.New("resolve down")}, "attribution task failed; scheduling retry", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			delivery := &attributionDeliveryStub{task: taskFixture()}
+			worker, err := NewAttributionWorker(
+				&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+				test.resolver,
+				attributionOwnerStub{accountID: "acct_01"},
+				&attributionReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}},
+				&attributionApplierStub{},
+				slog.New(slog.NewTextHandler(&buf, nil)),
+			)
+			if err != nil {
+				t.Fatalf("NewAttributionWorker() error = %v", err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+
+			if err := worker.Process(ctx, delivery); err != nil {
+				t.Fatalf("Process() error = %v, want settlement without error", err)
+			}
+			logged := buf.String()
+			if !strings.Contains(logged, test.wantLog) {
+				t.Fatalf("logger output = %q, want containing %q", logged, test.wantLog)
+			}
+			for _, want := range []string{"task_id=attr_vt_01", "turn_id=vt_01", "attempt=1", "error="} {
+				if !strings.Contains(logged, want) {
+					t.Fatalf("logger output = %q, want containing %q", logged, want)
+				}
+			}
+			if test.wantFail && !delivery.failed {
+				t.Fatal("delivery not failed, want permanent fail")
+			}
+			if !test.wantFail && !delivery.retried {
+				t.Fatal("delivery not retried, want retry")
+			}
+		})
 	}
 }
 

@@ -192,6 +192,81 @@ func TestAttributionWorkerStopsOnSettlementFailure(t *testing.T) {
 	}
 }
 
+func TestAttributionWorkerPreservesAckFailure(t *testing.T) {
+	ackErr := errors.New("ack store unavailable")
+	delivery := &attributionDeliveryStub{task: taskFixture(), ackErr: ackErr}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{},
+		&attributionApplierStub{},
+	)
+
+	err := worker.Run(ctx)
+	if !errors.Is(err, ErrAttributionSettlement) {
+		t.Fatalf("Run() error = %v, want settlement error", err)
+	}
+	if !errors.Is(err, ackErr) {
+		t.Fatalf("Run() error = %v, want underlying ack error preserved", err)
+	}
+}
+
+func TestAttributionWorkerPreservesRetryFailure(t *testing.T) {
+	retryErr := errors.New("retry store unavailable")
+	cause := errors.New("resolver outage")
+	delivery := &attributionDeliveryStub{task: taskFixture(), retryErr: retryErr}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{err: cause},
+		&attributionApplierStub{},
+	)
+
+	err := worker.Run(ctx)
+	if !errors.Is(err, ErrAttributionSettlement) {
+		t.Fatalf("Run() error = %v, want settlement error", err)
+	}
+	if !errors.Is(err, cause) || !errors.Is(err, retryErr) {
+		t.Fatalf("Run() error = %v, want cause and retry error preserved", err)
+	}
+}
+
+func TestAttributionWorkerPreservesFailFailure(t *testing.T) {
+	failErr := errors.New("fail store unavailable")
+	cause := errors.New("permanent outage")
+	delivery := &attributionDeliveryStub{task: taskFixture(), failErr: failErr}
+	delivery.task.Attempts = maxAttributionAttempts
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{err: cause},
+		&attributionApplierStub{},
+	)
+
+	err := worker.Run(ctx)
+	if !errors.Is(err, ErrAttributionSettlement) {
+		t.Fatalf("Run() error = %v, want settlement error", err)
+	}
+	if !errors.Is(err, cause) || !errors.Is(err, failErr) {
+		t.Fatalf("Run() error = %v, want cause and fail error preserved", err)
+	}
+}
+
+func TestAttributionWorkerPreservesStaleAckFailure(t *testing.T) {
+	ackErr := errors.New("ack store unavailable")
+	delivery := &attributionDeliveryStub{task: taskFixture(), ackErr: ackErr}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{decision: &AttributionDecision{ParticipantID: "p_02", AttributionStatus: recordsv1.AttributionConfirmed}},
+		&attributionApplierStub{err: ErrStaleAttribution},
+	)
+
+	err := worker.Run(ctx)
+	if !errors.Is(err, ErrAttributionSettlement) {
+		t.Fatalf("Run() error = %v, want settlement error", err)
+	}
+	if !errors.Is(err, ErrStaleAttribution) || !errors.Is(err, ackErr) {
+		t.Fatalf("Run() error = %v, want stale and ack errors preserved", err)
+	}
+}
+
 func TestNewAttributionWorkerValidatesDependencies(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tests := []struct {

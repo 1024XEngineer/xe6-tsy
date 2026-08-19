@@ -15,6 +15,7 @@ import (
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 	"github.com/1024XEngineer/xe6-tsy/services/api/participants"
 	"github.com/1024XEngineer/xe6-tsy/services/api/turns"
 )
@@ -425,6 +426,60 @@ func TestErrorMappingReturnsNotFoundAndInternalError(t *testing.T) {
 	decodeBody(t, response, &body)
 	if body.Error.Message != "internal server error" {
 		t.Fatalf("internal error message = %q, want generic message", body.Error.Message)
+	}
+}
+
+func TestWriteDomainErrorMapsContractAndHidesUnknownCause(t *testing.T) {
+	secret := errors.New("dial postgres password=secret")
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   recordsv1.ErrorCode
+		wantField  string
+		wantMsg    string
+	}{
+		{name: "not implemented", err: errNotImplemented, wantStatus: http.StatusNotImplemented, wantCode: recordsv1.ErrorNotImplemented, wantMsg: errNotImplemented.Error()},
+		{name: "participant session absent", err: participants.ErrSessionNotFound, wantStatus: http.StatusNotFound, wantCode: recordsv1.ErrorVoiceSessionAbsent, wantMsg: participants.ErrSessionNotFound.Error()},
+		{name: "turn session absent", err: turns.ErrSessionNotFound, wantStatus: http.StatusNotFound, wantCode: recordsv1.ErrorVoiceSessionAbsent, wantMsg: turns.ErrSessionNotFound.Error()},
+		{name: "participant absent", err: participants.ErrParticipantNotFound, wantStatus: http.StatusNotFound, wantCode: recordsv1.ErrorParticipantAbsent, wantMsg: participants.ErrParticipantNotFound.Error()},
+		{name: "turn participant absent", err: turns.ErrParticipantNotFound, wantStatus: http.StatusNotFound, wantCode: recordsv1.ErrorParticipantAbsent, wantMsg: turns.ErrParticipantNotFound.Error()},
+		{name: "turn absent", err: turns.ErrTurnNotFound, wantStatus: http.StatusNotFound, wantCode: recordsv1.ErrorVoiceTurnAbsent, wantMsg: turns.ErrTurnNotFound.Error()},
+		{name: "participant forbidden", err: participants.ErrForbidden, wantStatus: http.StatusForbidden, wantCode: recordsv1.ErrorForbidden, wantMsg: participants.ErrForbidden.Error()},
+		{name: "turn forbidden", err: turns.ErrForbidden, wantStatus: http.StatusForbidden, wantCode: recordsv1.ErrorForbidden, wantMsg: turns.ErrForbidden.Error()},
+		{name: "conflict", err: participants.ErrConflict, wantStatus: http.StatusConflict, wantCode: recordsv1.ErrorConflict, wantMsg: participants.ErrConflict.Error()},
+		{name: "invalid attribution", err: domain.NewFieldError("participant_id", turns.ErrInvalidAttribution), wantStatus: http.StatusBadRequest, wantCode: recordsv1.ErrorInvalidAttribution, wantField: "participant_id", wantMsg: "participant_id: invalid voice turn attribution"},
+		{name: "invalid request", err: domain.NewFieldError("limit", participants.ErrInvalidRequest), wantStatus: http.StatusBadRequest, wantCode: recordsv1.ErrorInvalidRequest, wantField: "limit", wantMsg: "limit: invalid participant request"},
+		{name: "unknown internal", err: secret, wantStatus: http.StatusInternalServerError, wantCode: recordsv1.ErrorInternal, wantMsg: "internal server error"},
+	}
+	server := newTestServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/voice-turns/vt_01", nil)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			server.writeDomainError(response, request, test.err)
+			var body recordsv1.ErrorResponse
+			decodeBody(t, response, &body)
+			if response.Code != test.wantStatus || body.Error.Code != test.wantCode {
+				t.Fatalf("response = status %d body %#v, want status %d code %q", response.Code, body, test.wantStatus, test.wantCode)
+			}
+			if body.Error.RequestID == "" {
+				t.Fatal("request ID is empty")
+			}
+			if body.Error.Message != test.wantMsg {
+				t.Fatalf("message = %q, want %q", body.Error.Message, test.wantMsg)
+			}
+			if test.wantField == "" {
+				if body.Error.Details != nil {
+					t.Fatalf("details = %#v, want nil", body.Error.Details)
+				}
+			} else if body.Error.Details == nil || body.Error.Details.Field != test.wantField {
+				t.Fatalf("details = %#v, want field %q", body.Error.Details, test.wantField)
+			}
+			if test.err == secret && strings.Contains(response.Body.String(), secret.Error()) {
+				t.Fatalf("response exposed internal cause: %s", response.Body.String())
+			}
+		})
 	}
 }
 

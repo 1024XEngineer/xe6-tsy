@@ -9,17 +9,63 @@ import (
 	"time"
 )
 
-func TestNewEndRecoveryWorkerRejectsNilService(t *testing.T) {
-	_, err := NewEndRecoveryWorker(nil, EndRecoveryConfig{
+func TestNewEndRecoveryWorkerRejectsInvalidConfig(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	valid := EndRecoveryConfig{
 		WorkerID:       "worker_1",
 		PollInterval:   time.Second,
 		LeaseDuration:  time.Minute,
 		AttemptTimeout: 30 * time.Second,
 		InitialBackoff: time.Second,
 		MaxBackoff:     time.Minute,
-	})
-	if !errors.Is(err, ErrInvalidDependency) {
-		t.Fatalf("NewEndRecoveryWorker() error = %v, want ErrInvalidDependency", err)
+	}
+	tests := []struct {
+		name    string
+		service *Service
+		edit    func(*EndRecoveryConfig)
+	}{
+		{name: "nil service"},
+		{
+			name: "empty worker ID", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.WorkerID = "" },
+		},
+		{
+			name: "zero poll interval", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.PollInterval = 0 },
+		},
+		{
+			name: "zero lease duration", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.LeaseDuration = 0 },
+		},
+		{
+			name: "zero attempt timeout", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.AttemptTimeout = 0 },
+		},
+		{
+			name: "attempt timeout equals lease", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.AttemptTimeout = config.LeaseDuration },
+		},
+		{
+			name: "zero initial backoff", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.InitialBackoff = 0 },
+		},
+		{
+			name: "maximum backoff below initial", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.MaxBackoff = config.InitialBackoff / 2 },
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := valid
+			if test.edit != nil {
+				test.edit(&config)
+			}
+			_, err := NewEndRecoveryWorker(test.service, config)
+			if !errors.Is(err, ErrInvalidDependency) {
+				t.Fatalf("NewEndRecoveryWorker() error = %v, want ErrInvalidDependency", err)
+			}
+		})
 	}
 }
 

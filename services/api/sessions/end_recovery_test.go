@@ -580,6 +580,21 @@ func TestEndRecoveryWorkerReconcileReturnsReadAndTransitionErrors(t *testing.T) 
 	}
 }
 
+func TestEndRecoveryWorkerReconcileReturnsNonConcurrentErrorWithoutRead(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	transitionErr := errors.New("transition dependency failed")
+
+	err := fixture.worker.reconcileTransition(
+		t.Context(), fixture.repository.intent, transitionErr,
+	)
+	if err != transitionErr {
+		t.Fatalf("reconcileTransition() error = %v, want original error %v", err, transitionErr)
+	}
+	if fixture.repository.startRepository.getCalls != 0 {
+		t.Fatalf("GetOwned() calls = %d, want 0", fixture.repository.startRepository.getCalls)
+	}
+}
+
 func TestEndRecoveryWorkerCompleteRejectsZeroClock(t *testing.T) {
 	fixture := newEndRecoveryFixture(t, StatusEnded)
 	fixture.worker.service.deps.Clock = &fakeClock{}

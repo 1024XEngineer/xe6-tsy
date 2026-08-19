@@ -3,6 +3,7 @@ package pipeline
 import (
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -100,9 +101,15 @@ func (s *PhraseStabilizer) consumePunctuation(text string) ([]StablePhrase, stri
 			continue
 		}
 		end := index + utf8.RuneLen(runeValue)
-		phrase := strings.TrimSpace(text[:end])
-		phrases := s.consume(phrase)
-		remaining := strings.TrimSpace(text[end:])
+		for end < len(text) {
+			next, size := utf8.DecodeRuneInString(text[end:])
+			if !unicode.IsSpace(next) {
+				break
+			}
+			end += size
+		}
+		phrases := s.consume(text[:end])
+		remaining := text[end:]
 		more, tail := s.consumePunctuation(remaining)
 		return append(phrases, more...), tail
 	}
@@ -110,8 +117,7 @@ func (s *PhraseStabilizer) consumePunctuation(text string) ([]StablePhrase, stri
 }
 
 func (s *PhraseStabilizer) consume(text string) []StablePhrase {
-	text = strings.TrimSpace(text)
-	if text == "" {
+	if strings.TrimSpace(text) == "" {
 		return nil
 	}
 	if s.consumed == "" {
@@ -119,11 +125,12 @@ func (s *PhraseStabilizer) consume(text string) []StablePhrase {
 	} else {
 		s.consumed += text
 	}
-	if utf8.RuneCountInString(strings.Trim(text, "。.!！?？，,;；:：、 ")) < s.minRunes || isTrivialASRText(text) {
+	displayText := strings.TrimSpace(text)
+	if utf8.RuneCountInString(strings.Trim(displayText, "。.!！?？，,;；:：、 ")) < s.minRunes || isTrivialASRText(displayText) {
 		return nil
 	}
 	s.nextSeq++
-	return []StablePhrase{{SequenceNo: s.nextSeq, Text: text}}
+	return []StablePhrase{{SequenceNo: s.nextSeq, Text: displayText}}
 }
 
 func (s *PhraseStabilizer) setCandidate(text string, now time.Time) {

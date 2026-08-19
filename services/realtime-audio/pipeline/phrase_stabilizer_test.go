@@ -53,6 +53,19 @@ func TestPhraseStabilizerFlushesFinalTailWithoutDuplicates(t *testing.T) {
 	}
 }
 
+func TestPhraseStabilizerPreservesWhitespaceInCommittedPrefix(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})
+	now := time.Unix(1700000000, 0)
+
+	if got := stabilizer.Observe("Hello, world", now); len(got) != 1 || got[0].Text != "Hello," {
+		t.Fatalf("punctuation phrase = %#v", got)
+	}
+	if got := stabilizer.Flush("Hello, world"); len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 2, Text: "world"}) {
+		t.Fatalf("Flush() = %#v", got)
+	}
+}
+
 func TestPhraseStabilizerIgnoresRollbackAndNoise(t *testing.T) {
 	t.Parallel()
 	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})

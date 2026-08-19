@@ -13,7 +13,7 @@ import (
 func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing.T) {
 	observer := &recordingPhraseSubtitleObserver{}
 	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
-		return translate.Result{Text: "en-" + request.Text, Provider: "mock", Model: "v1", InputTokens: 1, OutputTokens: 2, Currency: "USD"}, nil
+		return translate.Result{Text: "en-" + request.Text, Provider: "mock", Model: "v1", InputTokens: 1, OutputTokens: 2, CostAmount: "0.10", Currency: "USD"}, nil
 	}), "mock", observer, func() time.Time { return time.Unix(2, 0).UTC() })
 	turn := TurnContext{ID: "turn-1", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
 	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
@@ -24,7 +24,7 @@ func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing
 		coordinator.ObservePhraseSubtitle(context.Background(), event)
 	}
 	summary, ok := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好，世界")
-	if !ok || summary.Text != "en-你好，en-世界" || summary.InputTokens != 2 || summary.OutputTokens != 4 {
+	if !ok || summary.Text != "en-你好，en-世界" || summary.InputTokens != 2 || summary.OutputTokens != 4 || summary.CostAmount != "0.2" {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, %v", summary, ok)
 	}
 	events := observer.Events()

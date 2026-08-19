@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -177,6 +178,13 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 		if summary.Provider != phrase.result.Provider || summary.Model != phrase.result.Model || summary.Currency != phrase.result.Currency {
 			return PhraseTranslationSummary{}, false
 		}
+		if sequence > 1 {
+			var ok bool
+			summary.CostAmount, ok = addPhraseCost(summary.CostAmount, phrase.result.CostAmount)
+			if !ok {
+				return PhraseTranslationSummary{}, false
+			}
+		}
 		summary.InputTokens += phrase.result.InputTokens
 		summary.OutputTokens += phrase.result.OutputTokens
 	}
@@ -184,4 +192,28 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 		return PhraseTranslationSummary{}, false
 	}
 	return summary, true
+}
+
+func addPhraseCost(left, right string) (string, bool) {
+	if left == "" || right == "" {
+		return "", true
+	}
+	leftValue, leftOK := new(big.Rat).SetString(left)
+	rightValue, rightOK := new(big.Rat).SetString(right)
+	if !leftOK || !rightOK {
+		return "", false
+	}
+	scale := decimalScale(left)
+	if rightScale := decimalScale(right); rightScale > scale {
+		scale = rightScale
+	}
+	result := new(big.Rat).Add(leftValue, rightValue).FloatString(scale)
+	return strings.TrimRight(strings.TrimRight(result, "0"), "."), true
+}
+
+func decimalScale(value string) int {
+	if point := strings.IndexByte(value, '.'); point >= 0 {
+		return len(value) - point - 1
+	}
+	return 0
 }

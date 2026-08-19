@@ -87,6 +87,22 @@ func TestUpdateDoesNotCallRepositoryForAnotherAccount(t *testing.T) {
 	}
 }
 
+func TestUpdateReportsTheMissingBodyField(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+
+	_, err := service.Update(context.Background(), "acct_01", "vs_01", "p_01", Update{})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Update() error = %v, want ErrInvalidRequest", err)
+	}
+	if got := domain.FieldName(err); got != "body" {
+		t.Fatalf("FieldName() = %q, want body", got)
+	}
+	if repository.updateCalls != 0 {
+		t.Fatalf("Update() repository calls = %d, want 0", repository.updateCalls)
+	}
+}
+
 func TestUpdateReportsTheMissingParticipantField(t *testing.T) {
 	service := NewService(&fakeRepository{}, fakeSessionOwners{ownerID: "acct_01"}, nil)
 	_, err := service.Update(context.Background(), "acct_01", "vs_01", "", Update{DisplayNameSet: true})

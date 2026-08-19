@@ -134,6 +134,89 @@ func TestVerifyAccessTokenRejectsTamperingAndInvalidJWTMetadata(t *testing.T) {
 	}
 }
 
+func TestVerifyAccessTokenRejectsMalformedEncodedPartsAndMissingIdentity(t *testing.T) {
+	issuer, err := NewHMACIssuer(strings.Repeat("s", 32), "lingow-api", "lingow-client", func(context.Context, string) (bool, error) {
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("NewHMACIssuer() error = %v", err)
+	}
+	now := time.Now().Unix()
+	claims := validClaims(now)
+	tests := []struct {
+		name   string
+		header string
+		claim  map[string]any
+	}{
+		{name: "malformed header encoding", header: "%%%", claim: claims},
+		{name: "malformed header JSON", header: encodePart("not-an-object"), claim: claims},
+		{name: "malformed payload encoding", header: encodePart(map[string]string{"alg": "HS256", "typ": "JWT"}), claim: nil},
+		{name: "empty subject", header: encodePart(map[string]string{"alg": "HS256", "typ": "JWT"}), claim: claimsWith(claims, "sub", "")},
+		{name: "empty session", header: encodePart(map[string]string{"alg": "HS256", "typ": "JWT"}), claim: claimsWith(claims, "sid", "")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			token := tt.header + "."
+			if tt.claim == nil {
+				token += "%%%"
+			} else {
+				token += encodePart(tt.claim)
+			}
+			unsigned := token
+			token += "." + issuer.sign(unsigned)
+			if _, err := issuer.VerifyAccessToken(context.Background(), token); !errors.Is(err, domain.ErrUnauthorized) {
+				t.Fatalf("VerifyAccessToken() error = %v, want unauthorized", err)
+			}
+		})
+	}
+
+}
+
+func TestHMACIssuerRejectsInvalidIssueInputsAndActivityFailures(t *testing.T) {
+	issuer, err := NewHMACIssuer(strings.Repeat("s", 32), "lingow-api", "lingow-client", func(context.Context, string) (bool, error) {
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("NewHMACIssuer() error = %v", err)
+	}
+	for _, tt := range []struct {
+		name    string
+		account Account
+		session Session
+	}{
+		{name: "empty account", account: Account{}, session: Session{ID: "session-1"}},
+		{name: "empty session", account: Account{ID: "account-1"}, session: Session{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := issuer.Issue(context.Background(), tt.account, tt.session); !errors.Is(err, domain.ErrInvalidArgument) {
+				t.Fatalf("Issue() error = %v, want invalid argument", err)
+			}
+		})
+	}
+	tokens, err := issuer.Issue(context.Background(), Account{ID: "account-1"}, Session{ID: "session-1"})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if _, err := issuer.VerifyAccessToken(context.Background(), tokens.AccessToken); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("VerifyAccessToken() error = %v, want unauthorized for inactive session", err)
+	}
+
+	dependencyErr := errors.New("session lookup failed")
+	errorIssuer, err := NewHMACIssuer(strings.Repeat("s", 32), "lingow-api", "lingow-client", func(context.Context, string) (bool, error) {
+		return false, dependencyErr
+	})
+	if err != nil {
+		t.Fatalf("NewHMACIssuer() error = %v", err)
+	}
+	tokens, err = errorIssuer.Issue(context.Background(), Account{ID: "account-1"}, Session{ID: "session-1"})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if _, err := errorIssuer.VerifyAccessToken(context.Background(), tokens.AccessToken); !errors.Is(err, dependencyErr) {
+		t.Fatalf("VerifyAccessToken() error = %v, want dependency error", err)
+	}
+}
+
 func validClaims(now int64) map[string]any {
 	return map[string]any{
 		"iss": "lingow-api", "aud": "lingow-client", "sub": "acct-1", "sid": "session-1",

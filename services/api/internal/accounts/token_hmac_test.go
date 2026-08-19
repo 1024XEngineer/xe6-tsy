@@ -20,6 +20,32 @@ func TestHMACIssuerRequiresSessionLifecycleValidation(t *testing.T) {
 	}
 }
 
+func TestHMACIssuerConstructorsRejectEachRequiredSetting(t *testing.T) {
+	legacyActive := func(context.Context, string) (bool, error) { return true, nil }
+	accountActive := func(context.Context, string, string) (bool, error) { return true, nil }
+	for _, tt := range []struct {
+		name     string
+		secret   string
+		issuer   string
+		audience string
+	}{
+		{name: "short secret", secret: strings.Repeat("s", 31), issuer: "lingow-api", audience: "lingow-client"},
+		{name: "missing issuer", secret: strings.Repeat("s", 32), audience: "lingow-client"},
+		{name: "missing audience", secret: strings.Repeat("s", 32), issuer: "lingow-api"},
+	} {
+		t.Run("legacy "+tt.name, func(t *testing.T) {
+			if _, err := NewHMACIssuer(tt.secret, tt.issuer, tt.audience, legacyActive); !errors.Is(err, domain.ErrInvalidArgument) {
+				t.Fatalf("NewHMACIssuer() error = %v, want invalid argument", err)
+			}
+		})
+		t.Run("account-bound "+tt.name, func(t *testing.T) {
+			if _, err := NewHMACIssuerWithAccount(tt.secret, tt.issuer, tt.audience, accountActive); !errors.Is(err, domain.ErrInvalidArgument) {
+				t.Fatalf("NewHMACIssuerWithAccount() error = %v, want invalid argument", err)
+			}
+		})
+	}
+}
+
 func TestHMACIssuerWithAccountBindsSessionToSubject(t *testing.T) {
 	var gotSessionID, gotAccountID string
 	issuer, err := NewHMACIssuerWithAccount(strings.Repeat("s", 32), "lingow-api", "lingow-client", func(_ context.Context, sessionID, accountID string) (bool, error) {
@@ -214,6 +240,34 @@ func TestHMACIssuerRejectsInvalidIssueInputsAndActivityFailures(t *testing.T) {
 	}
 	if _, err := errorIssuer.VerifyAccessToken(context.Background(), tokens.AccessToken); !errors.Is(err, dependencyErr) {
 		t.Fatalf("VerifyAccessToken() error = %v, want dependency error", err)
+	}
+}
+
+func TestVerifyAccessTokenFailsClosedForIncompleteIssuer(t *testing.T) {
+	validIssuer, err := NewHMACIssuer(strings.Repeat("s", 32), "lingow-api", "lingow-client", func(context.Context, string) (bool, error) {
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("NewHMACIssuer() error = %v", err)
+	}
+	tokens, err := validIssuer.Issue(context.Background(), Account{ID: "account-1"}, Session{ID: "session-1"})
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	for _, tt := range []struct {
+		name   string
+		issuer *HMACIssuer
+	}{
+		{name: "nil issuer", issuer: nil},
+		{name: "empty secret", issuer: &HMACIssuer{issuer: "lingow-api", audience: "lingow-client"}},
+		{name: "empty issuer", issuer: &HMACIssuer{secret: []byte(strings.Repeat("s", 32)), audience: "lingow-client"}},
+		{name: "empty audience", issuer: &HMACIssuer{secret: []byte(strings.Repeat("s", 32)), issuer: "lingow-api"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := tt.issuer.VerifyAccessToken(context.Background(), tokens.AccessToken); !errors.Is(err, domain.ErrUnauthorized) {
+				t.Fatalf("VerifyAccessToken() error = %v, want unauthorized", err)
+			}
+		})
 	}
 }
 

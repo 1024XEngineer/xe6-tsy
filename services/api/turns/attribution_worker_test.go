@@ -274,11 +274,15 @@ func (s *attributionSourceStub) Receive(ctx context.Context) (AttributionTaskDel
 }
 
 type attributionDeliveryStub struct {
-	task    AttributionTask
-	acked   bool
-	retried bool
-	failed  bool
-	ackErr  error
+	task      AttributionTask
+	acked     bool
+	retried   bool
+	failed    bool
+	ackErr    error
+	retryErr  error
+	failErr   error
+	retryLast string
+	failLast  string
 }
 
 func (d *attributionDeliveryStub) Task() AttributionTask { return d.task }
@@ -289,13 +293,15 @@ func (d *attributionDeliveryStub) Ack() error {
 	d.acked = true
 	return nil
 }
-func (d *attributionDeliveryStub) Retry(string) error {
+func (d *attributionDeliveryStub) Retry(lastError string) error {
 	d.retried = true
-	return nil
+	d.retryLast = lastError
+	return d.retryErr
 }
-func (d *attributionDeliveryStub) Fail(string) error {
+func (d *attributionDeliveryStub) Fail(lastError string) error {
 	d.failed = true
-	return nil
+	d.failLast = lastError
+	return d.failErr
 }
 
 type fixedDecisionResolver struct {

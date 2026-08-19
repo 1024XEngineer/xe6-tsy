@@ -181,6 +181,8 @@ export function sessionReducer(
         ...state,
         phase: "listening",
         audioMode: "simulated",
+        asrPartial: null,
+        phraseSubtitles: [],
         notice: event.message,
       };
     case "ERROR":
@@ -188,6 +190,7 @@ export function sessionReducer(
         ...state,
         phase: state.phase === "idle" ? "idle" : "active",
         asrPartial: null,
+        phraseSubtitles: [],
         notice: event.message,
       };
     case "END":

@@ -140,4 +140,25 @@ describe("sessionReducer", () => {
     expect(duplicate.phraseSubtitles).toHaveLength(2);
     expect(settled.phraseSubtitles).toEqual([]);
   });
+
+  it("clears transient subtitles when the session falls back or errors", () => {
+    const active = {
+      ...initialSession,
+      phase: "active" as const,
+      asrPartial: { turnId: "turn-1", text: "你好", sourceLanguage: "zh-CN" },
+      phraseSubtitles: [
+        { utteranceId: "turn-1", phraseSequence: 1, sourceText: "你好，" },
+      ],
+    };
+    const fallback = sessionReducer(active, {
+      type: "FALLBACK",
+      message: "切换到模拟输入",
+    });
+    const errored = sessionReducer(active, { type: "ERROR", message: "连接中断" });
+
+    expect(fallback.asrPartial).toBeNull();
+    expect(fallback.phraseSubtitles).toEqual([]);
+    expect(errored.asrPartial).toBeNull();
+    expect(errored.phraseSubtitles).toEqual([]);
+  });
 });

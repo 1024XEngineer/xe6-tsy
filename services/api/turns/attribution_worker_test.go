@@ -329,6 +329,42 @@ func TestAttributionWorkerPreservesStaleAckFailure(t *testing.T) {
 	}
 }
 
+func TestAttributionWorkerStopsOnContextCancelWithoutSettling(t *testing.T) {
+	tests := []struct {
+		name   string
+		owners AttributionOwnerReader
+		reader AttributionReader
+	}{
+		{"owner read cancelled", ctxAwareOwnerStub{}, &attributionReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}}},
+		{"turn read cancelled", attributionOwnerStub{accountID: "acct_01"}, ctxAwareReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			delivery := &attributionDeliveryStub{task: taskFixture()}
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			worker, err := NewAttributionWorker(
+				&cancelAfterDeliverySource{delivery: delivery, cancel: cancel},
+				&fixedDecisionResolver{},
+				test.owners,
+				test.reader,
+				&attributionApplierStub{},
+				slog.New(slog.NewTextHandler(io.Discard, nil)),
+			)
+			if err != nil {
+				t.Fatalf("NewAttributionWorker() error = %v", err)
+			}
+
+			if err := worker.Run(ctx); err != nil {
+				t.Fatalf("Run() error = %v, want clean exit on cancel", err)
+			}
+			if delivery.acked || delivery.retried || delivery.failed {
+				t.Fatalf("task settled after cancel: acked=%v retried=%v failed=%v", delivery.acked, delivery.retried, delivery.failed)
+			}
+		})
+	}
+}
+
 func TestNewAttributionWorkerValidatesDependencies(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tests := []struct {
@@ -459,6 +495,45 @@ type attributionReaderStub struct {
 func (r *attributionReaderStub) GetTurn(_ context.Context, accountID string, _ string) (recordsv1.VoiceTurn, error) {
 	r.getAccountID = accountID
 	return r.turn, r.err
+}
+
+// cancelAfterDeliverySource hands out one delivery and then cancels the context, mimicking a
+// supervisor shutdown right after the task claim.
+type cancelAfterDeliverySource struct {
+	delivery  AttributionTaskDelivery
+	cancel    context.CancelFunc
+	delivered bool
+}
+
+func (s *cancelAfterDeliverySource) Receive(ctx context.Context) (AttributionTaskDelivery, error) {
+	if !s.delivered {
+		s.delivered = true
+		s.cancel()
+		return s.delivery, nil
+	}
+	return nil, context.Canceled
+}
+
+// ctxAwareOwnerStub fails the owner read once the context is cancelled.
+type ctxAwareOwnerStub struct{}
+
+func (ctxAwareOwnerStub) AccountIDForSession(ctx context.Context, _ string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return "acct_01", nil
+}
+
+// ctxAwareReaderStub fails the turn read once the context is cancelled.
+type ctxAwareReaderStub struct {
+	turn recordsv1.VoiceTurn
+}
+
+func (r ctxAwareReaderStub) GetTurn(ctx context.Context, _ string, _ string) (recordsv1.VoiceTurn, error) {
+	if err := ctx.Err(); err != nil {
+		return recordsv1.VoiceTurn{}, err
+	}
+	return r.turn, nil
 }
 
 type attributionOwnerStub struct {

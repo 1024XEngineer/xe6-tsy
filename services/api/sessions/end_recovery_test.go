@@ -485,6 +485,35 @@ func TestEndRecoveryWorkerRecoverClaimedRejectsInvalidState(t *testing.T) {
 	}
 }
 
+func TestEndRecoveryWorkerRecoverClaimedStopsAfterSessionReadFailure(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	clock := fixture.worker.service.deps.Clock.(*fakeClock)
+	fixture.repository.startRepository.getErr = errDependency
+	owner := fixture.worker.config.WorkerID
+	leaseExpiresAt := fixture.now.Add(fixture.worker.config.LeaseDuration)
+	intent := fixture.repository.intent
+	intent.RecoveryOwner = &owner
+	intent.LeaseExpiresAt = &leaseExpiresAt
+
+	err := fixture.worker.recoverClaimed(t.Context(), intent)
+	if !errors.Is(err, errDependency) {
+		t.Fatalf("recoverClaimed() error = %v, want errDependency", err)
+	}
+	if fixture.repository.startRepository.getCalls != 1 || clock.calls != 0 ||
+		fixture.repository.transitionCalls != 0 ||
+		fixture.repository.completeCalls != 0 ||
+		fixture.realtime.stopCalls != 0 {
+		t.Fatalf(
+			"side effects = get %d, clock %d, transition %d, complete %d, stop %d; want 1, 0, 0, 0, 0",
+			fixture.repository.startRepository.getCalls,
+			clock.calls,
+			fixture.repository.transitionCalls,
+			fixture.repository.completeCalls,
+			fixture.realtime.stopCalls,
+		)
+	}
+}
+
 func TestEndRecoveryWorkerReconcileReturnsReadAndTransitionErrors(t *testing.T) {
 	tests := []struct {
 		name    string

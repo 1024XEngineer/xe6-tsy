@@ -50,7 +50,10 @@ func (f AccessTokenSourceFunc) AccessToken(ctx context.Context) (string, error) 
 // SessionStartClient calls services/api after the host has established media.
 // It does not create sessions, mint realtime tickets, or own WebRTC lifecycle.
 type SessionStartClient struct {
-	BaseURL     string
+	BaseURL string
+	// SessionPath defaults to api/v1/voice-sessions. Device firmware must set
+	// it to api/v1/device/voice-sessions when using DeviceAuthClient.
+	SessionPath string
 	HTTPClient  *http.Client
 	AccessToken AccessTokenSource
 	MaxResponse int64
@@ -80,7 +83,11 @@ func (c *SessionStartClient) Start(
 	if err != nil {
 		return VoiceSessionStartResult{}, fmt.Errorf("%w: encode session start: %v", ErrInvalidRequest, err)
 	}
-	endpoint, err := url.JoinPath(strings.TrimRight(c.BaseURL, "/"), "api/v1/voice-sessions", sessionID, "start")
+	sessionPath := c.SessionPath
+	if strings.TrimSpace(sessionPath) == "" {
+		sessionPath = "api/v1/voice-sessions"
+	}
+	endpoint, err := url.JoinPath(strings.TrimRight(c.BaseURL, "/"), sessionPath, sessionID, "start")
 	if err != nil {
 		return VoiceSessionStartResult{}, fmt.Errorf("%w: start endpoint: %v", ErrInvalidConfig, err)
 	}

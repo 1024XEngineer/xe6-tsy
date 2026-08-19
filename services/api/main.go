@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/config"
+	"github.com/1024XEngineer/xe6-tsy/services/api/devices"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
@@ -154,12 +155,17 @@ func run() error {
 		)
 	}
 
+	deviceHandler, err := newDeviceHandler(pool, processConfig)
+	if err != nil {
+		return err
+	}
 	mux := buildMux(
 		langDependencies.handler,
 		sessionHandler,
 		records.handler,
 		records.accounts,
 		records.tokens,
+		deviceHandler,
 	)
 
 	server := &http.Server{
@@ -432,7 +438,12 @@ func buildMux(
 	records *recordswebapi.Server,
 	accountUseCases accounts.Service,
 	tokens accounts.AccessTokenVerifier,
+	deviceHandlers ...*devices.Handler,
 ) *http.ServeMux {
+	var deviceHandler *devices.Handler
+	if len(deviceHandlers) > 0 {
+		deviceHandler = deviceHandlers[0]
+	}
 	return buildMuxWithServices(
 		lang,
 		sessionHandler,
@@ -441,6 +452,7 @@ func buildMux(
 		delivery.NewUseCases(),
 		tokens,
 		records,
+		deviceHandler,
 	)
 }
 
@@ -452,7 +464,12 @@ func buildMuxWithServices(
 	deliveryService delivery.Service,
 	tokens accounts.AccessTokenVerifier,
 	records *recordswebapi.Server,
+	deviceHandlers ...*devices.Handler,
 ) *http.ServeMux {
+	var deviceHandler *devices.Handler
+	if len(deviceHandlers) > 0 {
+		deviceHandler = deviceHandlers[0]
+	}
 	mux := internalwebapi.New(accountService, usageService, deliveryService, tokens)
 	lang.Register(mux, func(next http.Handler) http.Handler {
 		return internalwebapi.Authenticate(tokens, next)
@@ -461,6 +478,13 @@ func buildMuxWithServices(
 		sessionHandler.Register(mux, func(next http.Handler) http.Handler {
 			return internalwebapi.Authenticate(tokens, next)
 		})
+	}
+	if deviceHandler != nil {
+		accountAuth := func(next http.Handler) http.Handler { return internalwebapi.Authenticate(tokens, next) }
+		deviceHandler.Register(mux, accountAuth, deviceHandler.Authenticate)
+		if sessionHandler != nil {
+			deviceHandler.RegisterSessions(mux, sessionHandler, deviceHandler.Authenticate)
+		}
 	}
 	if records != nil {
 		records.Register(mux, recordswebapi.RouteMiddleware{
@@ -479,6 +503,24 @@ func buildMuxWithServices(
 		System: notImplemented.SystemAuthenticate,
 	})
 	return mux
+}
+
+func newDeviceHandler(pool *pgxpool.Pool, processConfig config.Config) (*devices.Handler, error) {
+	repository := devices.NewPostgresRepository(pool)
+	issuer, err := devices.NewHMACIssuer(
+		processConfig.JWTSecret,
+		processConfig.JWTIssuer,
+		"lingow-device",
+		repository.ActiveBound,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initialize device token issuer: %w", err)
+	}
+	service, err := devices.NewService(repository, issuer)
+	if err != nil {
+		return nil, fmt.Errorf("initialize device service: %w", err)
+	}
+	return devices.NewHandler(service), nil
 }
 
 func newSessionHandler(service sessions.UseCases) *sessions.Handler {

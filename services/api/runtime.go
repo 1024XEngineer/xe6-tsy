@@ -78,6 +78,10 @@ func runConfigured(config config.Config) error {
 	}
 	defer runtime.Close()
 
+	deviceHandler, err := newDeviceHandler(runtime.pool, config)
+	if err != nil {
+		return err
+	}
 	mux := buildMuxWithServices(
 		languageHandler,
 		runtime.sessionHandler,
@@ -86,6 +90,7 @@ func runConfigured(config config.Config) error {
 		runtime.deliveryService,
 		runtime.tokenVerifier,
 		runtime.recordsHandler,
+		deviceHandler,
 	)
 	return runtime.Serve(config.APIAddr, mux)
 }

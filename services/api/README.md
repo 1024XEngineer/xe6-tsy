@@ -60,6 +60,26 @@ control-plane 客户端接入。
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
 
+## 硬件身份与绑定
+
+硬件不是免认证白名单。`product_id` 仅表示产品型号或能力版本；每台设备必须拥有唯一
+`device_id` 和出厂写入的 Ed25519 私钥。服务端只保存设备公钥，不保存出厂私钥。
+
+已登录的**注册账户**通过 `POST /api/v1/account/device-pairing-codes` 创建一次性配对码；设备对
+`lingow-device-pair-v1\n{device_id}\n{pairing_code}` 签名后调用 `POST /api/v1/devices/pair` 完成绑定。
+随后设备通过 `POST /api/v1/device-auth/challenges` 获取 2 分钟、一次性的 nonce，对
+`lingow-device-auth-v1\n{challenge_id}\n{device_id}\n{nonce}` 签名，并在
+`POST /api/v1/device-auth/tokens` 换取 15 分钟 device token。
+同一设备在存在未过期、未消费 challenge 时重复请求会获得该 challenge；服务端会清理该设备
+已消费和已过期的 challenge，并且数据库约束最多保留一个可用 challenge。
+
+device token 不能调用账户、用量、历史或普通 `/voice-sessions` 路由；只能调用
+`/api/v1/device/voice-sessions/*`。设备创建会话时，API 在同一事务中记录该设备与会话的关联，
+后续 start、end 和 realtime ticket 都再次校验关联。设备状态变为 revoked 后，签发过的
+device token 会在下一次请求的状态校验中失效。出厂设备公钥的灌装是受信任制造流程，不暴露为公网 API。
+账户可通过 `GET /api/v1/account/devices` 查看已绑定设备，使用
+`DELETE /api/v1/account/devices/{device_id}` 撤销丢失或转交的设备。
+
 ## 模式控制 API
 
 当 `LINGOW_SESSION_RUNTIME=enabled` 时，Session API 额外挂载：

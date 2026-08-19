@@ -56,6 +56,97 @@ paths:
         '200': { description: Current account, content: { application/json: { schema: { $ref: '#/components/schemas/Account' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/device-pairing-codes:
+    post:
+      operationId: createDevicePairingCode
+      security: [{ accountContext: [] }]
+      responses:
+        '201': { description: One-time pairing code, content: { application/json: { schema: { $ref: '#/components/schemas/DevicePairingCode' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /account/devices:
+    get:
+      operationId: listBoundDevices
+      security: [{ accountContext: [] }]
+      responses:
+        '200': { description: Devices bound to the current account, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceList' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /account/devices/{device_id}:
+    delete:
+      operationId: revokeBoundDevice
+      security: [{ accountContext: [] }]
+      parameters: [{ name: device_id, in: path, required: true, schema: { type: string, minLength: 1 } }]
+      responses:
+        '204': { description: Device revoked and its short-lived credentials invalidated }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /devices/pair:
+    post:
+      operationId: pairDevice
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PairDeviceRequest' } } } }
+      responses:
+        '200': { description: Device bound to the account that created the pairing code, content: { application/json: { schema: { $ref: '#/components/schemas/Device' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /device-auth/challenges:
+    post:
+      operationId: createDeviceAuthenticationChallenge
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceAuthenticationChallengeRequest' } } } }
+      responses:
+        '201': { description: Short-lived device signature challenge, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceAuthenticationChallenge' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /device-auth/tokens:
+    post:
+      operationId: exchangeDeviceAuthenticationChallenge
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceAuthenticationTokenRequest' } } } }
+      responses:
+        '200': { description: Short-lived device credential, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceAccessToken' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /device/voice-sessions:
+    post:
+      operationId: createDeviceVoiceSession
+      security: [{ deviceContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateVoiceSessionRequest' } } } }
+      responses:
+        '201': { description: Session owned by the authenticated device's bound account, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /device/voice-sessions/{id}/start:
+    post:
+      operationId: startDeviceVoiceSession
+      security: [{ deviceContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: false, content: { application/json: { schema: { $ref: '#/components/schemas/StartVoiceSessionRequest' } } } }
+      responses:
+        '200': { description: Started device session, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /device/voice-sessions/{id}/end:
+    post:
+      operationId: endDeviceVoiceSession
+      security: [{ deviceContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: false, content: { application/json: { schema: { $ref: '#/components/schemas/EndVoiceSessionRequest' } } } }
+      responses:
+        '200': { description: Ended device session, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /device/voice-sessions/{id}/realtime-ticket:
+    post:
+      operationId: mintDeviceRealtimeTicket
+      security: [{ deviceContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200': { description: Short-lived ticket for the authenticated device session, content: { application/json: { schema: { $ref: '#/components/schemas/RealtimeTicket' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /voice-sessions:
     post:
       operationId: createVoiceSession
@@ -600,6 +691,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Access token validated by authentication middleware; account_id comes from the trusted request context.
+    deviceContext:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived device token. It is restricted to sessions explicitly created by that device and cannot authorize account APIs.
     realtimeTicket:
       type: http
       scheme: bearer
@@ -625,6 +721,66 @@ components:
     RuntimeNotFound: { description: Realtime runtime not found for the requested Session, content: { application/json: { schema: { $ref: '#/components/schemas/RuntimeNotFoundError' } } } }
     NotImplemented: { description: Business implementation is intentionally pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
+    Device:
+      type: object
+      additionalProperties: false
+      required: [device_id, product_id, status, bound_at, created_at]
+      properties:
+        device_id: { type: string, minLength: 1 }
+        product_id: { type: string, minLength: 1 }
+        status: { type: string, enum: [active, revoked] }
+        bound_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+    DevicePairingCode:
+      type: object
+      additionalProperties: false
+      required: [pairing_code, expires_at]
+      properties:
+        pairing_code: { type: string, minLength: 1 }
+        expires_at: { type: string, format: date-time }
+    DeviceList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Device' } }
+    PairDeviceRequest:
+      type: object
+      additionalProperties: false
+      required: [device_id, pairing_code, signature]
+      properties:
+        device_id: { type: string, minLength: 1 }
+        pairing_code: { type: string, minLength: 1 }
+        signature: { type: string, description: Base64URL Ed25519 signature over the pairing payload. }
+    DeviceAuthenticationChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [device_id]
+      properties: { device_id: { type: string, minLength: 1 } }
+    DeviceAuthenticationChallenge:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, nonce, expires_at]
+      properties:
+        challenge_id: { type: string, minLength: 1 }
+        nonce: { type: string, minLength: 1 }
+        expires_at: { type: string, format: date-time }
+    DeviceAuthenticationTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [device_id, challenge_id, signature]
+      properties:
+        device_id: { type: string, minLength: 1 }
+        challenge_id: { type: string, minLength: 1 }
+        signature: { type: string, description: Base64URL Ed25519 signature over the challenge payload. }
+    DeviceAccessToken:
+      type: object
+      additionalProperties: false
+      required: [access_token, expires_at, device_id]
+      properties:
+        access_token: { type: string, description: Short-lived device credential. Clients must not persist it beyond expires_at. }
+        expires_at: { type: string, format: date-time }
+        device_id: { type: string }
     RealtimeRuntimeState:
       type: string
       enum: [stopped, starting, listening, asr_processing, translating, thinking, assistant_processing, tts_processing, playing, stopping, failed]

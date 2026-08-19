@@ -76,7 +76,15 @@ func (r *PostgresRepository) Create(
 		session, err := getSessionByOwner(
 			ctx, tx, params.AccountID, stored.sessionID, false,
 		)
+		if err == nil && params.DeviceID != "" {
+			err = verifyDeviceSession(ctx, tx, params.DeviceID, params.AccountID, stored.sessionID)
+		}
 		return session, true, postgresError("replay create", err)
+	}
+	if params.DeviceID != "" {
+		if err := verifyActiveDeviceBinding(ctx, tx, params.DeviceID, params.AccountID); err != nil {
+			return VoiceSession{}, false, postgresError("verify device binding", err)
+		}
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -90,6 +98,13 @@ func (r *PostgresRepository) Create(
 			return VoiceSession{}, false, ErrVoiceSessionNotFound
 		}
 		return VoiceSession{}, false, postgresError("insert session", err)
+	}
+	if params.DeviceID != "" {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO lingow_device_voice_sessions (device_id, session_id, account_id)
+			VALUES ($1, $2, $3)`, params.DeviceID, params.ID, params.AccountID); err != nil {
+			return VoiceSession{}, false, postgresError("bind device session", err)
+		}
 	}
 
 	var inserted int
@@ -107,7 +122,7 @@ func (r *PostgresRepository) Create(
 		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
 			return VoiceSession{}, false, postgresError("rollback create race", rollbackErr)
 		}
-		return r.replayCreate(ctx, params.AccountID, params.IdempotencyKey, params.RequestHash)
+		return r.replayCreate(ctx, params.AccountID, params.DeviceID, params.IdempotencyKey, params.RequestHash)
 	}
 	if err != nil {
 		return VoiceSession{}, false, postgresError("insert create request", err)
@@ -122,9 +137,31 @@ func (r *PostgresRepository) Create(
 	return session, false, nil
 }
 
+func verifyActiveDeviceBinding(ctx context.Context, db queryRower, deviceID, accountID string) error {
+	var found string
+	err := db.QueryRow(ctx, `SELECT device_id FROM lingow_devices WHERE device_id=$1 AND account_id=$2 AND status='active'`, deviceID, accountID).Scan(&found)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrUnauthorized
+	}
+	return err
+}
+
+func verifyDeviceSession(ctx context.Context, db queryRower, deviceID, accountID, sessionID string) error {
+	var found bool
+	err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM lingow_device_voice_sessions WHERE device_id=$1 AND account_id=$2 AND session_id=$3)`, deviceID, accountID, sessionID).Scan(&found)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrUnauthorized
+	}
+	return nil
+}
+
 func (r *PostgresRepository) replayCreate(
 	ctx context.Context,
 	accountID string,
+	deviceID string,
 	idempotencyKey string,
 	requestHash string,
 ) (VoiceSession, bool, error) {
@@ -143,6 +180,9 @@ func (r *PostgresRepository) replayCreate(
 	session, err := getSessionByOwner(
 		ctx, r.pool, accountID, stored.sessionID, false,
 	)
+	if err == nil && deviceID != "" {
+		err = verifyDeviceSession(ctx, r.pool, deviceID, accountID, stored.sessionID)
+	}
 	return session, true, postgresError("read winning session", err)
 }
 

@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 29 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 29", len(migrations))
+	if len(migrations) != 31 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 31", len(migrations))
 	}
 
 	longSentenceTrigger := migrations[28]
@@ -26,6 +26,14 @@ func TestEmbeddedMigrations(t *testing.T) {
 		if !strings.Contains(longSentenceTrigger.SQL, expected) {
 			t.Fatalf("long-sentence trigger migration does not contain %q", expected)
 		}
+	}
+	deviceIdentity := migrations[29]
+	if deviceIdentity.Version != 30 || deviceIdentity.Name != "devices" {
+		t.Fatalf("migration = %#v, want version 30 named devices", deviceIdentity)
+	}
+	challengeRetention := migrations[30]
+	if challengeRetention.Version != 31 || challengeRetention.Name != "device_auth_challenge_retention" {
+		t.Fatalf("migration = %#v, want version 31 named device_auth_challenge_retention", challengeRetention)
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -84,12 +92,14 @@ func TestEmbeddedMigrations(t *testing.T) {
 		byVersion[item.Version] = item
 	}
 	for version, content := range map[int64][]string{
-		3: {"max_attempts", "lingow_phone_challenges_phone_created_idx"},
-		4: {"lingow_account_lineage", "WITH RECURSIVE lineage"},
-		5: {"phone_hash_v2", "lingow_accounts_phone_hash_v2_key", "expires_at = created_at + INTERVAL '1 second'"},
-		6: {"SET phone_hash = NULL", "phone_hash_v2 IS NOT NULL"},
-		7: {"SET cost_amount = NULL", "lingow_usage_records_pricing_pair_valid"},
-		8: {"CREATE TABLE delivery_retry_requests", "delivery_retry_requests_account_key PRIMARY KEY", "delivery_retry_requests_attempt_key UNIQUE (attempt_id)"},
+		3:  {"max_attempts", "lingow_phone_challenges_phone_created_idx"},
+		4:  {"lingow_account_lineage", "WITH RECURSIVE lineage"},
+		5:  {"phone_hash_v2", "lingow_accounts_phone_hash_v2_key", "expires_at = created_at + INTERVAL '1 second'"},
+		6:  {"SET phone_hash = NULL", "phone_hash_v2 IS NOT NULL"},
+		7:  {"SET cost_amount = NULL", "lingow_usage_records_pricing_pair_valid"},
+		8:  {"CREATE TABLE delivery_retry_requests", "delivery_retry_requests_account_key PRIMARY KEY", "delivery_retry_requests_attempt_key UNIQUE (attempt_id)"},
+		30: {"CREATE TABLE lingow_devices", "public_key BYTEA NOT NULL", "lingow_device_pairing_codes", "lingow_device_auth_challenges", "lingow_device_voice_sessions"},
+		31: {"lingow_device_auth_challenges_one_active_per_device", "WHERE used_at IS NULL"},
 	} {
 		item, ok := byVersion[version]
 		if !ok {

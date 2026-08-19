@@ -92,7 +92,10 @@ func NewService(deps Dependencies) (*Service, error) {
 
 // CreateInput carries authenticated ownership and canonical request identity.
 type CreateInput struct {
-	AccountID      string
+	AccountID string
+	// DeviceID is set only after device-token authentication. It causes the
+	// repository to atomically attach the new session to that concrete device.
+	DeviceID       string
 	AudioConfig    *AudioConfig
 	Capabilities   Capabilities
 	IdempotencyKey string

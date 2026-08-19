@@ -19,7 +19,7 @@ func TestPhraseStabilizerCommitsPunctuationImmediately(t *testing.T) {
 	}
 }
 
-func TestPhraseStabilizerWaitsForUnchangedPrefix(t *testing.T) {
+func TestPhraseStabilizerCommitsStablePrefixWhilePartialGrows(t *testing.T) {
 	t.Parallel()
 	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})
 	now := time.Unix(1700000000, 0)
@@ -29,11 +29,11 @@ func TestPhraseStabilizerWaitsForUnchangedPrefix(t *testing.T) {
 		t.Fatalf("early Advance() = %#v", got)
 	}
 	stabilizer.Observe("今天很好", now.Add(200*time.Millisecond))
-	if got := stabilizer.Advance(now.Add(defaultPhraseStableAfter)); len(got) != 0 {
-		t.Fatalf("revised Advance() = %#v", got)
+	if delay, ok := stabilizer.stabilityDelay(now.Add(200 * time.Millisecond)); !ok || delay != 300*time.Millisecond {
+		t.Fatalf("stabilityDelay() = %v, %v, want 300ms, true", delay, ok)
 	}
-	if got := stabilizer.Advance(now.Add(700 * time.Millisecond)); len(got) != 1 || got[0].Text != "今天很好" {
-		t.Fatalf("stable Advance() = %#v", got)
+	if got := stabilizer.Advance(now.Add(defaultPhraseStableAfter)); len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 1, Text: "今天"}) {
+		t.Fatalf("stable prefix Advance() = %#v", got)
 	}
 }
 

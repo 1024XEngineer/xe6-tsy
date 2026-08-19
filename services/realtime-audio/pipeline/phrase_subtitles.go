@@ -65,8 +65,9 @@ func (p *PhraseSubtitleProcessor) Observe(ctx context.Context, event realtimev1.
 		p.mu.Unlock()
 		return
 	}
-	phrases := utterance.stabilizer.Observe(event.Text, p.clock())
-	p.resetTimerLocked(event.TurnID, utterance)
+	now := p.clock()
+	phrases := utterance.stabilizer.Observe(event.Text, now)
+	p.resetTimerLocked(event.TurnID, utterance, now)
 	p.mu.Unlock()
 	p.publish(ctx, utterance.turn, phrases)
 }
@@ -109,12 +110,16 @@ func (p *PhraseSubtitleProcessor) Discard(turnID string) {
 	}
 }
 
-func (p *PhraseSubtitleProcessor) resetTimerLocked(turnID string, utterance *phraseUtterance) {
+func (p *PhraseSubtitleProcessor) resetTimerLocked(turnID string, utterance *phraseUtterance, now time.Time) {
 	if utterance.timer != nil {
 		utterance.timer.Stop()
 	}
-	stableAfter := utterance.stabilizer.stableAfter
-	utterance.timer = time.AfterFunc(stableAfter, func() {
+	delay, ok := utterance.stabilizer.stabilityDelay(now)
+	if !ok {
+		utterance.timer = nil
+		return
+	}
+	utterance.timer = time.AfterFunc(delay, func() {
 		p.advance(turnID)
 	})
 }

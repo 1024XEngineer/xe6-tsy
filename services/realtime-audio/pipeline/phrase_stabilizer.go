@@ -61,7 +61,7 @@ func (s *PhraseStabilizer) Observe(text string, now time.Time) []StablePhrase {
 	return phrases
 }
 
-// Advance commits an unchanged unpunctuated candidate after the configured stability window.
+// Advance commits an unpunctuated prefix that has remained stable for the configured window.
 func (s *PhraseStabilizer) Advance(now time.Time) []StablePhrase {
 	if s == nil || s.candidate == "" || s.candidateAt.IsZero() || now.Sub(s.candidateAt) < s.stableAfter {
 		return nil
@@ -135,20 +135,52 @@ func (s *PhraseStabilizer) consume(text string) []StablePhrase {
 
 func (s *PhraseStabilizer) setCandidate(text string, now time.Time) {
 	text = strings.TrimSpace(text)
-	if text == s.candidate {
-		return
-	}
 	if text == "" {
 		s.clearCandidate()
 		return
+	}
+	if s.candidate != "" {
+		// Keep the oldest stable prefix while the recognizer appends to its
+		// replaceable tail. If it revises text, only the shared prefix remains
+		// eligible for the current stability window.
+		if prefix := commonPhrasePrefix(s.candidate, text); prefix != "" {
+			s.candidate = prefix
+			return
+		}
 	}
 	s.candidate = text
 	s.candidateAt = now
 }
 
+func commonPhrasePrefix(left, right string) string {
+	leftRunes := []rune(left)
+	rightRunes := []rune(right)
+	limit := len(leftRunes)
+	if len(rightRunes) < limit {
+		limit = len(rightRunes)
+	}
+	for index := 0; index < limit; index++ {
+		if leftRunes[index] != rightRunes[index] {
+			return string(leftRunes[:index])
+		}
+	}
+	return string(leftRunes[:limit])
+}
+
 func (s *PhraseStabilizer) clearCandidate() {
 	s.candidate = ""
 	s.candidateAt = time.Time{}
+}
+
+func (s *PhraseStabilizer) stabilityDelay(now time.Time) (time.Duration, bool) {
+	if s == nil || s.candidate == "" || s.candidateAt.IsZero() {
+		return 0, false
+	}
+	delay := s.candidateAt.Add(s.stableAfter).Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+	return delay, true
 }
 
 func phraseBoundary(value rune) bool {

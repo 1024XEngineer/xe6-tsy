@@ -365,6 +365,28 @@ func TestAttributionWorkerStopsOnContextCancelWithoutSettling(t *testing.T) {
 	}
 }
 
+// TestAttributionWorkerAcksEmptyParticipantDecision pins the worker contract that a non-nil
+// decision without a participant is a no-op: the claim is acked and nothing is applied.
+func TestAttributionWorkerAcksEmptyParticipantDecision(t *testing.T) {
+	delivery := &attributionDeliveryStub{task: taskFixture()}
+	applier := &attributionApplierStub{}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{decision: &AttributionDecision{}},
+		applier,
+	)
+
+	if err := worker.Process(ctx, delivery); err != nil {
+		t.Fatalf("Process() error = %v, want ack without applying", err)
+	}
+	if !delivery.acked || delivery.retried || delivery.failed {
+		t.Fatalf("settlement = acked:%v retried:%v failed:%v, want acked only", delivery.acked, delivery.retried, delivery.failed)
+	}
+	if len(applier.calls) != 0 {
+		t.Fatalf("applier called %d times, want 0", len(applier.calls))
+	}
+}
+
 func TestNewAttributionWorkerValidatesDependencies(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	tests := []struct {

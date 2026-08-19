@@ -323,6 +323,33 @@ func TestEndRecoveryWorkerRejectsInvalidClaim(t *testing.T) {
 	}
 }
 
+func TestEndRecoveryWorkerRejectsExpiredLeaseWithoutRecoverySideEffects(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	expiredAt := time.Now().Add(-fixture.worker.config.LeaseDuration)
+	fixture.worker.monotonicNow = func() time.Time { return expiredAt }
+
+	processed, err := fixture.worker.ProcessNext(t.Context())
+	if !processed || !errors.Is(err, ErrConcurrentTransition) {
+		t.Fatalf("ProcessNext() = %t, %v, want true, ErrConcurrentTransition", processed, err)
+	}
+	if fixture.repository.claimCalls != 1 ||
+		fixture.repository.startRepository.getCalls != 0 ||
+		fixture.repository.transitionCalls != 0 ||
+		fixture.repository.retryCalls != 0 ||
+		fixture.repository.completeCalls != 0 ||
+		fixture.realtime.stopCalls != 0 {
+		t.Fatalf(
+			"side effects = claim %d, get %d, transition %d, retry %d, complete %d, stop %d; want 1, 0, 0, 0, 0, 0",
+			fixture.repository.claimCalls,
+			fixture.repository.startRepository.getCalls,
+			fixture.repository.transitionCalls,
+			fixture.repository.retryCalls,
+			fixture.repository.completeCalls,
+			fixture.realtime.stopCalls,
+		)
+	}
+}
+
 func TestEndRecoveryWorkerDoesNotCompareLeaseAcrossClocks(t *testing.T) {
 	fixture := newEndRecoveryFixture(t, StatusActive)
 	fixture.worker.service.deps.Clock = &fakeClock{times: []time.Time{

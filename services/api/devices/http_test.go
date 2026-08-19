@@ -2,6 +2,7 @@ package devices
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -231,6 +232,32 @@ func TestHandlerRejectsMalformedAndUnauthenticatedRequests(t *testing.T) {
 	assertPanics(t, func() {
 		NewHandler(nil).RegisterSessions(http.NewServeMux(), sessions.NewHandler(nil, nil), func(next http.Handler) http.Handler { return next })
 	})
+}
+
+func TestHandlerReturnsInternalErrorWhenDeviceStateCheckFails(t *testing.T) {
+	issuer, err := NewHMACIssuer("device-token-secret-must-be-at-least-32-bytes", "issuer", "device", func(context.Context, string, string) error {
+		return errors.New("database unavailable")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := issuer.Issue(DeviceClaims{AccountID: "acct_registered", DeviceID: "dev_01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(newMemoryRepository(), issuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	response := httptest.NewRecorder()
+	NewHandler(service).Authenticate(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler should not be called when device state lookup fails")
+	})).ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("device state failure status=%d body=%s, want 500", response.Code, response.Body.String())
+	}
 }
 
 func assertPanics(t *testing.T, call func()) {

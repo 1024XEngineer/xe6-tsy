@@ -970,11 +970,15 @@ func TestHandlerDeviceRoutesBindDeviceAndEnforceOwnership(t *testing.T) {
 	minter := &ticketMinterFake{ticket: RealtimeTicket{Ticket: "ticket", SessionID: "vs_1"}}
 	handler := NewHandler(useCases, headerAccount).WithRealtimeTickets(minter)
 	allow := true
+	var ownsErr error
 	ownershipCalls := 0
 	access := DeviceSessionAccess{
 		DeviceID: func(*http.Request) (string, bool) { return "dev_01", true },
 		Owns: func(_ context.Context, deviceID, accountID, sessionID string) error {
 			ownershipCalls++
+			if ownsErr != nil {
+				return ownsErr
+			}
 			if !allow || deviceID != "dev_01" || accountID != "acct_1" || sessionID != "vs_1" {
 				return ErrUnauthorized
 			}
@@ -1009,6 +1013,11 @@ func TestHandlerDeviceRoutesBindDeviceAndEnforceOwnership(t *testing.T) {
 	allow = false
 	if response := request(http.MethodPost, "/api/v1/device/voice-sessions/vs_1/start", ""); response.Code != http.StatusUnauthorized || useCases.startCalls != 1 {
 		t.Fatalf("denied status=%d start calls=%d", response.Code, useCases.startCalls)
+	}
+	allow = true
+	ownsErr = errors.New("database unavailable")
+	if response := request(http.MethodPost, "/api/v1/device/voice-sessions/vs_1/start", ""); response.Code != http.StatusInternalServerError || useCases.startCalls != 1 {
+		t.Fatalf("device ownership failure status=%d start calls=%d", response.Code, useCases.startCalls)
 	}
 	badCreate := httptest.NewRequest(http.MethodPost, "/api/v1/device/voice-sessions", strings.NewReader(`{"unexpected":true}`))
 	badCreate.Header.Set("X-Test-Account", "acct_1")

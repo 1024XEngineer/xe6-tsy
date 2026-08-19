@@ -176,7 +176,7 @@ func (h *Handler) deviceExisting(access DeviceSessionAccess, next http.HandlerFu
 			return
 		}
 		if err := access.Owns(r.Context(), deviceID, accountID, r.PathValue("id")); err != nil {
-			writeHTTPError(w, r, ErrUnauthorized)
+			writeHTTPError(w, r, err)
 			return
 		}
 		next(w, r)

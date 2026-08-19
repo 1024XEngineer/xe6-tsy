@@ -168,7 +168,7 @@ func (h *Handler) Authenticate(next http.Handler) http.Handler {
 		}
 		claims, err := h.service.Verify(r.Context(), token)
 		if err != nil {
-			writeError(w, r, domain.ErrUnauthorized)
+			writeError(w, r, err)
 			return
 		}
 		ctx := internalwebapi.WithAccountID(r.Context(), claims.AccountID)

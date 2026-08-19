@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -211,6 +213,72 @@ func TestAPIServerTimeoutBudgetConstants(t *testing.T) {
 			apiIdleTimeout,
 		)
 	}
+}
+
+func TestRunHTTPAndBackgroundWorkersReportsServerStartupFailure(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	err = runHTTPAndBackgroundWorkers(t.Context(), &http.Server{
+		Addr:    listener.Addr().String(),
+		Handler: http.NewServeMux(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "run API HTTP server") {
+		t.Fatalf("runHTTPAndBackgroundWorkers() error = %v, want HTTP server startup failure", err)
+	}
+}
+
+func TestRunHTTPAndBackgroundWorkersPropagatesWorkerFailure(t *testing.T) {
+	workerErr := errors.New("final turn settlement failed")
+	err := runHTTPAndBackgroundWorkers(
+		t.Context(),
+		&http.Server{Addr: "127.0.0.1:0", Handler: http.NewServeMux()},
+		namedBackgroundWorker{
+			name: "final turn worker",
+			run:  func(context.Context) error { return workerErr },
+		},
+	)
+	if !errors.Is(err, workerErr) {
+		t.Fatalf("runHTTPAndBackgroundWorkers() error = %v, want worker failure", err)
+	}
+}
+
+func TestRunHTTPAndBackgroundWorkersCancelsWorkersAndGracefullyShutsDown(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	workerStarted := make(chan struct{})
+	workerStopped := make(chan struct{})
+	serverStopped := make(chan struct{})
+	server := &http.Server{Addr: "127.0.0.1:0", Handler: http.NewServeMux()}
+	server.RegisterOnShutdown(func() { close(serverStopped) })
+
+	result := make(chan error, 1)
+	go func() {
+		result <- runHTTPAndBackgroundWorkers(
+			ctx,
+			server,
+			namedBackgroundWorker{
+				name: "blocking worker",
+				run: func(ctx context.Context) error {
+					close(workerStarted)
+					<-ctx.Done()
+					close(workerStopped)
+					return ctx.Err()
+				},
+			},
+		)
+	}()
+
+	<-workerStarted
+	cancel()
+	if err := <-result; err != nil {
+		t.Fatalf("runHTTPAndBackgroundWorkers() error = %v", err)
+	}
+	<-workerStopped
+	<-serverStopped
 }
 
 func TestNewRecordsHTTPDependenciesFromPoolRequiresPool(t *testing.T) {

@@ -331,6 +331,81 @@ func TestPATCHRejectsOversizedBody(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONRejectsMalformedAndTrailingInput(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "empty body", body: ""},
+		{name: "syntax error", body: `{"display_name":`},
+		{name: "two values", body: `{"display_name":"A"}{}`},
+		{name: "trailing non whitespace", body: `{"display_name":"A"}x`},
+		{name: "unknown field", body: `{"unknown":true}`},
+		{name: "wrong field type", body: `{"display_name":123}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodeParticipantUpdate(strings.NewReader(test.body)); err == nil {
+				t.Fatal("decodeParticipantUpdate() error = nil, want error")
+			}
+		})
+	}
+}
+
+func TestDecodeParticipantUpdatePreservesMissingAndNullFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantSet   bool
+		wantValue *string
+	}{
+		{name: "missing", body: `{}`, wantSet: false},
+		{name: "explicit null", body: `{"voice_profile_id":null}`, wantSet: true},
+		{name: "value", body: `{"voice_profile_id":"vp_01"}`, wantSet: true, wantValue: stringPtr("vp_01")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			update, err := decodeParticipantUpdate(strings.NewReader(test.body))
+			if err != nil {
+				t.Fatalf("decodeParticipantUpdate() error = %v", err)
+			}
+			if update.VoiceProfileIDSet != test.wantSet || !equalString(update.VoiceProfileID, test.wantValue) {
+				t.Fatalf("update = %#v, want set=%v value=%v", update, test.wantSet, test.wantValue)
+			}
+		})
+	}
+}
+
+func TestPATCHInputErrorsDoNotCallRepositories(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		body   string
+	}{
+		{name: "participant empty", target: "/api/v1/voice-sessions/vs_01/participants/p_01", body: ""},
+		{name: "participant malformed", target: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"display_name":`},
+		{name: "participant unknown", target: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"unknown":true}`},
+		{name: "participant wrong type", target: "/api/v1/voice-sessions/vs_01/participants/p_01", body: `{"display_name":123}`},
+		{name: "attribution empty", target: "/api/v1/voice-turns/vt_01/attribution", body: ""},
+		{name: "attribution malformed", target: "/api/v1/voice-turns/vt_01/attribution", body: `{"participant_id":`},
+		{name: "attribution two values", target: "/api/v1/voice-turns/vt_01/attribution", body: `{"participant_id":"p_01","attribution_status":"confirmed"}{}`},
+		{name: "attribution unknown", target: "/api/v1/voice-turns/vt_01/attribution", body: `{"unknown":true}`},
+		{name: "attribution wrong type", target: "/api/v1/voice-turns/vt_01/attribution", body: `{"participant_id":123,"attribution_status":"confirmed"}`},
+		{name: "attribution confidence wrong type", target: "/api/v1/voice-turns/vt_01/attribution", body: `{"participant_id":"p_01","attribution_status":"confirmed","speaker_confidence":"high"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			participantRepository := &participantRepository{updated: recordsv1.Participant{ID: "p_01"}}
+			turnRepository := &turnRepository{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, participantInSession: true}
+			handler := newHandler(t, participantRepository, turnRepository, "acct_01")
+			response := serve(handler, accountRequest(http.MethodPatch, test.target, strings.NewReader(test.body), "acct_01", true))
+			assertError(t, response, http.StatusBadRequest, recordsv1.ErrorInvalidRequest)
+			if participantRepository.updateCalls != 0 || turnRepository.attributionCalls != 0 {
+				t.Fatalf("invalid body called repository: participant=%d attribution=%d", participantRepository.updateCalls, turnRepository.attributionCalls)
+			}
+		})
+	}
+}
+
 func TestInvalidRequestsReturnFieldDetails(t *testing.T) {
 	handler := newHandler(t, &participantRepository{}, &turnRepository{
 		turn:                 recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"},
@@ -811,6 +886,17 @@ func ptr64(value float64) *float64 {
 	return &value
 }
 
+func stringPtr(value string) *string {
+	return &value
+}
+
+func equalString(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
 func equalConfidence(a, b *float64) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -824,6 +910,7 @@ type participantRepository struct {
 	listCalls    int
 	updated      recordsv1.Participant
 	update       participants.Update
+	updateCalls  int
 	updateErr    error
 }
 
@@ -834,6 +921,7 @@ func (r *participantRepository) List(_ context.Context, _, _ string, query recor
 }
 
 func (r *participantRepository) Update(_ context.Context, _ string, _ string, update participants.Update) (recordsv1.Participant, error) {
+	r.updateCalls++
 	r.update = update
 	if r.updateErr != nil {
 		return recordsv1.Participant{}, r.updateErr
@@ -857,6 +945,7 @@ type turnRepository struct {
 	historyCalls         int
 	participantInSession bool
 	attributionUpdate    turns.AttributionUpdate
+	attributionCalls     int
 }
 
 func (*turnRepository) StoreFinalTurn(context.Context, recordsv1.FinalTurnEvent) error {
@@ -884,6 +973,7 @@ func (r *turnRepository) ListHistory(_ context.Context, accountID string, query 
 }
 
 func (r *turnRepository) CorrectAttribution(_ context.Context, update turns.AttributionUpdate) (recordsv1.VoiceTurn, error) {
+	r.attributionCalls++
 	if !r.participantInSession {
 		return recordsv1.VoiceTurn{}, turns.ErrInvalidAttribution
 	}

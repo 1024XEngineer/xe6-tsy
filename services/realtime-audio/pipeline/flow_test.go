@@ -412,7 +412,7 @@ func TestDispatchASRPartialsDropsQueuedSnapshotsAfterFinalSettlement(t *testing.
 	observer := &recordingASRPartialObserver{events: make(chan realtimev1.ASRPartialEvent, 1)}
 	done := make(chan struct{})
 	go func() {
-		dispatchASRPartials(context.Background(), observer, TurnContext{SessionID: "session-1", ID: "turn-1"}, "zh-CN", events, settled)
+		dispatchASRPartials(context.Background(), observer, nil, TurnContext{SessionID: "session-1", ID: "turn-1"}, "zh-CN", events, settled)
 		close(done)
 	}()
 	select {

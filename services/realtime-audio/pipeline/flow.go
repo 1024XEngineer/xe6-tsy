@@ -58,6 +58,7 @@ type TurnProcessor struct {
 	pipeline    *PipelineService
 	finals      ASRFinalHandler
 	partials    ASRPartialObserver
+	phrases     *PhraseSubtitleProcessor
 }
 
 // TurnProcessorDependencies 注入可离线测试的 ASR、Turn 配置读取、媒体生命周期和 final Handler。
@@ -69,6 +70,7 @@ type TurnProcessorDependencies struct {
 	Pipeline    *PipelineService
 	Finals      ASRFinalHandler
 	Partials    ASRPartialObserver
+	Phrases     *PhraseSubtitleProcessor
 }
 
 // StreamingTurnProcessor starts an ASR stream when VAD opens and receives
@@ -103,6 +105,7 @@ func NewTurnProcessor(deps TurnProcessorDependencies) *TurnProcessor {
 		pipeline:    deps.Pipeline,
 		finals:      deps.Finals,
 		partials:    deps.Partials,
+		phrases:     deps.Phrases,
 	}
 }
 
@@ -145,6 +148,9 @@ func (p *TurnProcessor) StartAudio(ctx context.Context, request TurnProcessReque
 	if err := p.pipeline.claimASRRuntime(ctx, turn); err != nil {
 		return nil, fmt.Errorf("report ASR runtime: %w", err)
 	}
+	if turn.Mode.Mode == realtimev1.ModeInterpretation {
+		p.phrases.Start(turn)
+	}
 	stream, err := p.recognizer.StartStream(ctx, asr.StreamRequest{
 		SessionID: turn.SessionID, TurnID: turn.ID, SourceLanguage: request.SourceLanguage,
 	})
@@ -165,9 +171,9 @@ func (p *TurnProcessor) StartAudio(ctx context.Context, request TurnProcessReque
 	partialSettled := make(chan struct{})
 	var settlePartials sync.Once
 	settlePartialObserver := func() { settlePartials.Do(func() { close(partialSettled) }) }
-	if p.partials != nil {
+	if p.partials != nil || p.phrases != nil {
 		partialEvents = make(chan asr.Event, 8)
-		go dispatchASRPartials(streamCtx, p.partials, turn, request.SourceLanguage, partialEvents, partialSettled)
+		go dispatchASRPartials(streamCtx, p.partials, p.phrases, turn, request.SourceLanguage, partialEvents, partialSettled)
 	}
 	go collectFinalASREvent(streamCtx, p.pipeline.latency, turn, asrStartedAt, stream.Events(), finalEvents, eventErrors, partialEvents, settlePartialObserver)
 	return &AudioTurn{processor: p, turn: turn, request: request, stream: stream, eventCancel: stopEvents,
@@ -215,6 +221,9 @@ func (t *AudioTurn) Finish(ctx context.Context) (TurnContext, error) {
 		result.SourceLanguage = request.SourceLanguage
 	}
 	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
+	if turn.Mode.Mode == realtimev1.ModeInterpretation {
+		p.phrases.Flush(ctx, turn, result.Text)
+	}
 	p.pipeline.latency.ProviderCheckpoint("asr_final", turn, t.asrStartedAt, observedProvider(p.asrProvider, result.Provider), result.Model,
 		"source_language", result.SourceLanguage,
 		"text_bytes", len(result.Text),
@@ -253,6 +262,9 @@ func (t *AudioTurn) Close() {
 		}
 		if t.stream != nil {
 			_ = t.stream.Close()
+		}
+		if t.processor != nil && t.processor.phrases != nil {
+			t.processor.phrases.Discard(t.turn.ID)
 		}
 	})
 }
@@ -342,7 +354,7 @@ func enqueueLatestPartial(queue chan asr.Event, event asr.Event) {
 	}
 }
 
-func dispatchASRPartials(ctx context.Context, observer ASRPartialObserver, turn TurnContext, sourceLanguage string, events <-chan asr.Event, settled <-chan struct{}) {
+func dispatchASRPartials(ctx context.Context, observer ASRPartialObserver, phrases *PhraseSubtitleProcessor, turn TurnContext, sourceLanguage string, events <-chan asr.Event, settled <-chan struct{}) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -358,7 +370,7 @@ func dispatchASRPartials(ctx context.Context, observer ASRPartialObserver, turn 
 				return
 			default:
 			}
-			observer.ObserveASRPartial(ctx, realtimev1.ASRPartialEvent{
+			partial := realtimev1.ASRPartialEvent{
 				Type:           realtimev1.ASRPartialTopic,
 				EventVersion:   realtimev1.ASRPartialEventVersion,
 				SessionID:      turn.SessionID,
@@ -366,7 +378,13 @@ func dispatchASRPartials(ctx context.Context, observer ASRPartialObserver, turn 
 				Text:           strings.TrimSpace(event.Text),
 				SourceLanguage: asr.NormalizeLanguage(sourceLanguage),
 				OccurredAt:     time.Now().UTC(),
-			})
+			}
+			if observer != nil {
+				observer.ObserveASRPartial(ctx, partial)
+			}
+			if turn.Mode.Mode == realtimev1.ModeInterpretation {
+				phrases.Observe(ctx, partial)
+			}
 		}
 	}
 }

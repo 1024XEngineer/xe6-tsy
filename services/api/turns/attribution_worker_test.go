@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -188,6 +189,48 @@ func TestAttributionWorkerStopsOnSettlementFailure(t *testing.T) {
 	err := worker.Run(ctx)
 	if !errors.Is(err, ErrAttributionSettlement) {
 		t.Fatalf("Run() error = %v, want settlement error", err)
+	}
+}
+
+func TestNewAttributionWorkerValidatesDependencies(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tests := []struct {
+		name     string
+		source   AttributionTaskSource
+		resolver AttributionResolver
+		owners   AttributionOwnerReader
+		reader   AttributionReader
+		applier  AttributionApplier
+		logger   *slog.Logger
+		wantErr  bool
+	}{
+		{name: "nil source", source: nil, resolver: &fixedDecisionResolver{}, owners: attributionOwnerStub{accountID: "acct_01"}, reader: &attributionReaderStub{}, applier: &attributionApplierStub{}, logger: logger, wantErr: true},
+		{name: "nil resolver", source: &attributionSourceStub{}, resolver: nil, owners: attributionOwnerStub{accountID: "acct_01"}, reader: &attributionReaderStub{}, applier: &attributionApplierStub{}, logger: logger, wantErr: true},
+		{name: "nil owners", source: &attributionSourceStub{}, resolver: &fixedDecisionResolver{}, owners: nil, reader: &attributionReaderStub{}, applier: &attributionApplierStub{}, logger: logger, wantErr: true},
+		{name: "nil reader", source: &attributionSourceStub{}, resolver: &fixedDecisionResolver{}, owners: attributionOwnerStub{accountID: "acct_01"}, reader: nil, applier: &attributionApplierStub{}, logger: logger, wantErr: true},
+		{name: "nil applier", source: &attributionSourceStub{}, resolver: &fixedDecisionResolver{}, owners: attributionOwnerStub{accountID: "acct_01"}, reader: &attributionReaderStub{}, applier: nil, logger: logger, wantErr: true},
+		{name: "nil logger", source: &attributionSourceStub{}, resolver: &fixedDecisionResolver{}, owners: attributionOwnerStub{accountID: "acct_01"}, reader: &attributionReaderStub{}, applier: &attributionApplierStub{}, logger: nil, wantErr: true},
+		{name: "all dependencies", source: &attributionSourceStub{}, resolver: &fixedDecisionResolver{}, owners: attributionOwnerStub{accountID: "acct_01"}, reader: &attributionReaderStub{}, applier: &attributionApplierStub{}, logger: logger},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			worker, err := NewAttributionWorker(test.source, test.resolver, test.owners, test.reader, test.applier, test.logger)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("NewAttributionWorker() error = nil, want dependency error")
+				}
+				if !strings.Contains(err.Error(), "dependencies are required") {
+					t.Fatalf("NewAttributionWorker() error = %v, want dependency error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewAttributionWorker() error = %v", err)
+			}
+			if worker == nil || worker.source == nil || worker.resolver == nil || worker.owners == nil || worker.reader == nil || worker.applier == nil || worker.logger == nil {
+				t.Fatalf("NewAttributionWorker() = %#v, want all dependencies wired", worker)
+			}
+		})
 	}
 }
 

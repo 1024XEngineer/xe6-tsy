@@ -16,14 +16,13 @@ import (
 
 var testStart = time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
 
-func TestGateExecutesAllowlistedCommandsAndQuarantinesAudio(t *testing.T) {
+func TestGateExecutesSemanticCandidateAndQuarantinesAudio(t *testing.T) {
 	tests := []struct {
 		name string
 		text string
 		want realtimev1.Mode
 	}{
-		{name: "start interpretation", text: " 开始 同声传译。", want: realtimev1.ModeInterpretation},
-		{name: "stop translation", text: "停止翻译", want: realtimev1.ModeAssistant},
+		{name: "activate interpretation", text: "开启同声传译", want: realtimev1.ModeInterpretation},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -64,7 +63,7 @@ func TestGatePublishesTypedResultWithoutReexecutingOnDeliveryFailure(t *testing.
 		Classifier: &classifier, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
 			Final: asr.FinalResult{Text: "开始同声传译"},
 		}),
-		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t), Executor: executor,
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t), Executor: executor,
 		Results: results, Now: func() time.Time { return testStart.Add(time.Second) },
 	}, Options{
 		WindowTTL: 1500 * time.Millisecond, NoSpeechTimeout: 500 * time.Millisecond,
@@ -142,7 +141,7 @@ func TestGatePublishesClarificationAndKeepsRuntimeUsable(t *testing.T) {
 		Classifier: &classifier, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{
 			Final: asr.FinalResult{Text: "开始同声传译"},
 		}),
-		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t), Executor: executor,
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t), Executor: executor,
 		Results: results, Feedback: feedback, Now: func() time.Time { return testStart.Add(time.Second) },
 	}, Options{
 		WindowTTL: 1500 * time.Millisecond, NoSpeechTimeout: 500 * time.Millisecond,
@@ -299,7 +298,6 @@ func TestGateOperationalFailuresRestoreDormant(t *testing.T) {
 	}{
 		{name: "asr start", asrConfig: asr.FakeProviderConfig{StartErr: dependencyErr}, want: FailureASR},
 		{name: "asr finish", asrConfig: asr.FakeProviderConfig{FinishErr: dependencyErr}, want: FailureASR},
-		{name: "parser", asrConfig: asr.FakeProviderConfig{Final: asr.FinalResult{Text: "今天天气不错"}}, want: FailureNotAllowed},
 		{name: "executor", asrConfig: asr.FakeProviderConfig{Final: asr.FinalResult{Text: "停止翻译"}}, executorErr: dependencyErr, want: FailureExecution},
 		{name: "canceled", asrConfig: asr.FakeProviderConfig{Final: asr.FinalResult{Text: "停止翻译"}}, cancel: true, want: FailureCanceled},
 	}
@@ -413,7 +411,7 @@ func TestGateReplayAndLiveAudioShareUtteranceBoundary(t *testing.T) {
 	g, err := NewGate(Dependencies{
 		Classifier:  &classifier,
 		ASR:         provider,
-		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t), Executor: executor,
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t), Executor: executor,
 	}, Options{
 		WindowTTL: 3 * time.Second, NoSpeechTimeout: time.Second,
 		MaxAudioDuration: 900 * time.Millisecond, EndSilence: 100 * time.Millisecond,
@@ -772,7 +770,7 @@ func TestGateExpiresWithoutAnotherAudioFrame(t *testing.T) {
 	gate, err := NewGate(Dependencies{
 		Classifier:  &classifier,
 		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t),
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t),
 		Executor: &recordingExecutor{},
 	}, Options{
 		WindowTTL: 100 * time.Millisecond, NoSpeechTimeout: 20 * time.Millisecond,
@@ -801,7 +799,7 @@ func TestOldCommandTimerCannotCloseReopenedWindow(t *testing.T) {
 	gate, err := NewGate(Dependencies{
 		Classifier:  &classifier,
 		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t),
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t),
 		Executor: &recordingExecutor{},
 	}, Options{
 		WindowTTL: 200 * time.Millisecond, NoSpeechTimeout: 80 * time.Millisecond,
@@ -836,7 +834,7 @@ func TestLateNoSpeechTimerCannotCloseActiveCapture(t *testing.T) {
 	gate, err := NewGate(Dependencies{
 		Classifier:  &classifier,
 		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t),
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t),
 		Executor: &recordingExecutor{},
 	}, Options{
 		WindowTTL: 200 * time.Millisecond, NoSpeechTimeout: 80 * time.Millisecond,
@@ -870,7 +868,7 @@ func TestGatePropagatesCallerCancellationToCommandASR(t *testing.T) {
 	provider := &blockingASRProvider{started: make(chan struct{}), canceled: make(chan struct{})}
 	classifier := speechSequence{true}
 	gate, err := NewGate(Dependencies{
-		Classifier: &classifier, ASR: provider, Interpreter: LegacyInterpreter{},
+		Classifier: &classifier, ASR: provider, Interpreter: testSemanticInterpreter(),
 		Validator: testGateRegistry(t), Executor: &recordingExecutor{},
 	}, Options{
 		WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond,
@@ -901,7 +899,7 @@ func TestGateDeadlineCancelsBlockedCommandASR(t *testing.T) {
 	provider := &blockingASRProvider{started: make(chan struct{}), canceled: make(chan struct{})}
 	classifier := speechSequence{true}
 	gate, err := NewGate(Dependencies{
-		Classifier: &classifier, ASR: provider, Interpreter: LegacyInterpreter{},
+		Classifier: &classifier, ASR: provider, Interpreter: testSemanticInterpreter(),
 		Validator: testGateRegistry(t), Executor: &recordingExecutor{},
 	}, Options{
 		WindowTTL: 50 * time.Millisecond, NoSpeechTimeout: 25 * time.Millisecond,
@@ -987,14 +985,6 @@ func (t *manualTimer) Stop() bool {
 func (t *manualTimer) Fire() {
 	if t.callback != nil {
 		t.callback()
-	}
-}
-
-func TestParseRejectsNearMatches(t *testing.T) {
-	for _, text := range []string{"", "开始翻译", "停止同声传译", "请停止翻译", "开始同声传译模式"} {
-		if _, err := Parse(text); !errors.Is(err, ErrCommandNotAllowed) {
-			t.Fatalf("Parse(%q) error = %v, want ErrCommandNotAllowed", text, err)
-		}
 	}
 }
 
@@ -1090,7 +1080,7 @@ func newTestGate(t *testing.T, classifier speechSequence, config asr.FakeProvide
 	t.Helper()
 	gate, err := NewGate(Dependencies{
 		Classifier: &classifier, ASR: asr.NewFakeProvider(config),
-		Interpreter: LegacyInterpreter{}, Validator: testGateRegistry(t), Executor: executor,
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t), Executor: executor,
 	}, Options{
 		WindowTTL: 1500 * time.Millisecond, NoSpeechTimeout: 500 * time.Millisecond,
 		MaxAudioDuration: 500 * time.Millisecond, EndSilence: 250 * time.Millisecond,
@@ -1099,6 +1089,14 @@ func newTestGate(t *testing.T, classifier speechSequence, config asr.FakeProvide
 		t.Fatalf("NewGate() error = %v", err)
 	}
 	return gate
+}
+
+func testSemanticInterpreter() Interpreter {
+	return InterpreterFunc(func(_ context.Context, request InterpretRequest) (Candidate, error) {
+		return Candidate{
+			Text: request.Text, Action: ActionActivateMode, TargetMode: realtimev1.ModeInterpretation,
+		}, nil
+	})
 }
 
 func testGateRegistry(t *testing.T) *Registry {

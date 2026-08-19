@@ -159,8 +159,8 @@ func (e commandExecutor) prepareInterpretation(ctx context.Context, request comm
 	if !explicit {
 		return nil, nil
 	}
-	// LanguageConfigurator is optional at Manager construction so legacy command paths remain
-	// usable; an explicit language direction cannot proceed without the API-owned writer.
+	// An explicit language direction cannot proceed without the API-owned writer. Keeping the
+	// check at this boundary also protects tests and programmatic Manager construction.
 	if e.configurator == nil {
 		return nil, ErrCommandConfiguratorRequired
 	}

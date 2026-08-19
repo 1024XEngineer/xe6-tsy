@@ -176,14 +176,13 @@ Required env:
 | --- | --- | --- |
 | `REALTIME_ADDR` | `:8090` | Listen address |
 | `REALTIME_TICKET_SECRET` | _(required)_ | Raw secret (≥32 bytes), must match API `REALTIME_TICKET_SECRET` |
-| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun` (same wiring; offline fakes injected for mock) |
-| `COMMAND_INTERPRETER` | `legacy` | `legacy` 仅供离线兼容；`qwen` 启用通用 AI 语义命令入口 |
-| `COMMAND_LLM_API_KEY` | 与地址同时回退到 `LLM_API_KEY` | Command Interpreter 凭证；单独覆盖会拒绝启动，不得写入日志 |
-| `COMMAND_LLM_BASE_URL` | 与凭证同时回退到 `LLM_BASE_URL` | OpenAI-compatible 地址；必须与 Command 凭证成对覆盖 |
+| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun`; mock ASR returns fixed offline text and cannot validate spoken semantic commands |
+| `COMMAND_LLM_API_KEY` | 与地址同时回退到 `LLM_API_KEY` | 必需的 Qwen Command Interpreter 凭证；没有固定指令回退，不得写入日志 |
+| `COMMAND_LLM_BASE_URL` | 与凭证同时回退到 `LLM_BASE_URL` | 必需的 OpenAI-compatible 地址；必须与 Command 凭证成对配置 |
 | `COMMAND_LLM_MODEL` | 回退到 `LLM_MODEL` | 语义命令模型 |
 | `COMMAND_LLM_TIMEOUT_MS` | provider 默认值 | 单次语义解释超时（毫秒），建议真实 Qwen 环境至少 10000 |
-| `LINGOW_API_BASE_URL` | _(off)_ | API 内部地址；启用 `qwen` 命令入口时必须与命令令牌同时配置 |
-| `LINGOW_COMMAND_SYSTEM_TOKEN` | _(off)_ | realtime 调用 API 语言配置端点的共享令牌，至少 32 bytes |
+| `LINGOW_API_BASE_URL` | _(required)_ | API 内部地址；语义命令入口必须与命令令牌同时配置 |
+| `LINGOW_COMMAND_SYSTEM_TOKEN` | _(required)_ | realtime 调用 API 语言配置端点的共享令牌，至少 32 bytes |
 | `COMMAND_CONFIG_TIMEOUT_MS` | `3000` | 命令更新 API 语言配置的超时（毫秒） |
 | `REALTIME_TTS_DOWNLINK` | `none` | `none` = subtitles only (forces mock TTS); `pcm` = whole-clip TTS PCM over DataChannel; `opus` = 120ms-buffered, 20ms-paced WebRTC Opus at 32kbps |
 | `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Fallback pair when API DB link is off |

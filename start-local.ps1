@@ -228,7 +228,22 @@ function Assert-RealtimeEnv {
   if ([string]::IsNullOrWhiteSpace($secret) -or $secret.Length -lt 32) {
     throw "REALTIME_TICKET_SECRET must be set in .env (>= 32 bytes)"
   }
+  $commandKey = $env:COMMAND_LLM_API_KEY
+  $commandBaseUrl = $env:COMMAND_LLM_BASE_URL
+  if ([string]::IsNullOrWhiteSpace($commandKey) -and [string]::IsNullOrWhiteSpace($commandBaseUrl)) {
+    $commandKey = $env:LLM_API_KEY
+    $commandBaseUrl = $env:LLM_BASE_URL
+  }
+  if ([string]::IsNullOrWhiteSpace($commandKey) -or [string]::IsNullOrWhiteSpace($commandBaseUrl)) {
+    throw "Semantic commands require COMMAND_LLM_API_KEY + COMMAND_LLM_BASE_URL (or LLM_API_KEY + LLM_BASE_URL)"
+  }
+  $commandToken = [Environment]::GetEnvironmentVariable("LINGOW_COMMAND_SYSTEM_TOKEN", "Process")
+  if ([string]::IsNullOrWhiteSpace($env:LINGOW_API_BASE_URL) -or
+      [string]::IsNullOrWhiteSpace($commandToken) -or $commandToken.Length -lt 32) {
+    throw "Semantic commands require LINGOW_API_BASE_URL and LINGOW_COMMAND_SYSTEM_TOKEN (>= 32 bytes)"
+  }
   Write-Host "    REALTIME_ADDR=$($env:REALTIME_ADDR)"
+  Write-Host "    Command interpreter=Qwen semantic intent"
 }
 
 function Start-RealtimeProcess {

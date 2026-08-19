@@ -523,9 +523,6 @@ func (g *Gate) runRecognition(
 	g.recordInterpretation(time.Since(interpretationStarted), err != nil)
 	if err != nil {
 		g.logRecognitionFailure(request, "interpretation", err, len([]rune(commandText)))
-		if errors.Is(err, ErrCommandNotAllowed) {
-			return failureOutcome(request, FailureNotAllowed, realtimev1.CommandResultUnsupported, "当前不支持这个指令", Command{}, g.now())
-		}
 		return failureOutcome(request, classifyAttemptFailure(caller, processingCtx, FailureInterpretation), realtimev1.CommandResultFailed, "暂时无法理解这个指令，请重试", Command{}, g.now())
 	}
 	parsed, err := g.deps.Validator.Validate(candidate)

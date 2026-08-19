@@ -258,19 +258,16 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		return nil, fmt.Errorf("load provider config: %w", err)
 	}
 	providerConfig = applySubtitleOnlyOverrides(cfg, providerConfig)
-	var languageConfigurator command.LanguageConfigurator
-	if providerConfig.Command.Interpreter == config.CommandInterpreterQwen {
-		// activate_mode may include an explicit source/target language pair. Persist that API-owned
-		// configuration before the realtime mode CAS so a successful switch never uses stale languages.
-		if cfg.APIBaseURL == "" {
-			return nil, fmt.Errorf("semantic command interpreter requires LINGOW_API_BASE_URL and LINGOW_COMMAND_SYSTEM_TOKEN")
-		}
-		languageConfigurator, err = languageconfig.NewClient(languageconfig.Config{
-			BaseURL: cfg.APIBaseURL, SystemToken: cfg.CommandToken, Timeout: cfg.CommandConfigTimeout,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("configure command language client: %w", err)
-		}
+	// Semantic commands are the only command path. Explicit language pairs must be persisted by
+	// the API before the realtime mode CAS so a successful switch never uses stale languages.
+	if cfg.APIBaseURL == "" {
+		return nil, fmt.Errorf("semantic command interpreter requires LINGOW_API_BASE_URL and LINGOW_COMMAND_SYSTEM_TOKEN")
+	}
+	languageConfigurator, err := languageconfig.NewClient(languageconfig.Config{
+		BaseURL: cfg.APIBaseURL, SystemToken: cfg.CommandToken, Timeout: cfg.CommandConfigTimeout,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("configure command language client: %w", err)
 	}
 	// Local Silero (or energy) VAD owns utterance cuts; disable Qwen server_vad unless set.
 	if strings.TrimSpace(os.Getenv("ASR_SERVER_VAD")) == "" {
@@ -382,18 +379,10 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 
 func commandInterpreterFactory(cfg config.CommandConfig) runtime.CommandInterpreterFactory {
 	return func(capabilities []command.CapabilityDescriptor) (command.Interpreter, error) {
-		switch cfg.Interpreter {
-		case config.CommandInterpreterLegacy:
-			return command.LegacyInterpreter{}, nil
-		case config.CommandInterpreterQwen:
-			return commandqwen.NewInterpreter(commandqwen.Config{
-				APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model,
-				Timeout: cfg.Timeout, Capabilities: capabilities,
-			})
-		default:
-			// Fail closed for programmatic configuration even though the environment loader validates it.
-			return nil, fmt.Errorf("unsupported command interpreter %q", cfg.Interpreter)
-		}
+		return commandqwen.NewInterpreter(commandqwen.Config{
+			APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: cfg.Model,
+			Timeout: cfg.Timeout, Capabilities: capabilities,
+		})
 	}
 }
 

@@ -46,7 +46,6 @@ JWT_SECRET=local-dev-only-secret-change-me-1234
 ASR_PROVIDER=mock
 LLM_PROVIDER=mock
 TTS_PROVIDER=mock
-COMMAND_INTERPRETER=legacy
 COMMAND_LLM_API_KEY=
 COMMAND_LLM_BASE_URL=
 COMMAND_LLM_MODEL=qwen3.6-flash
@@ -56,7 +55,11 @@ LINGOW_COMMAND_SYSTEM_TOKEN=replace-with-the-same-32-byte-secret-in-both-service
 COMMAND_CONFIG_TIMEOUT_MS=3000
 ```
 
-本地默认使用 mock ASR/翻译/TTS，避免开发阶段被第三方额度和网络状态阻塞。
+本地默认使用 mock ASR/翻译/TTS，避免普通音频链路在开发阶段被第三方额度和网络状态阻塞。
+语音命令没有固定短语或离线回退，必须通过 `COMMAND_LLM_*` 配置 Qwen 意图识别；未单独配置时
+复用 `LLM_API_KEY` 和 `LLM_BASE_URL`。缺少意图识别凭证、API 内部地址或共享令牌时，
+`realtime-audio` 会拒绝启动。`ASR_PROVIDER=mock` 只返回固定离线文本，不能验证麦克风中的自然语言
+命令；联调“开启同声传译”等真实口令时必须配置 `ASR_PROVIDER=aliyun`。
 
 ## 4. Go 开发规范
 

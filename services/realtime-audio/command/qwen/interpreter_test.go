@@ -27,7 +27,9 @@ func TestInterpreterProducesUntrustedCandidateFromStrictJSON(t *testing.T) {
 		if body.ResponseFormat.Type != "json_object" || body.EnableThinking || len(body.Messages) != 2 || body.Messages[1].Content != "帮我进入中文翻译成英文的同传状态" {
 			t.Errorf("body = %#v", body)
 		}
-		if !strings.Contains(body.Messages[0].Content, `"mode":"interpretation"`) || strings.Contains(body.Messages[0].Content, "english_practice") {
+		if !strings.Contains(body.Messages[0].Content, `"mode":"interpretation"`) ||
+			!strings.Contains(body.Messages[0].Content, "Classify by meaning rather than exact wording") ||
+			strings.Contains(body.Messages[0].Content, "english_practice") {
 			t.Errorf("system prompt capability surface = %q", body.Messages[0].Content)
 		}
 		if !strings.Contains(body.Messages[0].Content, "Chinese zh-CN") || !strings.Contains(body.Messages[0].Content, "Japanese ja-JP") {

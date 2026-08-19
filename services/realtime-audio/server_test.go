@@ -201,23 +201,17 @@ func setMockProviderEnv(t *testing.T) {
 	// Unit tests stay offline: Silero needs ONNX Runtime shared libs.
 	t.Setenv("LOCAL_VAD_PROVIDER", "energy")
 	t.Setenv("REALTIME_METRICS_TOKEN", "")
-	t.Setenv("COMMAND_INTERPRETER", "")
-	t.Setenv("COMMAND_LLM_API_KEY", "")
-	t.Setenv("COMMAND_LLM_BASE_URL", "")
+	t.Setenv("COMMAND_LLM_API_KEY", "test-command-key")
+	t.Setenv("COMMAND_LLM_BASE_URL", "https://example.invalid/v1")
 	t.Setenv("COMMAND_LLM_MODEL", "")
 	t.Setenv("COMMAND_LLM_TIMEOUT_MS", "")
-	t.Setenv("LINGOW_API_BASE_URL", "")
-	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", "")
+	t.Setenv("LINGOW_API_BASE_URL", "http://api:8080")
+	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", strings.Repeat("c", minCommandTokenBytes))
 	t.Setenv("COMMAND_CONFIG_TIMEOUT_MS", "")
 }
 
-func TestNewControlPlaneHandlerWiresQwenSemanticCommands(t *testing.T) {
+func TestNewControlPlaneHandlerWiresSemanticCommands(t *testing.T) {
 	setMockProviderEnv(t)
-	t.Setenv("COMMAND_INTERPRETER", "qwen")
-	t.Setenv("COMMAND_LLM_API_KEY", "test-command-key")
-	t.Setenv("COMMAND_LLM_BASE_URL", "https://example.invalid/v1")
-	t.Setenv("LINGOW_API_BASE_URL", "http://api:8080")
-	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", strings.Repeat("c", minCommandTokenBytes))
 
 	handler, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
 	if err != nil {
@@ -228,11 +222,10 @@ func TestNewControlPlaneHandlerWiresQwenSemanticCommands(t *testing.T) {
 	}
 }
 
-func TestNewControlPlaneHandlerRejectsQwenWithoutCommandAPI(t *testing.T) {
+func TestNewControlPlaneHandlerRejectsSemanticCommandsWithoutCommandAPI(t *testing.T) {
 	setMockProviderEnv(t)
-	t.Setenv("COMMAND_INTERPRETER", "qwen")
-	t.Setenv("COMMAND_LLM_API_KEY", "test-command-key")
-	t.Setenv("COMMAND_LLM_BASE_URL", "https://example.invalid/v1")
+	t.Setenv("LINGOW_API_BASE_URL", "")
+	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", "")
 
 	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
 	if err == nil || !strings.Contains(err.Error(), "LINGOW_API_BASE_URL") {
@@ -240,18 +233,14 @@ func TestNewControlPlaneHandlerRejectsQwenWithoutCommandAPI(t *testing.T) {
 	}
 }
 
-func TestNewControlPlaneHandlerLegacyDoesNotConstructUnusedCommandAPIClient(t *testing.T) {
+func TestNewControlPlaneHandlerRejectsMissingSemanticCommandCredentials(t *testing.T) {
 	setMockProviderEnv(t)
-	t.Setenv("COMMAND_INTERPRETER", "legacy")
-	t.Setenv("LINGOW_API_BASE_URL", "://invalid-command-api")
-	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", strings.Repeat("c", minCommandTokenBytes))
+	t.Setenv("COMMAND_LLM_API_KEY", "")
+	t.Setenv("COMMAND_LLM_BASE_URL", "")
 
-	handler, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
-	if err != nil {
-		t.Fatalf("newControlPlaneHandler() error = %v", err)
-	}
-	if handler == nil {
-		t.Fatal("newControlPlaneHandler() = nil")
+	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err == nil || !strings.Contains(err.Error(), "command API key is required") {
+		t.Fatalf("newControlPlaneHandler() error = %v, want missing semantic command credentials", err)
 	}
 }
 

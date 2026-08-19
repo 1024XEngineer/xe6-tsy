@@ -17,7 +17,7 @@ func TestLoadProviderConfigDefaultsToOfflineProviders(t *testing.T) {
 	if !config.ASR.ServerVAD {
 		t.Fatal("ASR.ServerVAD default = false, want true")
 	}
-	if config.Command.Interpreter != CommandInterpreterLegacy || config.Command.Model != defaultTranslationModel {
+	if config.Command.Model != defaultTranslationModel {
 		t.Fatalf("command config = %+v", config.Command)
 	}
 }
@@ -28,7 +28,7 @@ func TestLoadProviderConfigReadsQwenSettings(t *testing.T) {
 		"ASR_VAD_THRESHOLD": "0.3", "ASR_SILENCE_DURATION_MS": "700",
 		"LLM_PROVIDER": "aliyun", "LLM_API_KEY": "llm-key", "LLM_MODEL": "qwen3.6-flash", "LLM_ENABLE_THINKING": "true", "LLM_TIMEOUT_MS": "12000",
 		"TTS_PROVIDER": "aliyun", "TTS_API_KEY": "tts-key", "TTS_SAMPLE_RATE": "24000", "TTS_TIMEOUT_MS": "25000",
-		"COMMAND_INTERPRETER": "qwen", "COMMAND_LLM_TIMEOUT_MS": "4000",
+		"COMMAND_LLM_TIMEOUT_MS": "4000",
 	}
 	config, err := LoadProviderConfig(mapLookup(values))
 	if err != nil {
@@ -46,7 +46,7 @@ func TestLoadProviderConfigReadsQwenSettings(t *testing.T) {
 	if config.TTS.SampleRate != 24000 || config.TTS.Timeout != 25*time.Second {
 		t.Fatalf("TTS config = %+v", config.TTS)
 	}
-	if config.Command.Interpreter != CommandInterpreterQwen || config.Command.APIKey != "llm-key" ||
+	if config.Command.APIKey != "llm-key" ||
 		config.Command.Model != defaultTranslationModel || config.Command.Timeout != 4*time.Second {
 		t.Fatalf("command config = %+v", config.Command)
 	}
@@ -85,7 +85,6 @@ func TestLoadProviderConfigRejectsInvalidValues(t *testing.T) {
 		{name: "silence range", values: map[string]string{"ASR_SILENCE_DURATION_MS": "100"}, want: ErrInvalidEnvironmentValue},
 		{name: "sample rate", values: map[string]string{"ASR_SAMPLE_RATE": "44100"}, want: ErrInvalidEnvironmentValue},
 		{name: "boolean", values: map[string]string{"LLM_ENABLE_THINKING": "sometimes"}, want: ErrInvalidEnvironmentValue},
-		{name: "command interpreter", values: map[string]string{"COMMAND_INTERPRETER": "other"}, want: ErrUnsupportedProvider},
 		{name: "command timeout", values: map[string]string{"COMMAND_LLM_TIMEOUT_MS": "-1"}, want: ErrInvalidEnvironmentValue},
 		{name: "command key without endpoint", values: map[string]string{"COMMAND_LLM_API_KEY": "command-key"}, want: ErrInvalidEnvironmentValue},
 		{name: "command endpoint without key", values: map[string]string{"COMMAND_LLM_BASE_URL": "https://command.example/v1"}, want: ErrInvalidEnvironmentValue},

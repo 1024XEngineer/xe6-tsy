@@ -284,15 +284,14 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	}
 	manager.commandValidator = registry
 	if deps.NewCommandInterpreter == nil {
-		manager.commandInterpreter = command.LegacyInterpreter{}
-	} else {
-		manager.commandInterpreter, err = deps.NewCommandInterpreter(registry.Descriptors())
-		if err != nil {
-			return nil, fmt.Errorf("create command interpreter: %w", err)
-		}
-		if manager.commandInterpreter == nil {
-			return nil, fmt.Errorf("%w: command interpreter", ErrDependencyRequired)
-		}
+		return nil, fmt.Errorf("%w: command interpreter factory", ErrDependencyRequired)
+	}
+	manager.commandInterpreter, err = deps.NewCommandInterpreter(registry.Descriptors())
+	if err != nil {
+		return nil, fmt.Errorf("create command interpreter: %w", err)
+	}
+	if manager.commandInterpreter == nil {
+		return nil, fmt.Errorf("%w: command interpreter", ErrDependencyRequired)
 	}
 	manager.playback = service
 	manager.speech = speech

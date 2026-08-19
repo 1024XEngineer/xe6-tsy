@@ -538,7 +538,7 @@ func TestRuntimeCommandGateInterruptsPlaybackBeforeArming(t *testing.T) {
 	interrupter := &recordingPlaybackInterrupter{}
 	gate, err := command.NewGate(command.Dependencies{
 		Classifier: speechClassifier{}, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Interpreter: command.LegacyInterpreter{}, Validator: commandRegistryForTest(t), Executor: commandExecutor{},
+		Interpreter: testCommandInterpreter(), Validator: commandRegistryForTest(t), Executor: commandExecutor{},
 	}, command.Options{
 		WindowTTL: 2 * time.Second, NoSpeechTimeout: time.Second,
 		MaxAudioDuration: time.Second, EndSilence: 100 * time.Millisecond,
@@ -563,7 +563,7 @@ func TestRuntimeCommandGateForwardsReplay(t *testing.T) {
 	t.Parallel()
 	gate, err := command.NewGate(command.Dependencies{
 		Classifier: speechClassifier{}, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
-		Interpreter: command.LegacyInterpreter{}, Validator: commandRegistryForTest(t), Executor: commandExecutor{},
+		Interpreter: testCommandInterpreter(), Validator: commandRegistryForTest(t), Executor: commandExecutor{},
 	}, command.Options{
 		WindowTTL: 2 * time.Second, NoSpeechTimeout: time.Second,
 		MaxAudioDuration: time.Second, EndSilence: 100 * time.Millisecond,

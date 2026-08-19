@@ -308,6 +308,33 @@ func TestConfiguredRuntimeServeRejectsIncompleteRuntime(t *testing.T) {
 			handler: http.NewServeMux(),
 		},
 		{name: "missing handler", runtime: newRuntimeServeFixture(t), handler: nil},
+		{
+			name: "missing session handler",
+			runtime: func() *configuredRuntime {
+				runtime := newRuntimeServeFixture(t)
+				runtime.sessionHandler = nil
+				return runtime
+			}(),
+			handler: http.NewServeMux(),
+		},
+		{
+			name: "missing records handler",
+			runtime: func() *configuredRuntime {
+				runtime := newRuntimeServeFixture(t)
+				runtime.recordsHandler = nil
+				return runtime
+			}(),
+			handler: http.NewServeMux(),
+		},
+		{
+			name: "missing final turn worker",
+			runtime: func() *configuredRuntime {
+				runtime := newRuntimeServeFixture(t)
+				runtime.finalTurnWorker = nil
+				return runtime
+			}(),
+			handler: http.NewServeMux(),
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -420,6 +447,21 @@ func TestRunFailFastBackgroundWorkerReportsWorkerError(t *testing.T) {
 	err := <-errs
 	if err == nil || !errors.Is(err, turns.ErrFinalTurnSettlement) {
 		t.Fatalf("runFailFastBackgroundWorker() error = %v, want settlement failure", err)
+	}
+}
+
+func TestRunFailFastBackgroundWorkerReportsUnexpectedStop(t *testing.T) {
+	errs := make(chan error, 1)
+	var components sync.WaitGroup
+	components.Add(1)
+	go runFailFastBackgroundWorker(t.Context(), "final turn worker", func(context.Context) error {
+		return nil
+	}, errs, &components)
+	components.Wait()
+
+	err := <-errs
+	if err == nil || !strings.Contains(err.Error(), "stopped unexpectedly") {
+		t.Fatalf("runFailFastBackgroundWorker() error = %v, want unexpected stop", err)
 	}
 }
 
@@ -545,5 +587,26 @@ func TestShutdownConfiguredServerWaitsForComponents(t *testing.T) {
 
 	if err := shutdownConfiguredServer(server, &components); err != nil {
 		t.Fatalf("shutdownConfiguredServer() error = %v", err)
+	}
+}
+
+func TestShutdownConfiguredServerReportsComponentShutdownTimeout(t *testing.T) {
+	originalTimeout := configuredRuntimeShutdownTimeout
+	configuredRuntimeShutdownTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { configuredRuntimeShutdownTimeout = originalTimeout })
+
+	var components sync.WaitGroup
+	release := make(chan struct{})
+	components.Add(1)
+	go func() {
+		defer components.Done()
+		<-release
+	}()
+
+	err := shutdownConfiguredServer(&http.Server{}, &components)
+	close(release)
+	components.Wait()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdownConfiguredServer() error = %v, want context deadline exceeded", err)
 	}
 }

@@ -54,6 +54,20 @@ func TestLanguageOutputRestorerDoesNotOverrideNewerConfig(t *testing.T) {
 	}
 }
 
+func TestLanguageOutputRestorerDoesNotOverrideBidirectionalTTS(t *testing.T) {
+	service := &languageOutputServiceFake{configs: []languages.LanguageConfig{languageOutputConfig(3, []languages.OutputRoute{
+		{TargetLanguage: "en-US", TTSEnabled: true},
+		{TargetLanguage: "zh-CN", TTSEnabled: true},
+	})}}
+
+	if err := (languageOutputRestorer{service: service}).RestoreBidirectionalOutput(t.Context(), "account-1", "session-1", 3, "restore-fallback-1"); err != nil {
+		t.Fatalf("RestoreBidirectionalOutput() error = %v", err)
+	}
+	if service.createCalls != 0 {
+		t.Fatalf("CreateConfig() calls = %d, want 0", service.createCalls)
+	}
+}
+
 func TestLanguageOutputRestorerAcceptsNewerConfigAfterVersionConflict(t *testing.T) {
 	service := &languageOutputServiceFake{
 		configs: []languages.LanguageConfig{
@@ -119,10 +133,11 @@ func TestLanguageOutputRestorerPreservesReadAndCreateFailures(t *testing.T) {
 		expectedVersion int
 		wantErr         error
 		wantCreates     int
+		wantReads       int
 	}{
-		{name: "read failure", service: &languageOutputServiceFake{getErrs: []error{readErr}}, expectedVersion: 4, wantErr: readErr},
-		{name: "version mismatch", service: &languageOutputServiceFake{configs: []languages.LanguageConfig{config}}, expectedVersion: 4, wantErr: languages.ErrVersionConflict},
-		{name: "create failure", service: &languageOutputServiceFake{configs: []languages.LanguageConfig{config}, createErr: createErr}, expectedVersion: 3, wantErr: createErr, wantCreates: 1},
+		{name: "read failure", service: &languageOutputServiceFake{getErrs: []error{readErr}}, expectedVersion: 4, wantErr: readErr, wantReads: 1},
+		{name: "version mismatch", service: &languageOutputServiceFake{configs: []languages.LanguageConfig{config}}, expectedVersion: 4, wantErr: languages.ErrVersionConflict, wantReads: 1},
+		{name: "create failure", service: &languageOutputServiceFake{configs: []languages.LanguageConfig{config}, createErr: createErr}, expectedVersion: 3, wantErr: createErr, wantCreates: 1, wantReads: 1},
 	}
 
 	for _, test := range tests {
@@ -133,6 +148,9 @@ func TestLanguageOutputRestorerPreservesReadAndCreateFailures(t *testing.T) {
 			}
 			if test.service.createCalls != test.wantCreates {
 				t.Fatalf("CreateConfig() calls = %d, want %d", test.service.createCalls, test.wantCreates)
+			}
+			if test.service.getCalls != test.wantReads {
+				t.Fatalf("GetActiveConfig() calls = %d, want %d", test.service.getCalls, test.wantReads)
 			}
 		})
 	}
@@ -152,6 +170,56 @@ func TestLanguageOutputRestorerReportsVersionConflictWhenRereadFails(t *testing.
 	}
 	if service.getCalls != 2 || service.createCalls != 1 {
 		t.Fatalf("calls = get %d, create %d, want get 2, create 1", service.getCalls, service.createCalls)
+	}
+}
+
+func TestLanguageOutputRestorerKeepsVersionConflictWhenRereadHasExpectedVersion(t *testing.T) {
+	service := &languageOutputServiceFake{
+		configs: []languages.LanguageConfig{
+			languageOutputConfig(3, []languages.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: true}}),
+			languageOutputConfig(3, []languages.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: true}}),
+		},
+		createErr: languages.ErrVersionConflict,
+	}
+
+	err := (languageOutputRestorer{service: service}).RestoreBidirectionalOutput(t.Context(), "account-1", "session-1", 3, "operation-1")
+	if !errors.Is(err, languages.ErrVersionConflict) {
+		t.Fatalf("RestoreBidirectionalOutput() error = %v, want version conflict", err)
+	}
+}
+
+func TestLanguageOutputRestorerAcceptsVersionOne(t *testing.T) {
+	service := &languageOutputServiceFake{configs: []languages.LanguageConfig{languageOutputConfig(1, []languages.OutputRoute{
+		{TargetLanguage: "en-US", DeliveryEnabled: true},
+	})}}
+
+	if err := (languageOutputRestorer{service: service}).RestoreBidirectionalOutput(t.Context(), "account-1", "session-1", 1, "operation-1"); err != nil {
+		t.Fatalf("RestoreBidirectionalOutput() error = %v", err)
+	}
+	if service.createCalls != 1 {
+		t.Fatalf("CreateConfig() calls = %d, want 1", service.createCalls)
+	}
+}
+
+func TestBidirectionalTTSRequiresExactlyTwoTTSOnlyRoutes(t *testing.T) {
+	tests := []struct {
+		name   string
+		routes []languages.OutputRoute
+		want   bool
+	}{
+		{name: "two TTS routes", routes: []languages.OutputRoute{{TTSEnabled: true}, {TTSEnabled: true}}, want: true},
+		{name: "one route", routes: []languages.OutputRoute{{TTSEnabled: true}}, want: false},
+		{name: "three routes", routes: []languages.OutputRoute{{TTSEnabled: true}, {TTSEnabled: true}, {TTSEnabled: true}}, want: false},
+		{name: "TTS disabled", routes: []languages.OutputRoute{{TTSEnabled: false}, {TTSEnabled: true}}, want: false},
+		{name: "delivery enabled", routes: []languages.OutputRoute{{TTSEnabled: true, DeliveryEnabled: true}, {TTSEnabled: true}}, want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := bidirectionalTTS(test.routes); got != test.want {
+				t.Fatalf("bidirectionalTTS(%#v) = %t, want %t", test.routes, got, test.want)
+			}
+		})
 	}
 }
 

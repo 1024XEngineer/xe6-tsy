@@ -68,6 +68,68 @@ func TestAttributionWorkerRetriesResolutionError(t *testing.T) {
 	}
 }
 
+func TestAttributionWorkerRetriesOwnerResolutionError(t *testing.T) {
+	ownerErr := errors.New("session owner lookup failed")
+	delivery := &attributionDeliveryStub{task: taskFixture()}
+	worker, err := NewAttributionWorker(
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{},
+		attributionOwnerStub{accountID: "acct_01", err: ownerErr},
+		&attributionReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}},
+		&attributionApplierStub{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatalf("NewAttributionWorker() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	if err := worker.Process(ctx, delivery); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if !delivery.retried {
+		t.Fatal("task was not retried after owner resolution error")
+	}
+	if delivery.acked || delivery.failed {
+		t.Fatal("owner resolution error must neither ack nor fail the task")
+	}
+	if !strings.Contains(delivery.retryLast, ownerErr.Error()) {
+		t.Fatalf("retry reason = %q, want owner error preserved", delivery.retryLast)
+	}
+}
+
+func TestAttributionWorkerRetriesTurnReadError(t *testing.T) {
+	readErr := errors.New("turn store unavailable")
+	delivery := &attributionDeliveryStub{task: taskFixture()}
+	worker, err := NewAttributionWorker(
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{},
+		attributionOwnerStub{accountID: "acct_01"},
+		&attributionReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, err: readErr},
+		&attributionApplierStub{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatalf("NewAttributionWorker() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	if err := worker.Process(ctx, delivery); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if !delivery.retried {
+		t.Fatal("task was not retried after turn read error")
+	}
+	if delivery.acked || delivery.failed {
+		t.Fatal("turn read error must neither ack nor fail the task")
+	}
+	if !strings.Contains(delivery.retryLast, readErr.Error()) {
+		t.Fatalf("retry reason = %q, want read error preserved", delivery.retryLast)
+	}
+}
+
 func TestAttributionWorkerFailsPermanentlyOnNoEvidence(t *testing.T) {
 	delivery := &attributionDeliveryStub{task: taskFixture()}
 	worker, ctx := newAttributionWorkerStub(t,

@@ -34,6 +34,10 @@ func TestVoiceSessionLifecycleOpenAPI(t *testing.T) {
 	}
 
 	schemas := spec["components"].(map[string]any)["schemas"].(map[string]any)
+	deviceToken := schemas["DeviceAccessToken"].(map[string]any)["properties"].(map[string]any)["access_token"].(map[string]any)
+	if _, writeOnly := deviceToken["writeOnly"]; writeOnly {
+		t.Fatal("DeviceAccessToken.access_token is returned by the token exchange and must not be writeOnly")
+	}
 	status := schemas["VoiceSessionStatus"].(map[string]any)
 	wantStatuses := []any{"created", "active", "ended", "failed"}
 	if got := status["enum"]; !sameStringSlice(got.([]any), wantStatuses) {

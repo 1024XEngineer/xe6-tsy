@@ -778,7 +778,7 @@ components:
       additionalProperties: false
       required: [access_token, expires_at, device_id]
       properties:
-        access_token: { type: string, writeOnly: true }
+        access_token: { type: string, description: Short-lived device credential. Clients must not persist it beyond expires_at. }
         expires_at: { type: string, format: date-time }
         device_id: { type: string }
     RealtimeRuntimeState:

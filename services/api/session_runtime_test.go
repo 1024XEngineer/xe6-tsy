@@ -14,6 +14,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/sessions"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
+	"github.com/oklog/ulid/v2"
 )
 
 func TestNewSessionHTTPDependenciesValidatesInputs(t *testing.T) {
@@ -134,6 +135,46 @@ func TestSessionOwnerReaderMapsMissingSession(t *testing.T) {
 	}
 }
 
+func TestSessionOwnerReaderMapsBoundaryErrors(t *testing.T) {
+	dependencyErr := errors.New("session repository unavailable")
+	tests := []struct {
+		name   string
+		reader sessions.SessionReader
+		want   error
+	}{
+		{name: "missing reader", want: languages.ErrNotImplemented},
+		{name: "invalid request", reader: sessionReaderStub{err: sessions.ErrInvalidRequest}, want: languages.ErrInvalidRequest},
+		{name: "dependency failure", reader: sessionReaderStub{err: dependencyErr}, want: dependencyErr},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := (sessionOwnerReader{reader: test.reader}).GetOwnerAccountID(t.Context(), "vs_1")
+			if !errors.Is(err, test.want) {
+				t.Fatalf("GetOwnerAccountID() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestRealtimeHTTPTimeoutUsesDefaultAndConfiguredValue(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Config
+		want time.Duration
+	}{
+		{name: "default", want: 5 * time.Second},
+		{name: "configured", cfg: config.Config{RealtimeHTTPTimeout: 1500 * time.Millisecond}, want: 1500 * time.Millisecond},
+		{name: "negative falls back", cfg: config.Config{RealtimeHTTPTimeout: -time.Second}, want: 5 * time.Second},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := realtimeHTTPTimeout(test.cfg); got != test.want {
+				t.Fatalf("realtimeHTTPTimeout() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAutomaticOutputSessionReaderRequiresOwnedSession(t *testing.T) {
 	dependencyFailure := errors.New("session repository unavailable")
 	tests := []struct {
@@ -176,6 +217,22 @@ func TestSessionIDGeneratorProducesStablePrefixes(t *testing.T) {
 	}
 }
 
+func TestSessionIDGeneratorFallsBackWhenEntropyFails(t *testing.T) {
+	generator := newSessionIDGenerator()
+	generator.now = func() time.Time { return time.Unix(1700000000, 0).UTC() }
+	generator.entropy = ulid.Monotonic(failingEntropyReader{}, 0)
+
+	first := generator.NewVoiceSessionID()
+	second := generator.NewVoiceSessionID()
+
+	if !strings.HasPrefix(first, "vs_") || !strings.HasPrefix(second, "vs_") {
+		t.Fatalf("fallback IDs = (%q, %q), want vs_ prefix", first, second)
+	}
+	if first == second || generator.fallback != 2 {
+		t.Fatalf("fallback IDs = (%q, %q), fallback count = %d, want distinct IDs and count 2", first, second, generator.fallback)
+	}
+}
+
 func TestNewSessionEndRecoveryConfigUsesUniqueWorkerID(t *testing.T) {
 	config := newSessionEndRecoveryConfig(fixedClock{now: time.Unix(1700000000, 0).UTC()})
 	if !strings.HasPrefix(config.WorkerID, "api_end_recovery_") {
@@ -189,6 +246,17 @@ func TestNewSessionEndRecoveryConfigUsesUniqueWorkerID(t *testing.T) {
 		config.MaxBackoff < config.InitialBackoff {
 		t.Fatalf("invalid recovery config: %#v", config)
 	}
+	if config.PollInterval != time.Second || config.LeaseDuration != 10*time.Second ||
+		config.AttemptTimeout != 5*time.Second || config.InitialBackoff != time.Second || config.MaxBackoff != time.Minute {
+		t.Fatalf("recovery config = %#v, want documented default timing", config)
+	}
+}
+
+func TestNewSessionEndRecoveryConfigAcceptsNilClock(t *testing.T) {
+	config := newSessionEndRecoveryConfig(nil)
+	if !strings.HasPrefix(config.WorkerID, "api_end_recovery_") {
+		t.Fatalf("WorkerID = %q, want api_end_recovery_ prefix", config.WorkerID)
+	}
 }
 
 type fixedClock struct {
@@ -197,6 +265,12 @@ type fixedClock struct {
 
 func (c fixedClock) Now() time.Time {
 	return c.now
+}
+
+type failingEntropyReader struct{}
+
+func (failingEntropyReader) Read([]byte) (int, error) {
+	return 0, errors.New("entropy unavailable")
 }
 
 func validSessionCompositionInputs(t *testing.T) sessionCompositionInputs {

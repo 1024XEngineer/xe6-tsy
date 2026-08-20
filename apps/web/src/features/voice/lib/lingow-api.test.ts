@@ -13,8 +13,11 @@ import {
   listOutboundMessages,
   listSupportedLanguages,
   listVoiceSessions,
+  loginWithPhone,
+  logoutAccount,
   putMessagePreference,
   requestEmailBindVerification,
+  requestPhoneVerificationCode,
   resolveVoiceInitialMode,
   revokeMessageTarget,
   startVoiceSession,
@@ -104,6 +107,63 @@ describe("startVoiceSession", () => {
       RequestInit,
     ];
     expect(init.body).toBeUndefined();
+  });
+});
+
+describe("phone authentication", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("requests a verification challenge with the canonical phone", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ challenge_id: "challenge-1" }, 201),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(requestPhoneVerificationCode("+8613800000000")).resolves.toEqual({
+      challenge_id: "challenge-1",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/auth/verification-codes",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ phone: "+8613800000000" }),
+      }),
+    );
+  });
+
+  it("logs in with a challenge and can revoke the refresh token", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith("/logout")
+        ? new Response(null, { status: 204 })
+        : jsonResponse({
+            account: {
+              id: "acc-1",
+              kind: "registered",
+              created_at: "2026-08-20T00:00:00Z",
+            },
+            tokens: {
+              access_token: "access-1",
+              refresh_token: "refresh-1",
+              expires_at: "2099-08-20T01:00:00Z",
+            },
+          }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(loginWithPhone("challenge-1", "8888")).resolves.toMatchObject({
+      account: { kind: "registered" },
+    });
+    await expect(logoutAccount("refresh-1")).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, loginInit] = fetchMock.mock.calls[0] as unknown as [RequestInfo, RequestInit];
+    expect(JSON.parse(String(loginInit.body))).toEqual({
+      challenge_id: "challenge-1",
+      code: "8888",
+    });
+    const [, logoutInit] = fetchMock.mock.calls[1] as unknown as [RequestInfo, RequestInit];
+    expect(JSON.parse(String(logoutInit.body))).toEqual({ refresh_token: "refresh-1" });
   });
 });
 

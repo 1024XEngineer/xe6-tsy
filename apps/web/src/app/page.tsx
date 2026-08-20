@@ -1,5 +1,5 @@
-import { VoiceExperience } from "@/features/voice/components/voice-experience";
+import { AuthGate } from "@/features/auth/auth-gate";
 
 export default function Home() {
-  return <VoiceExperience />;
+  return <AuthGate />;
 }

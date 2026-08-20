@@ -26,8 +26,12 @@ export type AuthTokens = {
 };
 
 export type AuthResult = {
-  account: { id: string; kind: string; created_at: string };
+  account: { id: string; kind: "anonymous" | "registered"; created_at: string };
   tokens: AuthTokens;
+};
+
+export type PhoneChallenge = {
+  challenge_id: string;
 };
 
 export type VoiceSession = {
@@ -225,11 +229,36 @@ function authHeaders(accessToken: string, idempotencyKey?: string): HeadersInit 
   return headers;
 }
 
-export async function createAnonymousAccount(): Promise<AuthResult> {
-  const response = await fetch("/api/v1/auth/anonymous", {
+export async function requestPhoneVerificationCode(
+  phone: string,
+): Promise<PhoneChallenge> {
+  const response = await fetch("/api/v1/auth/verification-codes", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone }),
+  });
+  return parseJson<PhoneChallenge>(response);
+}
+
+export async function loginWithPhone(
+  challengeId: string,
+  code: string,
+): Promise<AuthResult> {
+  const response = await fetch("/api/v1/auth/phone/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ challenge_id: challengeId, code }),
   });
   return parseJson<AuthResult>(response);
+}
+
+export async function logoutAccount(refreshToken: string): Promise<void> {
+  const response = await fetch("/api/v1/auth/logout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  await parseJson<void>(response);
 }
 
 export async function createVoiceSession(

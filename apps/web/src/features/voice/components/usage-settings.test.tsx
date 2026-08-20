@@ -17,7 +17,7 @@ describe("UsageSettings", () => {
     saveAuthSession({
       account: {
         id: "acc-usage",
-        kind: "anonymous",
+        kind: "registered",
         created_at: "2026-08-01T00:00:00Z",
       },
       tokens: {
@@ -39,7 +39,7 @@ describe("UsageSettings", () => {
                 service_type: "asr",
                 input_tokens: 0,
                 output_tokens: 0,
-                audio_duration_ms: 120_000,
+                audio_duration_ms: 121_000,
                 cost_amount: "",
                 currency: "",
               },
@@ -59,12 +59,12 @@ describe("UsageSettings", () => {
     );
   });
 
-  it("shows remaining free minutes from ASR usage", async () => {
+  it("shows total and used minutes from ASR usage", async () => {
     render(<UsageSettings />);
 
-    expect(await screen.findByText("498")).toBeInTheDocument();
-    expect(screen.getByText("分钟剩余")).toBeInTheDocument();
-    expect(screen.getByText("已使用 2 分钟")).toBeInTheDocument();
-    expect(screen.getByText("免费额度 500 分钟")).toBeInTheDocument();
+    expect(await screen.findByText("500")).toBeInTheDocument();
+    expect(screen.getByText("本月总额（分钟）")).toBeInTheDocument();
+    expect(screen.getByText("2.02")).toBeInTheDocument();
+    expect(screen.getByText("已使用（分钟）")).toBeInTheDocument();
   });
 });

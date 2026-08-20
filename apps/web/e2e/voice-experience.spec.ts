@@ -3,25 +3,28 @@ import { expect, test } from "@playwright/test";
 const voiceButton = (page: import("@playwright/test").Page) =>
   page.getByRole("button", { name: /^(开始|停止)(对话|翻译)$/ });
 
-async function mockLingowApis(page: import("@playwright/test").Page) {
-  await page.route("**/api/v1/auth/anonymous", async (route) => {
-    await route.fulfill({
-      status: 201,
-      contentType: "application/json",
-      body: JSON.stringify({
+async function seedRegisteredSession(page: import("@playwright/test").Page) {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "lingow-auth-session-v1",
+      JSON.stringify({
         account: {
           id: "acc-e2e",
-          kind: "anonymous",
+          kind: "registered",
           created_at: "2026-07-31T00:00:00Z",
         },
         tokens: {
           access_token: "access-e2e",
           refresh_token: "refresh-e2e",
-          expires_at: "2026-07-31T01:00:00Z",
+          expires_at: "2099-07-31T01:00:00Z",
         },
       }),
-    });
+    );
   });
+}
+
+async function mockLingowApis(page: import("@playwright/test").Page) {
+  await seedRegisteredSession(page);
 
   await page.route("**/api/v1/voice-sessions", async (route) => {
     if (route.request().method() !== "POST") {
@@ -98,7 +101,56 @@ async function mockLingowApis(page: import("@playwright/test").Page) {
   });
 }
 
+test("requires phone login and never creates an anonymous account", async ({
+  page,
+}) => {
+  let anonymousRequests = 0;
+  let requestedPhone = "";
+  await page.route("**/api/v1/auth/anonymous", async (route) => {
+    anonymousRequests += 1;
+    await route.fallback();
+  });
+  await page.route("**/api/v1/auth/verification-codes", async (route) => {
+    requestedPhone = String(route.request().postDataJSON().phone);
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify({ challenge_id: "challenge-e2e" }),
+    });
+  });
+  await page.route("**/api/v1/auth/phone/login", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        account: {
+          id: "acc-e2e",
+          kind: "registered",
+          created_at: "2026-07-31T00:00:00Z",
+        },
+        tokens: {
+          access_token: "access-e2e",
+          refresh_token: "refresh-e2e",
+          expires_at: "2099-07-31T01:00:00Z",
+        },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByLabel("手机号码").fill("13800000000");
+  await page.getByRole("button", { name: "获取验证码" }).click();
+  await expect(page.getByLabel("验证码")).toBeVisible();
+  await page.getByLabel("验证码").fill("8888");
+  await page.getByRole("button", { name: "登录" }).click();
+
+  await expect(page.getByRole("button", { name: "开始对话" })).toBeVisible();
+  expect(requestedPhone).toBe("+8613800000000");
+  expect(anonymousRequests).toBe(0);
+});
+
 test("keeps the Lingow experience inside one viewport", async ({ page }) => {
+  await seedRegisteredSession(page);
   await page.goto("/");
 
   await expect(page.getByText("lingow", { exact: true })).toBeVisible();
@@ -125,6 +177,7 @@ test("shows API errors clearly when realtime is unavailable", async ({
 });
 
 test("keeps voice states legible with reduced motion", async ({ page }) => {
+  await seedRegisteredSession(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
 
@@ -137,6 +190,7 @@ test("keeps voice states legible with reduced motion", async ({ page }) => {
 });
 
 test("renders the idle voice video", async ({ page }) => {
+  await seedRegisteredSession(page);
   await page.goto("/");
   const video = page.getByTestId("idle-voice-video");
   await expect(video).toHaveAttribute("src", "/media/loop.mp4");

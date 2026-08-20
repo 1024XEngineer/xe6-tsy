@@ -1,5 +1,4 @@
 import {
-  createAnonymousAccount,
   refreshAccountTokens,
   type AuthResult,
   type AuthTokens,
@@ -10,9 +9,15 @@ const EXPIRY_SKEW_MS = 30_000;
 let authSessionRequest: Promise<AuthResult> | null = null;
 
 type AuthDependencies = {
-  create?: () => Promise<AuthResult>;
   refresh?: (refreshToken: string) => Promise<AuthTokens>;
 };
+
+export class AuthenticationRequiredError extends Error {
+  constructor() {
+    super("请先登录");
+    this.name = "AuthenticationRequiredError";
+  }
+}
 
 export function loadAuthSession(): AuthResult | null {
   if (typeof window === "undefined") return null;
@@ -23,6 +28,7 @@ export function loadAuthSession(): AuthResult | null {
       | null;
     if (
       !value?.account?.id ||
+      value.account.kind !== "registered" ||
       !value.tokens?.access_token ||
       !value.tokens?.refresh_token ||
       !value.tokens?.expires_at
@@ -37,10 +43,18 @@ export function loadAuthSession(): AuthResult | null {
 
 export function saveAuthSession(auth: AuthResult): void {
   if (typeof window === "undefined") return;
+  if (auth.account.kind !== "registered") {
+    throw new AuthenticationRequiredError();
+  }
   localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth));
 }
 
-export function getOrCreateAuthSession(
+export function clearAuthSession(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+}
+
+export function getAuthSession(
   dependencies: AuthDependencies = {},
 ): Promise<AuthResult> {
   if (authSessionRequest) return authSessionRequest;
@@ -61,35 +75,32 @@ export function getOrCreateAuthSession(
 async function resolveAuthSession(
   dependencies: AuthDependencies,
 ): Promise<AuthResult> {
-  const create = dependencies.create ?? createAnonymousAccount;
   const refresh = dependencies.refresh ?? refreshAccountTokens;
   const stored = loadAuthSession();
+  if (!stored) throw new AuthenticationRequiredError();
   const expiresAt = stored ? Date.parse(stored.tokens.expires_at) : Number.NaN;
 
   if (stored && expiresAt > Date.now() + EXPIRY_SKEW_MS) {
     return stored;
   }
 
-  if (stored) {
-    try {
-      const tokens = await refresh(stored.tokens.refresh_token);
-      const refreshed = { account: stored.account, tokens };
-      saveAuthSession(refreshed);
-      return refreshed;
-    } catch {
-      // Another tab may have rotated the same refresh token successfully.
-      const latest = loadAuthSession();
-      if (
-        latest &&
-        latest.tokens.refresh_token !== stored.tokens.refresh_token &&
-        Date.parse(latest.tokens.expires_at) > Date.now() + EXPIRY_SKEW_MS
-      ) {
-        return latest;
-      }
+  try {
+    const tokens = await refresh(stored.tokens.refresh_token);
+    const refreshed = { account: stored.account, tokens };
+    saveAuthSession(refreshed);
+    return refreshed;
+  } catch {
+    // Another tab may have rotated the same refresh token successfully.
+    const latest = loadAuthSession();
+    if (
+      latest &&
+      latest.tokens.refresh_token !== stored.tokens.refresh_token &&
+      Date.parse(latest.tokens.expires_at) > Date.now() + EXPIRY_SKEW_MS
+    ) {
+      return latest;
     }
   }
 
-  const created = await create();
-  saveAuthSession(created);
-  return created;
+  clearAuthSession();
+  throw new AuthenticationRequiredError();
 }

@@ -12,7 +12,11 @@ import { LatestTranslation } from "./latest-translation";
 import { SettingsPanel } from "./settings-panel";
 import { VoiceControl } from "./voice-control";
 
-export function VoiceExperience() {
+type VoiceExperienceProps = {
+  onLogout?: () => void | Promise<void>;
+};
+
+export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
   const {
     state,
     transientASRSubtitle,
@@ -218,8 +222,10 @@ export function VoiceExperience() {
             <SettingsPanel
               debug={debug}
               configSyncStatus={configSyncStatus}
+              logoutDisabled={state.phase !== "idle"}
               onClose={() => setSettingsOpen(false)}
               onConfigChange={updateConfig}
+              onLogout={onLogout}
               voiceConfig={voiceConfig}
             />
           ) : null}

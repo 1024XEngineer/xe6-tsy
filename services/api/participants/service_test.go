@@ -74,6 +74,106 @@ func TestUpdatePassesExplicitClearWithoutTouchingTurns(t *testing.T) {
 	}
 }
 
+func TestUpdatePreservesOnlyExplicitDisplayName(t *testing.T) {
+	displayName := "Speaker One"
+	repository := &fakeRepository{updated: recordsv1.Participant{ID: "p_01", SessionID: "vs_01"}}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+
+	_, err := service.Update(context.Background(), "acct_01", "vs_01", "p_01", Update{
+		DisplayName:    &displayName,
+		DisplayNameSet: true,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !repository.update.DisplayNameSet || repository.update.DisplayName == nil || *repository.update.DisplayName != displayName {
+		t.Fatalf("Update() display name update = %#v", repository.update)
+	}
+	if repository.update.ProviderSpeakerIDSet || repository.update.VoiceProfileIDSet {
+		t.Fatalf("Update() changed unrelated fields: %#v", repository.update)
+	}
+}
+
+func TestUpdatePreservesOnlyExplicitProviderSpeakerID(t *testing.T) {
+	providerSpeakerID := "diar_01"
+	repository := &fakeRepository{updated: recordsv1.Participant{ID: "p_01", SessionID: "vs_01"}}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+
+	_, err := service.Update(context.Background(), "acct_01", "vs_01", "p_01", Update{
+		ProviderSpeakerID:    &providerSpeakerID,
+		ProviderSpeakerIDSet: true,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !repository.update.ProviderSpeakerIDSet || repository.update.ProviderSpeakerID == nil || *repository.update.ProviderSpeakerID != providerSpeakerID {
+		t.Fatalf("Update() provider speaker ID update = %#v", repository.update)
+	}
+	if repository.update.DisplayNameSet || repository.update.VoiceProfileIDSet {
+		t.Fatalf("Update() changed unrelated fields: %#v", repository.update)
+	}
+}
+
+func TestUpdateDoesNotCallRepositoryForAnotherAccount(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_owner"}, nil)
+
+	_, err := service.Update(context.Background(), "acct_other", "vs_01", "p_01", Update{DisplayNameSet: true})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("Update() error = %v, want ErrForbidden", err)
+	}
+	if repository.updateCalls != 0 {
+		t.Fatalf("Update() repository calls = %d, want 0", repository.updateCalls)
+	}
+}
+
+func TestUpdateReportsTheMissingBodyField(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+
+	_, err := service.Update(context.Background(), "acct_01", "vs_01", "p_01", Update{})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Update() error = %v, want ErrInvalidRequest", err)
+	}
+	if got := domain.FieldName(err); got != "body" {
+		t.Fatalf("FieldName() = %q, want body", got)
+	}
+	if repository.updateCalls != 0 {
+		t.Fatalf("Update() repository calls = %d, want 0", repository.updateCalls)
+	}
+}
+
+func TestUpdateRejectsEmptyAccountForValidSession(t *testing.T) {
+	repository := &fakeRepository{}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+
+	_, err := service.Update(context.Background(), "", "vs_01", "p_01", Update{DisplayNameSet: true})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Update() error = %v, want ErrInvalidRequest", err)
+	}
+	if repository.updateCalls != 0 {
+		t.Fatalf("Update() repository calls = %d, want 0", repository.updateCalls)
+	}
+}
+
+func TestUpdateUsesSystemClockWhenNowIsNil(t *testing.T) {
+	repository := &fakeRepository{updated: recordsv1.Participant{ID: "p_01", SessionID: "vs_01"}}
+	service := NewService(repository, fakeSessionOwners{ownerID: "acct_01"}, nil)
+	before := time.Now().UTC()
+
+	_, err := service.Update(context.Background(), "acct_01", "vs_01", "p_01", Update{DisplayNameSet: true})
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if repository.update.UpdatedAt.Before(before) || repository.update.UpdatedAt.After(after) {
+		t.Fatalf("Update() updated_at = %v, want between %v and %v", repository.update.UpdatedAt, before, after)
+	}
+	if repository.update.UpdatedAt.Location() != time.UTC {
+		t.Fatalf("Update() updated_at location = %v, want UTC", repository.update.UpdatedAt.Location())
+	}
+}
+
 func TestUpdateReportsTheMissingParticipantField(t *testing.T) {
 	service := NewService(&fakeRepository{}, fakeSessionOwners{ownerID: "acct_01"}, nil)
 	_, err := service.Update(context.Background(), "acct_01", "vs_01", "", Update{DisplayNameSet: true})
@@ -153,6 +253,7 @@ type fakeRepository struct {
 	participants  map[string]recordsv1.Participant
 	listAccountID string
 	listCalls     int
+	updateCalls   int
 }
 
 func (r *fakeRepository) List(_ context.Context, accountID, _ string, _ recordsv1.ListParticipantsQuery) (recordsv1.ParticipantListResponse, error) {
@@ -162,6 +263,7 @@ func (r *fakeRepository) List(_ context.Context, accountID, _ string, _ recordsv
 }
 
 func (r *fakeRepository) Update(_ context.Context, _ string, _ string, update Update) (recordsv1.Participant, error) {
+	r.updateCalls++
 	r.update = update
 	return r.updated, nil
 }

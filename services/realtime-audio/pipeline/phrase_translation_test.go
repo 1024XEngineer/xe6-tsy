@@ -57,6 +57,34 @@ func TestPhraseTranslationCoordinatorDoesNotWaitForPendingPhrase(t *testing.T) {
 	close(release)
 }
 
+func TestPhraseTranslationCoordinatorStartsTranslationBeforeSourceDelivery(t *testing.T) {
+	observer := newBlockingSourceObserver()
+	defer close(observer.release)
+	started := make(chan struct{})
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		close(started)
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1}, nil
+	}), "mock", observer, nil)
+	turn := TurnContext{ID: "turn-blocked-source", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+
+	returned := make(chan struct{})
+	go func() {
+		coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("ObservePhraseSubtitle() waited for source delivery")
+	}
+	select {
+	case <-started:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("translation did not start while source delivery was blocked")
+	}
+}
+
 func TestPhraseTranslationCoordinatorFinalizeDoesNotWaitForSubtitleObserver(t *testing.T) {
 	observer := newBlockingTranslatedObserver()
 	defer close(observer.release)
@@ -186,6 +214,24 @@ type blockingTranslatedObserver struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+type blockingSourceObserver struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingSourceObserver() *blockingSourceObserver {
+	return &blockingSourceObserver{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (o *blockingSourceObserver) ObservePhraseSubtitle(_ context.Context, event realtimev1.PhraseSubtitleEvent) {
+	if event.Status != realtimev1.PhraseSubtitleSourceStable {
+		return
+	}
+	o.once.Do(func() { close(o.started) })
+	<-o.release
 }
 
 func newBlockingTranslatedObserver() *blockingTranslatedObserver {

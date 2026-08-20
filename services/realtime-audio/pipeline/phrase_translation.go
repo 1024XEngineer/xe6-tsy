@@ -39,13 +39,15 @@ type phraseTranslationUtterance struct {
 	phrases        map[int64]*translatedPhrase
 	next           int64
 	observerMu     sync.Mutex
+	sourceTail     chan struct{}
 }
 
 type translatedPhrase struct {
-	event  realtimev1.PhraseSubtitleEvent
-	result translate.Result
-	err    error
-	done   bool
+	event           realtimev1.PhraseSubtitleEvent
+	result          translate.Result
+	err             error
+	done            bool
+	sourceDelivered chan struct{}
 }
 
 func NewPhraseTranslationCoordinator(translator translate.Provider, provider string, observer PhraseSubtitleObserver, now func() time.Time) *PhraseTranslationCoordinator {
@@ -70,8 +72,13 @@ func (c *PhraseTranslationCoordinator) StartPhraseSubtitleTurn(turn TurnContext,
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	firstSource := make(chan struct{})
+	close(firstSource)
 	c.mu.Lock()
-	c.utterances[turn.ID] = &phraseTranslationUtterance{turn: turn, source: asr.NormalizeLanguage(sourceLanguage), target: target, ctx: ctx, cancel: cancel, phrases: make(map[int64]*translatedPhrase), next: 1}
+	c.utterances[turn.ID] = &phraseTranslationUtterance{
+		turn: turn, source: asr.NormalizeLanguage(sourceLanguage), target: target,
+		ctx: ctx, cancel: cancel, phrases: make(map[int64]*translatedPhrase), next: 1, sourceTail: firstSource,
+	}
 	c.mu.Unlock()
 }
 
@@ -79,21 +86,32 @@ func (c *PhraseTranslationCoordinator) ObservePhraseSubtitle(ctx context.Context
 	if c == nil || event.Status != realtimev1.PhraseSubtitleSourceStable {
 		return
 	}
-	c.observer.ObservePhraseSubtitle(ctx, event)
 	c.mu.Lock()
 	utterance := c.utterances[event.UtteranceID]
 	if utterance == nil || utterance.phrases[event.PhraseSequence] != nil {
 		c.mu.Unlock()
 		return
 	}
-	phrase := &translatedPhrase{event: event}
+	phrase := &translatedPhrase{event: event, sourceDelivered: make(chan struct{})}
+	previousSource := utterance.sourceTail
+	utterance.sourceTail = phrase.sourceDelivered
 	utterance.phrases[event.PhraseSequence] = phrase
 	c.mu.Unlock()
+	go c.publishSourcePhrase(utterance, phrase, ctx, previousSource)
 	go c.translate(utterance, phrase)
+}
+
+func (c *PhraseTranslationCoordinator) publishSourcePhrase(utterance *phraseTranslationUtterance, phrase *translatedPhrase, ctx context.Context, previous <-chan struct{}) {
+	<-previous
+	utterance.observerMu.Lock()
+	c.observer.ObservePhraseSubtitle(ctx, phrase.event)
+	utterance.observerMu.Unlock()
+	close(phrase.sourceDelivered)
 }
 
 func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtterance, phrase *translatedPhrase) {
 	result, err := c.translator.Translate(utterance.ctx, translate.Request{SessionID: utterance.turn.SessionID, TurnID: utterance.turn.ID, Text: phrase.event.SourceText, SourceLanguage: utterance.source, TargetLanguage: utterance.target})
+	<-phrase.sourceDelivered
 	c.mu.Lock()
 	phrase.result, phrase.err, phrase.done = result, err, true
 	events := c.publishReadyLocked(utterance)

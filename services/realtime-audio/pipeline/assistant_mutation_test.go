@@ -108,6 +108,14 @@ func TestAssistantHandlerRejectsInvalidReplyEventBeforeCommit(t *testing.T) {
 	}
 }
 
+func TestAssistantHandlerIgnoresSupersededListeningRestore(t *testing.T) {
+	runtime := stateFailingRuntimeReporter{failState: session.RuntimeListening, err: session.ErrRuntimeIdentityConflict}
+	handler := newAssistantMutationHandler(successfulAssistantLLM(), &recordingUsageSink{}, runtime)
+	if err := handler.HandleASRFinal(t.Context(), assistantTurn(), asr.FinalResult{Text: "question", SourceLanguage: "en-US"}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v, want superseded restore ignored", err)
+	}
+}
+
 func TestPublishLLMUsageIfPresentHonorsProviderModelAndTokenBoundaries(t *testing.T) {
 	handler := newAssistantMutationHandler(successfulAssistantLLM(), &recordingUsageSink{}, &recordingRuntimeReporter{})
 	tests := []struct {

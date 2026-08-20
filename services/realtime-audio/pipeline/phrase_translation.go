@@ -33,7 +33,6 @@ type PhraseTranslationCoordinator struct {
 	usageRetryDelay func(int) time.Duration
 
 	mu         sync.Mutex
-	observerMu sync.Mutex
 	utterances map[string]*phraseTranslationUtterance
 }
 
@@ -45,6 +44,7 @@ type phraseTranslationUtterance struct {
 	phrases        map[int64]*translatedPhrase
 	next           int64
 	recordUsage    bool
+	observerMu     sync.Mutex
 }
 
 type translatedPhrase struct {
@@ -114,7 +114,7 @@ func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtt
 	if recordUsage {
 		c.schedulePhraseUsage(utterance.turn, phrase)
 	}
-	c.publishPhraseEvents(events)
+	c.publishPhraseEvents(utterance, events)
 }
 
 func (c *PhraseTranslationCoordinator) publishReadyLocked(utterance *phraseTranslationUtterance) []realtimev1.PhraseSubtitleEvent {
@@ -136,14 +136,14 @@ func (c *PhraseTranslationCoordinator) publishReadyLocked(utterance *phraseTrans
 	}
 }
 
-func (c *PhraseTranslationCoordinator) publishPhraseEvents(events []realtimev1.PhraseSubtitleEvent) {
+func (c *PhraseTranslationCoordinator) publishPhraseEvents(utterance *phraseTranslationUtterance, events []realtimev1.PhraseSubtitleEvent) {
 	if len(events) == 0 {
 		return
 	}
 	// Keep translated notifications in sequence without holding state ownership
 	// while a transport observer waits for a client channel.
-	c.observerMu.Lock()
-	defer c.observerMu.Unlock()
+	utterance.observerMu.Lock()
+	defer utterance.observerMu.Unlock()
 	for _, event := range events {
 		c.observer.ObservePhraseSubtitle(context.Background(), event)
 	}

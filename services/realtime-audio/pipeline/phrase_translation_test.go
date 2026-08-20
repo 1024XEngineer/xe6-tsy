@@ -92,6 +92,38 @@ func TestPhraseTranslationCoordinatorFinalizeDoesNotWaitForSubtitleObserver(t *t
 	}
 }
 
+func TestPhraseTranslationCoordinatorDoesNotBlockOtherTurnsOnSubtitleObserver(t *testing.T) {
+	blocked := newBlockingTranslatedObserver()
+	defer close(blocked.release)
+	other := &recordingPhraseSubtitleObserver{}
+	observer := phraseObserverFunc(func(ctx context.Context, event realtimev1.PhraseSubtitleEvent) {
+		if event.UtteranceID == "turn-blocked" {
+			blocked.ObservePhraseSubtitle(ctx, event)
+			return
+		}
+		other.ObservePhraseSubtitle(ctx, event)
+	})
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "en-" + request.Text, Provider: "mock", Model: "v1", InputTokens: 1}, nil
+	}), "mock", observer, nil)
+	blockedTurn := TurnContext{ID: "turn-blocked", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	otherTurn := TurnContext{ID: "turn-other", SessionID: "session-2", LanguageConfig: blockedTurn.LanguageConfig}
+	coordinator.StartPhraseSubtitleTurn(blockedTurn, "zh-CN")
+	coordinator.StartPhraseSubtitleTurn(otherTurn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(blockedTurn, 1, "你好"))
+	<-blocked.started
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(otherTurn, 1, "世界"))
+
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for len(other.Events()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	events := other.Events()
+	if len(events) != 2 || events[1].Status != realtimev1.PhraseSubtitleTranslated {
+		t.Fatalf("other turn events = %#v; want translated event while first turn is blocked", events)
+	}
+}
+
 func TestPhraseTranslationCoordinatorRecordsCompletedFailedPhraseUsageOnFallback(t *testing.T) {
 	usage := &phraseUsageRecorder{}
 	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
@@ -173,6 +205,16 @@ func (f phraseTranslateFunc) Translate(ctx context.Context, request translate.Re
 }
 
 var _ translate.Provider = phraseTranslateFunc(nil)
+
+type phraseObserverFunc func(context.Context, realtimev1.PhraseSubtitleEvent)
+
+func (f phraseObserverFunc) ObservePhraseSubtitle(ctx context.Context, event realtimev1.PhraseSubtitleEvent) {
+	f(ctx, event)
+}
+
+func stablePhraseEvent(turn TurnContext, sequence int64, text string) realtimev1.PhraseSubtitleEvent {
+	return realtimev1.PhraseSubtitleEvent{Type: realtimev1.PhraseSubtitleTopic, EventVersion: 1, SessionID: turn.SessionID, UtteranceID: turn.ID, PhraseSequence: sequence, SourceText: text, Status: realtimev1.PhraseSubtitleSourceStable, OccurredAt: time.Now().UTC()}
+}
 
 type phraseUsageRecorder struct {
 	mu    sync.Mutex

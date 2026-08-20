@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,8 +73,9 @@ func TestAssistantHandlerRejectsInvalidLLMUsageFact(t *testing.T) {
 	turn.ID = ""
 	handler := newTestAssistantHandler(successfulAssistantLLM(), &recordingAssistantReplySink{}, &recordingUsageSink{},
 		tts.NewFakeProvider(tts.FakeProviderConfig{}), acceptingAssistantReplyGate{}, time.Now())
-	if err := handler.HandleASRFinal(t.Context(), turn, asr.FinalResult{Text: "question", SourceLanguage: "en-US"}); err == nil {
-		t.Fatal("HandleASRFinal() error = nil, want invalid usage fact error")
+	err := handler.HandleASRFinal(t.Context(), turn, asr.FinalResult{Text: "question", SourceLanguage: "en-US"})
+	if err == nil || !strings.Contains(err.Error(), "prepare assistant LLM usage") {
+		t.Fatalf("HandleASRFinal() error = %v, want prepared LLM usage error", err)
 	}
 }
 

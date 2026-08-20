@@ -165,6 +165,11 @@ export function sessionReducer(
           subtitle.phraseSequence === event.subtitle.phraseSequence,
       );
       if (existing) {
+        const terminal = existing.status === "translated" || existing.status === "translation_failed";
+        const incomingSource = event.subtitle.status === "source_stable";
+        if (terminal && incomingSource) {
+          return state;
+        }
         return {
           ...state,
           phraseSubtitles: state.phraseSubtitles.map((subtitle) =>

@@ -144,6 +144,28 @@ describe("sessionReducer", () => {
     expect(settled.phraseSubtitles).toEqual([]);
   });
 
+  it("does not let late source events downgrade a terminal phrase", () => {
+    const translated = sessionReducer(initialSession, {
+      type: "ADD_PHRASE_SUBTITLE",
+      subtitle: { utteranceId: "turn-1", phraseSequence: 1, sourceText: "你好", translatedText: "Hello", status: "translated" },
+    });
+    const lateSource = sessionReducer(translated, {
+      type: "ADD_PHRASE_SUBTITLE",
+      subtitle: { utteranceId: "turn-1", phraseSequence: 1, sourceText: "你好", translatedText: "", status: "source_stable" },
+    });
+    const failed = sessionReducer(initialSession, {
+      type: "ADD_PHRASE_SUBTITLE",
+      subtitle: { utteranceId: "turn-2", phraseSequence: 1, sourceText: "再见", translatedText: "", status: "translation_failed" },
+    });
+    const lateFailedSource = sessionReducer(failed, {
+      type: "ADD_PHRASE_SUBTITLE",
+      subtitle: { utteranceId: "turn-2", phraseSequence: 1, sourceText: "再见", translatedText: "", status: "source_stable" },
+    });
+
+    expect(lateSource).toBe(translated);
+    expect(lateFailedSource).toBe(failed);
+  });
+
   it("clears transient subtitles when the session falls back or errors", () => {
     const active = {
       ...initialSession,

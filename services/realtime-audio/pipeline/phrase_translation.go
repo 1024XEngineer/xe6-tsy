@@ -233,7 +233,7 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 func phraseFailureUsageFactsLocked(utterance *phraseTranslationUtterance, c *PhraseTranslationCoordinator) []UsageFact {
 	var usage []UsageFact
 	for _, phrase := range utterance.phrases {
-		if !phrase.done || phrase.err == nil || !hasPhraseUsage(phrase.result) || phrase.usageHanded {
+		if !phrase.done || phrase.usageHanded || (phrase.err == nil && strings.TrimSpace(phrase.result.Text) != "") || !hasPhraseUsage(phrase.result) {
 			continue
 		}
 		fact, err := c.phraseUsageFact(utterance.turn, phrase)

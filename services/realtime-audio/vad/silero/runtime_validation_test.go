@@ -20,9 +20,11 @@ func TestNormalizeThresholds(t *testing.T) {
 		{name: "zero threshold uses default and fallback negative threshold", wantThreshold: 0.5, wantNeg: 0.35},
 		{name: "negative threshold uses default", threshold: -1, neg: 0.2, wantThreshold: 0.5, wantNeg: 0.2},
 		{name: "zero negative threshold uses threshold offset", threshold: 0.8, wantThreshold: 0.8, wantNeg: 0.65},
+		{name: "negative negative threshold uses threshold offset", threshold: 0.8, neg: -1, wantThreshold: 0.8, wantNeg: 0.65},
 		{name: "negative threshold fallback is clamped", threshold: 0.1, wantThreshold: 0.1, wantNeg: 0.01},
 		{name: "configured negative threshold at clamp remains unchanged", threshold: 0.8, neg: 0.01, wantThreshold: 0.8, wantNeg: 0.01},
 		{name: "configured thresholds remain unchanged", threshold: 0.8, neg: 0.4, wantThreshold: 0.8, wantNeg: 0.4},
+		{name: "equal thresholds are valid", threshold: 0.8, neg: 0.8, wantThreshold: 0.8, wantNeg: 0.8},
 		{name: "negative threshold cannot exceed threshold", threshold: 0.2, neg: 0.5, wantErr: "must be <= Threshold"},
 	}
 

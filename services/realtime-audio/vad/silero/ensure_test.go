@@ -1,6 +1,8 @@
 package silero
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,6 +41,16 @@ func TestEnsureAssetsRequiresModel(t *testing.T) {
 	}
 	if err := EnsureAssets(&cfg); err == nil {
 		t.Fatal("expected missing model error")
+	}
+}
+
+func TestEnsureAssetsEmptyProviderUsesSileroPath(t *testing.T) {
+	cfg := LocalConfig{
+		ModelPath:   filepath.Join(t.TempDir(), "missing.onnx"),
+		LibraryPath: filepath.Join(t.TempDir(), "missing.dll"),
+	}
+	if err := EnsureAssets(&cfg); err == nil {
+		t.Fatal("empty provider should use Silero asset validation")
 	}
 }
 
@@ -99,5 +111,45 @@ func TestResolveInstalledLibraryRejectsDirectoryAndUnexpectedLayout(t *testing.T
 	emptyRoot := t.TempDir()
 	if _, err := firstSubdir(emptyRoot); err == nil {
 		t.Fatal("expected unexpected archive layout error")
+	}
+}
+
+func TestUntarGzipSkipsSymlinkAndContinues(t *testing.T) {
+	tgzPath := filepath.Join(t.TempDir(), "symlink-then-library.tgz")
+	f, err := os.Create(tgzPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "package/link", Typeflag: tar.TypeSymlink, Linkname: "outside"}); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("library")
+	if err := tw.WriteHeader(&tar.Header{Name: "package/lib/onnxruntime.dll", Mode: 0o644, Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	destDir := filepath.Join(t.TempDir(), "extract")
+	if err := untarGzipArchive(tgzPath, destDir); err != nil {
+		t.Fatalf("untarGzipArchive() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "package", "link")); !os.IsNotExist(err) {
+		t.Fatalf("symlink path exists or returned unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destDir, "package", "lib", "onnxruntime.dll")); err != nil {
+		t.Fatalf("library after symlink was not extracted: %v", err)
 	}
 }

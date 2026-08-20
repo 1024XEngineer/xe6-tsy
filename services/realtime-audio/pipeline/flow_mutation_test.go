@@ -18,7 +18,7 @@ import (
 func TestStartAudioPropagatesTurnOpenAndRuntimeErrors(t *testing.T) {
 	wantOpenErr := errors.New("language config unavailable")
 	service := newTestPipelineService(PipelineDependencies{
-		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "translated", Provider: "mock-translate", Model: "v1"}}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
 		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	})
 	openProcessor := NewTurnProcessor(turnProcessorDependenciesForMutation(service, &errorLanguageReader{err: wantOpenErr}))
@@ -50,7 +50,7 @@ func TestStartAudioInitializesInterpretationPhrases(t *testing.T) {
 		SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 	}}))
 	processor.phrases = phrases
-	turn, err := processor.StartAudio(t.Context(), TurnProcessRequest{SessionID: "session-1"})
+	turn, err := processor.StartAudio(t.Context(), TurnProcessRequest{SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"})
 	if err != nil {
 		t.Fatalf("StartAudio() error = %v", err)
 	}
@@ -120,7 +120,7 @@ func TestStartAudioDispatchesPhrasePartialsWhenOnlyPhrasesAreConfigured(t *testi
 		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
-		ASR: &pushEventProvider{stream: stream}, Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		ASR: sequencedStreamProvider{stream: stream}, Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}), Pipeline: service, Finals: service, Phrases: phrases,
 	})

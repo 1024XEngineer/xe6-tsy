@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math/big"
 	"strings"
 	"sync"
@@ -14,8 +13,6 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 )
 
-const phraseUsagePublishTimeout = 2 * time.Second
-
 // PhraseTranslationSummary is the aggregate provider result reused by the final Turn.
 type PhraseTranslationSummary struct {
 	Text, Provider, Model, CostAmount, Currency string
@@ -25,12 +22,10 @@ type PhraseTranslationSummary struct {
 // PhraseTranslationCoordinator translates stable source phrases without blocking ASR reads.
 // It owns only ephemeral per-utterance state; FinalTurn persistence remains in PipelineService.
 type PhraseTranslationCoordinator struct {
-	translator      translate.Provider
-	provider        string
-	observer        PhraseSubtitleObserver
-	usage           UsageFactSink
-	now             func() time.Time
-	usageRetryDelay func(int) time.Duration
+	translator translate.Provider
+	provider   string
+	observer   PhraseSubtitleObserver
+	now        func() time.Time
 
 	mu         sync.Mutex
 	utterances map[string]*phraseTranslationUtterance
@@ -43,33 +38,26 @@ type phraseTranslationUtterance struct {
 	cancel         context.CancelFunc
 	phrases        map[int64]*translatedPhrase
 	next           int64
-	recordUsage    bool
 	observerMu     sync.Mutex
 }
 
 type translatedPhrase struct {
-	event          realtimev1.PhraseSubtitleEvent
-	result         translate.Result
-	err            error
-	done           bool
-	usagePublished bool
+	event  realtimev1.PhraseSubtitleEvent
+	result translate.Result
+	err    error
+	done   bool
 }
 
-func NewPhraseTranslationCoordinator(translator translate.Provider, provider string, observer PhraseSubtitleObserver, now func() time.Time, usage ...UsageFactSink) *PhraseTranslationCoordinator {
+func NewPhraseTranslationCoordinator(translator translate.Provider, provider string, observer PhraseSubtitleObserver, now func() time.Time) *PhraseTranslationCoordinator {
 	if translator == nil || observer == nil {
 		return nil
 	}
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	var usageSink UsageFactSink
-	if len(usage) > 0 {
-		usageSink = usage[0]
-	}
 	return &PhraseTranslationCoordinator{
-		translator: translator, provider: provider, observer: observer, usage: usageSink, now: now,
-		usageRetryDelay: phraseUsageRetryDelay,
-		utterances:      make(map[string]*phraseTranslationUtterance),
+		translator: translator, provider: provider, observer: observer, now: now,
+		utterances: make(map[string]*phraseTranslationUtterance),
 	}
 }
 
@@ -109,11 +97,7 @@ func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtt
 	c.mu.Lock()
 	phrase.result, phrase.err, phrase.done = result, err, true
 	events := c.publishReadyLocked(utterance)
-	recordUsage := utterance.recordUsage
 	c.mu.Unlock()
-	if recordUsage {
-		c.schedulePhraseUsage(utterance.turn, phrase)
-	}
 	c.publishPhraseEvents(utterance, events)
 }
 
@@ -149,15 +133,19 @@ func (c *PhraseTranslationCoordinator) publishPhraseEvents(utterance *phraseTran
 	}
 }
 
-func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Context, turn TurnContext, finalText string) (PhraseTranslationSummary, bool) {
+func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Context, turn TurnContext, finalText string) (PhraseTranslationSummary, []UsageFact, bool, error) {
 	if c == nil {
-		return PhraseTranslationSummary{}, false
+		return PhraseTranslationSummary{}, nil, false, nil
+	}
+	if ctx.Err() != nil {
+		c.discardPhraseSubtitleTurn(turn.ID)
+		return PhraseTranslationSummary{}, nil, false, nil
 	}
 	c.mu.Lock()
 	utterance := c.utterances[turn.ID]
 	c.mu.Unlock()
 	if utterance == nil {
-		return PhraseTranslationSummary{}, false
+		return PhraseTranslationSummary{}, nil, false, nil
 	}
 	c.mu.Lock()
 	allDone := allPhraseTranslationsDone(utterance)
@@ -165,14 +153,13 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 		summary, ok := phraseSummary(finalText, utterance)
 		if ok {
 			c.mu.Unlock()
-			c.discardPhraseSubtitleTurn(turn.ID, false)
-			return summary, true
+			c.discardPhraseSubtitleTurn(turn.ID)
+			return summary, nil, true, nil
 		}
 	}
-	toPublish := c.detachPhraseSubtitleTurnLocked(turn.ID, true)
+	usage, err := c.detachPhraseSubtitleTurnLocked(turn.ID, true)
 	c.mu.Unlock()
-	c.schedulePhraseUsageList(turn, toPublish)
-	return PhraseTranslationSummary{}, false
+	return PhraseTranslationSummary{}, usage, false, err
 }
 
 func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) {
@@ -185,42 +172,38 @@ func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) 
 		c.mu.Unlock()
 		return
 	}
-	toPublish := c.detachPhraseSubtitleTurnLocked(turnID, true)
-	turn := utterance.turn
+	_, _ = c.detachPhraseSubtitleTurnLocked(turnID, false)
 	c.mu.Unlock()
-	c.schedulePhraseUsageList(turn, toPublish)
 }
 
-func (c *PhraseTranslationCoordinator) discardPhraseSubtitleTurn(turnID string, recordUsage bool) {
+func (c *PhraseTranslationCoordinator) discardPhraseSubtitleTurn(turnID string) {
 	c.mu.Lock()
-	utterance := c.utterances[turnID]
-	var turn TurnContext
-	if utterance != nil {
-		turn = utterance.turn
-	}
-	toPublish := c.detachPhraseSubtitleTurnLocked(turnID, recordUsage)
+	_, _ = c.detachPhraseSubtitleTurnLocked(turnID, false)
 	c.mu.Unlock()
-	c.schedulePhraseUsageList(turn, toPublish)
 }
 
-func (c *PhraseTranslationCoordinator) detachPhraseSubtitleTurnLocked(turnID string, recordUsage bool) []*translatedPhrase {
+func (c *PhraseTranslationCoordinator) detachPhraseSubtitleTurnLocked(turnID string, collectUsage bool) ([]UsageFact, error) {
 	utterance := c.utterances[turnID]
 	if utterance == nil {
-		return nil
+		return nil, nil
 	}
-	utterance.recordUsage = recordUsage
-	var toPublish []*translatedPhrase
-	if recordUsage {
+	var usage []UsageFact
+	var usageErr error
+	if collectUsage {
 		for _, phrase := range utterance.phrases {
-			if phrase.done && !phrase.usagePublished && hasPhraseUsage(phrase.result) {
-				phrase.usagePublished = true
-				toPublish = append(toPublish, phrase)
+			if phrase.done && hasPhraseUsage(phrase.result) {
+				fact, err := c.phraseUsageFact(utterance.turn, phrase)
+				if err != nil && usageErr == nil {
+					usageErr = err
+				} else if err == nil {
+					usage = append(usage, fact)
+				}
 			}
 		}
 	}
 	utterance.cancel()
 	delete(c.utterances, turnID)
-	return toPublish
+	return usage, usageErr
 }
 
 func allPhraseTranslationsDone(utterance *phraseTranslationUtterance) bool {
@@ -236,54 +219,13 @@ func hasPhraseUsage(result translate.Result) bool {
 	return strings.TrimSpace(result.Provider) != "" && strings.TrimSpace(result.Model) != "" && (result.InputTokens != 0 || result.OutputTokens != 0 || result.CostAmount != "")
 }
 
-func (c *PhraseTranslationCoordinator) schedulePhraseUsageList(turn TurnContext, phrases []*translatedPhrase) {
-	for _, phrase := range phrases {
-		c.schedulePhraseUsage(turn, phrase)
-	}
-}
-
-func (c *PhraseTranslationCoordinator) schedulePhraseUsage(turn TurnContext, phrase *translatedPhrase) {
-	if c == nil || c.usage == nil || !hasPhraseUsage(phrase.result) {
-		return
-	}
-	fact, err := buildUsageFactWithIdentity(
+func (c *PhraseTranslationCoordinator) phraseUsageFact(turn TurnContext, phrase *translatedPhrase) (UsageFact, error) {
+	return buildUsageFactWithIdentity(
 		turn, "translation", phrase.result.Provider, phrase.result.Model, 0,
 		phrase.result.InputTokens, phrase.result.OutputTokens, phrase.result.CostAmount, phrase.result.Currency,
 		fmt.Sprintf("usage_%s_phrase_%d", turn.ID, phrase.event.PhraseSequence),
 		fmt.Sprintf("usage:%s:phrase:%d", turn.ID, phrase.event.PhraseSequence), c.now(),
 	)
-	if err != nil {
-		slog.Error("prepare phrase translation usage", "turn_id", turn.ID, "error", err)
-		return
-	}
-	go c.publishPhraseUsage(fact)
-}
-
-func (c *PhraseTranslationCoordinator) publishPhraseUsage(fact UsageFact) {
-	for attempt := 0; ; attempt++ {
-		// The finalization request may end before the provider returns. Keep the
-		// durable accounting attempt independent, but bound every outbox call.
-		ctx, cancel := context.WithTimeout(context.Background(), phraseUsagePublishTimeout)
-		err := c.usage.Publish(ctx, fact)
-		cancel()
-		if err == nil {
-			return
-		}
-		slog.Error("publish phrase translation usage", "turn_id", fact.TurnID, "attempt", attempt+1, "error", err)
-		time.Sleep(c.usageRetryDelay(attempt))
-	}
-}
-
-func phraseUsageRetryDelay(attempt int) time.Duration {
-	delay := 100 * time.Millisecond
-	for attempt > 0 && delay < 5*time.Second {
-		delay *= 2
-		attempt--
-	}
-	if delay > 5*time.Second {
-		return 5 * time.Second
-	}
-	return delay
 }
 
 func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (PhraseTranslationSummary, bool) {

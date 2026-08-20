@@ -78,6 +78,40 @@ func TestPipelineFinalFlowCarriesTurnID(t *testing.T) {
 	}
 }
 
+func TestPipelinePropagatesCompletedPhraseUsageFailureBeforeFinalTurn(t *testing.T) {
+	wantErr := errors.New("usage outbox unavailable")
+	translator := phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		if request.Text == "失败" {
+			return translate.Result{Provider: "mock", Model: "v1", InputTokens: 2}, context.DeadlineExceeded
+		}
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1}, nil
+	})
+	observer := &recordingPhraseSubtitleObserver{}
+	phrases := NewPhraseTranslationCoordinator(translator, "mock", observer, nil)
+	finals := &recordingFinalSink{}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: finals, Usage: rejectingUsageSink{err: wantErr}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phrases,
+	})
+	turn := testTurn()
+	phrases.StartPhraseSubtitleTurn(turn, "zh-CN")
+	phrases.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	phrases.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 2, "失败"))
+	deadline := time.Now().Add(time.Second)
+	for len(observer.Events()) < 4 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好失败", SourceLanguage: "zh-CN"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("HandleASRFinal() error = %v, want %v", err, wantErr)
+	}
+	if len(finals.events) != 0 {
+		t.Fatalf("FinalTurn events = %#v, want no commit after usage failure", finals.events)
+	}
+}
+
 func TestPipelineRejectsUnsupportedSourceBeforeTranslation(t *testing.T) {
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "unused"}}
 	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{})

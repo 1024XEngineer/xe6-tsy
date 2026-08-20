@@ -182,9 +182,11 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
 	}
 	translateStartedAt := time.Now()
-	translationResult, reusedPhrases := s.phraseTranslation(ctx, turn, result.Text)
+	translationResult, reusedPhrases, err := s.phraseTranslation(ctx, turn, result.Text)
+	if err != nil {
+		return fmt.Errorf("publish phrase translation usage: %w", err)
+	}
 	if !reusedPhrases {
-		var err error
 		translationResult, err = s.translator.Translate(ctx, translate.Request{
 			SessionID: turn.SessionID, TurnID: turn.ID, Text: result.Text,
 			SourceLanguage: result.SourceLanguage, TargetLanguage: target,
@@ -282,15 +284,23 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	return nil
 }
 
-func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text string) (translate.Result, bool) {
+func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text string) (translate.Result, bool, error) {
 	if s.phraseTranslations == nil {
-		return translate.Result{}, false
+		return translate.Result{}, false, nil
 	}
-	summary, ok := s.phraseTranslations.FinalizePhraseSubtitleTurn(ctx, turn, text)
+	summary, usage, ok, err := s.phraseTranslations.FinalizePhraseSubtitleTurn(ctx, turn, text)
+	if err != nil {
+		return translate.Result{}, false, err
+	}
+	for _, fact := range usage {
+		if err := s.usage.Publish(ctx, fact); err != nil {
+			return translate.Result{}, false, err
+		}
+	}
 	if !ok {
-		return translate.Result{}, false
+		return translate.Result{}, false, nil
 	}
-	return translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}, true
+	return translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}, true, nil
 }
 
 func finalTurnAcceptedError(operation string, err error) error {

@@ -246,7 +246,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		VoiceID: deps.VoiceID, Provider: labels.tts, Latency: latency,
 	})
 	commitGate := managerTurnCommitGate{manager: manager}
-	phraseTranslations := pipeline.NewPhraseTranslationCoordinator(providers.Translation, labels.translation, deps.PhraseSubtitles, deps.Now, deps.Usage)
+	phraseTranslations := pipeline.NewPhraseTranslationCoordinator(providers.Translation, labels.translation, deps.PhraseSubtitles, deps.Now)
 	phraseObserver := deps.PhraseSubtitles
 	if phraseTranslations != nil {
 		phraseObserver = phraseTranslations

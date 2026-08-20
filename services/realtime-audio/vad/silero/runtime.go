@@ -239,6 +239,13 @@ func (r *Runtime) inferLocked(window, state, context []float32) (float32, []floa
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("read silero state: %w", err)
 	}
+	return buildInferenceResult(probs, nextState, inputData)
+}
+
+func buildInferenceResult(probs, nextState, inputData []float32) (float32, []float32, []float32, error) {
+	if len(probs) == 0 {
+		return 0, nil, nil, errors.New("silero output probability is empty")
+	}
 	if len(nextState) != stateSize {
 		return 0, nil, nil, fmt.Errorf("silero stateN size = %d, want %d", len(nextState), stateSize)
 	}

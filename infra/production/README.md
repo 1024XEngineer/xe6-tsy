@@ -2,12 +2,12 @@
 
 该目录提供通用 Docker Compose 主机部署。它构建并运行 Web、API 和 realtime-audio；PostgreSQL、Redis/Valkey、TLS 终止和 TURN 服务不在 Compose 中创建，必须由目标环境以私网方式提供。
 
-Web 对外只绑定宿主机回环地址 `127.0.0.1:3000`。在其前方配置已有的 HTTPS 反向代理，将公网流量转发到该端口。WebRTC 在生产中还需要可从客户端访问的 STUN/TURN 配置；当前 realtime 服务的 ICE server 仍是代码内的公共 STUN 地址，部署前应确认这符合网络与可靠性要求。
+Web 默认只绑定宿主机回环地址 `127.0.0.1:3000`。如需绑定其他地址，在环境文件中修改 `WEB_BIND_IP`；在其前方配置已有的 HTTPS 反向代理，将公网流量转发到该端口。WebRTC 在生产中还需要可从客户端访问的 STUN/TURN 配置；当前 realtime 服务的 ICE server 仍是代码内的公共 STUN 地址，部署前应确认这符合网络与可靠性要求。
 
 ## 首次配置
 
 1. 在 Linux x86_64 部署主机安装 Docker Engine、Docker Compose v2 和 Bash，创建专用非 root 部署用户，并确保该用户可以使用 Docker。当前工作流发布 `linux/amd64` 镜像。
-2. 从 `.env.production.example` 创建部署环境文件。实际文件只保存在 GitHub `production` Environment secret `DEPLOY_ENV_FILE` 和部署主机，不能提交到仓库。
+2. 从 `.env.production.example` 创建部署环境文件。实际文件只保存在 GitHub `production` Environment secret `DEPLOY_ENV_FILE` 和部署主机，不能提交到仓库。模板中的尖括号字段就是需要替换的值，具体位置见下方“占位符位置”。
 3. 将 PostgreSQL 与 Redis/Valkey 地址配置为仅部署主机可访问的 TLS/认证连接。为 API 生成独立且至少 32 字节的 `JWT_SECRET`、`AUTH_PEPPER`、`REALTIME_TICKET_SECRET`、`LINGOW_DELIVERY_DESTINATION_KEY`、`LINGOW_RECORDS_SYSTEM_TOKEN` 与 `LINGOW_COMMAND_SYSTEM_TOKEN`。
 4. 配置 GitHub `production` Environment，可开启所需审批。添加以下 secrets：
 
@@ -21,6 +21,14 @@ Web 对外只绑定宿主机回环地址 `127.0.0.1:3000`。在其前方配置�
    添加 repository variable `DEPLOY_PATH`，值为部署用户可写的绝对目录，例如 `/srv/lingow`。
 
 5. 使三个 GHCR package 对该令牌或部署组织可读。若将 package 设为 public，可移除主机 GHCR 登录步骤及对应 secret。
+
+## 占位符位置
+
+- `.env.production.example` 的镜像字段 `LINGOW_API_IMAGE`、`LINGOW_REALTIME_AUDIO_IMAGE`、`LINGOW_WEB_IMAGE` 使用 `<GitHub owner>` 和 `<commit SHA>`。这三项由 GitHub Actions 自动写入部署文件，不要放入 `DEPLOY_ENV_FILE`。
+- `.env.production.example` 的 `DATABASE_URL`、`REDIS_URL`、六项系统密钥、三项 consumer 名称，以及 SMTP、企业微信和 ASR/LLM/TTS/command provider 字段中的 `<...>`，都要替换为目标生产环境的真实配置。
+- `.env.production.example` 的 `WEB_BIND_IP` 和 `WEB_PORT` 不使用尖括号；默认值分别为 `127.0.0.1` 和 `3000`，需要改变监听地址或端口时直接修改对应值。
+- `docker-compose.yml` 不应填写尖括号文本。它只通过 `${VARIABLE}` 读取环境文件；带 `:?` 的变量为必填项，带 `:-` 的变量使用默认值。Web 的宿主机绑定由 `WEB_BIND_IP` 与 `WEB_PORT` 控制，`VERIFICATION_SENDER` 为空时使用应用默认行为。
+- 本 README 中的 `/srv/lingow` 只是命令示例，不是需要填入环境文件的尖括号字段；执行回滚命令时将其替换为实际 `DEPLOY_PATH`。
 
 ## 发布与回滚
 

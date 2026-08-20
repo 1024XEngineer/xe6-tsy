@@ -13,7 +13,7 @@ services:
       JWT_ISSUER: ${JWT_ISSUER:-lingow-api}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-lingow-client}
       AUTH_PEPPER: ${AUTH_PEPPER:?AUTH_PEPPER is required}
-      VERIFICATION_SENDER: ${VERIFICATION_SENDER:-<verification sender mode>}
+      VERIFICATION_SENDER: ${VERIFICATION_SENDER:-}
       LINGOW_SESSION_RUNTIME: enabled
       REALTIME_BASE_URL: http://realtime-audio:8090
       REALTIME_TICKET_SECRET: ${REALTIME_TICKET_SECRET:?REALTIME_TICKET_SECRET is required}
@@ -94,7 +94,7 @@ services:
     image: ${LINGOW_WEB_IMAGE:?LINGOW_WEB_IMAGE is required}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+      - "${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-3000}:3000"
     depends_on:
       api:
         condition: service_healthy

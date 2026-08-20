@@ -198,33 +198,32 @@ func sourcePhraseDelivered(phrase *translatedPhrase) bool {
 	}
 }
 
-func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Context, turn TurnContext, finalText string) (PhraseTranslationSummary, []UsageFact, bool, error) {
+func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Context, turn TurnContext, finalText string) (PhraseTranslationSummary, string, []UsageFact, bool, error) {
 	if c == nil {
-		return PhraseTranslationSummary{}, nil, false, nil
+		return PhraseTranslationSummary{}, finalText, nil, false, nil
 	}
 	if ctx.Err() != nil {
 		c.discardPhraseSubtitleTurn(turn.ID, true)
-		return PhraseTranslationSummary{}, nil, false, nil
+		return PhraseTranslationSummary{}, finalText, nil, false, nil
 	}
 	c.mu.Lock()
 	utterance := c.utterances[turn.ID]
 	c.mu.Unlock()
 	if utterance == nil {
-		return PhraseTranslationSummary{}, nil, false, nil
+		return PhraseTranslationSummary{}, finalText, nil, false, nil
 	}
 	c.mu.Lock()
-	allDone := allPhraseTranslationsDone(utterance)
-	if allDone {
-		summary, ok := phraseSummary(finalText, utterance)
-		if ok {
+	summary, consumed, fullyReused := phraseSummary(finalText, utterance)
+	if fullyReused {
+		if consumed == len(finalText) {
 			c.mu.Unlock()
 			c.discardPhraseSubtitleTurn(turn.ID, false)
-			return summary, nil, true, nil
+			return summary, "", nil, true, nil
 		}
 	}
 	usage, err := c.detachPhraseSubtitleTurnLocked(turn.ID, true)
 	c.mu.Unlock()
-	return PhraseTranslationSummary{}, usage, false, err
+	return summary, finalText[consumed:], usage, false, err
 }
 
 func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) {
@@ -323,7 +322,10 @@ func (c *PhraseTranslationCoordinator) phraseUsageFact(turn TurnContext, phrase 
 	)
 }
 
-func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (PhraseTranslationSummary, bool) {
+// phraseSummary returns the translated prefix that still reconciles with the final
+// ASR text. Any unfinished or failed phrase remains part of the residual source
+// text, so FinalTurn translates only that portion instead of retrying the prefix.
+func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (PhraseTranslationSummary, int, bool) {
 	var summary PhraseTranslationSummary
 	cursor := 0
 	for sequence := int64(1); ; sequence++ {
@@ -332,11 +334,11 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 			break
 		}
 		if !phrase.done || phrase.err != nil || strings.TrimSpace(phrase.result.Text) == "" {
-			return PhraseTranslationSummary{}, false
+			return summary, cursor, false
 		}
 		index := strings.Index(finalText[cursor:], phrase.event.SourceText)
 		if index < 0 || strings.TrimSpace(finalText[cursor:cursor+index]) != "" {
-			return PhraseTranslationSummary{}, false
+			return PhraseTranslationSummary{}, 0, false
 		}
 		summary.Text += finalText[cursor:cursor+index] + phrase.result.Text
 		cursor += index + len(phrase.event.SourceText)
@@ -344,22 +346,22 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 			summary.Provider, summary.Model, summary.CostAmount, summary.Currency = phrase.result.Provider, phrase.result.Model, phrase.result.CostAmount, phrase.result.Currency
 		}
 		if summary.Provider != phrase.result.Provider || summary.Model != phrase.result.Model || summary.Currency != phrase.result.Currency {
-			return PhraseTranslationSummary{}, false
+			return PhraseTranslationSummary{}, 0, false
 		}
 		if sequence > 1 {
 			var ok bool
 			summary.CostAmount, ok = addPhraseCost(summary.CostAmount, phrase.result.CostAmount)
 			if !ok {
-				return PhraseTranslationSummary{}, false
+				return PhraseTranslationSummary{}, 0, false
 			}
 		}
 		summary.InputTokens += phrase.result.InputTokens
 		summary.OutputTokens += phrase.result.OutputTokens
 	}
 	if cursor == 0 || strings.TrimSpace(finalText[cursor:]) != "" {
-		return PhraseTranslationSummary{}, false
+		return summary, cursor, false
 	}
-	return summary, true
+	return summary, cursor, true
 }
 
 func addPhraseCost(left, right string) (string, bool) {

@@ -860,6 +860,58 @@ func TestPipelineIgnoresPartialASREvents(t *testing.T) {
 	}
 }
 
+func TestPipelineTranslatesOnlyPendingPhraseTailAtFinalization(t *testing.T) {
+	tailStarted := make(chan struct{})
+	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(ctx context.Context, request translate.Request) (translate.Result, error) {
+		if request.Text == "你好" {
+			return translate.Result{Text: "hello", Provider: "phrase", Model: "v1", InputTokens: 1}, nil
+		}
+		close(tailStarted)
+		<-ctx.Done()
+		return translate.Result{}, ctx.Err()
+	}), "phrase", &recordingPhraseSubtitleObserver{}, nil)
+	translator := &translate.FakeProvider{Result: translate.Result{Text: " world", Provider: "final", Model: "v1", InputTokens: 2}}
+	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: finalSink, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phraseCoordinator,
+	})
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: false}}
+	phraseCoordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		phraseCoordinator.mu.Lock()
+		phrase := phraseCoordinator.utterances[turn.ID].phrases[1]
+		done := phrase.done
+		phraseCoordinator.mu.Unlock()
+		if done || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 2, "，世界"))
+	<-tailStarted
+
+	if err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好，世界", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	requests := translator.Requests()
+	if len(requests) != 1 || requests[0].Text != "，世界" {
+		t.Fatalf("final translation requests = %#v", requests)
+	}
+	if len(finalSink.events) != 1 || finalSink.events[0].TranslatedText != "hello world" {
+		t.Fatalf("FinalTurns = %#v", finalSink.events)
+	}
+	if len(usageSink.facts) != 2 || usageSink.facts[0].IdempotencyKey != "usage:turn-1:phrase:1" || usageSink.facts[1].IdempotencyKey != "usage:turn-1:translation" {
+		t.Fatalf("usage facts = %#v", usageSink.facts)
+	}
+}
+
 func testTurn() TurnContext {
 	return TurnContext{ID: "turn-1", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", SequenceNo: 1, LanguageConfig: session.LanguageConfigSnapshot{SessionID: "session-1", Version: 3, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}, StartedAt: time.Unix(1700000000, 0).UTC()}
 }

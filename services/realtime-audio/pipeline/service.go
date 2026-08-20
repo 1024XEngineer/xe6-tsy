@@ -195,22 +195,24 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
 	}
 	translateStartedAt := time.Now()
-	translationResult, reusedPhrases, err := s.phraseTranslation(ctx, turn, result.Text)
+	translationResult, residualText, reusedPhrases, err := s.phraseTranslation(ctx, turn, result.Text)
 	if err != nil {
 		return fmt.Errorf("publish phrase translation usage: %w", err)
 	}
 	if !reusedPhrases {
-		translationResult, err = s.translator.Translate(ctx, translate.Request{
-			SessionID: turn.SessionID, TurnID: turn.ID, Text: result.Text,
+		residualResult, translateErr := s.translator.Translate(ctx, translate.Request{
+			SessionID: turn.SessionID, TurnID: turn.ID, Text: residualText,
 			SourceLanguage: result.SourceLanguage, TargetLanguage: target,
 		})
-		if err != nil {
-			s.latency.ProviderFailure("translation", turn, observedProvider(s.translationProvider, translationResult.Provider), translationResult.Model, err)
-			if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, translationResult); usageErr != nil {
-				return errors.Join(fmt.Errorf("translate Turn %s: %w", turn.ID, err), usageErr)
+		if translateErr != nil {
+			s.latency.ProviderFailure("translation", turn, observedProvider(s.translationProvider, residualResult.Provider), residualResult.Model, translateErr)
+			if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, residualResult); usageErr != nil {
+				return errors.Join(fmt.Errorf("translate Turn %s: %w", turn.ID, translateErr), usageErr)
 			}
-			return fmt.Errorf("translate Turn %s: %w", turn.ID, err)
+			return fmt.Errorf("translate Turn %s: %w", turn.ID, translateErr)
 		}
+		residualResult.Text = translationResult.Text + residualResult.Text
+		translationResult = residualResult
 	}
 	s.latency.ProviderCheckpoint("translate_done", turn, translateStartedAt, observedProvider(s.translationProvider, translationResult.Provider), translationResult.Model,
 		"source_language", result.SourceLanguage,
@@ -297,23 +299,23 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	return nil
 }
 
-func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text string) (translate.Result, bool, error) {
+func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text string) (translate.Result, string, bool, error) {
 	if s.phraseTranslations == nil {
-		return translate.Result{}, false, nil
+		return translate.Result{}, text, false, nil
 	}
-	summary, usage, ok, err := s.phraseTranslations.FinalizePhraseSubtitleTurn(ctx, turn, text)
+	summary, residual, usage, ok, err := s.phraseTranslations.FinalizePhraseSubtitleTurn(ctx, turn, text)
 	if err != nil {
-		return translate.Result{}, false, err
+		return translate.Result{}, "", false, err
 	}
 	for _, fact := range usage {
 		if err := s.usage.Publish(ctx, fact); err != nil {
-			return translate.Result{}, false, err
+			return translate.Result{}, "", false, err
 		}
 	}
 	if !ok {
-		return translate.Result{}, false, nil
+		return translate.Result{Text: summary.Text}, residual, false, nil
 	}
-	return translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}, true, nil
+	return translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}, "", true, nil
 }
 
 func finalTurnAcceptedError(operation string, err error) error {

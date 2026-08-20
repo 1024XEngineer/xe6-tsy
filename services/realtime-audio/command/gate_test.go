@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,145 @@ func TestOpenRejectsInvalidRequestsAndClosedGate(t *testing.T) {
 	gate.Cancel()
 	if err := gate.Open(validOpenRequest()); !errors.Is(err, ErrGateClosed) {
 		t.Fatalf("Open() after Cancel error = %v, want %v", err, ErrGateClosed)
+	}
+}
+
+func TestGateRecordsInterpretationAndOutcome(t *testing.T) {
+	observer := &recordingObserver{}
+	classifier := speechSequence{true, false}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "开始同声传译"}}),
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t), Executor: &recordingExecutor{}, Observer: observer,
+	}, validGateOptions())
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	openTestGate(t, gate)
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond))
+	if result := gate.Consume(t.Context(), testFrame(t, testStart.Add(500*time.Millisecond), 100*time.Millisecond)); result.State != StateRecognizing {
+		t.Fatalf("final Consume() = %#v, want recognizing", result)
+	}
+	waitGateRecognition(t, gate)
+	if len(observer.interpretations) != 1 || observer.interpretations[0].failed || observer.interpretations[0].duration < 0 {
+		t.Fatalf("interpretation observations = %#v, want one successful observation", observer.interpretations)
+	}
+	if len(observer.outcomes) != 1 || observer.outcomes[0].failure != FailureNone || observer.outcomes[0].status != realtimev1.CommandResultApplied {
+		t.Fatalf("outcome observations = %#v, want one applied outcome", observer.outcomes)
+	}
+}
+
+func TestGateCleanupStopsTimersClosesStreamAndFeedback(t *testing.T) {
+	stream := &recordingAudioStream{final: asr.FinalResult{Text: "开始同声传译"}}
+	feedback := &recordingFeedbackSink{}
+	provider := &recordingAudioProvider{stream: stream}
+	classifier := speechSequence{true}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier, ASR: provider, Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t),
+		Executor: &recordingExecutor{}, Feedback: feedback,
+	}, validGateOptions())
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	var timers []*manualTimer
+	gate.afterFunc = func(_ time.Duration, callback func()) commandTimer {
+		timer := &manualTimer{callback: callback}
+		timers = append(timers, timer)
+		return timer
+	}
+	openTestGate(t, gate)
+	if feedback.interrupts != 1 || len(timers) != 2 {
+		t.Fatalf("Open() feedback/timers = %d/%d, want 1/2", feedback.interrupts, len(timers))
+	}
+	if result := gate.Consume(t.Context(), testFrame(t, testStart.Add(100*time.Millisecond), 100*time.Millisecond)); result.State != StateCapturing {
+		t.Fatalf("Consume() = %#v, want capturing", result)
+	}
+	if !timers[1].stopped || gate.silenceTimer != nil {
+		t.Fatalf("speech did not stop no-speech timer: stopped=%v timer=%v", timers[1].stopped, gate.silenceTimer)
+	}
+	gate.Cancel()
+	if !feedback.closed || !stream.closed || gate.State() != StateDormant || gate.captureComplete || gate.stream != nil || gate.attemptCtx != nil || gate.attemptCancel != nil || gate.stopCallerCancel != nil || gate.windowTimer != nil || gate.silenceTimer != nil {
+		t.Fatalf("Cancel() did not clear resources: closed=%v streamClosed=%v state=%q captureComplete=%v streamNil=%v ctxNil=%v cancelNil=%v callerNil=%v windowNil=%v silenceNil=%v", feedback.closed, stream.closed, gate.State(), gate.captureComplete, gate.stream == nil, gate.attemptCtx == nil, gate.attemptCancel == nil, gate.stopCallerCancel == nil, gate.windowTimer == nil, gate.silenceTimer == nil)
+	}
+	if !timers[0].stopped {
+		t.Fatal("Cancel() did not stop window timer")
+	}
+}
+
+func TestGateOpenInterruptsFeedbackAndRetainsExactly256CommandIDs(t *testing.T) {
+	feedback := &recordingFeedbackSink{}
+	classifier := speechSequence{}
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t), Executor: &recordingExecutor{}, Feedback: feedback,
+	}, validGateOptions())
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	for i := 0; i < commandIDRetentionLimit; i++ {
+		request := validOpenRequest()
+		request.CommandID = "command-" + strconv.Itoa(i)
+		if err := gate.Open(request); err != nil {
+			t.Fatalf("Open(%d) error = %v", i, err)
+		}
+	}
+	if len(gate.commandIDOrder) != commandIDRetentionLimit || gate.commandIDOrder[0] != "command-0" {
+		t.Fatalf("retention before overflow = len %d first %q", len(gate.commandIDOrder), gate.commandIDOrder[0])
+	}
+	request := validOpenRequest()
+	request.CommandID = "command-" + strconv.Itoa(commandIDRetentionLimit)
+	if err := gate.Open(request); err != nil {
+		t.Fatalf("overflow Open() error = %v", err)
+	}
+	if len(gate.commandIDOrder) != commandIDRetentionLimit || gate.commandIDOrder[0] != "command-1" {
+		t.Fatalf("retention after overflow = len %d first %q", len(gate.commandIDOrder), gate.commandIDOrder[0])
+	}
+	if _, exists := gate.seenCommandIDs["command-0"]; exists {
+		t.Fatal("oldest command ID remained in duplicate set")
+	}
+	if _, exists := gate.seenCommandIDs["command-1"]; !exists {
+		t.Fatal("second command ID was lost during retention shift")
+	}
+	gate.Cancel()
+	if feedback.interrupts != commandIDRetentionLimit+1 {
+		t.Fatalf("feedback interrupts = %d, want %d", feedback.interrupts, commandIDRetentionLimit+1)
+	}
+}
+
+func TestValidFrameAndSuccessFeedbackBoundaries(t *testing.T) {
+	valid := audio.Frame{PCM: []byte{0, 0}, SampleRate: audio.SupportedSampleRate, CapturedAt: testStart}
+	tests := []struct {
+		name  string
+		frame audio.Frame
+		want  bool
+	}{
+		{name: "valid", frame: valid, want: true},
+		{name: "empty", frame: audio.Frame{SampleRate: audio.SupportedSampleRate, CapturedAt: testStart}},
+		{name: "odd pcm", frame: audio.Frame{PCM: []byte{0}, SampleRate: audio.SupportedSampleRate, CapturedAt: testStart}},
+		{name: "unsupported rate", frame: audio.Frame{PCM: []byte{0, 0}, SampleRate: 8000, CapturedAt: testStart}},
+		{name: "missing timestamp", frame: audio.Frame{PCM: []byte{0, 0}, SampleRate: audio.SupportedSampleRate}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := validFrame(test.frame); got != test.want {
+				t.Fatalf("validFrame() = %v, want %v", got, test.want)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "empty", text: "", want: false},
+		{name: "80 runes", text: strings.Repeat("中", 80), want: true},
+		{name: "81 runes", text: strings.Repeat("中", 81), want: false},
+		{name: "control", text: "确认\n完成", want: false},
+	} {
+		t.Run("feedback/"+test.name, func(t *testing.T) {
+			if got := ValidSuccessFeedback(test.text); got != test.want {
+				t.Fatalf("ValidSuccessFeedback(%q) = %v, want %v", test.text, got, test.want)
+			}
+		})
 	}
 }
 
@@ -1090,8 +1230,9 @@ func (p *recordingAudioProvider) StartStream(context.Context, asr.StreamRequest)
 }
 
 type recordingAudioStream struct {
-	audio [][]byte
-	final asr.FinalResult
+	audio  [][]byte
+	final  asr.FinalResult
+	closed bool
 }
 
 func (s *recordingAudioStream) PushAudio(_ context.Context, pcm []byte) error {
@@ -1109,7 +1250,10 @@ func (s *recordingAudioStream) Finish(context.Context) (asr.FinalResult, error) 
 	return s.final, nil
 }
 
-func (s *recordingAudioStream) Close() error { return nil }
+func (s *recordingAudioStream) Close() error {
+	s.closed = true
+	return nil
+}
 
 func (p *blockingASRProvider) StartStream(ctx context.Context, _ asr.StreamRequest) (asr.Stream, error) {
 	close(p.started)
@@ -1155,6 +1299,31 @@ type recordingExecutor struct {
 	requests []ExecuteRequest
 	err      error
 	result   ExecutionResult
+}
+
+type recordingObserver struct {
+	interpretations []struct {
+		duration time.Duration
+		failed   bool
+	}
+	outcomes []struct {
+		status  realtimev1.CommandResultStatus
+		failure Failure
+	}
+}
+
+func (o *recordingObserver) RecordCommandInterpretation(duration time.Duration, failed bool) {
+	o.interpretations = append(o.interpretations, struct {
+		duration time.Duration
+		failed   bool
+	}{duration: duration, failed: failed})
+}
+
+func (o *recordingObserver) RecordCommandOutcome(status realtimev1.CommandResultStatus, failure Failure) {
+	o.outcomes = append(o.outcomes, struct {
+		status  realtimev1.CommandResultStatus
+		failure Failure
+	}{status: status, failure: failure})
 }
 
 type recordingResultSink struct {

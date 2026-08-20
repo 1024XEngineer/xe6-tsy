@@ -1,8 +1,10 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -12,6 +14,115 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 )
+
+func TestStartAudioPropagatesTurnOpenAndRuntimeErrors(t *testing.T) {
+	wantOpenErr := errors.New("language config unavailable")
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	openProcessor := NewTurnProcessor(turnProcessorDependenciesForMutation(service, &errorLanguageReader{err: wantOpenErr}))
+	if _, err := openProcessor.StartAudio(t.Context(), TurnProcessRequest{SessionID: "session-1"}); !errors.Is(err, wantOpenErr) {
+		t.Fatalf("StartAudio() open error = %v, want %v", err, wantOpenErr)
+	}
+
+	wantRuntimeErr := errors.New("runtime unavailable")
+	runtime := stateFailingRuntimeReporter{failState: session.RuntimeASRProcessing, err: wantRuntimeErr}
+	runtimeService := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: runtime,
+	})
+	runtimeProcessor := NewTurnProcessor(turnProcessorDependenciesForMutation(runtimeService, &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+	}}))
+	if _, err := runtimeProcessor.StartAudio(t.Context(), TurnProcessRequest{SessionID: "session-1"}); !errors.Is(err, wantRuntimeErr) {
+		t.Fatalf("StartAudio() runtime error = %v, want %v", err, wantRuntimeErr)
+	}
+}
+
+func TestStartAudioInitializesInterpretationPhrases(t *testing.T) {
+	phrases := NewPhraseSubtitleProcessor(&recordingPhraseSubtitleObserver{}, PhraseStabilizerOptions{StableAfter: time.Hour})
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	processor := NewTurnProcessor(turnProcessorDependenciesForMutation(service, &fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+	}}))
+	processor.phrases = phrases
+	turn, err := processor.StartAudio(t.Context(), TurnProcessRequest{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("StartAudio() error = %v", err)
+	}
+	defer turn.Close()
+	phrases.mu.Lock()
+	defer phrases.mu.Unlock()
+	if phrases.utterances[turn.turn.ID] == nil {
+		t.Fatalf("phrase utterances = %#v, want initialized turn", phrases.utterances)
+	}
+}
+
+func TestStartAudioRejectsNilASRStreamAndCleansPhraseState(t *testing.T) {
+	phrases := NewPhraseSubtitleProcessor(&recordingPhraseSubtitleObserver{}, PhraseStabilizerOptions{})
+	observer := &recordingProviderFailureObserver{}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		Latency: LatencyLogger{Observer: observer},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{ASR: nilStreamProvider{}, Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+	}}), Pipeline: service, Finals: service})
+	processor.phrases = phrases
+	_, err := processor.StartAudio(t.Context(), TurnProcessRequest{SessionID: "session-1"})
+	if !errors.Is(err, ErrASRStreamRequired) {
+		t.Fatalf("StartAudio() error = %v, want ErrASRStreamRequired", err)
+	}
+	if observer.stage != "asr_stream" || observer.calls != 1 {
+		t.Fatalf("provider failure observer = %#v, want asr_stream", observer)
+	}
+	phrases.mu.Lock()
+	defer phrases.mu.Unlock()
+	if len(phrases.utterances) != 0 {
+		t.Fatalf("phrase state = %#v, want discarded", phrases.utterances)
+	}
+}
+
+func TestStartAudioReportsStreamCheckpoint(t *testing.T) {
+	var output bytes.Buffer
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		Latency: LatencyLogger{Logger: slog.New(slog.NewJSONHandler(&output, nil))},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}), Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+	}}), Pipeline: service, Finals: service})
+	turn, err := processor.StartAudio(t.Context(), TurnProcessRequest{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("StartAudio() error = %v", err)
+	}
+	turn.Close()
+	if !bytes.Contains(output.Bytes(), []byte(`"stage":"asr_stream_started"`)) {
+		t.Fatalf("checkpoint log = %s, want asr_stream_started", output.String())
+	}
+}
+
+func turnProcessorDependenciesForMutation(service *PipelineService, languages session.LanguageConfigReader) TurnProcessorDependencies {
+	return TurnProcessorDependencies{ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}), Opener: newTestTurnOpener(languages), Pipeline: service, Finals: service}
+}
+
+type errorLanguageReader struct{ err error }
+
+func (r *errorLanguageReader) GetCurrentConfig(context.Context, string) (session.LanguageConfigSnapshot, error) {
+	return session.LanguageConfigSnapshot{}, r.err
+}
+
+type nilStreamProvider struct{}
+
+func (nilStreamProvider) StartStream(context.Context, asr.StreamRequest) (asr.Stream, error) {
+	return nil, nil
+}
 
 func TestTurnProcessorRejectsEveryMissingDependency(t *testing.T) {
 	valid := func() TurnProcessorDependencies {

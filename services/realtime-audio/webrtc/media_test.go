@@ -402,6 +402,122 @@ func TestPionTransportCloseUnblocksAudioSource(t *testing.T) {
 	}
 }
 
+func TestMediaConfigRejectsInvalidSampleRateAndChannels(t *testing.T) {
+	for _, config := range []MediaConfig{{SampleRate: -1}, {SampleRate: 16_000, Channels: 2}} {
+		if _, err := config.normalized(); !errors.Is(err, ErrMediaConfigInvalid) {
+			t.Fatalf("normalized(%#v) error = %v, want ErrMediaConfigInvalid", config, err)
+		}
+	}
+}
+
+func TestPionAudioTrackRejectsInvalidChunksAndPendingPlayback(t *testing.T) {
+	if _, err := newPionAudioTrack(nil, MediaConfig{}); !errors.Is(err, ErrMediaUnavailable) {
+		t.Fatalf("nil track error = %v, want ErrMediaUnavailable", err)
+	}
+	expected := errors.New("second RTP write failed")
+	recorder := &partialFailureRTPTrackRecorder{failAt: 2, err: expected}
+	track, err := newPionAudioTrack(recorder, MediaConfig{SampleRate: 16_000, Channels: 1})
+	if err != nil {
+		t.Fatalf("newPionAudioTrack() error = %v", err)
+	}
+	for _, chunk := range []pipeline.AudioChunk{{PlaybackID: "", Data: []byte{1, 2}}, {PlaybackID: "p", Data: []byte{1}}} {
+		if err := track.Write(context.Background(), chunk); !errors.Is(err, ErrInvalidDependency) {
+			t.Fatalf("Write(%#v) error = %v, want ErrInvalidDependency", chunk, err)
+		}
+	}
+	chunk := pipeline.AudioChunk{PlaybackID: "p", SequenceNo: 1, Data: make([]byte, (320+160)*2)}
+	if err := track.Write(context.Background(), chunk); !errors.Is(err, expected) {
+		t.Fatalf("first Write() error = %v, want %v", err, expected)
+	}
+	if err := track.Write(context.Background(), pipeline.AudioChunk{PlaybackID: "p", SequenceNo: 2, Data: []byte{1, 2}}); !errors.Is(err, ErrAudioChunkPending) {
+		t.Fatalf("overlapping playback Write() error = %v, want ErrAudioChunkPending", err)
+	}
+	if err := track.Write(context.Background(), chunk); err != nil {
+		t.Fatalf("retry Write() error = %v", err)
+	}
+}
+
+func TestPionEventSinkReportsContextEncodingSendAndTerminalErrors(t *testing.T) {
+	var nilSink *PionEventSink
+	if err := nilSink.PublishJSON(context.Background(), nil); !errors.Is(err, ErrMediaUnavailable) {
+		t.Fatalf("nil sink error = %v, want ErrMediaUnavailable", err)
+	}
+	channel := &dataChannelRecorder{state: pion.DataChannelStateOpen}
+	sink := newPionEventSink(channel)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sink.PublishJSON(canceled, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled PublishJSON() error = %v, want context.Canceled", err)
+	}
+	if err := sink.PublishJSON(context.Background(), make(chan int)); err == nil || !strings.Contains(err.Error(), "encode translation event") {
+		t.Fatalf("unencodable PublishJSON() error = %v", err)
+	}
+	sink.close(errors.New("transport failed"))
+	if err := sink.PublishJSON(context.Background(), nil); !strings.Contains(err.Error(), "transport failed") {
+		t.Fatalf("closed PublishJSON() error = %v, want transport failure", err)
+	}
+
+	failing := newPionEventSink(&failingDataChannelRecorder{err: errors.New("send failed")})
+	if err := failing.PublishJSON(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "send translation event") {
+		t.Fatalf("send failure = %v", err)
+	}
+}
+
+func TestPionAudioSourceSkipsDecodeFailuresAndMaintainsMonotonicCaptureTimes(t *testing.T) {
+	track := &remoteTrackRecorder{packets: make(chan *rtp.Packet, 3)}
+	decoder := &sequenceRTPDecoder{outputs: [][]byte{nil, {1, 2}, {3, 4}}, errors: []error{errors.New("bad packet"), nil, nil}}
+	capturedAt := time.Unix(1700000000, 0).UTC()
+	source, err := newPionAudioSource(decoder, func() time.Time { return capturedAt })
+	if err != nil {
+		t.Fatalf("newPionAudioSource() error = %v", err)
+	}
+	if err := source.Attach(track); err != nil {
+		t.Fatalf("Attach() error = %v", err)
+	}
+	if err := source.Attach(track); !errors.Is(err, ErrRemoteTrackAttached) {
+		t.Fatalf("second Attach() error = %v, want ErrRemoteTrackAttached", err)
+	}
+	track.packets <- &rtp.Packet{Payload: []byte{1}}
+	track.packets <- &rtp.Packet{Payload: []byte{2}}
+	track.packets <- &rtp.Packet{Payload: []byte{3}}
+	first, err := source.ReadFrame(context.Background())
+	if err != nil {
+		t.Fatalf("first ReadFrame() error = %v", err)
+	}
+	second, err := source.ReadFrame(context.Background())
+	if err != nil {
+		t.Fatalf("second ReadFrame() error = %v", err)
+	}
+	if !second.CapturedAt.After(first.CapturedAt) {
+		t.Fatalf("capture times are not monotonic: %v then %v", first.CapturedAt, second.CapturedAt)
+	}
+	close(track.packets)
+	if _, err := source.ReadFrame(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal ReadFrame() error = %v, want io.EOF", err)
+	}
+}
+
+func TestPionAudioSourceReturnsRemoteTrackError(t *testing.T) {
+	if _, err := newPionAudioSource(nil, nil); !errors.Is(err, ErrDecoderRequired) {
+		t.Fatalf("nil decoder error = %v, want ErrDecoderRequired", err)
+	}
+	trackErr := errors.New("remote read failed")
+	track := &errorRemoteTrack{err: trackErr}
+	source, err := newPionAudioSource(&fakeRTPDecoder{pcm: []byte{1, 2}}, nil)
+	if err != nil {
+		t.Fatalf("newPionAudioSource() error = %v", err)
+	}
+	if err := source.Attach(nil); !errors.Is(err, ErrRemoteTrackRequired) {
+		t.Fatalf("nil Attach() error = %v, want ErrRemoteTrackRequired", err)
+	}
+	if err := source.Attach(track); err != nil {
+		t.Fatalf("Attach() error = %v", err)
+	}
+	if _, err := source.ReadFrame(context.Background()); !errors.Is(err, trackErr) {
+		t.Fatalf("ReadFrame() error = %v, want %v", err, trackErr)
+	}
+}
+
 func contains(value, part string) bool {
 	return strings.Contains(value, part)
 }
@@ -518,6 +634,26 @@ type fakeRTPDecoder struct{ pcm []byte }
 
 func (d *fakeRTPDecoder) Decode([]byte) ([]byte, error) { return append([]byte(nil), d.pcm...), nil }
 
+type sequenceRTPDecoder struct {
+	outputs [][]byte
+	errors  []error
+	index   int
+}
+
+func (d *sequenceRTPDecoder) Decode([]byte) ([]byte, error) {
+	index := d.index
+	d.index++
+	var output []byte
+	if index < len(d.outputs) {
+		output = d.outputs[index]
+	}
+	var err error
+	if index < len(d.errors) {
+		err = d.errors[index]
+	}
+	return output, err
+}
+
 type remoteTrackRecorder struct{ packets chan *rtp.Packet }
 
 func (r *remoteTrackRecorder) ReadRTP() (*rtp.Packet, error) {
@@ -527,6 +663,18 @@ func (r *remoteTrackRecorder) ReadRTP() (*rtp.Packet, error) {
 	}
 	return packet, nil
 }
+
+type errorRemoteTrack struct{ err error }
+
+func (t *errorRemoteTrack) ReadRTP() (*rtp.Packet, error) { return nil, t.err }
+
+type failingDataChannelRecorder struct{ err error }
+
+func (*failingDataChannelRecorder) OnOpen(func()) {}
+func (*failingDataChannelRecorder) ReadyState() pion.DataChannelState {
+	return pion.DataChannelStateOpen
+}
+func (d *failingDataChannelRecorder) SendText(string) error { return d.err }
 
 type mediaPeerRecorder struct {
 	*fakePionPeerConnection

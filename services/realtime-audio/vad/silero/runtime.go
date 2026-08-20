@@ -66,19 +66,9 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 		return nil, fmt.Errorf("silero model %q: %w", modelPath, err)
 	}
 
-	threshold := cfg.Threshold
-	if threshold <= 0 {
-		threshold = defaultThreshold
-	}
-	neg := cfg.NegThreshold
-	if neg <= 0 {
-		neg = threshold - 0.15
-		if neg < 0.01 {
-			neg = 0.01
-		}
-	}
-	if neg > threshold {
-		return nil, fmt.Errorf("silero NegThreshold (%v) must be <= Threshold (%v)", neg, threshold)
+	threshold, neg, err := normalizeThresholds(cfg.Threshold, cfg.NegThreshold)
+	if err != nil {
+		return nil, err
 	}
 
 	engine, err := ort.NewEngine(libraryPath)
@@ -114,6 +104,22 @@ func NewRuntime(cfg RuntimeConfig) (*Runtime, error) {
 	}
 	runtime.SetFinalizer(rt, func(r *Runtime) { _ = r.Close() })
 	return rt, nil
+}
+
+func normalizeThresholds(threshold, neg float64) (float64, float64, error) {
+	if threshold <= 0 {
+		threshold = defaultThreshold
+	}
+	if neg <= 0 {
+		neg = threshold - 0.15
+		if neg < 0.01 {
+			neg = 0.01
+		}
+	}
+	if neg > threshold {
+		return 0, 0, fmt.Errorf("silero NegThreshold (%v) must be <= Threshold (%v)", neg, threshold)
+	}
+	return threshold, neg, nil
 }
 
 // NewClassifier returns an isolated speech classifier for one realtime session.

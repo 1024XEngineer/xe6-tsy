@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 )
 
 func secretEnv(secret string) func(string) string {
@@ -187,6 +189,45 @@ func TestLoadProcessConfigRejectsIncompleteCommandAPISettings(t *testing.T) {
 	}
 }
 
+func TestLoadProcessConfigCommandTimeoutBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		raw       string
+		want      time.Duration
+		wantError bool
+	}{
+		{name: "one millisecond", raw: "1", want: time.Millisecond},
+		{name: "zero", raw: "0", wantError: true},
+		{name: "negative", raw: "-1", wantError: true},
+		{name: "not a number", raw: "invalid", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := loadProcessConfig(func(key string) string {
+				switch key {
+				case "REALTIME_TICKET_SECRET":
+					return strings.Repeat("s", minTicketSecretBytes)
+				case "COMMAND_CONFIG_TIMEOUT_MS":
+					return test.raw
+				default:
+					return ""
+				}
+			})
+			if test.wantError {
+				if err == nil {
+					t.Fatal("loadProcessConfig() error = nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadProcessConfig() error = %v", err)
+			}
+			if cfg.CommandConfigTimeout != test.want {
+				t.Fatalf("CommandConfigTimeout = %s, want %s", cfg.CommandConfigTimeout, test.want)
+			}
+		})
+	}
+}
+
 func TestApplySubtitleOnlyOverridesForcesMockTTS(t *testing.T) {
 	cfg := processConfig{ForceMockTTS: true}
 	providers := config.ProviderConfig{
@@ -206,6 +247,18 @@ func TestApplySubtitleOnlyOverridesForcesMockTTS(t *testing.T) {
 	got = applySubtitleOnlyOverrides(cfg, providers)
 	if got.TTS.Provider != config.ProviderAliyun {
 		t.Fatalf("TTS provider = %q, want aliyun when audio downlink enabled", got.TTS.Provider)
+	}
+}
+
+func TestWebRTCConfigSampleRateMatchesDownlink(t *testing.T) {
+	if got := webrtcConfigSampleRate(processConfig{DownlinkMode: "pcm"}); got != 24000 {
+		t.Fatalf("PCM sample rate = %d, want 24000", got)
+	}
+	if got := webrtcConfigSampleRate(processConfig{DownlinkMode: "opus"}); got != 48000 {
+		t.Fatalf("Opus sample rate = %d, want 48000", got)
+	}
+	if got := webrtcConfigSampleRate(processConfig{}); got != 48000 {
+		t.Fatalf("default sample rate = %d, want 48000", got)
 	}
 }
 
@@ -278,6 +331,38 @@ func TestNewControlPlaneHandlerRejectsMissingSemanticCommandCredentials(t *testi
 	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
 	if err == nil || !strings.Contains(err.Error(), "command API key is required") {
 		t.Fatalf("newControlPlaneHandler() error = %v, want missing semantic command credentials", err)
+	}
+}
+
+func TestNewControlPlaneHandlerRejectsInvalidProviderConfiguration(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("ASR_PROVIDER", "unsupported")
+
+	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err == nil || !strings.Contains(err.Error(), "load provider config") {
+		t.Fatalf("newControlPlaneHandler() error = %v, want provider configuration error", err)
+	}
+}
+
+func TestNewControlPlaneHandlerRejectsDatabaseWithoutURL(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("REALTIME_API_DATABASE", "enabled")
+	t.Setenv("DATABASE_URL", "")
+
+	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL is empty") {
+		t.Fatalf("newControlPlaneHandler() error = %v, want missing database URL", err)
+	}
+}
+
+func TestNewControlPlaneHandlerRejectsValkeyWithoutURL(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("REALTIME_OUTBOX", "valkey")
+	t.Setenv("REDIS_URL", "")
+
+	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err == nil || !strings.Contains(err.Error(), "REDIS_URL is required") {
+		t.Fatalf("newControlPlaneHandler() error = %v, want missing Redis URL", err)
 	}
 }
 
@@ -619,6 +704,45 @@ func TestMockOfflineProvidersSwitchWithSourceLanguage(t *testing.T) {
 	}
 	if translated.Text != "你好" {
 		t.Fatalf("translated = %#v", translated)
+	}
+}
+
+func TestMockOfflineProvidersDefaultLanguageAndTTSChunk(t *testing.T) {
+	providers := mockOfflineProviders("")
+	asrStream, err := providers.ASR.StartStream(context.Background(), asr.StreamRequest{})
+	if err != nil {
+		t.Fatalf("ASR StartStream: %v", err)
+	}
+	final, err := asrStream.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("ASR Finish: %v", err)
+	}
+	if final.SourceLanguage != "zh-CN" || final.Text != "你好" {
+		t.Fatalf("default ASR final = %#v", final)
+	}
+
+	ttsStream, err := providers.TTS.StartStream(context.Background(), tts.Request{Text: "hello", TargetLanguage: "en-US"})
+	if err != nil {
+		t.Fatalf("TTS StartStream: %v", err)
+	}
+	var chunks []struct {
+		sequence int64
+		data     []byte
+	}
+	for chunk := range ttsStream.Chunks() {
+		chunks = append(chunks, struct {
+			sequence int64
+			data     []byte
+		}{sequence: chunk.SequenceNo, data: append([]byte(nil), chunk.Data...)})
+	}
+	if _, err := ttsStream.Finish(context.Background()); err != nil {
+		t.Fatalf("TTS Finish: %v", err)
+	}
+	if err := ttsStream.Close(); err != nil {
+		t.Fatalf("TTS Close: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].sequence != 1 || !bytes.Equal(chunks[0].data, []byte{0, 0, 0, 0}) {
+		t.Fatalf("TTS chunks = %#v, want one zero PCM chunk with sequence 1", chunks)
 	}
 }
 

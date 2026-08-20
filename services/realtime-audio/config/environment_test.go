@@ -109,6 +109,75 @@ func TestLoadProviderConfigAllowsNegativeQwenVADThreshold(t *testing.T) {
 	}
 }
 
+func TestLoadProviderConfigAcceptsASRValidationBoundaries(t *testing.T) {
+	tests := []struct {
+		name   string
+		values map[string]string
+		check  func(t *testing.T, config ProviderConfig)
+	}{
+		{
+			name:   "minimum VAD threshold",
+			values: map[string]string{"ASR_VAD_THRESHOLD": "-1"},
+			check: func(t *testing.T, config ProviderConfig) {
+				t.Helper()
+				if config.ASR.VADThreshold != -1 {
+					t.Fatalf("VAD threshold = %v, want -1", config.ASR.VADThreshold)
+				}
+			},
+		},
+		{
+			name:   "maximum VAD threshold",
+			values: map[string]string{"ASR_VAD_THRESHOLD": "1"},
+			check: func(t *testing.T, config ProviderConfig) {
+				t.Helper()
+				if config.ASR.VADThreshold != 1 {
+					t.Fatalf("VAD threshold = %v, want 1", config.ASR.VADThreshold)
+				}
+			},
+		},
+		{
+			name:   "minimum silence duration",
+			values: map[string]string{"ASR_SILENCE_DURATION_MS": "200"},
+			check: func(t *testing.T, config ProviderConfig) {
+				t.Helper()
+				if config.ASR.SilenceDuration != 200*time.Millisecond {
+					t.Fatalf("silence duration = %v, want 200ms", config.ASR.SilenceDuration)
+				}
+			},
+		},
+		{
+			name:   "maximum silence duration",
+			values: map[string]string{"ASR_SILENCE_DURATION_MS": "6000"},
+			check: func(t *testing.T, config ProviderConfig) {
+				t.Helper()
+				if config.ASR.SilenceDuration != 6*time.Second {
+					t.Fatalf("silence duration = %v, want 6s", config.ASR.SilenceDuration)
+				}
+			},
+		},
+		{
+			name:   "explicit zero sample rate",
+			values: map[string]string{"ASR_SAMPLE_RATE": "0"},
+			check: func(t *testing.T, config ProviderConfig) {
+				t.Helper()
+				if config.ASR.SampleRate != 0 {
+					t.Fatalf("sample rate = %d, want 0", config.ASR.SampleRate)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := LoadProviderConfig(mapLookup(test.values))
+			if err != nil {
+				t.Fatalf("LoadProviderConfig() error = %v", err)
+			}
+			test.check(t, config)
+		})
+	}
+}
+
 func TestLoadProviderConfigRequiresLookup(t *testing.T) {
 	_, err := LoadProviderConfig(nil)
 	if !errors.Is(err, ErrEnvironmentLookupRequired) {

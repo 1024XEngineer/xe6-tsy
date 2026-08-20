@@ -117,7 +117,9 @@ func (p *Provider) Reply(ctx context.Context, request assistant.Request) (assist
 }
 
 func systemPrompt(language string) string {
-	return "You are Lingow, a concise voice assistant. Answer the user's request directly in " + language + ". Keep the response natural for speech output."
+	return "You are 小灵, the Lingow voice assistant. Lingow is the product brand, while 小灵 is your Chinese spoken name. " +
+		"When answering in Chinese or speaking with a Chinese user, always refer to yourself as 小灵, never as Lingow. " +
+		"Answer the user's request directly in " + language + ". Keep the response concise and natural for speech output."
 }
 
 type chatRequest struct {

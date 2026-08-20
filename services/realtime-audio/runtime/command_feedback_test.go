@@ -215,6 +215,52 @@ func TestCommandSpeechFeedbackUsageFailureDoesNotRetrySpeech(t *testing.T) {
 	}
 }
 
+func TestCommandSpeechFeedbackDefaultsGenerationTimeout(t *testing.T) {
+	feedback := newCommandSpeechFeedback(commandSpeechFeedbackDependencies{})
+	if feedback.deps.SuccessFeedbackTimeout != commandFeedbackLLMTimeout {
+		t.Fatalf("default feedback timeout = %s, want %s", feedback.deps.SuccessFeedbackTimeout, commandFeedbackLLMTimeout)
+	}
+}
+
+func TestCommandSpeechFeedbackSkipsIncompleteLLMUsageAndReturnsPublishError(t *testing.T) {
+	usageErr := errors.New("usage unavailable")
+	tests := []struct {
+		name         string
+		result       command.SuccessFeedbackResult
+		wantCalls    int
+		wantUsageErr bool
+	}{
+		{name: "missing provider", result: command.SuccessFeedbackResult{Model: "model", InputTokens: 1}},
+		{name: "missing model", result: command.SuccessFeedbackResult{Provider: "provider", InputTokens: 1}},
+		{name: "no tokens", result: command.SuccessFeedbackResult{Provider: "provider", Model: "model"}},
+		{
+			name:      "publish error",
+			result:    command.SuccessFeedbackResult{Provider: "provider", Model: "model", InputTokens: 1},
+			wantCalls: 1, wantUsageErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			usage := &failingCommandUsageSink{err: usageErr}
+			feedback := newCommandSpeechFeedback(commandSpeechFeedbackDependencies{
+				Usage: usage, AccountID: "account-1", TraceID: "trace-1", Now: time.Now,
+			})
+
+			err := feedback.publishFeedbackUsage(t.Context(), validCommandFeedbackEvent(), test.result)
+			if errors.Is(err, usageErr) != test.wantUsageErr {
+				t.Fatalf("publishFeedbackUsage() error = %v, want usage error = %t", err, test.wantUsageErr)
+			}
+			if usage.calls != test.wantCalls {
+				t.Fatalf("usage publish calls = %d, want %d", usage.calls, test.wantCalls)
+			}
+			if test.wantCalls > 0 && !usage.hadDeadline {
+				t.Fatal("usage publish context did not have a deadline")
+			}
+		})
+	}
+}
+
 func validCommandFeedbackEvent() realtimev1.CommandResultEvent {
 	return realtimev1.CommandResultEvent{
 		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,

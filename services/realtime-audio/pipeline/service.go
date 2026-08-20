@@ -195,7 +195,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
 	}
 	translateStartedAt := time.Now()
-	translationResult, residualText, reusedPhrases, skipTranslationUsage, err := s.phraseTranslation(ctx, turn, result.Text)
+	translationResult, residualText, reusedPhrases, err := s.phraseTranslation(ctx, turn, result.Text, result.SourceLanguage, target)
 	if err != nil {
 		return fmt.Errorf("publish phrase translation usage: %w", err)
 	}
@@ -222,7 +222,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		"output_tokens", translationResult.OutputTokens,
 	)
 	var translationUsage UsageFact
-	hasTranslationUsage := !skipTranslationUsage
+	hasTranslationUsage := true
 	if hasTranslationUsage {
 		translationUsage, err = s.buildUsageFact(
 			turn,
@@ -307,23 +307,59 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	return nil
 }
 
-func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text string) (translate.Result, string, bool, bool, error) {
+func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text, sourceLanguage, targetLanguage string) (translate.Result, string, bool, error) {
 	if s.phraseTranslations == nil {
-		return translate.Result{}, text, false, false, nil
+		return translate.Result{}, text, false, nil
 	}
 	summary, residual, usage, ok, err := s.phraseTranslations.FinalizePhraseSubtitleTurn(ctx, turn, text)
 	if err != nil {
-		return translate.Result{}, "", false, false, err
+		return translate.Result{}, "", false, err
 	}
 	for _, fact := range usage {
 		if err := s.usage.Publish(ctx, fact); err != nil {
-			return translate.Result{}, "", false, false, err
+			return translate.Result{}, "", false, err
 		}
 	}
 	if !ok {
-		return translate.Result{Text: summary.Text}, residual, false, false, nil
+		return translate.Result{Text: summary.Text}, residual, false, nil
 	}
-	return translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}, "", true, summary.SkipUsage, nil
+	result := translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}
+	for _, segment := range summary.ResidualSegments {
+		residualResult, translateErr := s.translator.Translate(ctx, translate.Request{
+			SessionID: turn.SessionID, TurnID: turn.ID, Text: segment,
+			SourceLanguage: sourceLanguage, TargetLanguage: targetLanguage,
+		})
+		if translateErr != nil {
+			if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, residualResult); usageErr != nil {
+				return translate.Result{}, "", false, errors.Join(translateErr, usageErr)
+			}
+			return translate.Result{}, "", false, translateErr
+		}
+		if err := mergeTranslationResult(&result, residualResult); err != nil {
+			return translate.Result{}, "", false, err
+		}
+		result.Text = strings.Replace(result.Text, phraseResidualMarker, residualResult.Text, 1)
+	}
+	return result, "", true, nil
+}
+
+func mergeTranslationResult(total *translate.Result, next translate.Result) error {
+	hadUsage := total.Provider != ""
+	if !hadUsage {
+		total.Provider, total.Model, total.CostAmount, total.Currency = next.Provider, next.Model, next.CostAmount, next.Currency
+	} else if total.Provider != next.Provider || total.Model != next.Model || total.Currency != next.Currency {
+		return fmt.Errorf("translation providers differ across phrase settlement: %s/%s and %s/%s", total.Provider, total.Model, next.Provider, next.Model)
+	}
+	if hadUsage && next.CostAmount != "" {
+		var ok bool
+		total.CostAmount, ok = addPhraseCost(total.CostAmount, next.CostAmount)
+		if !ok {
+			return fmt.Errorf("cannot aggregate translation cost %q and %q", total.CostAmount, next.CostAmount)
+		}
+	}
+	total.InputTokens += next.InputTokens
+	total.OutputTokens += next.OutputTokens
+	return nil
 }
 
 func finalTurnAcceptedError(operation string, err error) error {

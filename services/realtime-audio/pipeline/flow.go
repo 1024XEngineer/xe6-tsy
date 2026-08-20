@@ -233,6 +233,12 @@ func (t *AudioTurn) Finish(ctx context.Context) (TurnContext, error) {
 	if strings.TrimSpace(result.Text) == "" || isTrivialASRText(result.Text) {
 		// 本地 VAD 或手动 commit 可能产生空片段、语气词片段；这类输入不应进入业务模式，
 		// 直接恢复 listening，避免生成无意义的 FinalTurn、用量和 TTS。
+		if turn.Mode.Mode == realtimev1.ModeInterpretation && p.phrases != nil {
+			// Flush removes the stabilizer entry before this branch. Explicitly
+			// discard the translation coordinator as well so empty turns do not
+			// retain provider work or per-utterance state.
+			p.phrases.Discard(turn.ID)
+		}
 		if err := p.pipeline.reportListening(ctx, turn); err != nil {
 			return turn, err
 		}

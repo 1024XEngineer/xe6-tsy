@@ -17,7 +17,7 @@ import (
 type PhraseTranslationSummary struct {
 	Text, Provider, Model, CostAmount, Currency string
 	InputTokens, OutputTokens                   int64
-	SkipUsage                                   bool
+	ResidualSegments                            []string
 }
 
 // PhraseTranslationCoordinator translates stable source phrases without blocking ASR reads.
@@ -42,6 +42,7 @@ type phraseTranslationUtterance struct {
 	next           int64
 	observerMu     sync.Mutex
 	sourceTail     chan struct{}
+	sourceOnly     bool
 }
 
 type translatedPhrase struct {
@@ -97,6 +98,28 @@ func (c *PhraseTranslationCoordinator) StartPhraseSubtitleTurn(turn TurnContext,
 	c.mu.Unlock()
 }
 
+func (c *PhraseTranslationCoordinator) BeginPhraseSubtitleFinalFlush(turnID string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	if utterance := c.utterances[turnID]; utterance != nil {
+		utterance.sourceOnly = true
+	}
+	c.mu.Unlock()
+}
+
+func (c *PhraseTranslationCoordinator) EndPhraseSubtitleFinalFlush(turnID string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	if utterance := c.utterances[turnID]; utterance != nil {
+		utterance.sourceOnly = false
+	}
+	c.mu.Unlock()
+}
+
 func (c *PhraseTranslationCoordinator) ObservePhraseSubtitle(ctx context.Context, event realtimev1.PhraseSubtitleEvent) {
 	if c == nil || event.Status != realtimev1.PhraseSubtitleSourceStable {
 		return
@@ -111,9 +134,12 @@ func (c *PhraseTranslationCoordinator) ObservePhraseSubtitle(ctx context.Context
 	previousSource := utterance.sourceTail
 	utterance.sourceTail = phrase.sourceDelivered
 	utterance.phrases[event.PhraseSequence] = phrase
+	sourceOnly := utterance.sourceOnly
 	c.mu.Unlock()
 	go c.publishSourcePhrase(utterance, phrase, ctx, previousSource)
-	go c.translate(utterance, phrase)
+	if !sourceOnly {
+		go c.translate(utterance, phrase)
+	}
 }
 
 func (c *PhraseTranslationCoordinator) publishSourcePhrase(utterance *phraseTranslationUtterance, phrase *translatedPhrase, ctx context.Context, previous <-chan struct{}) {
@@ -219,31 +245,14 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 	summary, consumed, fullyReused := phraseSummary(finalText, utterance)
 	if fullyReused {
 		if consumed == len(finalText) {
-			usage := phraseFailureUsageFactsLocked(utterance, c)
 			c.mu.Unlock()
 			c.discardPhraseSubtitleTurn(turn.ID, false)
-			return summary, "", usage, true, nil
+			return summary, "", nil, true, nil
 		}
 	}
-	usage, err := c.detachPhraseSubtitleTurnLocked(turn.ID, true)
+	usage, err := c.detachPhraseSubtitleTurnLocked(turn.ID, false)
 	c.mu.Unlock()
 	return summary, finalText[consumed:], usage, false, err
-}
-
-func phraseFailureUsageFactsLocked(utterance *phraseTranslationUtterance, c *PhraseTranslationCoordinator) []UsageFact {
-	var usage []UsageFact
-	for _, phrase := range utterance.phrases {
-		if !phrase.done || phrase.usageHanded || (phrase.err == nil && strings.TrimSpace(phrase.result.Text) != "") || !hasPhraseUsage(phrase.result) {
-			continue
-		}
-		fact, err := c.phraseUsageFact(utterance.turn, phrase)
-		if err != nil {
-			continue
-		}
-		phrase.usageHanded = true
-		usage = append(usage, fact)
-	}
-	return usage
 }
 
 func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) {
@@ -342,10 +351,11 @@ func (c *PhraseTranslationCoordinator) phraseUsageFact(turn TurnContext, phrase 
 	)
 }
 
-// phraseSummary snapshots phrase state without waiting for in-flight providers.
-// Completed phrases are reused in sequence; failed or unfinished phrases remain as
-// source text for the immutable FinalTurn, preventing a second translation request
-// for work that was already started asynchronously.
+const phraseResidualMarker = "\x00"
+
+// phraseSummary builds a final translation template without waiting for phrase
+// workers. Successful phrases are reused; unresolved source segments are replaced
+// by markers and translated once by the final settlement path.
 func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (PhraseTranslationSummary, int, bool) {
 	var summary PhraseTranslationSummary
 	cursor := 0
@@ -363,31 +373,51 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 		cursor += index + len(phrase.event.SourceText)
 		if phrase.done && phrase.err == nil && strings.TrimSpace(phrase.result.Text) != "" {
 			summary.Text += phrase.result.Text
-			if summary.Provider == "" {
-				summary.Provider, summary.Model, summary.CostAmount, summary.Currency = phrase.result.Provider, phrase.result.Model, phrase.result.CostAmount, phrase.result.Currency
-			} else if summary.Provider != phrase.result.Provider || summary.Model != phrase.result.Model || summary.Currency != phrase.result.Currency {
+			if !mergePhraseUsage(&summary, phrase.result) {
 				return PhraseTranslationSummary{}, 0, false
 			}
-			if covered {
-				var ok bool
-				summary.CostAmount, ok = addPhraseCost(summary.CostAmount, phrase.result.CostAmount)
-				if !ok {
+		} else {
+			summary.Text += phraseResidualMarker
+			summary.ResidualSegments = append(summary.ResidualSegments, phrase.event.SourceText)
+			if phrase.done && hasPhraseUsage(phrase.result) {
+				if !mergePhraseUsage(&summary, phrase.result) {
 					return PhraseTranslationSummary{}, 0, false
 				}
+				phrase.usageHanded = true
 			}
-			summary.InputTokens += phrase.result.InputTokens
-			summary.OutputTokens += phrase.result.OutputTokens
-		} else {
-			summary.Text += phrase.event.SourceText
 		}
 		covered = true
 	}
-	if !covered || strings.TrimSpace(finalText[cursor:]) != "" {
+	if !covered {
 		return summary, cursor, false
 	}
-	summary.Text += finalText[cursor:]
-	summary.SkipUsage = summary.Provider == "" || summary.Model == ""
+	if strings.TrimSpace(finalText[cursor:]) != "" {
+		summary.Text += phraseResidualMarker
+		summary.ResidualSegments = append(summary.ResidualSegments, finalText[cursor:])
+	}
 	return summary, cursor, true
+}
+
+func mergePhraseUsage(summary *PhraseTranslationSummary, result translate.Result) bool {
+	if !hasPhraseUsage(result) {
+		return true
+	}
+	hadUsage := summary.Provider != ""
+	if !hadUsage {
+		summary.Provider, summary.Model, summary.CostAmount, summary.Currency = result.Provider, result.Model, result.CostAmount, result.Currency
+	} else if summary.Provider != result.Provider || summary.Model != result.Model || summary.Currency != result.Currency {
+		return false
+	}
+	if hadUsage && result.CostAmount != "" {
+		var ok bool
+		summary.CostAmount, ok = addPhraseCost(summary.CostAmount, result.CostAmount)
+		if !ok {
+			return false
+		}
+	}
+	summary.InputTokens += result.InputTokens
+	summary.OutputTokens += result.OutputTokens
+	return true
 }
 
 func addPhraseCost(left, right string) (string, bool) {

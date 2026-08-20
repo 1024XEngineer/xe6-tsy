@@ -19,6 +19,13 @@ type PhraseSubtitleTurnObserver interface {
 	DiscardPhraseSubtitleTurn(string)
 }
 
+// PhraseSubtitleFinalFlushObserver distinguishes final-tail source delivery from
+// live-stabilized phrases so the tail is finalized by the whole-turn translator.
+type PhraseSubtitleFinalFlushObserver interface {
+	BeginPhraseSubtitleFinalFlush(string)
+	EndPhraseSubtitleFinalFlush(string)
+}
+
 // PhraseSubtitleProcessor owns the in-memory stabilizer state for active interpretation turns.
 type PhraseSubtitleProcessor struct {
 	observer PhraseSubtitleObserver
@@ -98,6 +105,10 @@ func (p *PhraseSubtitleProcessor) Flush(ctx context.Context, turn TurnContext, t
 	}
 	phrases := utterance.stabilizer.Flush(text)
 	p.mu.Unlock()
+	if lifecycle, ok := p.observer.(PhraseSubtitleFinalFlushObserver); ok {
+		lifecycle.BeginPhraseSubtitleFinalFlush(turn.ID)
+		defer lifecycle.EndPhraseSubtitleFinalFlush(turn.ID)
+	}
 	p.publish(ctx, utterance.turn, phrases)
 }
 

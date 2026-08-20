@@ -82,7 +82,7 @@ func TestPhraseTranslationCoordinatorDoesNotWaitForPendingPhrase(t *testing.T) {
 	select {
 	case result := <-finalized:
 		if result.err != nil || result.residual != "" || !result.ok {
-			t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, want immediate source fallback", result)
+			t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, want immediate residual settlement", result)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("FinalizePhraseSubtitleTurn() blocked on pending phrase")
@@ -328,13 +328,13 @@ func TestPhraseTranslationCoordinatorReturnsCompletedPhraseUsageOnFallback(t *te
 	}
 	summary, residual, usage, ok, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好失败")
 	if err != nil || !ok || residual != "" {
-		t.Fatalf("FinalizePhraseSubtitleTurn() = ok=%v residual=%q err=%v, want source fallback settlement", ok, residual, err)
+		t.Fatalf("FinalizePhraseSubtitleTurn() = ok=%v residual=%q err=%v, want residual settlement", ok, residual, err)
 	}
-	if summary.Text != "hello失败" {
-		t.Fatalf("summary.Text = %q, want hello失败", summary.Text)
+	if summary.Text != "hello\x00" || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "失败" {
+		t.Fatalf("summary = %#v, want marker for 失败", summary)
 	}
-	if len(usage) != 1 || usage[0].IdempotencyKey != "usage:turn-fallback:phrase:2" {
-		t.Fatalf("phrase usage facts = %#v, want failed phrase usage only", usage)
+	if len(usage) != 0 {
+		t.Fatalf("phrase usage facts = %#v, want aggregate settlement", usage)
 	}
 }
 
@@ -367,7 +367,7 @@ func TestPhraseTranslationCoordinatorDoesNotRetranslateAfterMiddleFailure(t *tes
 		time.Sleep(time.Millisecond)
 	}
 	summary, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好失败世界")
-	if err != nil || !reused || residual != "" || summary.Text != "en-你好失败en-世界" {
+	if err != nil || !reused || residual != "" || summary.Text != "en-你好\x00en-世界" || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "失败" {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, %q, %v, %v", summary, residual, reused, err)
 	}
 	requestsMu.Lock()

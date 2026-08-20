@@ -57,12 +57,38 @@ func TestPhraseTranslationCoordinatorDoesNotWaitForPendingPhrase(t *testing.T) {
 	}
 	close(release)
 	deadline := time.Now().Add(time.Second)
-	for len(usage.facts) < 1 && time.Now().Before(deadline) {
+	for len(usage.Facts()) < 1 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	facts := usage.Facts()
 	if len(facts) != 1 || facts[0].IdempotencyKey != "usage:turn-pending:phrase:1" {
 		t.Fatalf("phrase usage = %#v", facts)
+	}
+}
+
+func TestPhraseTranslationCoordinatorFinalizeDoesNotWaitForSubtitleObserver(t *testing.T) {
+	observer := newBlockingTranslatedObserver()
+	defer close(observer.release)
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1}, nil
+	}), "mock", observer, nil)
+	turn := TurnContext{ID: "turn-blocked-observer", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), realtimev1.PhraseSubtitleEvent{Type: realtimev1.PhraseSubtitleTopic, EventVersion: 1, SessionID: turn.SessionID, UtteranceID: turn.ID, PhraseSequence: 1, SourceText: "你好", Status: realtimev1.PhraseSubtitleSourceStable, OccurredAt: time.Now().UTC()})
+	<-observer.started
+
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好")
+		done <- ok
+	}()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("FinalizePhraseSubtitleTurn() did not reuse the completed phrase")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("FinalizePhraseSubtitleTurn() waited for the subtitle observer")
 	}
 }
 
@@ -133,4 +159,22 @@ func (r *phraseUsageRecorder) Facts() []UsageFact {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]UsageFact(nil), r.facts...)
+}
+
+type blockingTranslatedObserver struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingTranslatedObserver() *blockingTranslatedObserver {
+	return &blockingTranslatedObserver{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (o *blockingTranslatedObserver) ObservePhraseSubtitle(_ context.Context, event realtimev1.PhraseSubtitleEvent) {
+	if event.Status != realtimev1.PhraseSubtitleTranslated {
+		return
+	}
+	o.once.Do(func() { close(o.started) })
+	<-o.release
 }

@@ -29,6 +29,7 @@ type PhraseTranslationCoordinator struct {
 	now        func() time.Time
 
 	mu         sync.Mutex
+	observerMu sync.Mutex
 	utterances map[string]*phraseTranslationUtterance
 }
 
@@ -99,19 +100,21 @@ func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtt
 	result, err := c.translator.Translate(utterance.ctx, translate.Request{SessionID: utterance.turn.SessionID, TurnID: utterance.turn.ID, Text: phrase.event.SourceText, SourceLanguage: utterance.source, TargetLanguage: utterance.target})
 	c.mu.Lock()
 	phrase.result, phrase.err, phrase.done = result, err, true
-	c.publishReadyLocked(utterance)
+	events := c.publishReadyLocked(utterance)
 	recordUsage := utterance.recordUsage
 	c.mu.Unlock()
+	c.publishPhraseEvents(events)
 	if recordUsage {
 		c.publishPhraseUsage(utterance.turn, phrase)
 	}
 }
 
-func (c *PhraseTranslationCoordinator) publishReadyLocked(utterance *phraseTranslationUtterance) {
+func (c *PhraseTranslationCoordinator) publishReadyLocked(utterance *phraseTranslationUtterance) []realtimev1.PhraseSubtitleEvent {
+	var events []realtimev1.PhraseSubtitleEvent
 	for {
 		phrase := utterance.phrases[utterance.next]
 		if phrase == nil || !phrase.done {
-			return
+			return events
 		}
 		event := phrase.event
 		event.OccurredAt = c.now()
@@ -120,8 +123,21 @@ func (c *PhraseTranslationCoordinator) publishReadyLocked(utterance *phraseTrans
 		} else {
 			event.Status, event.TranslatedText = realtimev1.PhraseSubtitleTranslated, phrase.result.Text
 		}
-		c.observer.ObservePhraseSubtitle(context.Background(), event)
+		events = append(events, event)
 		utterance.next++
+	}
+}
+
+func (c *PhraseTranslationCoordinator) publishPhraseEvents(events []realtimev1.PhraseSubtitleEvent) {
+	if len(events) == 0 {
+		return
+	}
+	// Keep translated notifications in sequence without holding state ownership
+	// while a transport observer waits for a client channel.
+	c.observerMu.Lock()
+	defer c.observerMu.Unlock()
+	for _, event := range events {
+		c.observer.ObservePhraseSubtitle(context.Background(), event)
 	}
 }
 

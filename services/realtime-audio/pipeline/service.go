@@ -25,8 +25,6 @@ var (
 	ErrFinalTurnAccepted = errors.New("final turn accepted")
 )
 
-const latePhraseUsagePublishTimeout = 2 * time.Second
-
 // IsRecoverableUnsupportedSourceLanguage reports whether unsupported language is the only
 // failure in an error chain. A joined error means cleanup or runtime-state recovery also failed
 // and must be propagated instead of being discarded with the Turn.
@@ -112,6 +110,7 @@ type PipelineService struct {
 	latency             LatencyLogger
 	longDeliveryEnabled bool
 	phraseTranslations  *PhraseTranslationCoordinator
+	latePhraseUsage     *latePhraseUsageQueue
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
@@ -138,17 +137,17 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 		longDeliveryEnabled: deps.LongDeliveryEnabled,
 		phraseTranslations:  deps.PhraseTranslations,
 	}
+	service.latePhraseUsage = newLatePhraseUsageQueue(service.usage, service.latency)
 	if service.phraseTranslations != nil {
-		service.phraseTranslations.SetLatePhraseUsageReporter(service.reportLatePhraseUsage)
+		service.phraseTranslations.SetLatePhraseUsageReporter(service.latePhraseUsage.Enqueue)
 	}
 	return service
 }
 
-func (s *PipelineService) reportLatePhraseUsage(fact UsageFact) {
-	ctx, cancel := context.WithTimeout(context.Background(), latePhraseUsagePublishTimeout)
-	defer cancel()
-	if err := s.usage.Publish(ctx, fact); err != nil {
-		s.latency.ProviderFailure("phrase_usage", TurnContext{ID: fact.TurnID, SessionID: fact.SessionID, TraceID: fact.TraceID}, fact.Provider, fact.Model, err)
+// Close stops the service-owned late usage worker during process shutdown.
+func (s *PipelineService) Close() {
+	if s != nil {
+		s.latePhraseUsage.Close()
 	}
 }
 

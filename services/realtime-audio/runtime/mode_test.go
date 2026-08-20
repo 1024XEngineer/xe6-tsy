@@ -81,6 +81,75 @@ func TestNewModeCoordinatorRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestModeCoordinatorRejectsInvalidTurnCommitInputs(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*pipeline.TurnContext, *pipeline.FinalTurnCommit)
+		want   error
+	}{
+		{
+			name: "missing session",
+			mutate: func(turn *pipeline.TurnContext, _ *pipeline.FinalTurnCommit) {
+				turn.SessionID = ""
+			},
+			want: ErrModeCommandInvalid,
+		},
+		{
+			name: "mode session mismatch",
+			mutate: func(turn *pipeline.TurnContext, _ *pipeline.FinalTurnCommit) {
+				turn.Mode.SessionID = "session-2"
+			},
+			want: ErrModeCommandInvalid,
+		},
+		{
+			name: "missing runtime instance",
+			mutate: func(turn *pipeline.TurnContext, _ *pipeline.FinalTurnCommit) {
+				turn.Mode.RuntimeInstanceID = ""
+			},
+			want: ErrModeCommandInvalid,
+		},
+		{
+			name: "invalid mode",
+			mutate: func(turn *pipeline.TurnContext, _ *pipeline.FinalTurnCommit) {
+				turn.Mode.Mode = "invalid"
+			},
+			want: ErrModeCommandInvalid,
+		},
+		{
+			name: "missing generation",
+			mutate: func(turn *pipeline.TurnContext, _ *pipeline.FinalTurnCommit) {
+				turn.Mode.Generation = 0
+			},
+			want: ErrModeCommandInvalid,
+		},
+		{
+			name: "missing callback",
+			mutate: func(_ *pipeline.TurnContext, commit *pipeline.FinalTurnCommit) {
+				*commit = nil
+			},
+			want: ErrModeCommandInvalid,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{realtimev1.ModeInterpretation})
+			turn := modeTurn(realtimev1.ModeInterpretation, 1)
+			var commitCalls int
+			var commit pipeline.FinalTurnCommit = func(context.Context) error {
+				commitCalls++
+				return nil
+			}
+			test.mutate(&turn, &commit)
+
+			committed, err := coordinator.CommitFinalTurn(t.Context(), turn, commit)
+			if committed || !errors.Is(err, test.want) || commitCalls != 0 {
+				t.Fatalf("CommitFinalTurn() = %v, %v, calls %d; want false, %v, no callback", committed, err, commitCalls, test.want)
+			}
+		})
+	}
+}
+
 func TestTurnModeSnapshotRemainsFixedAcrossModeSwitch(t *testing.T) {
 	coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
 		realtimev1.ModeInterpretation,

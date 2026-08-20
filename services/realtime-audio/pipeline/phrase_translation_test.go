@@ -54,7 +54,7 @@ func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing
 	}
 }
 
-func TestPhraseTranslationCoordinatorDoesNotWaitForPendingPhrase(t *testing.T) {
+func TestPhraseTranslationCoordinatorWaitsForPendingPhrase(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
@@ -66,11 +66,33 @@ func TestPhraseTranslationCoordinatorDoesNotWaitForPendingPhrase(t *testing.T) {
 	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
 	coordinator.ObservePhraseSubtitle(context.Background(), realtimev1.PhraseSubtitleEvent{Type: realtimev1.PhraseSubtitleTopic, EventVersion: 1, SessionID: turn.SessionID, UtteranceID: turn.ID, PhraseSequence: 1, SourceText: "你好", Status: realtimev1.PhraseSubtitleSourceStable, OccurredAt: time.Now().UTC()})
 	<-started
-	start := time.Now()
-	if _, residual, usage, ok, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好"); err != nil || residual != "你好" || ok || len(usage) != 0 || time.Since(start) > 100*time.Millisecond {
-		t.Fatalf("FinalizePhraseSubtitleTurn() = residual=%q, usage=%#v, reused=%v, err=%v, elapsed=%v; want immediate fallback", residual, usage, ok, err, time.Since(start))
+	finalized := make(chan struct {
+		residual string
+		ok       bool
+		err      error
+	}, 1)
+	go func() {
+		_, residual, _, ok, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好")
+		finalized <- struct {
+			residual string
+			ok       bool
+			err      error
+		}{residual: residual, ok: ok, err: err}
+	}()
+	select {
+	case <-finalized:
+		t.Fatal("FinalizePhraseSubtitleTurn() returned before pending phrase completed")
+	case <-time.After(20 * time.Millisecond):
 	}
 	close(release)
+	select {
+	case result := <-finalized:
+		if result.err != nil || result.residual != "" || !result.ok {
+			t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, want completed phrase reuse", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("FinalizePhraseSubtitleTurn() did not reuse the completed phrase")
+	}
 }
 
 func TestPhraseTranslationCoordinatorReusesCompletedPrefixWithPendingTail(t *testing.T) {
@@ -80,8 +102,7 @@ func TestPhraseTranslationCoordinatorReusesCompletedPrefixWithPendingTail(t *tes
 			return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1}, nil
 		}
 		close(tailStarted)
-		<-ctx.Done()
-		return translate.Result{}, ctx.Err()
+		return translate.Result{Text: "world", Provider: "mock", Model: "v1", InputTokens: 1}, nil
 	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
 	turn := TurnContext{ID: "turn-prefix", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
 	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
@@ -102,7 +123,7 @@ func TestPhraseTranslationCoordinatorReusesCompletedPrefixWithPendingTail(t *tes
 	<-tailStarted
 
 	summary, residual, usage, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好，世界")
-	if err != nil || reused || summary.Text != "hello" || residual != "，世界" || len(usage) != 1 || usage[0].IdempotencyKey != "usage:turn-prefix:phrase:1" {
+	if err != nil || !reused || summary.Text != "helloworld" || residual != "" || len(usage) != 0 {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, %q, %#v, %v, %v", summary, residual, usage, reused, err)
 	}
 }
@@ -121,9 +142,18 @@ func TestPhraseTranslationCoordinatorReportsLateUsageAfterFinalize(t *testing.T)
 	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
 	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
 	<-started
-	_, residual, usage, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好")
-	if err != nil || residual != "你好" || reused || len(usage) != 0 {
-		t.Fatalf("FinalizePhraseSubtitleTurn() = residual=%q, usage=%#v, reused=%v, err=%v", residual, usage, reused, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	finalized := make(chan struct{})
+	go func() {
+		_, _, _, _, _ = coordinator.FinalizePhraseSubtitleTurn(ctx, turn, "你好")
+		close(finalized)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case <-finalized:
+	case <-time.After(time.Second):
+		t.Fatal("FinalizePhraseSubtitleTurn() did not stop after cancellation")
 	}
 	close(release)
 	select {

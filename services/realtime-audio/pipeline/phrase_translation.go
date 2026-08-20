@@ -48,6 +48,7 @@ type translatedPhrase struct {
 	result          translate.Result
 	err             error
 	done            bool
+	doneCh          chan struct{}
 	sourceDelivered chan struct{}
 	usageHanded     bool
 }
@@ -105,7 +106,7 @@ func (c *PhraseTranslationCoordinator) ObservePhraseSubtitle(ctx context.Context
 		c.mu.Unlock()
 		return
 	}
-	phrase := &translatedPhrase{event: event, sourceDelivered: make(chan struct{})}
+	phrase := &translatedPhrase{event: event, doneCh: make(chan struct{}), sourceDelivered: make(chan struct{})}
 	previousSource := utterance.sourceTail
 	utterance.sourceTail = phrase.sourceDelivered
 	utterance.phrases[event.PhraseSequence] = phrase
@@ -129,6 +130,7 @@ func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtt
 	result, err := c.translator.Translate(utterance.ctx, translate.Request{SessionID: utterance.turn.SessionID, TurnID: utterance.turn.ID, Text: phrase.event.SourceText, SourceLanguage: utterance.source, TargetLanguage: utterance.target})
 	c.mu.Lock()
 	phrase.result, phrase.err, phrase.done = result, err, true
+	close(phrase.doneCh)
 	lateUsage, usageErr := c.latePhraseUsageLocked(utterance, phrase)
 	c.mu.Unlock()
 	if usageErr == nil && lateUsage.ID != "" {
@@ -212,6 +214,10 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 	if utterance == nil {
 		return PhraseTranslationSummary{}, finalText, nil, false, nil
 	}
+	if err := waitPhraseTranslations(ctx, utterance); err != nil {
+		c.discardPhraseSubtitleTurn(turn.ID, true)
+		return PhraseTranslationSummary{}, finalText, nil, false, nil
+	}
 	c.mu.Lock()
 	summary, consumed, fullyReused := phraseSummary(finalText, utterance)
 	if fullyReused {
@@ -224,6 +230,17 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 	usage, err := c.detachPhraseSubtitleTurnLocked(turn.ID, true)
 	c.mu.Unlock()
 	return summary, finalText[consumed:], usage, false, err
+}
+
+func waitPhraseTranslations(ctx context.Context, utterance *phraseTranslationUtterance) error {
+	for _, phrase := range utterance.phrases {
+		select {
+		case <-phrase.doneCh:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) {

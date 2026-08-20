@@ -860,17 +860,16 @@ func TestPipelineIgnoresPartialASREvents(t *testing.T) {
 	}
 }
 
-func TestPipelineTranslatesOnlyPendingPhraseTailAtFinalization(t *testing.T) {
+func TestPipelineReusesPendingPhraseAtFinalization(t *testing.T) {
 	tailStarted := make(chan struct{})
 	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(ctx context.Context, request translate.Request) (translate.Result, error) {
 		if request.Text == "你好" {
 			return translate.Result{Text: "hello", Provider: "phrase", Model: "v1", InputTokens: 1}, nil
 		}
 		close(tailStarted)
-		<-ctx.Done()
-		return translate.Result{}, ctx.Err()
+		return translate.Result{Text: "world", Provider: "phrase", Model: "v1", InputTokens: 1}, nil
 	}), "phrase", &recordingPhraseSubtitleObserver{}, nil)
-	translator := &translate.FakeProvider{Result: translate.Result{Text: " world", Provider: "final", Model: "v1", InputTokens: 2}}
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "unexpected", Provider: "final", Model: "v1", InputTokens: 2}}
 	finalSink := &recordingFinalSink{}
 	usageSink := &recordingUsageSink{}
 	service := newTestPipelineService(PipelineDependencies{
@@ -900,15 +899,14 @@ func TestPipelineTranslatesOnlyPendingPhraseTailAtFinalization(t *testing.T) {
 	if err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好，世界", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}); err != nil {
 		t.Fatalf("HandleASRFinal() error = %v", err)
 	}
-	requests := translator.Requests()
-	if len(requests) != 1 || requests[0].Text != "，世界" {
-		t.Fatalf("final translation requests = %#v", requests)
+	if requests := translator.Requests(); len(requests) != 0 {
+		t.Fatalf("final translation requests = %#v, want no duplicate request", requests)
 	}
-	if len(finalSink.events) != 1 || finalSink.events[0].TranslatedText != "hello world" {
+	if len(finalSink.events) != 1 || finalSink.events[0].TranslatedText != "helloworld" {
 		t.Fatalf("FinalTurns = %#v", finalSink.events)
 	}
-	if len(usageSink.facts) != 2 || usageSink.facts[0].IdempotencyKey != "usage:turn-1:phrase:1" || usageSink.facts[1].IdempotencyKey != "usage:turn-1:translation" {
-		t.Fatalf("usage facts = %#v", usageSink.facts)
+	if len(usageSink.facts) != 1 || usageSink.facts[0].IdempotencyKey != "usage:turn-1:translation" || usageSink.facts[0].InputTokens != 2 {
+		t.Fatalf("usage facts = %#v, want one aggregated translation fact", usageSink.facts)
 	}
 }
 

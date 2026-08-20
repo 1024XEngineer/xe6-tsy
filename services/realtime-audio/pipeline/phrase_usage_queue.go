@@ -39,8 +39,9 @@ func newLatePhraseUsageQueue(usage UsageFactSink, latency LatencyLogger) *latePh
 	return q
 }
 
-// Enqueue is intentionally non-blocking: VAD finalization and provider
-// completion may continue while a previous durable append is recovering.
+// Enqueue applies backpressure instead of dropping a durable usage fact. Its
+// callers report late usage from detached goroutines, so VAD finalization and
+// provider completion remain independent of outbox recovery.
 func (q *latePhraseUsageQueue) Enqueue(fact UsageFact) {
 	if q == nil {
 		return
@@ -60,8 +61,6 @@ func (q *latePhraseUsageQueue) Enqueue(fact UsageFact) {
 	case q.queue <- fact:
 	case <-q.ctx.Done():
 		q.report(fact, q.ctx.Err())
-	default:
-		q.report(fact, errors.New("late phrase usage queue is full"))
 	}
 }
 

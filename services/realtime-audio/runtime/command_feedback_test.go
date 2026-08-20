@@ -261,6 +261,25 @@ func TestCommandSpeechFeedbackSkipsIncompleteLLMUsageAndReturnsPublishError(t *t
 	}
 }
 
+func TestCommandSpeechFeedbackRejectsInvalidAndClosedRequests(t *testing.T) {
+	feedback := newCommandSpeechFeedback(commandSpeechFeedbackDependencies{})
+	feedback.Publish(command.FeedbackRequest{Event: realtimev1.CommandResultEvent{Message: "invalid"}})
+	feedback.mu.Lock()
+	if feedback.attempt != 0 {
+		feedback.mu.Unlock()
+		t.Fatalf("invalid request changed feedback state: attempt=%d", feedback.attempt)
+	}
+	feedback.mu.Unlock()
+
+	feedback.Close()
+	feedback.Publish(command.FeedbackRequest{Event: validCommandFeedbackEvent()})
+	feedback.mu.Lock()
+	defer feedback.mu.Unlock()
+	if feedback.attempt != 0 {
+		t.Fatalf("closed feedback accepted a request, attempt=%d", feedback.attempt)
+	}
+}
+
 func validCommandFeedbackEvent() realtimev1.CommandResultEvent {
 	return realtimev1.CommandResultEvent{
 		Type: realtimev1.CommandResultTopic, EventVersion: realtimev1.CommandResultEventVersion,

@@ -112,8 +112,39 @@ func TestPhraseTranslationCoordinatorRecordsCompletedFailedPhraseUsageOnFallback
 	if _, ok := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好失败"); ok {
 		t.Fatal("FinalizePhraseSubtitleTurn() unexpectedly reused failed phrase")
 	}
+	deadline = time.Now().Add(time.Second)
+	for len(usage.Facts()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	if len(usage.Facts()) != 2 {
 		t.Fatalf("phrase usage facts = %#v, want both completed requests", usage.Facts())
+	}
+}
+
+func TestPhraseTranslationCoordinatorRetriesPhraseUsagePublication(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	usage := &retryingPhraseUsageRecorder{failures: 1}
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		close(started)
+		<-release
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil, usage)
+	coordinator.usageRetryDelay = func(int) time.Duration { return time.Millisecond }
+	turn := TurnContext{ID: "turn-usage-retry", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), realtimev1.PhraseSubtitleEvent{Type: realtimev1.PhraseSubtitleTopic, EventVersion: 1, SessionID: turn.SessionID, UtteranceID: turn.ID, PhraseSequence: 1, SourceText: "你好", Status: realtimev1.PhraseSubtitleSourceStable, OccurredAt: time.Now().UTC()})
+	<-started
+	if _, ok := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好"); ok {
+		t.Fatal("FinalizePhraseSubtitleTurn() unexpectedly reused pending phrase")
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for len(usage.Facts()) < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(usage.Facts()) != 1 || usage.Attempts() != 2 {
+		t.Fatalf("phrase usage facts = %#v, attempts = %d; want one fact after two attempts", usage.Facts(), usage.Attempts())
 	}
 }
 
@@ -159,6 +190,37 @@ func (r *phraseUsageRecorder) Facts() []UsageFact {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]UsageFact(nil), r.facts...)
+}
+
+type retryingPhraseUsageRecorder struct {
+	mu       sync.Mutex
+	facts    []UsageFact
+	failures int
+	attempts int
+}
+
+func (r *retryingPhraseUsageRecorder) Publish(_ context.Context, fact UsageFact) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.attempts++
+	if r.failures > 0 {
+		r.failures--
+		return context.DeadlineExceeded
+	}
+	r.facts = append(r.facts, fact)
+	return nil
+}
+
+func (r *retryingPhraseUsageRecorder) Facts() []UsageFact {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]UsageFact(nil), r.facts...)
+}
+
+func (r *retryingPhraseUsageRecorder) Attempts() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.attempts
 }
 
 type blockingTranslatedObserver struct {

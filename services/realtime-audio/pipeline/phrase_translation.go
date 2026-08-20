@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ type PhraseTranslationCoordinator struct {
 	translator translate.Provider
 	provider   string
 	observer   PhraseSubtitleObserver
+	usage      UsageFactSink
 	now        func() time.Time
 
 	mu         sync.Mutex
@@ -35,26 +37,31 @@ type phraseTranslationUtterance struct {
 	source, target string
 	ctx            context.Context
 	cancel         context.CancelFunc
-	pending        sync.WaitGroup
 	phrases        map[int64]*translatedPhrase
 	next           int64
+	recordUsage    bool
 }
 
 type translatedPhrase struct {
-	event  realtimev1.PhraseSubtitleEvent
-	result translate.Result
-	err    error
-	done   bool
+	event          realtimev1.PhraseSubtitleEvent
+	result         translate.Result
+	err            error
+	done           bool
+	usagePublished bool
 }
 
-func NewPhraseTranslationCoordinator(translator translate.Provider, provider string, observer PhraseSubtitleObserver, now func() time.Time) *PhraseTranslationCoordinator {
+func NewPhraseTranslationCoordinator(translator translate.Provider, provider string, observer PhraseSubtitleObserver, now func() time.Time, usage ...UsageFactSink) *PhraseTranslationCoordinator {
 	if translator == nil || observer == nil {
 		return nil
 	}
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &PhraseTranslationCoordinator{translator: translator, provider: provider, observer: observer, now: now, utterances: make(map[string]*phraseTranslationUtterance)}
+	var usageSink UsageFactSink
+	if len(usage) > 0 {
+		usageSink = usage[0]
+	}
+	return &PhraseTranslationCoordinator{translator: translator, provider: provider, observer: observer, usage: usageSink, now: now, utterances: make(map[string]*phraseTranslationUtterance)}
 }
 
 func (c *PhraseTranslationCoordinator) StartPhraseSubtitleTurn(turn TurnContext, sourceLanguage string) {
@@ -84,18 +91,20 @@ func (c *PhraseTranslationCoordinator) ObservePhraseSubtitle(ctx context.Context
 	}
 	phrase := &translatedPhrase{event: event}
 	utterance.phrases[event.PhraseSequence] = phrase
-	utterance.pending.Add(1)
 	c.mu.Unlock()
 	go c.translate(utterance, phrase)
 }
 
 func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtterance, phrase *translatedPhrase) {
-	defer utterance.pending.Done()
 	result, err := c.translator.Translate(utterance.ctx, translate.Request{SessionID: utterance.turn.SessionID, TurnID: utterance.turn.ID, Text: phrase.event.SourceText, SourceLanguage: utterance.source, TargetLanguage: utterance.target})
 	c.mu.Lock()
 	phrase.result, phrase.err, phrase.done = result, err, true
 	c.publishReadyLocked(utterance)
+	recordUsage := utterance.recordUsage
 	c.mu.Unlock()
+	if recordUsage {
+		c.publishPhraseUsage(utterance.turn, phrase)
+	}
 }
 
 func (c *PhraseTranslationCoordinator) publishReadyLocked(utterance *phraseTranslationUtterance) {
@@ -126,17 +135,20 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 	if utterance == nil {
 		return PhraseTranslationSummary{}, false
 	}
-	defer c.DiscardPhraseSubtitleTurn(turn.ID)
-	done := make(chan struct{})
-	go func() { utterance.pending.Wait(); close(done) }()
-	select {
-	case <-ctx.Done():
-		return PhraseTranslationSummary{}, false
-	case <-done:
-	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return phraseSummary(finalText, utterance)
+	allDone := allPhraseTranslationsDone(utterance)
+	if allDone {
+		summary, ok := phraseSummary(finalText, utterance)
+		if ok {
+			c.mu.Unlock()
+			c.discardPhraseSubtitleTurn(turn.ID, false)
+			return summary, true
+		}
+	}
+	toPublish := c.detachPhraseSubtitleTurnLocked(turn.ID, true)
+	c.mu.Unlock()
+	c.publishPhraseUsageList(turn, toPublish)
+	return PhraseTranslationSummary{}, false
 }
 
 func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) {
@@ -144,14 +156,80 @@ func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) 
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.discardLocked(turnID)
+	utterance := c.utterances[turnID]
+	if utterance == nil {
+		c.mu.Unlock()
+		return
+	}
+	toPublish := c.detachPhraseSubtitleTurnLocked(turnID, true)
+	turn := utterance.turn
+	c.mu.Unlock()
+	c.publishPhraseUsageList(turn, toPublish)
 }
 
-func (c *PhraseTranslationCoordinator) discardLocked(turnID string) {
-	if utterance := c.utterances[turnID]; utterance != nil {
-		utterance.cancel()
-		delete(c.utterances, turnID)
+func (c *PhraseTranslationCoordinator) discardPhraseSubtitleTurn(turnID string, recordUsage bool) {
+	c.mu.Lock()
+	utterance := c.utterances[turnID]
+	var turn TurnContext
+	if utterance != nil {
+		turn = utterance.turn
+	}
+	toPublish := c.detachPhraseSubtitleTurnLocked(turnID, recordUsage)
+	c.mu.Unlock()
+	c.publishPhraseUsageList(turn, toPublish)
+}
+
+func (c *PhraseTranslationCoordinator) detachPhraseSubtitleTurnLocked(turnID string, recordUsage bool) []*translatedPhrase {
+	utterance := c.utterances[turnID]
+	if utterance == nil {
+		return nil
+	}
+	utterance.recordUsage = recordUsage
+	var toPublish []*translatedPhrase
+	if recordUsage {
+		for _, phrase := range utterance.phrases {
+			if phrase.done && !phrase.usagePublished && hasPhraseUsage(phrase.result) {
+				phrase.usagePublished = true
+				toPublish = append(toPublish, phrase)
+			}
+		}
+	}
+	utterance.cancel()
+	delete(c.utterances, turnID)
+	return toPublish
+}
+
+func allPhraseTranslationsDone(utterance *phraseTranslationUtterance) bool {
+	for _, phrase := range utterance.phrases {
+		if !phrase.done {
+			return false
+		}
+	}
+	return true
+}
+
+func hasPhraseUsage(result translate.Result) bool {
+	return strings.TrimSpace(result.Provider) != "" && strings.TrimSpace(result.Model) != "" && (result.InputTokens != 0 || result.OutputTokens != 0 || result.CostAmount != "")
+}
+
+func (c *PhraseTranslationCoordinator) publishPhraseUsageList(turn TurnContext, phrases []*translatedPhrase) {
+	for _, phrase := range phrases {
+		c.publishPhraseUsage(turn, phrase)
+	}
+}
+
+func (c *PhraseTranslationCoordinator) publishPhraseUsage(turn TurnContext, phrase *translatedPhrase) {
+	if c == nil || c.usage == nil || !hasPhraseUsage(phrase.result) {
+		return
+	}
+	fact, err := buildUsageFactWithIdentity(
+		turn, "translation", phrase.result.Provider, phrase.result.Model, 0,
+		phrase.result.InputTokens, phrase.result.OutputTokens, phrase.result.CostAmount, phrase.result.Currency,
+		fmt.Sprintf("usage_%s_phrase_%d", turn.ID, phrase.event.PhraseSequence),
+		fmt.Sprintf("usage:%s:phrase:%d", turn.ID, phrase.event.PhraseSequence), c.now(),
+	)
+	if err == nil {
+		_ = c.usage.Publish(context.Background(), fact)
 	}
 }
 

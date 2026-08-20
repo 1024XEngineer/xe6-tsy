@@ -336,9 +336,14 @@ func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider
 }
 
 func buildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string, occurredAt time.Time) (UsageFact, error) {
+	return buildUsageFactWithIdentity(turn, serviceType, provider, model, durationMS, inputTokens, outputTokens, cost, currency,
+		fmt.Sprintf("usage_%s_%s", turn.ID, serviceType), fmt.Sprintf("usage:%s:%s", turn.ID, serviceType), occurredAt)
+}
+
+func buildUsageFactWithIdentity(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency, id, idempotencyKey string, occurredAt time.Time) (UsageFact, error) {
 	fact := UsageFact{
-		EventVersion: UsageEventVersion, ID: fmt.Sprintf("usage_%s_%s", turn.ID, serviceType),
-		TraceID: turn.TraceID, IdempotencyKey: fmt.Sprintf("usage:%s:%s", turn.ID, serviceType),
+		EventVersion: UsageEventVersion, ID: id,
+		TraceID: turn.TraceID, IdempotencyKey: idempotencyKey,
 		AccountID: turn.AccountID, SessionID: turn.SessionID, TurnID: turn.ID, ServiceType: serviceType,
 		Provider: provider, Model: model, InputTokens: inputTokens, OutputTokens: outputTokens,
 		AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: occurredAt,

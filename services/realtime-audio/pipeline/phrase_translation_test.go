@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,10 @@ func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing
 	} {
 		coordinator.ObservePhraseSubtitle(context.Background(), event)
 	}
+	deadline := time.Now().Add(time.Second)
+	for len(observer.Events()) < 4 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	summary, ok := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好，世界")
 	if !ok || summary.Text != "en-你好，en-世界" || summary.InputTokens != 2 || summary.OutputTokens != 4 || summary.CostAmount != "0.2" {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, %v", summary, ok)
@@ -30,6 +35,59 @@ func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing
 	events := observer.Events()
 	if len(events) != 4 || events[2].Status != realtimev1.PhraseSubtitleTranslated || events[2].PhraseSequence != 1 || events[3].PhraseSequence != 2 {
 		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestPhraseTranslationCoordinatorDoesNotWaitForPendingPhrase(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	usage := &phraseUsageRecorder{}
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		close(started)
+		<-release
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 3}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil, usage)
+	turn := TurnContext{ID: "turn-pending", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), realtimev1.PhraseSubtitleEvent{Type: realtimev1.PhraseSubtitleTopic, EventVersion: 1, SessionID: turn.SessionID, UtteranceID: turn.ID, PhraseSequence: 1, SourceText: "你好", Status: realtimev1.PhraseSubtitleSourceStable, OccurredAt: time.Now().UTC()})
+	<-started
+	start := time.Now()
+	if _, ok := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好"); ok || time.Since(start) > 100*time.Millisecond {
+		t.Fatalf("FinalizePhraseSubtitleTurn() = %v, elapsed %v; want immediate fallback", ok, time.Since(start))
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for len(usage.facts) < 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	facts := usage.Facts()
+	if len(facts) != 1 || facts[0].IdempotencyKey != "usage:turn-pending:phrase:1" {
+		t.Fatalf("phrase usage = %#v", facts)
+	}
+}
+
+func TestPhraseTranslationCoordinatorRecordsCompletedFailedPhraseUsageOnFallback(t *testing.T) {
+	usage := &phraseUsageRecorder{}
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		if request.Text == "失败" {
+			return translate.Result{Provider: "mock", Model: "v1", InputTokens: 2, CostAmount: "0.25", Currency: "USD"}, context.DeadlineExceeded
+		}
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1, CostAmount: "0.10", Currency: "USD"}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil, usage)
+	turn := TurnContext{ID: "turn-fallback", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	for sequence, text := range map[int64]string{1: "你好", 2: "失败"} {
+		coordinator.ObservePhraseSubtitle(context.Background(), realtimev1.PhraseSubtitleEvent{Type: realtimev1.PhraseSubtitleTopic, EventVersion: 1, SessionID: turn.SessionID, UtteranceID: turn.ID, PhraseSequence: sequence, SourceText: text, Status: realtimev1.PhraseSubtitleSourceStable, OccurredAt: time.Now().UTC()})
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(usage.Facts()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if _, ok := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好失败"); ok {
+		t.Fatal("FinalizePhraseSubtitleTurn() unexpectedly reused failed phrase")
+	}
+	if len(usage.Facts()) != 2 {
+		t.Fatalf("phrase usage facts = %#v, want both completed requests", usage.Facts())
 	}
 }
 
@@ -58,3 +116,21 @@ func (f phraseTranslateFunc) Translate(ctx context.Context, request translate.Re
 }
 
 var _ translate.Provider = phraseTranslateFunc(nil)
+
+type phraseUsageRecorder struct {
+	mu    sync.Mutex
+	facts []UsageFact
+}
+
+func (r *phraseUsageRecorder) Publish(_ context.Context, fact UsageFact) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.facts = append(r.facts, fact)
+	return nil
+}
+
+func (r *phraseUsageRecorder) Facts() []UsageFact {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]UsageFact(nil), r.facts...)
+}

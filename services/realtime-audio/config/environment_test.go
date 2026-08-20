@@ -225,6 +225,32 @@ func TestLoadProviderConfigRejectsAdjacentASRValidationValues(t *testing.T) {
 	}
 }
 
+func TestLoadProviderConfigStopsOnInvalidEarlySettings(t *testing.T) {
+	tests := []struct {
+		name   string
+		values map[string]string
+		want   error
+	}{
+		{name: "ASR provider", values: map[string]string{"ASR_PROVIDER": "invalid"}, want: ErrUnsupportedProvider},
+		{name: "TTS provider", values: map[string]string{"TTS_PROVIDER": "invalid"}, want: ErrUnsupportedProvider},
+		{name: "ASR silence duration", values: map[string]string{"ASR_SILENCE_DURATION_MS": "invalid"}, want: ErrInvalidEnvironmentValue},
+		{name: "translation timeout", values: map[string]string{"LLM_TIMEOUT_MS": "-1"}, want: ErrInvalidEnvironmentValue},
+		{name: "TTS sample rate", values: map[string]string{"TTS_SAMPLE_RATE": "-1"}, want: ErrInvalidEnvironmentValue},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := LoadProviderConfig(mapLookup(test.values))
+			if !errors.Is(err, test.want) {
+				t.Fatalf("LoadProviderConfig() error = %v, want %v", err, test.want)
+			}
+			if config != (ProviderConfig{}) {
+				t.Fatalf("LoadProviderConfig() config = %+v, want zero value on error", config)
+			}
+		})
+	}
+}
+
 func TestLoadProviderConfigRequiresLookup(t *testing.T) {
 	_, err := LoadProviderConfig(nil)
 	if !errors.Is(err, ErrEnvironmentLookupRequired) {

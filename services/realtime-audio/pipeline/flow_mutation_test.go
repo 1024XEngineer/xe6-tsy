@@ -108,6 +108,34 @@ func TestStartAudioReportsStreamCheckpoint(t *testing.T) {
 	}
 }
 
+func TestStartAudioDispatchesPhrasePartialsWhenOnlyPhrasesAreConfigured(t *testing.T) {
+	partialObserved := make(chan struct{})
+	observer := &phraseSignalObserver{observed: partialObserved}
+	phrases := NewPhraseSubtitleProcessor(observer, PhraseStabilizerOptions{StableAfter: 0})
+	events := make(chan asr.Event, 1)
+	events <- asr.Event{Type: asr.EventPartial, Text: "partial phrase"}
+	stream := &pushEventStream{events: events, partialSent: make(chan struct{}), result: asr.FinalResult{Text: "final phrase", SourceLanguage: "zh-CN"}}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: &pushEventProvider{stream: stream}, Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}), Pipeline: service, Finals: service, Phrases: phrases,
+	})
+	turn, err := processor.StartAudio(t.Context(), TurnProcessRequest{SessionID: "session-1"})
+	if err != nil {
+		t.Fatalf("StartAudio() error = %v", err)
+	}
+	defer turn.Close()
+	select {
+	case <-partialObserved:
+	case <-time.After(time.Second):
+		t.Fatal("phrase partial was not dispatched")
+	}
+}
+
 func turnProcessorDependenciesForMutation(service *PipelineService, languages session.LanguageConfigReader) TurnProcessorDependencies {
 	return TurnProcessorDependencies{ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}), Opener: newTestTurnOpener(languages), Pipeline: service, Finals: service}
 }
@@ -122,6 +150,16 @@ type nilStreamProvider struct{}
 
 func (nilStreamProvider) StartStream(context.Context, asr.StreamRequest) (asr.Stream, error) {
 	return nil, nil
+}
+
+type phraseSignalObserver struct{ observed chan struct{} }
+
+func (o *phraseSignalObserver) ObservePhraseSubtitle(context.Context, realtimev1.PhraseSubtitleEvent) {
+	select {
+	case <-o.observed:
+	default:
+		close(o.observed)
+	}
 }
 
 func TestTurnProcessorRejectsEveryMissingDependency(t *testing.T) {

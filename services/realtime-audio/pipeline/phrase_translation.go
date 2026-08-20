@@ -17,6 +17,7 @@ import (
 type PhraseTranslationSummary struct {
 	Text, Provider, Model, CostAmount, Currency string
 	InputTokens, OutputTokens                   int64
+	SkipUsage                                   bool
 }
 
 // PhraseTranslationCoordinator translates stable source phrases without blocking ASR reads.
@@ -214,17 +215,14 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 	if utterance == nil {
 		return PhraseTranslationSummary{}, finalText, nil, false, nil
 	}
-	if err := waitPhraseTranslations(ctx, utterance); err != nil {
-		c.discardPhraseSubtitleTurn(turn.ID, true)
-		return PhraseTranslationSummary{}, finalText, nil, false, nil
-	}
 	c.mu.Lock()
 	summary, consumed, fullyReused := phraseSummary(finalText, utterance)
 	if fullyReused {
 		if consumed == len(finalText) {
+			usage := phraseFailureUsageFactsLocked(utterance, c)
 			c.mu.Unlock()
 			c.discardPhraseSubtitleTurn(turn.ID, false)
-			return summary, "", nil, true, nil
+			return summary, "", usage, true, nil
 		}
 	}
 	usage, err := c.detachPhraseSubtitleTurnLocked(turn.ID, true)
@@ -232,15 +230,20 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 	return summary, finalText[consumed:], usage, false, err
 }
 
-func waitPhraseTranslations(ctx context.Context, utterance *phraseTranslationUtterance) error {
+func phraseFailureUsageFactsLocked(utterance *phraseTranslationUtterance, c *PhraseTranslationCoordinator) []UsageFact {
+	var usage []UsageFact
 	for _, phrase := range utterance.phrases {
-		select {
-		case <-phrase.doneCh:
-		case <-ctx.Done():
-			return ctx.Err()
+		if !phrase.done || phrase.err == nil || !hasPhraseUsage(phrase.result) || phrase.usageHanded {
+			continue
 		}
+		fact, err := c.phraseUsageFact(utterance.turn, phrase)
+		if err != nil {
+			continue
+		}
+		phrase.usageHanded = true
+		usage = append(usage, fact)
 	}
-	return nil
+	return usage
 }
 
 func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) {
@@ -339,45 +342,51 @@ func (c *PhraseTranslationCoordinator) phraseUsageFact(turn TurnContext, phrase 
 	)
 }
 
-// phraseSummary returns the translated prefix that still reconciles with the final
-// ASR text. Any unfinished or failed phrase remains part of the residual source
-// text, so FinalTurn translates only that portion instead of retrying the prefix.
+// phraseSummary snapshots phrase state without waiting for in-flight providers.
+// Completed phrases are reused in sequence; failed or unfinished phrases remain as
+// source text for the immutable FinalTurn, preventing a second translation request
+// for work that was already started asynchronously.
 func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (PhraseTranslationSummary, int, bool) {
 	var summary PhraseTranslationSummary
 	cursor := 0
+	covered := false
 	for sequence := int64(1); ; sequence++ {
 		phrase := utterance.phrases[sequence]
 		if phrase == nil {
 			break
 		}
-		if !phrase.done || phrase.err != nil || strings.TrimSpace(phrase.result.Text) == "" {
-			return summary, cursor, false
-		}
 		index := strings.Index(finalText[cursor:], phrase.event.SourceText)
 		if index < 0 || strings.TrimSpace(finalText[cursor:cursor+index]) != "" {
 			return PhraseTranslationSummary{}, 0, false
 		}
-		summary.Text += finalText[cursor:cursor+index] + phrase.result.Text
+		summary.Text += finalText[cursor : cursor+index]
 		cursor += index + len(phrase.event.SourceText)
-		if summary.Provider == "" {
-			summary.Provider, summary.Model, summary.CostAmount, summary.Currency = phrase.result.Provider, phrase.result.Model, phrase.result.CostAmount, phrase.result.Currency
-		}
-		if summary.Provider != phrase.result.Provider || summary.Model != phrase.result.Model || summary.Currency != phrase.result.Currency {
-			return PhraseTranslationSummary{}, 0, false
-		}
-		if sequence > 1 {
-			var ok bool
-			summary.CostAmount, ok = addPhraseCost(summary.CostAmount, phrase.result.CostAmount)
-			if !ok {
+		if phrase.done && phrase.err == nil && strings.TrimSpace(phrase.result.Text) != "" {
+			summary.Text += phrase.result.Text
+			if summary.Provider == "" {
+				summary.Provider, summary.Model, summary.CostAmount, summary.Currency = phrase.result.Provider, phrase.result.Model, phrase.result.CostAmount, phrase.result.Currency
+			} else if summary.Provider != phrase.result.Provider || summary.Model != phrase.result.Model || summary.Currency != phrase.result.Currency {
 				return PhraseTranslationSummary{}, 0, false
 			}
+			if covered {
+				var ok bool
+				summary.CostAmount, ok = addPhraseCost(summary.CostAmount, phrase.result.CostAmount)
+				if !ok {
+					return PhraseTranslationSummary{}, 0, false
+				}
+			}
+			summary.InputTokens += phrase.result.InputTokens
+			summary.OutputTokens += phrase.result.OutputTokens
+		} else {
+			summary.Text += phrase.event.SourceText
 		}
-		summary.InputTokens += phrase.result.InputTokens
-		summary.OutputTokens += phrase.result.OutputTokens
+		covered = true
 	}
-	if cursor == 0 || strings.TrimSpace(finalText[cursor:]) != "" {
+	if !covered || strings.TrimSpace(finalText[cursor:]) != "" {
 		return summary, cursor, false
 	}
+	summary.Text += finalText[cursor:]
+	summary.SkipUsage = summary.Provider == "" || summary.Model == ""
 	return summary, cursor, true
 }
 

@@ -195,7 +195,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
 	}
 	translateStartedAt := time.Now()
-	translationResult, residualText, reusedPhrases, err := s.phraseTranslation(ctx, turn, result.Text)
+	translationResult, residualText, reusedPhrases, skipTranslationUsage, err := s.phraseTranslation(ctx, turn, result.Text)
 	if err != nil {
 		return fmt.Errorf("publish phrase translation usage: %w", err)
 	}
@@ -221,19 +221,23 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		"input_tokens", translationResult.InputTokens,
 		"output_tokens", translationResult.OutputTokens,
 	)
-	translationUsage, err := s.buildUsageFact(
-		turn,
-		"translation",
-		translationResult.Provider,
-		translationResult.Model,
-		0,
-		translationResult.InputTokens,
-		translationResult.OutputTokens,
-		translationResult.CostAmount,
-		translationResult.Currency,
-	)
-	if err != nil {
-		return fmt.Errorf("prepare translation usage: %w", err)
+	var translationUsage UsageFact
+	hasTranslationUsage := !skipTranslationUsage
+	if hasTranslationUsage {
+		translationUsage, err = s.buildUsageFact(
+			turn,
+			"translation",
+			translationResult.Provider,
+			translationResult.Model,
+			0,
+			translationResult.InputTokens,
+			translationResult.OutputTokens,
+			translationResult.CostAmount,
+			translationResult.Currency,
+		)
+		if err != nil {
+			return fmt.Errorf("prepare translation usage: %w", err)
+		}
 	}
 	startedAt, endedAt := turnBounds(turn, result, s.now())
 	longSource := s.longDeliveryEnabled && recordsv1.IsLongSourceTurn(result.Text, endedAt.Sub(startedAt))
@@ -274,14 +278,18 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		// Translation already completed before the generation check. Even when a
 		// mode switch supersedes the Turn and FinalTurn is dropped, its provider
 		// usage remains billable and must be recorded exactly once.
-		if err := s.usage.Publish(ctx, translationUsage); err != nil {
-			return fmt.Errorf("publish superseded translation usage: %w", err)
+		if hasTranslationUsage {
+			if err := s.usage.Publish(ctx, translationUsage); err != nil {
+				return fmt.Errorf("publish superseded translation usage: %w", err)
+			}
 		}
 		return nil
 	}
 	acceptedFinalTurn = true
-	if err := s.usage.Publish(ctx, translationUsage); err != nil {
-		return finalTurnAcceptedError("publish translation usage", err)
+	if hasTranslationUsage {
+		if err := s.usage.Publish(ctx, translationUsage); err != nil {
+			return finalTurnAcceptedError("publish translation usage", err)
+		}
 	}
 	if !ttsEnabled {
 		return nil
@@ -299,23 +307,23 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	return nil
 }
 
-func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text string) (translate.Result, string, bool, error) {
+func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text string) (translate.Result, string, bool, bool, error) {
 	if s.phraseTranslations == nil {
-		return translate.Result{}, text, false, nil
+		return translate.Result{}, text, false, false, nil
 	}
 	summary, residual, usage, ok, err := s.phraseTranslations.FinalizePhraseSubtitleTurn(ctx, turn, text)
 	if err != nil {
-		return translate.Result{}, "", false, err
+		return translate.Result{}, "", false, false, err
 	}
 	for _, fact := range usage {
 		if err := s.usage.Publish(ctx, fact); err != nil {
-			return translate.Result{}, "", false, err
+			return translate.Result{}, "", false, false, err
 		}
 	}
 	if !ok {
-		return translate.Result{Text: summary.Text}, residual, false, nil
+		return translate.Result{Text: summary.Text}, residual, false, false, nil
 	}
-	return translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}, "", true, nil
+	return translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}, "", true, summary.SkipUsage, nil
 }
 
 func finalTurnAcceptedError(operation string, err error) error {

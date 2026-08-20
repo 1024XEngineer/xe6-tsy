@@ -1,0 +1,172 @@
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  verify:
+    name: Verify ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: contracts
+            runtime: go
+            directory: packages/contracts
+          - name: api
+            runtime: go
+            directory: services/api
+          - name: realtime-audio
+            runtime: go
+            directory: services/realtime-audio
+          - name: web
+            runtime: node
+            directory: apps/web
+            lockfile: apps/web/package-lock.json
+            command: npm run lint && npm run typecheck && npm test && npm run build
+          - name: mobile
+            runtime: node
+            directory: apps/mobile
+            lockfile: apps/mobile/package-lock.json
+            command: npm run typecheck && npm test && npm run build
+    defaults:
+      run:
+        working-directory: ${{ matrix.directory }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Go
+        if: matrix.runtime == 'go'
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: ${{ matrix.directory }}/go.mod
+      - name: Verify Go formatting
+        if: matrix.runtime == 'go'
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            printf 'The following Go files are not formatted:\n%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Test Go
+        if: matrix.runtime == 'go'
+        run: go test -count=1 ./...
+      - name: Set up Node.js
+        if: matrix.runtime == 'node'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.lockfile }}
+      - name: Install Node.js dependencies
+        if: matrix.runtime == 'node'
+        run: npm ci
+      - name: Verify Node.js project
+        if: matrix.runtime == 'node'
+        run: ${{ matrix.command }}
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and publish immutable images
+        id: images
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image_tag="${GITHUB_SHA}"
+          api_image="ghcr.io/${owner}/lingow-api:${image_tag}"
+          realtime_image="ghcr.io/${owner}/lingow-realtime-audio:${image_tag}"
+          web_image="ghcr.io/${owner}/lingow-web:${image_tag}"
+
+          docker buildx build --platform linux/amd64 --file infra/production/api.Dockerfile --tag "$api_image" --push .
+          docker buildx build --platform linux/amd64 --file infra/production/realtime-audio.Dockerfile --tag "$realtime_image" --push .
+          docker buildx build --platform linux/amd64 --file infra/production/web.Dockerfile --tag "$web_image" --push .
+
+          echo "api_image=${api_image}" >> "$GITHUB_OUTPUT"
+          echo "realtime_image=${realtime_image}" >> "$GITHUB_OUTPUT"
+          echo "web_image=${web_image}" >> "$GITHUB_OUTPUT"
+      - name: Validate deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?DEPLOY_HOST secret is required}"
+          : "${DEPLOY_USER:?DEPLOY_USER secret is required}"
+          : "${DEPLOY_SSH_PRIVATE_KEY:?DEPLOY_SSH_PRIVATE_KEY secret is required}"
+          : "${DEPLOY_KNOWN_HOSTS:?DEPLOY_KNOWN_HOSTS secret is required}"
+          : "${DEPLOY_ENV_FILE:?DEPLOY_ENV_FILE secret is required}"
+          : "${DEPLOY_PATH:?DEPLOY_PATH repository variable is required}"
+          : "${GHCR_PULL_TOKEN:?GHCR_PULL_TOKEN secret is required}"
+          [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "DEPLOY_PATH must be an absolute safe path" >&2; exit 1; }
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "DEPLOY_HOST must be a hostname or IPv4 address" >&2; exit 1; }
+          [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || { echo "DEPLOY_USER contains unsupported characters" >&2; exit 1; }
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Upload deployment files
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="${DEPLOY_USER}@${DEPLOY_HOST}"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "install -d -m 700 '${DEPLOY_PATH}'"
+          {
+            printf '%s\n' "$DEPLOY_ENV_FILE"
+            printf 'LINGOW_API_IMAGE=%s\n' '${{ steps.images.outputs.api_image }}'
+            printf 'LINGOW_REALTIME_AUDIO_IMAGE=%s\n' '${{ steps.images.outputs.realtime_image }}'
+            printf 'LINGOW_WEB_IMAGE=%s\n' '${{ steps.images.outputs.web_image }}'
+          } > "$RUNNER_TEMP/.env.production"
+          chmod 600 "$RUNNER_TEMP/.env.production"
+          scp -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml scripts/deploy.sh "$RUNNER_TEMP/.env.production" "${destination}:${DEPLOY_PATH}/"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "chmod 600 '${DEPLOY_PATH}/.env.production' && chmod 700 '${DEPLOY_PATH}/deploy.sh'"
+      - name: Authenticate deployment host to GHCR
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="${DEPLOY_USER}@${DEPLOY_HOST}"
+          printf '%s' "$GHCR_PULL_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" "docker login ghcr.io --username '${GITHUB_ACTOR}' --password-stdin"
+      - name: Deploy and wait for health checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="${DEPLOY_USER}@${DEPLOY_HOST}"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${DEPLOY_PATH}/deploy.sh' '${DEPLOY_PATH}' '${DEPLOY_PATH}/.env.production'"

@@ -388,6 +388,9 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		return nil, fmt.Errorf("configure control-plane: %w", err)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	realtimemetrics.Register(mux, metricRegistry, cfg.MetricsToken)
 	mux.Handle("/", handler)
 	return mux, nil

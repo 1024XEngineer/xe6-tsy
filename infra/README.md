@@ -47,5 +47,5 @@ POST /api/v1/account/message-targets/email/bind
 
 ## 后续
 
-- API / realtime-audio 独立部署 manifest
+- [生产 Docker Compose 部署](./production/README.md)：Web、API 与 realtime-audio 镜像、GitHub Actions 发布和所需 GitHub Environment 配置。
 - 生产环境密钥与 Valkey consumer 命名规范

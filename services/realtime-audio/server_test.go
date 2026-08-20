@@ -361,6 +361,20 @@ func TestNewControlPlaneHandlerProtectsRealtimeMetrics(t *testing.T) {
 	}
 }
 
+func TestNewControlPlaneHandlerServesUnauthenticatedHealthCheck(t *testing.T) {
+	setMockProviderEnv(t)
+	handler, err := newControlPlaneHandler(strings.Repeat("h", 32))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("health check status = %d, want %d", response.Code, http.StatusOK)
+	}
+}
+
 func TestNewControlPlaneHandlerDoesNotExposeMetricsByDefault(t *testing.T) {
 	setMockProviderEnv(t)
 	handler, err := newControlPlaneHandler(strings.Repeat("m", 32))

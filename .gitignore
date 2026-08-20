@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+!infra/production/.env.production.example
 
 # Temporary inbound PCM WAV dumps from realtime-audio debug_inbound_wav.go
 debug-inbound-wav/

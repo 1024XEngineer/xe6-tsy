@@ -28,6 +28,59 @@ func TestModeCoordinatorStartsWithIndependentModeState(t *testing.T) {
 	}
 }
 
+func TestNewModeCoordinatorRejectsInvalidConfiguration(t *testing.T) {
+	modeChanges := &recordingModeChangedSink{}
+	now := func() time.Time { return time.Unix(1700000000, 0).UTC() }
+	tests := []struct {
+		name      string
+		sessionID string
+		runtimeID string
+		initial   realtimev1.Mode
+		available []realtimev1.Mode
+		sink      ModeChangedSink
+		now       func() time.Time
+		wantErr   error
+	}{
+		{
+			name: "missing session", runtimeID: "runtime-1", initial: realtimev1.ModeInterpretation,
+			available: []realtimev1.Mode{realtimev1.ModeInterpretation}, sink: modeChanges, now: now,
+			wantErr: ErrModeCommandInvalid,
+		},
+		{
+			name: "missing runtime instance", sessionID: "session-1", initial: realtimev1.ModeInterpretation,
+			available: []realtimev1.Mode{realtimev1.ModeInterpretation}, sink: modeChanges, now: now,
+			wantErr: ErrModeCommandInvalid,
+		},
+		{
+			name: "missing event sink", sessionID: "session-1", runtimeID: "runtime-1", initial: realtimev1.ModeInterpretation,
+			available: []realtimev1.Mode{realtimev1.ModeInterpretation}, now: now, wantErr: ErrModeCommandInvalid,
+		},
+		{
+			name: "missing clock", sessionID: "session-1", runtimeID: "runtime-1", initial: realtimev1.ModeInterpretation,
+			available: []realtimev1.Mode{realtimev1.ModeInterpretation}, sink: modeChanges, wantErr: ErrModeCommandInvalid,
+		},
+		{
+			name: "invalid registered mode", sessionID: "session-1", runtimeID: "runtime-1", initial: realtimev1.ModeInterpretation,
+			available: []realtimev1.Mode{"invalid"}, sink: modeChanges, now: now, wantErr: ErrModeCommandInvalid,
+		},
+		{
+			name: "unavailable initial mode", sessionID: "session-1", runtimeID: "runtime-1", initial: realtimev1.ModeAssistant,
+			available: []realtimev1.Mode{realtimev1.ModeInterpretation}, sink: modeChanges, now: now, wantErr: ErrModeNotAvailable,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator, err := newModeCoordinator(
+				test.sessionID, test.runtimeID, test.initial, test.available, test.sink, test.now,
+			)
+			if coordinator != nil || !errors.Is(err, test.wantErr) {
+				t.Fatalf("newModeCoordinator() = %p, %v; want nil, %v", coordinator, err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestTurnModeSnapshotRemainsFixedAcrossModeSwitch(t *testing.T) {
 	coordinator := mustModeCoordinator(t, realtimev1.ModeInterpretation, []realtimev1.Mode{
 		realtimev1.ModeInterpretation,

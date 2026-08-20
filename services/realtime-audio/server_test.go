@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -484,6 +485,54 @@ func TestRunAcceptsServerClosedListenerExit(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func TestRunReturnsShutdownTimeout(t *testing.T) {
+	setMockProviderEnv(t)
+	previousTimeout := shutdownTimeout
+	shutdownTimeout = time.Millisecond
+	t.Cleanup(func() { shutdownTimeout = previousTimeout })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listenerReady := make(chan net.Listener, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, secretEnv(strings.Repeat("y", 32)), func(server *http.Server) error {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				return err
+			}
+			listenerReady <- listener
+			return server.Serve(listener)
+		})
+	}()
+
+	var listener net.Listener
+	select {
+	case listener = <-listenerReady:
+	case <-time.After(time.Second):
+		t.Fatal("listener did not start")
+	}
+	defer listener.Close()
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\n")); err != nil {
+		t.Fatalf("write partial request: %v", err)
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("run() error = %v, want shutdown deadline", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run() did not return after shutdown timeout")
 	}
 }
 

@@ -92,6 +92,22 @@ func TestAssistantHandlerRejectsInvalidTTSUsageFactAfterAccept(t *testing.T) {
 	}
 }
 
+func TestAssistantHandlerRejectsInvalidReplyEventBeforeCommit(t *testing.T) {
+	turn := assistantTurn()
+	turn.Mode.RuntimeInstanceID = ""
+	replies := &recordingAssistantReplySink{}
+	usage := &recordingUsageSink{}
+	handler := newTestAssistantHandler(successfulAssistantLLM(), replies, usage,
+		tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}), acceptingAssistantReplyGate{}, time.Now())
+	err := handler.HandleASRFinal(t.Context(), turn, asr.FinalResult{Text: "question", SourceLanguage: "en-US"})
+	if !errors.Is(err, ErrAssistantReplyInvalid) {
+		t.Fatalf("HandleASRFinal() error = %v, want ErrAssistantReplyInvalid", err)
+	}
+	if len(replies.events) != 0 || len(usage.facts) != 0 {
+		t.Fatalf("invalid event side effects = replies %#v, usage %#v", replies.events, usage.facts)
+	}
+}
+
 func TestPublishLLMUsageIfPresentHonorsProviderModelAndTokenBoundaries(t *testing.T) {
 	handler := newAssistantMutationHandler(successfulAssistantLLM(), &recordingUsageSink{}, &recordingRuntimeReporter{})
 	tests := []struct {

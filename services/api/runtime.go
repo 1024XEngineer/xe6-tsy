@@ -31,6 +31,8 @@ const (
 	runtimeStartupTimeout       = 30 * time.Second
 )
 
+var configuredRuntimeShutdownTimeout = 10 * time.Second
+
 type configuredRuntime struct {
 	pool                  *pgxpool.Pool
 	redis                 *redis.Client
@@ -493,7 +495,7 @@ func runFailFastBackgroundWorker(ctx context.Context, name string, run func(cont
 }
 
 func shutdownConfiguredServer(server *http.Server, components *sync.WaitGroup) error {
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), configuredRuntimeShutdownTimeout)
 	defer cancel()
 	shutdownErr := server.Shutdown(shutdownCtx)
 	done := make(chan struct{})

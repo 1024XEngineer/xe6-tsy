@@ -14,6 +14,7 @@ type Classifier struct {
 	runtime   *Runtime
 	threshold float64
 	negThresh float64
+	inferFn   func([]float32) (float32, []float32, []float32, error)
 
 	mu         sync.Mutex
 	state      []float32
@@ -113,6 +114,9 @@ func (c *Classifier) Reset() {
 }
 
 func (c *Classifier) infer(window []float32) (float32, []float32, []float32, error) {
+	if c.inferFn != nil {
+		return c.inferFn(window)
+	}
 	c.runtime.mu.Lock()
 	defer c.runtime.mu.Unlock()
 	return c.runtime.inferLocked(window, c.state, c.context)

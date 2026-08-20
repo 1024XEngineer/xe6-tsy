@@ -59,3 +59,42 @@ func TestClassifierInferenceFailureClearsTriggeredState(t *testing.T) {
 		t.Fatal("inference failure should clear triggered state")
 	}
 }
+
+func TestClassifierSpeechSuccessPath(t *testing.T) {
+	nextState := make([]float32, stateSize)
+	nextState[0] = 0.25
+	nextContext := make([]float32, contextSamples)
+	nextContext[0] = 0.5
+	calls := 0
+	classifier := &Classifier{
+		runtime:   &Runtime{},
+		threshold: 0.5,
+		negThresh: 0.35,
+		state:     make([]float32, stateSize),
+		context:   make([]float32, contextSamples),
+		inferFn: func(window []float32) (float32, []float32, []float32, error) {
+			calls++
+			if len(window) != WindowSamples {
+				t.Fatalf("inference window length = %d, want %d", len(window), WindowSamples)
+			}
+			return 0.8, nextState, nextContext, nil
+		},
+	}
+	frame, err := audio.NewFrame(make([]byte, WindowSamples*2), audio.SupportedSampleRate, time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !classifier.Speech(frame) {
+		t.Fatal("successful speech inference should report speech")
+	}
+	if calls != 1 || classifier.WindowRuns() != 1 {
+		t.Fatalf("inference calls = %d, window runs = %d, want 1, 1", calls, classifier.WindowRuns())
+	}
+	if classifier.LastProbability() != 0.8 || !classifier.triggered {
+		t.Fatalf("classifier state = probability %v, triggered %v", classifier.LastProbability(), classifier.triggered)
+	}
+	if classifier.state[0] != nextState[0] || classifier.context[0] != nextContext[0] {
+		t.Fatalf("inference state was not copied: state[0]=%v context[0]=%v", classifier.state[0], classifier.context[0])
+	}
+}

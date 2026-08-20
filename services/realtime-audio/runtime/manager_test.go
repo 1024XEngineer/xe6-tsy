@@ -1175,6 +1175,42 @@ func TestManagerDoesNotBlockOtherSessionsWhileOpeningInput(t *testing.T) {
 	}
 }
 
+func TestKeyedLockerWaitersShareAndReleaseSessionLock(t *testing.T) {
+	locker := newKeyedLocker()
+	firstUnlock := locker.lock("session-1")
+	secondAcquired := make(chan struct{})
+	allowSecondRelease := make(chan struct{})
+	secondReleased := make(chan struct{})
+
+	go func() {
+		secondUnlock := locker.lock("session-1")
+		close(secondAcquired)
+		<-allowSecondRelease
+		secondUnlock()
+		close(secondReleased)
+	}()
+
+	firstUnlock()
+	<-secondAcquired
+
+	locker.mu.Lock()
+	entry := locker.locks["session-1"]
+	if entry == nil || entry.references != 1 {
+		locker.mu.Unlock()
+		t.Fatalf("waiting lock entry = %#v, want one active reference", entry)
+	}
+	locker.mu.Unlock()
+
+	close(allowSecondRelease)
+	<-secondReleased
+
+	locker.mu.Lock()
+	defer locker.mu.Unlock()
+	if _, ok := locker.locks["session-1"]; ok {
+		t.Fatal("session lock remained after its final waiter released it")
+	}
+}
+
 func TestManagerStopTimeoutCanBeRetriedAfterSourceUnblocks(t *testing.T) {
 	source := &stubbornFrameSource{entered: make(chan struct{}), release: make(chan struct{})}
 	manager, err := NewManager(config.ProviderConfig{}, config.Providers{

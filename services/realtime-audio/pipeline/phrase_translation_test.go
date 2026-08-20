@@ -159,6 +159,32 @@ func TestPhraseTranslationCoordinatorStartsTranslationBeforeSourceDelivery(t *te
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("translation did not start while source delivery was blocked")
 	}
+	if _, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好"); err != nil || !reused {
+		t.Fatalf("FinalizePhraseSubtitleTurn() = reused=%v, err=%v; want phrase reuse", reused, err)
+	}
+}
+
+func TestPhraseTranslationCoordinatorDoesNotPublishTerminalEventsAfterDiscard(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	observer := &recordingPhraseSubtitleObserver{}
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		close(started)
+		<-release
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1}, nil
+	}), "mock", observer, nil)
+	turn := TurnContext{ID: "turn-discard-events", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	<-started
+	coordinator.DiscardPhraseSubtitleTurn(turn.ID)
+	close(release)
+	time.Sleep(20 * time.Millisecond)
+	for _, event := range observer.Events() {
+		if event.Status == realtimev1.PhraseSubtitleTranslated || event.Status == realtimev1.PhraseSubtitleTranslationFailed {
+			t.Fatalf("terminal event after discard = %#v", event)
+		}
+	}
 }
 
 func TestPhraseTranslationCoordinatorFinalizeDoesNotWaitForSubtitleObserver(t *testing.T) {

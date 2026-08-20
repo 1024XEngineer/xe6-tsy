@@ -120,7 +120,7 @@ func TestStartAudioDispatchesPhrasePartialsWhenOnlyPhrasesAreConfigured(t *testi
 		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	})
 	processor := NewTurnProcessor(TurnProcessorDependencies{
-		ASR: sequencedStreamProvider{stream: stream}, Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+		ASR: &pushEventProvider{stream: stream}, Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
 		}}), Pipeline: service, Finals: service, Phrases: phrases,
 	})

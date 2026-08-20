@@ -16,6 +16,126 @@ import (
 
 var testStart = time.Date(2026, 8, 11, 10, 0, 0, 0, time.UTC)
 
+func TestNewGateRejectsMissingDependencies(t *testing.T) {
+	classifier := speechSequence{}
+	base := Dependencies{
+		Classifier: &classifier, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t), Executor: &recordingExecutor{},
+	}
+	tests := []struct {
+		name string
+		edit func(*Dependencies)
+	}{
+		{name: "classifier", edit: func(deps *Dependencies) { deps.Classifier = nil }},
+		{name: "asr", edit: func(deps *Dependencies) { deps.ASR = nil }},
+		{name: "interpreter", edit: func(deps *Dependencies) { deps.Interpreter = nil }},
+		{name: "validator", edit: func(deps *Dependencies) { deps.Validator = nil }},
+		{name: "executor", edit: func(deps *Dependencies) { deps.Executor = nil }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			deps := base
+			test.edit(&deps)
+			if gate, err := NewGate(deps, validGateOptions()); gate != nil || !errors.Is(err, ErrDependenciesRequired) {
+				t.Fatalf("NewGate() = (%v, %v), want nil and %v", gate, err, ErrDependenciesRequired)
+			}
+		})
+	}
+}
+
+func TestNewGateRejectsOptionBoundaries(t *testing.T) {
+	base := validGateOptions()
+	tests := []struct {
+		name string
+		edit func(*Options)
+	}{
+		{name: "zero window", edit: func(options *Options) { options.WindowTTL = 0 }},
+		{name: "zero no speech", edit: func(options *Options) { options.NoSpeechTimeout = 0 }},
+		{name: "zero maximum", edit: func(options *Options) { options.MaxAudioDuration = 0 }},
+		{name: "zero end silence", edit: func(options *Options) { options.EndSilence = 0 }},
+		{name: "negative prefix", edit: func(options *Options) { options.PrefixPadding = -time.Nanosecond }},
+		{name: "no speech exceeds window", edit: func(options *Options) { options.NoSpeechTimeout = options.WindowTTL + time.Nanosecond }},
+		{name: "maximum exceeds window", edit: func(options *Options) { options.MaxAudioDuration = options.WindowTTL + time.Nanosecond }},
+		{name: "end silence equals maximum", edit: func(options *Options) { options.EndSilence = options.MaxAudioDuration }},
+		{name: "prefix equals maximum", edit: func(options *Options) { options.PrefixPadding = options.MaxAudioDuration }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := base
+			test.edit(&options)
+			if gate, err := NewGate(validGateDependencies(t), options); gate != nil || !errors.Is(err, ErrInvalidOptions) {
+				t.Fatalf("NewGate() = (%v, %v), want nil and %v", gate, err, ErrInvalidOptions)
+			}
+		})
+	}
+}
+
+func TestNewGateUsesDefaultsAndNilReceiverGuards(t *testing.T) {
+	gate, err := NewGate(validGateDependencies(t), validGateOptions())
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	if gate.logger == nil || gate.now == nil || gate.State() != StateDormant {
+		t.Fatalf("NewGate() did not initialize logger/clock, state = %q", gate.State())
+	}
+	var nilGate *Gate
+	if nilGate.State() != StateDormant {
+		t.Fatalf("nil State() = %q, want dormant", nilGate.State())
+	}
+	nilGate.Cancel()
+	if err := nilGate.Open(validOpenRequest()); !errors.Is(err, ErrDependenciesRequired) {
+		t.Fatalf("nil Open() error = %v, want %v", err, ErrDependenciesRequired)
+	}
+	if got := nilGate.Consume(t.Context(), audio.Frame{}); got != (Result{State: StateDormant}) {
+		t.Fatalf("nil Consume() = %#v, want dormant result", got)
+	}
+}
+
+func TestOpenRejectsInvalidRequestsAndClosedGate(t *testing.T) {
+	gate, err := NewGate(validGateDependencies(t), validGateOptions())
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	tests := []struct {
+		name string
+		edit func(*OpenRequest)
+	}{
+		{name: "missing session", edit: func(request *OpenRequest) { request.SessionID = "" }},
+		{name: "missing command", edit: func(request *OpenRequest) { request.CommandID = "" }},
+		{name: "missing opened at", edit: func(request *OpenRequest) { request.OpenedAt = time.Time{} }},
+		{name: "capture after opened", edit: func(request *OpenRequest) { request.CaptureFrom = request.OpenedAt.Add(time.Nanosecond) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := validOpenRequest()
+			test.edit(&request)
+			if err := gate.Open(request); !errors.Is(err, ErrInvalidOpenRequest) {
+				t.Fatalf("Open() error = %v, want %v", err, ErrInvalidOpenRequest)
+			}
+		})
+	}
+	gate.Cancel()
+	if err := gate.Open(validOpenRequest()); !errors.Is(err, ErrGateClosed) {
+		t.Fatalf("Open() after Cancel error = %v, want %v", err, ErrGateClosed)
+	}
+}
+
+func validGateDependencies(t *testing.T) Dependencies {
+	t.Helper()
+	classifier := speechSequence{}
+	return Dependencies{
+		Classifier: &classifier, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}),
+		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t), Executor: &recordingExecutor{},
+	}
+}
+
+func validGateOptions() Options {
+	return Options{
+		WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond,
+		MaxAudioDuration: 800 * time.Millisecond, EndSilence: 100 * time.Millisecond,
+	}
+}
+
 func TestGateExecutesSemanticCandidateAndQuarantinesAudio(t *testing.T) {
 	tests := []struct {
 		name string

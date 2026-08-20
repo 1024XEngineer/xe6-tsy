@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
@@ -42,6 +43,41 @@ func TestTurnProcessorRejectsEveryMissingDependency(t *testing.T) {
 				t.Fatalf("StartAudio() error = %v, want ErrTurnProcessorDependencyRequired", err)
 			}
 		})
+	}
+}
+
+func TestStartAudioReturnsCanceledContextBeforeOpeningTurn(t *testing.T) {
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{}), Opener: newTestTurnOpener(&fakeLanguageConfigReader{}), Pipeline: service, Finals: service,
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := processor.StartAudio(ctx, TurnProcessRequest{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("StartAudio() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestDispatchASRPartialsUpdatesInterpretationPhraseState(t *testing.T) {
+	turn := TurnContext{ID: "turn-1", SessionID: "session-1", Mode: TurnModeSnapshot{Mode: realtimev1.ModeInterpretation}}
+	phrases := NewPhraseSubtitleProcessor(&recordingPhraseSubtitleObserver{}, PhraseStabilizerOptions{StableAfter: time.Hour})
+	phrases.Start(turn)
+	events := make(chan asr.Event, 1)
+	events <- asr.Event{Type: asr.EventPartial, Text: "partial text"}
+	close(events)
+
+	dispatchASRPartials(t.Context(), nil, phrases, turn, "en-US", events, make(chan struct{}))
+
+	phrases.mu.Lock()
+	defer phrases.mu.Unlock()
+	utterance := phrases.utterances[turn.ID]
+	if utterance == nil || utterance.stabilizer.candidate != "partial text" {
+		t.Fatalf("phrase state = %#v, want observed partial candidate", utterance)
 	}
 }
 

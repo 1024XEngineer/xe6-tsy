@@ -1,6 +1,8 @@
 package silero
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,5 +39,65 @@ func TestEnsureAssetsRequiresModel(t *testing.T) {
 	}
 	if err := EnsureAssets(&cfg); err == nil {
 		t.Fatal("expected missing model error")
+	}
+}
+
+func TestDownloadONNXRuntimeRejectsCorruptArchive(t *testing.T) {
+	asset, _, err := ortReleaseAsset()
+	if err != nil {
+		t.Skipf("unsupported platform: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/"+asset {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte("not an onnxruntime archive"))
+	}))
+	t.Cleanup(server.Close)
+
+	previousURL := ortReleaseBaseURL
+	ortReleaseBaseURL = server.URL + "/"
+	t.Cleanup(func() { ortReleaseBaseURL = previousURL })
+
+	if _, err := downloadONNXRuntime(t.TempDir()); err == nil {
+		t.Fatal("expected corrupt archive error")
+	}
+}
+
+func TestArchivesRejectCurrentDirectoryAndTarTraversal(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "current-directory.zip")
+	if err := writeZip(zipPath, map[string][]byte{".": []byte("nope")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := unzipArchive(zipPath, t.TempDir()); err == nil {
+		t.Fatal("expected current directory zip path error")
+	}
+
+	tgzPath := filepath.Join(t.TempDir(), "traversal.tgz")
+	if err := writeTarGz(tgzPath, map[string][]byte{"../escape.txt": []byte("nope")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := untarGzipArchive(tgzPath, t.TempDir()); err == nil {
+		t.Fatal("expected unsafe tar path error")
+	}
+}
+
+func TestResolveInstalledLibraryRejectsDirectoryAndUnexpectedLayout(t *testing.T) {
+	root := t.TempDir()
+	_, libraryRel, err := ortReleaseAsset()
+	if err != nil {
+		t.Skipf("unsupported platform: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, libraryRel), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveInstalledLibrary(root, libraryRel); err == nil {
+		t.Fatal("expected directory to be rejected as library")
+	}
+
+	emptyRoot := t.TempDir()
+	if _, err := firstSubdir(emptyRoot); err == nil {
+		t.Fatal("expected unexpected archive layout error")
 	}
 }

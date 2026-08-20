@@ -1,6 +1,8 @@
 package silero
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -39,6 +41,44 @@ func TestLoadLocalConfigReadsOverrides(t *testing.T) {
 	}
 	if cfg.LibraryPath != `C:\ort\onnxruntime.dll` || cfg.ModelPath != `C:\models\silero_vad.onnx` {
 		t.Fatalf("paths = %q %q", cfg.LibraryPath, cfg.ModelPath)
+	}
+}
+
+func TestLoadLocalConfigPreservesExplicitZeroThresholds(t *testing.T) {
+	cfg := LoadLocalConfigFromEnv(func(key string) string {
+		switch key {
+		case envThreshold:
+			return "0"
+		case envNegThreshold:
+			return "0.01"
+		default:
+			return ""
+		}
+	})
+	if cfg.Threshold != 0 || cfg.NegThreshold != 0.01 {
+		t.Fatalf("thresholds = %v, %v, want 0, 0.01", cfg.Threshold, cfg.NegThreshold)
+	}
+}
+
+func TestDefaultPathsFallBackToFirstCandidate(t *testing.T) {
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(originalDir); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	if got, want := defaultLibraryPath(), filepath.Join("third_party", "onnxruntime", "lib", libraryFileName()); got != want {
+		t.Fatalf("defaultLibraryPath() = %q, want %q", got, want)
+	}
+	if got, want := defaultModelPath(), filepath.Join("vad", "silero", "silero_vad.onnx"); got != want {
+		t.Fatalf("defaultModelPath() = %q, want %q", got, want)
 	}
 }
 

@@ -805,6 +805,102 @@ func TestMemoryConnectionManagerHidesOpeningConnection(t *testing.T) {
 	}
 }
 
+func TestTransportStateGateRejectsPendingAndFutureNotifications(t *testing.T) {
+	var applied []realtimev1.ConnectionState
+	gate := newTransportStateGate(func(state realtimev1.ConnectionState, _ time.Time) {
+		applied = append(applied, state)
+	})
+	gate.Notify(realtimev1.ConnectionConnected, time.Unix(1, 0))
+	gate.Reject()
+	gate.Activate()
+	gate.Notify(realtimev1.ConnectionFailed, time.Unix(2, 0))
+	if len(applied) != 0 {
+		t.Fatalf("rejected gate applied states = %#v, want none", applied)
+	}
+}
+
+func TestTransportStateGateAllowsActivationWithoutHandler(t *testing.T) {
+	gate := newTransportStateGate(nil)
+	gate.Notify(realtimev1.ConnectionConnecting, time.Unix(1, 0))
+	gate.Activate()
+	gate.Notify(realtimev1.ConnectionConnected, time.Unix(2, 0))
+}
+
+func TestMemoryConnectionManagerOpenRejectsNilManagerAndFactory(t *testing.T) {
+	request := validOpenConnectionRequest()
+	var nilManager *MemoryConnectionManager
+	if _, err := nilManager.Open(context.Background(), request); !errors.Is(err, ErrInvalidDependency) {
+		t.Fatalf("nil manager Open() error = %v, want ErrInvalidDependency", err)
+	}
+	manager := NewMemoryConnectionManager(nil)
+	if _, err := manager.Open(context.Background(), request); !errors.Is(err, ErrInvalidDependency) {
+		t.Fatalf("nil factory Open() error = %v, want ErrInvalidDependency", err)
+	}
+}
+
+func TestMemoryConnectionManagerApplyStateValidatesAndPreservesVersion(t *testing.T) {
+	manager := NewMemoryConnectionManager(&fakeTransportFactory{transport: &fakeTransport{answer: SessionDescription{SDP: "answer", Type: "answer"}}})
+	request := validOpenConnectionRequest()
+	connection, err := manager.Open(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	tests := []struct {
+		name  string
+		state realtimev1.ConnectionState
+		at    time.Time
+		want  error
+	}{
+		{name: "invalid state", state: "invalid", at: request.CreatedAt.Add(time.Second), want: ErrConnectionStateInvalid},
+		{name: "missing time", state: realtimev1.ConnectionConnected, want: ErrConnectionStateTimeRequired},
+		{name: "stale", state: realtimev1.ConnectionConnected, at: request.CreatedAt, want: ErrConnectionStateStale},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, got := manager.ApplyState(context.Background(), request.SessionID, connection.ID, test.state, test.at)
+			if !errors.Is(got, test.want) {
+				t.Fatalf("ApplyState() error = %v, want %v", got, test.want)
+			}
+		})
+	}
+	snapshot, err := manager.ApplyState(context.Background(), request.SessionID, connection.ID, realtimev1.ConnectionConnecting, request.CreatedAt.Add(time.Second))
+	if err != nil {
+		t.Fatalf("same-state ApplyState() error = %v", err)
+	}
+	if snapshot.Version != 1 || !snapshot.UpdatedAt.Equal(request.CreatedAt.Add(time.Second)) {
+		t.Fatalf("same-state snapshot = %#v", snapshot)
+	}
+	if _, err := manager.ApplyState(context.Background(), request.SessionID, connection.ID, realtimev1.ConnectionNew, request.CreatedAt.Add(2*time.Second)); !errors.Is(err, ErrConnectionStateTransition) {
+		t.Fatalf("invalid transition error = %v, want ErrConnectionStateTransition", err)
+	}
+}
+
+func TestSameICECandidateChecksOptionalFields(t *testing.T) {
+	base := ICECandidate{ID: "candidate-1", Candidate: "candidate:1", SDPMid: stringPtr("audio"), SDPMLineIndex: uint16Ptr(0), UsernameFragment: stringPtr("ufrag")}
+	tests := []struct {
+		name  string
+		other ICECandidate
+		want  bool
+	}{
+		{name: "same", other: base, want: true},
+		{name: "different id", other: ICECandidate{ID: "candidate-2", Candidate: base.Candidate, SDPMid: base.SDPMid, SDPMLineIndex: base.SDPMLineIndex, UsernameFragment: base.UsernameFragment}},
+		{name: "different mid", other: ICECandidate{ID: base.ID, Candidate: base.Candidate, SDPMid: stringPtr("video"), SDPMLineIndex: base.SDPMLineIndex, UsernameFragment: base.UsernameFragment}},
+		{name: "different line", other: ICECandidate{ID: base.ID, Candidate: base.Candidate, SDPMid: base.SDPMid, SDPMLineIndex: uint16Ptr(1), UsernameFragment: base.UsernameFragment}},
+		{name: "different fragment", other: ICECandidate{ID: base.ID, Candidate: base.Candidate, SDPMid: base.SDPMid, SDPMLineIndex: base.SDPMLineIndex, UsernameFragment: stringPtr("other")}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sameICECandidate(base, test.other); got != test.want {
+				t.Fatalf("sameICECandidate() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func stringPtr(value string) *string { return &value }
+
+func uint16Ptr(value uint16) *uint16 { return &value }
+
 func validOpenConnectionRequest() OpenConnectionRequest {
 	return OpenConnectionRequest{
 		SessionID: "session-1", IdempotencyKey: "offer-device-1",

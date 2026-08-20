@@ -18,7 +18,10 @@ Web 默认只绑定宿主机回环地址 `127.0.0.1:3000`。如需绑定其他�
    - `DEPLOY_ENV_FILE`：将环境模板中的尖括号字段说明替换为真实配置后的完整环境文件，不包含三项 `LINGOW_*_IMAGE` 值。
    - `GHCR_PULL_TOKEN`：仅具 `packages:read` 权限、可读取三个 GHCR 镜像的访问令牌。
 
-   添加 repository variable `DEPLOY_PATH`，值为部署用户可写的绝对目录，例如 `/srv/lingow`。
+   添加 repository variables：
+
+   - `DEPLOY_PATH`：部署用户可写的绝对目录，例如 `/srv/lingow`。
+   - `GHCR_PULL_USERNAME`：创建 `GHCR_PULL_TOKEN` 的 GitHub 用户名或专用服务账号。
 
 5. 使三个 GHCR package 对该令牌或部署组织可读。若将 package 设为 public，可移除主机 GHCR 登录步骤及对应 secret。
 

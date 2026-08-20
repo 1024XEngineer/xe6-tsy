@@ -90,6 +90,7 @@ jobs:
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
       DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      GHCR_PULL_USERNAME: ${{ vars.GHCR_PULL_USERNAME }}
       GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
     steps:
       - name: Check out code
@@ -130,10 +131,12 @@ jobs:
           : "${DEPLOY_KNOWN_HOSTS:?DEPLOY_KNOWN_HOSTS secret is required}"
           : "${DEPLOY_ENV_FILE:?DEPLOY_ENV_FILE secret is required}"
           : "${DEPLOY_PATH:?DEPLOY_PATH repository variable is required}"
+          : "${GHCR_PULL_USERNAME:?GHCR_PULL_USERNAME repository variable is required}"
           : "${GHCR_PULL_TOKEN:?GHCR_PULL_TOKEN secret is required}"
           [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "DEPLOY_PATH must be an absolute safe path" >&2; exit 1; }
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "DEPLOY_HOST must be a hostname or IPv4 address" >&2; exit 1; }
           [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || { echo "DEPLOY_USER contains unsupported characters" >&2; exit 1; }
+          [[ "$GHCR_PULL_USERNAME" =~ ^[A-Za-z0-9-]+$ ]] || { echo "GHCR_PULL_USERNAME contains unsupported characters" >&2; exit 1; }
       - name: Configure SSH
         shell: bash
         run: |
@@ -163,7 +166,7 @@ jobs:
         run: |
           set -euo pipefail
           destination="${DEPLOY_USER}@${DEPLOY_HOST}"
-          printf '%s' "$GHCR_PULL_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" "docker login ghcr.io --username '${GITHUB_ACTOR}' --password-stdin"
+          printf '%s' "$GHCR_PULL_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" "docker login ghcr.io --username '${GHCR_PULL_USERNAME}' --password-stdin"
       - name: Deploy and wait for health checks
         shell: bash
         run: |

@@ -33,6 +33,24 @@ func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing
 	}
 }
 
+func TestPhraseTranslationCoordinatorDiscardsStateWhenFinalizeIsCanceled(t *testing.T) {
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(ctx context.Context, _ translate.Request) (translate.Result, error) {
+		return translate.Result{}, ctx.Err()
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	turn := TurnContext{ID: "turn-canceled", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, ok := coordinator.FinalizePhraseSubtitleTurn(ctx, turn, "你好"); ok {
+		t.Fatal("FinalizePhraseSubtitleTurn() unexpectedly reused canceled context")
+	}
+	coordinator.mu.Lock()
+	defer coordinator.mu.Unlock()
+	if len(coordinator.utterances) != 0 {
+		t.Fatalf("coordinator utterances = %d, want 0", len(coordinator.utterances))
+	}
+}
+
 type phraseTranslateFunc func(context.Context, translate.Request) (translate.Result, error)
 
 func (f phraseTranslateFunc) Translate(ctx context.Context, request translate.Request) (translate.Result, error) {

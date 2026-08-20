@@ -7,6 +7,8 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 )
 
 func TestPhraseSubtitleProcessorPublishesOrderedPunctuationAndFinalTail(t *testing.T) {
@@ -36,6 +38,23 @@ func TestPhraseSubtitleProcessorDiscardsLatePartialsAfterFlush(t *testing.T) {
 
 	if got := observer.Events(); len(got) != 1 || got[0].SourceText != "你好" {
 		t.Fatalf("events = %#v", got)
+	}
+}
+
+func TestPhraseSubtitleProcessorForwardsDiscardAfterFlush(t *testing.T) {
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(ctx context.Context, _ translate.Request) (translate.Result, error) {
+		return translate.Result{}, ctx.Err()
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	processor := NewPhraseSubtitleProcessor(coordinator, PhraseStabilizerOptions{})
+	turn := TurnContext{ID: "turn-1", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	processor.Start(turn, "zh-CN")
+	processor.Flush(context.Background(), turn, "嗯")
+	processor.Discard(turn.ID)
+
+	coordinator.mu.Lock()
+	defer coordinator.mu.Unlock()
+	if len(coordinator.utterances) != 0 {
+		t.Fatalf("coordinator utterances = %d, want 0", len(coordinator.utterances))
 	}
 }
 

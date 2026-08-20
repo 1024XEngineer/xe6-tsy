@@ -107,15 +107,14 @@ func (p *PhraseSubtitleProcessor) Discard(turnID string) {
 		return
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	utterance := p.utterances[turnID]
-	if utterance == nil {
-		return
+	if utterance != nil {
+		delete(p.utterances, turnID)
+		if utterance.timer != nil {
+			utterance.timer.Stop()
+		}
 	}
-	delete(p.utterances, turnID)
-	if utterance.timer != nil {
-		utterance.timer.Stop()
-	}
+	p.mu.Unlock()
 	if lifecycle, ok := p.observer.(PhraseSubtitleTurnObserver); ok {
 		lifecycle.DiscardPhraseSubtitleTurn(turnID)
 	}

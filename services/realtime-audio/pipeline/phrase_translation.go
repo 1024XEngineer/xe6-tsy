@@ -126,6 +126,7 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 	if utterance == nil {
 		return PhraseTranslationSummary{}, false
 	}
+	defer c.DiscardPhraseSubtitleTurn(turn.ID)
 	done := make(chan struct{})
 	go func() { utterance.pending.Wait(); close(done) }()
 	select {
@@ -135,7 +136,6 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	defer c.discardLocked(turn.ID)
 	return phraseSummary(finalText, utterance)
 }
 

@@ -33,7 +33,23 @@ func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing
 		t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, %#v, %v, %v", summary, usage, ok, err)
 	}
 	events := observer.Events()
-	if len(events) != 4 || events[2].Status != realtimev1.PhraseSubtitleTranslated || events[2].PhraseSequence != 1 || events[3].PhraseSequence != 2 {
+	if len(events) != 4 {
+		t.Fatalf("events = %#v", events)
+	}
+	sourceIndex := map[int64]int{}
+	var translated []int64
+	for index, event := range events {
+		switch event.Status {
+		case realtimev1.PhraseSubtitleSourceStable:
+			sourceIndex[event.PhraseSequence] = index
+		case realtimev1.PhraseSubtitleTranslated:
+			if sourceIndex[event.PhraseSequence] >= index {
+				t.Fatalf("translated event preceded source event: %#v", events)
+			}
+			translated = append(translated, event.PhraseSequence)
+		}
+	}
+	if len(sourceIndex) != 2 || len(translated) != 2 || translated[0] != 1 || translated[1] != 2 {
 		t.Fatalf("events = %#v", events)
 	}
 }
@@ -55,6 +71,66 @@ func TestPhraseTranslationCoordinatorDoesNotWaitForPendingPhrase(t *testing.T) {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = usage=%#v, reused=%v, err=%v, elapsed=%v; want immediate fallback", usage, ok, err, time.Since(start))
 	}
 	close(release)
+}
+
+func TestPhraseTranslationCoordinatorReportsLateUsageAfterFinalize(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	reported := make(chan UsageFact, 1)
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		close(started)
+		<-release
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 7}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	coordinator.SetLatePhraseUsageReporter(func(fact UsageFact) { reported <- fact })
+	turn := TurnContext{ID: "turn-late-usage", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	<-started
+	_, usage, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好")
+	if err != nil || reused || len(usage) != 0 {
+		t.Fatalf("FinalizePhraseSubtitleTurn() = usage=%#v, reused=%v, err=%v", usage, reused, err)
+	}
+	close(release)
+	select {
+	case fact := <-reported:
+		if fact.IdempotencyKey != "usage:turn-late-usage:phrase:1" || fact.InputTokens != 7 {
+			t.Fatalf("late usage = %#v", fact)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late phrase usage was not reported")
+	}
+}
+
+func TestPhraseTranslationCoordinatorReportsCompletedUsageOnDiscard(t *testing.T) {
+	reported := make(chan UsageFact, 1)
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 3}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	coordinator.SetLatePhraseUsageReporter(func(fact UsageFact) { reported <- fact })
+	turn := TurnContext{ID: "turn-discard-usage", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	deadline := time.Now().Add(time.Second)
+	for {
+		coordinator.mu.Lock()
+		phrase := coordinator.utterances[turn.ID].phrases[1]
+		done := phrase.done
+		coordinator.mu.Unlock()
+		if done || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	coordinator.DiscardPhraseSubtitleTurn(turn.ID)
+	select {
+	case fact := <-reported:
+		if fact.IdempotencyKey != "usage:turn-discard-usage:phrase:1" || fact.InputTokens != 3 {
+			t.Fatalf("discard usage = %#v", fact)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("discarded phrase usage was not reported")
+	}
 }
 
 func TestPhraseTranslationCoordinatorStartsTranslationBeforeSourceDelivery(t *testing.T) {

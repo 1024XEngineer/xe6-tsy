@@ -25,6 +25,8 @@ var (
 	ErrFinalTurnAccepted = errors.New("final turn accepted")
 )
 
+const latePhraseUsagePublishTimeout = 2 * time.Second
+
 // IsRecoverableUnsupportedSourceLanguage reports whether unsupported language is the only
 // failure in an error chain. A joined error means cleanup or runtime-state recovery also failed
 // and must be propagated instead of being discarded with the Turn.
@@ -127,7 +129,7 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 			VoiceID: deps.VoiceID, Provider: deps.TTSProvider, Latency: deps.Latency,
 		})
 	}
-	return &PipelineService{
+	service := &PipelineService{
 		translator: deps.Translator, translationProvider: deps.TranslationProvider,
 		finalTurns: deps.FinalTurns, finalGate: deps.FinalGate,
 		usage: deps.Usage, runtime: deps.Runtime,
@@ -135,6 +137,18 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 		now:    now, latency: deps.Latency,
 		longDeliveryEnabled: deps.LongDeliveryEnabled,
 		phraseTranslations:  deps.PhraseTranslations,
+	}
+	if service.phraseTranslations != nil {
+		service.phraseTranslations.SetLatePhraseUsageReporter(service.reportLatePhraseUsage)
+	}
+	return service
+}
+
+func (s *PipelineService) reportLatePhraseUsage(fact UsageFact) {
+	ctx, cancel := context.WithTimeout(context.Background(), latePhraseUsagePublishTimeout)
+	defer cancel()
+	if err := s.usage.Publish(ctx, fact); err != nil {
+		s.latency.ProviderFailure("phrase_usage", TurnContext{ID: fact.TurnID, SessionID: fact.SessionID, TraceID: fact.TraceID}, fact.Provider, fact.Model, err)
 	}
 }
 

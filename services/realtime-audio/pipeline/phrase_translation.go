@@ -26,6 +26,7 @@ type PhraseTranslationCoordinator struct {
 	provider   string
 	observer   PhraseSubtitleObserver
 	now        func() time.Time
+	lateUsage  func(UsageFact)
 
 	mu         sync.Mutex
 	utterances map[string]*phraseTranslationUtterance
@@ -48,6 +49,7 @@ type translatedPhrase struct {
 	err             error
 	done            bool
 	sourceDelivered chan struct{}
+	usageHanded     bool
 }
 
 func NewPhraseTranslationCoordinator(translator translate.Provider, provider string, observer PhraseSubtitleObserver, now func() time.Time) *PhraseTranslationCoordinator {
@@ -61,6 +63,17 @@ func NewPhraseTranslationCoordinator(translator translate.Provider, provider str
 		translator: translator, provider: provider, observer: observer, now: now,
 		utterances: make(map[string]*phraseTranslationUtterance),
 	}
+}
+
+// SetLatePhraseUsageReporter installs the PipelineService-owned durable usage
+// boundary for results that arrive after finalization has returned.
+func (c *PhraseTranslationCoordinator) SetLatePhraseUsageReporter(reporter func(UsageFact)) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.lateUsage = reporter
+	c.mu.Unlock()
 }
 
 func (c *PhraseTranslationCoordinator) StartPhraseSubtitleTurn(turn TurnContext, sourceLanguage string) {
@@ -115,7 +128,11 @@ func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtt
 	c.mu.Lock()
 	phrase.result, phrase.err, phrase.done = result, err, true
 	events := c.publishReadyLocked(utterance)
+	lateUsage, usageErr := c.latePhraseUsageLocked(utterance, phrase)
 	c.mu.Unlock()
+	if usageErr == nil && lateUsage.ID != "" {
+		c.reportLatePhraseUsage(lateUsage)
+	}
 	c.publishPhraseEvents(utterance, events)
 }
 
@@ -156,7 +173,7 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 		return PhraseTranslationSummary{}, nil, false, nil
 	}
 	if ctx.Err() != nil {
-		c.discardPhraseSubtitleTurn(turn.ID)
+		c.discardPhraseSubtitleTurn(turn.ID, true)
 		return PhraseTranslationSummary{}, nil, false, nil
 	}
 	c.mu.Lock()
@@ -171,7 +188,7 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 		summary, ok := phraseSummary(finalText, utterance)
 		if ok {
 			c.mu.Unlock()
-			c.discardPhraseSubtitleTurn(turn.ID)
+			c.discardPhraseSubtitleTurn(turn.ID, false)
 			return summary, nil, true, nil
 		}
 	}
@@ -190,14 +207,16 @@ func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) 
 		c.mu.Unlock()
 		return
 	}
-	_, _ = c.detachPhraseSubtitleTurnLocked(turnID, false)
+	usage, _ := c.detachPhraseSubtitleTurnLocked(turnID, true)
 	c.mu.Unlock()
+	c.reportLatePhraseUsageList(usage)
 }
 
-func (c *PhraseTranslationCoordinator) discardPhraseSubtitleTurn(turnID string) {
+func (c *PhraseTranslationCoordinator) discardPhraseSubtitleTurn(turnID string, collectUsage bool) {
 	c.mu.Lock()
-	_, _ = c.detachPhraseSubtitleTurnLocked(turnID, false)
+	usage, _ := c.detachPhraseSubtitleTurnLocked(turnID, collectUsage)
 	c.mu.Unlock()
+	c.reportLatePhraseUsageList(usage)
 }
 
 func (c *PhraseTranslationCoordinator) detachPhraseSubtitleTurnLocked(turnID string, collectUsage bool) ([]UsageFact, error) {
@@ -215,6 +234,7 @@ func (c *PhraseTranslationCoordinator) detachPhraseSubtitleTurnLocked(turnID str
 					usageErr = err
 				} else if err == nil {
 					usage = append(usage, fact)
+					phrase.usageHanded = true
 				}
 			}
 		}
@@ -222,6 +242,33 @@ func (c *PhraseTranslationCoordinator) detachPhraseSubtitleTurnLocked(turnID str
 	utterance.cancel()
 	delete(c.utterances, turnID)
 	return usage, usageErr
+}
+
+func (c *PhraseTranslationCoordinator) latePhraseUsageLocked(utterance *phraseTranslationUtterance, phrase *translatedPhrase) (UsageFact, error) {
+	if c.utterances[utterance.turn.ID] == utterance || phrase.usageHanded || !hasPhraseUsage(phrase.result) {
+		return UsageFact{}, nil
+	}
+	fact, err := c.phraseUsageFact(utterance.turn, phrase)
+	if err != nil {
+		return UsageFact{}, err
+	}
+	phrase.usageHanded = true
+	return fact, nil
+}
+
+func (c *PhraseTranslationCoordinator) reportLatePhraseUsageList(facts []UsageFact) {
+	for _, fact := range facts {
+		c.reportLatePhraseUsage(fact)
+	}
+}
+
+func (c *PhraseTranslationCoordinator) reportLatePhraseUsage(fact UsageFact) {
+	c.mu.Lock()
+	reporter := c.lateUsage
+	c.mu.Unlock()
+	if reporter != nil {
+		go reporter(fact)
+	}
 }
 
 func allPhraseTranslationsDone(utterance *phraseTranslationUtterance) bool {

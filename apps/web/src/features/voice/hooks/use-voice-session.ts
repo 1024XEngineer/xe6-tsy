@@ -326,6 +326,7 @@ export function useVoiceSession() {
   const commandUplinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settledPartialTurnsRef = useRef(new Set<string>());
   const activePartialTurnRef = useRef<string | null>(null);
+  const partialTextByTurnRef = useRef(new Map<string, string>());
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
 
@@ -556,6 +557,7 @@ export function useVoiceSession() {
     const activeTurn = activePartialTurnRef.current;
     if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
     activePartialTurnRef.current = null;
+    partialTextByTurnRef.current.clear();
     dispatch({ type: "CLEAR_ASR_PARTIAL" });
   }, [clearCommandUplinkTimer]);
 
@@ -725,6 +727,7 @@ export function useVoiceSession() {
     latestAutomaticOutputStatusRef.current = null;
     settledPartialTurnsRef.current = new Set();
     activePartialTurnRef.current = null;
+    partialTextByTurnRef.current.clear();
     activeCommandIdRef.current = null;
     setCommandFeedback(null);
     setAutomaticOutputMessage(null);
@@ -1019,6 +1022,7 @@ export function useVoiceSession() {
             if (partial && partial.sessionId === session.id) {
               if (settledPartialTurnsRef.current.has(partial.turnId)) return;
               activePartialTurnRef.current = partial.turnId;
+              partialTextByTurnRef.current.set(partial.turnId, partial.text);
               dispatch({
                 type: "SET_ASR_PARTIAL",
                 partial: {
@@ -1094,8 +1098,12 @@ export function useVoiceSession() {
             }
             const assistantReply = parseAssistantReply(payload);
             if (assistantReply) {
+              const source = assistantReply.turnId
+                ? partialTextByTurnRef.current.get(assistantReply.turnId) ?? ""
+                : "";
               if (assistantReply.turnId) {
                 settledPartialTurnsRef.current.add(assistantReply.turnId);
+                partialTextByTurnRef.current.delete(assistantReply.turnId);
                 if (activePartialTurnRef.current === assistantReply.turnId) {
                   activePartialTurnRef.current = null;
                   dispatch({ type: "CLEAR_ASR_PARTIAL" });
@@ -1106,6 +1114,7 @@ export function useVoiceSession() {
                 reply: {
                   replyId: assistantReply.eventId,
                   turnId: assistantReply.turnId,
+                  source,
                   text: assistantReply.text,
                   language: assistantReply.language,
                 },
@@ -1116,6 +1125,7 @@ export function useVoiceSession() {
             const event = parseTranslationFinal(payload);
             if (!event) return;
             settledPartialTurnsRef.current.add(event.turnId);
+            partialTextByTurnRef.current.delete(event.turnId);
             if (activePartialTurnRef.current === event.turnId) {
               activePartialTurnRef.current = null;
             }

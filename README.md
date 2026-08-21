@@ -162,17 +162,7 @@ npm run build
 
 ## 文档
 
-- [架构与模块边界](docs/ARCHITECTURE.md)
+- [Lingow 架构总览](https://github.com/1024XEngineer/xe6-tsy/pull/165)
 - [开发说明](docs/DEVELOPMENT.md)
-- [数据设计](docs/DATA_DESIGN.md)
-- [Web 联调入口](apps/web/README.md)
-- [API 控制面](services/api/README.md)
-- [Realtime 媒体面](services/realtime-audio/README.md)
-- [客户端与设备侧 KWS 接入](docs/DEVICE_KWS_INTEGRATION.md)
-- [设备 SDK](sdks/device/README.md)
-- [本地与网关基础设施](infra/README.md)
-
-### 相关设计 PR
-
-- [Lingow 模块详细设计（PR #169）](https://github.com/1024XEngineer/xe6-tsy/pull/169)
-- [Lingow P0 协议设计（PR #171）](https://github.com/1024XEngineer/xe6-tsy/pull/171)
+- [Lingow 模块详细设计](https://github.com/1024XEngineer/xe6-tsy/pull/169)
+- [Lingow P0 协议设计](https://github.com/1024XEngineer/xe6-tsy/pull/171)

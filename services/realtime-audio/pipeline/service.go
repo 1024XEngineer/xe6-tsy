@@ -31,6 +31,11 @@ var (
 
 const finalSettlementQueueCapacity = 32
 
+// Keep final residual audio behind all stable phrase tasks already accepted
+// for this utterance. The scheduler preserves enqueue order; the large value
+// also keeps the event metadata after ordinary phrase sequences.
+const finalPhrasePlaybackSequence int64 = 1 << 62
+
 // IsRecoverableUnsupportedSourceLanguage reports whether unsupported language is the only
 // failure in an error chain. A joined error means cleanup or runtime-state recovery also failed
 // and must be propagated instead of being discarded with the Turn.
@@ -101,6 +106,7 @@ type PipelineDependencies struct {
 	Speech               *SpeechOutput
 	LongDeliveryEnabled  bool
 	PhraseTranslations   *PhraseTranslationCoordinator
+	PhrasePlayback       PhrasePlaybackScheduler
 	FinalSettlementError func(TurnContext, error)
 }
 
@@ -117,6 +123,7 @@ type PipelineService struct {
 	latency              LatencyLogger
 	longDeliveryEnabled  bool
 	phraseTranslations   *PhraseTranslationCoordinator
+	phrasePlayback       PhrasePlaybackScheduler
 	latePhraseUsage      *latePhraseUsageQueue
 	settlementCtx        context.Context
 	settlementCancel     context.CancelFunc
@@ -157,6 +164,7 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 		now:    now, latency: deps.Latency,
 		longDeliveryEnabled: deps.LongDeliveryEnabled,
 		phraseTranslations:  deps.PhraseTranslations,
+		phrasePlayback:      deps.PhrasePlayback,
 		settlementCtx:       settlementCtx, settlementCancel: settlementCancel,
 		settlementError: deps.FinalSettlementError,
 	}
@@ -298,7 +306,7 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
 	}
 	translateStartedAt := time.Now()
-	translationResult, residualText, reusedPhrases, err := s.phraseTranslation(ctx, turn, result.Text, result.SourceLanguage, target)
+	translationResult, residualText, reusedPhrases, residualPlaybackText, err := s.phraseTranslation(ctx, turn, result.Text, result.SourceLanguage, target)
 	if err != nil {
 		return fmt.Errorf("publish phrase translation usage: %w", err)
 	}
@@ -397,6 +405,19 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 	if !ttsEnabled {
 		return nil
 	}
+	if s.phrasePlayback != nil && reusedPhrases {
+		// Stable phrases have already been queued. Only the final source tail
+		// needs audio, and it must join that same per-session queue.
+		if strings.TrimSpace(residualPlaybackText) == "" {
+			return nil
+		}
+		_ = s.phrasePlayback.Enqueue(PhrasePlaybackRequest{
+			Turn: turn, UtteranceID: turn.ID, PhraseSequence: finalPhrasePlaybackSequence,
+			Language: target, Text: residualPlaybackText,
+			PlaybackID: "phrase_" + turn.ID + "_final",
+		})
+		return nil
+	}
 	playbackID := "playback_" + turn.ID
 	ttsResult, err := s.speech.Play(ctx, SpeechOutputRequest{
 		Turn: turn, Language: target, Text: translationResult.Text, PlaybackID: playbackID,
@@ -411,23 +432,24 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 	return nil
 }
 
-func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text, sourceLanguage, targetLanguage string) (translate.Result, string, bool, error) {
+func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text, sourceLanguage, targetLanguage string) (translate.Result, string, bool, string, error) {
 	if s.phraseTranslations == nil {
-		return translate.Result{}, text, false, nil
+		return translate.Result{}, text, false, "", nil
 	}
 	summary, residual, usage, ok, err := s.phraseTranslations.FinalizePhraseSubtitleTurn(ctx, turn, text)
 	if err != nil {
-		return translate.Result{}, "", false, err
+		return translate.Result{}, "", false, "", err
 	}
 	for _, fact := range usage {
 		if err := s.usage.Publish(ctx, fact); err != nil {
-			return translate.Result{}, "", false, err
+			return translate.Result{}, "", false, "", err
 		}
 	}
 	if !ok {
-		return translate.Result{Text: summary.Text}, residual, false, nil
+		return translate.Result{Text: summary.Text}, residual, false, "", nil
 	}
 	result := translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}
+	var residualPlayback strings.Builder
 	for _, segment := range summary.ResidualSegments {
 		residualResult, translateErr := s.translator.Translate(ctx, translate.Request{
 			SessionID: turn.SessionID, TurnID: turn.ID, Text: segment,
@@ -435,16 +457,17 @@ func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContex
 		})
 		if translateErr != nil {
 			if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, residualResult); usageErr != nil {
-				return translate.Result{}, "", false, errors.Join(translateErr, usageErr)
+				return translate.Result{}, "", false, "", errors.Join(translateErr, usageErr)
 			}
-			return translate.Result{}, "", false, translateErr
+			return translate.Result{}, "", false, "", translateErr
 		}
 		if err := mergeTranslationResult(&result, residualResult); err != nil {
-			return translate.Result{}, "", false, err
+			return translate.Result{}, "", false, "", err
 		}
 		result.Text = strings.Replace(result.Text, phraseResidualMarker, residualResult.Text, 1)
+		residualPlayback.WriteString(residualResult.Text)
 	}
-	return result, "", true, nil
+	return result, "", true, residualPlayback.String(), nil
 }
 
 func mergeTranslationResult(total *translate.Result, next translate.Result) error {

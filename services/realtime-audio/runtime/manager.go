@@ -273,6 +273,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		Latency:             latency,
 		LongDeliveryEnabled: deps.LongDeliveryEnabled,
 		PhraseTranslations:  phraseTranslations,
+		PhrasePlayback:      phrasePlayback,
 	})
 	// The router registry is the capability source of truth. The coordinator and command
 	// interpreter therefore expose only modes backed by an actual handler.

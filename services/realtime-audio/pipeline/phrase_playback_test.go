@@ -44,6 +44,46 @@ func TestPhrasePlaybackSchedulerPreservesOrderAndUsesIndependentIDs(t *testing.T
 	}
 }
 
+func TestPhrasePlaybackSchedulerDegradesAtFiveUnfinishedSegmentsAndResets(t *testing.T) {
+	provider := newPhraseBlockingTTSProvider()
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-1", SessionID: "session-1"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
+		t.Fatal("first phrase rejected")
+	}
+	<-provider.started
+	for sequence := int64(2); sequence <= 5; sequence++ {
+		accepted := scheduler.Enqueue(phraseRequest(turn, sequence))
+		if sequence == 5 && accepted {
+			t.Fatal("fifth phrase was accepted after backlog limit")
+		}
+	}
+	provider.release()
+	if !audio.waitFor(1, time.Second) {
+		t.Fatal("active phrase did not finish")
+	}
+	if scheduler.Enqueue(phraseRequest(turn, 6)) {
+		t.Fatal("degraded utterance accepted a later phrase")
+	}
+
+	newTurn := TurnContext{ID: "turn-2", SessionID: turn.SessionID}
+	scheduler.ResetUtterance(newTurn.SessionID, newTurn.ID)
+	provider.allowImmediate = true
+	if !scheduler.Enqueue(phraseRequest(newTurn, 1)) {
+		t.Fatal("next utterance did not recover playback eligibility")
+	}
+	if !audio.waitFor(2, time.Second) {
+		t.Fatal("next utterance did not play")
+	}
+}
+
 func TestPhrasePlaybackSchedulerInterruptDropsLateQueue(t *testing.T) {
 	provider := newPhraseBlockingTTSProvider()
 	audio := &recordingPhraseAudio{}

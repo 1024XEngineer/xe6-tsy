@@ -693,6 +693,9 @@ func (m *Manager) playbackInterrupter() PlaybackInterrupter {
 		return nil
 	}
 	if m.phrasePlayback != nil {
+		if m.deps.PlaybackInterrupter != nil {
+			return playbackInterrupterChain{phrase: m.phrasePlayback, fallback: m.deps.PlaybackInterrupter}
+		}
 		return m.phrasePlayback
 	}
 	if m.deps.PlaybackInterrupter != nil {
@@ -700,6 +703,22 @@ func (m *Manager) playbackInterrupter() PlaybackInterrupter {
 	}
 	interrupter, _ := m.deps.Audio.(PlaybackInterrupter)
 	return interrupter
+}
+
+type playbackInterrupterChain struct {
+	phrase   PlaybackInterrupter
+	fallback PlaybackInterrupter
+}
+
+func (c playbackInterrupterChain) InterruptCurrent(ctx context.Context, sessionID, reason string) error {
+	var err error
+	if c.phrase != nil {
+		err = c.phrase.InterruptCurrent(ctx, sessionID, reason)
+	}
+	if c.fallback != nil {
+		err = errors.Join(err, c.fallback.InterruptCurrent(ctx, sessionID, reason))
+	}
+	return err
 }
 
 func (g runtimeCommandGate) Open(request command.OpenRequest) error {

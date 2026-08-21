@@ -171,3 +171,8 @@ npm run build
 - [客户端与设备侧 KWS 接入](docs/DEVICE_KWS_INTEGRATION.md)
 - [设备 SDK](sdks/device/README.md)
 - [本地与网关基础设施](infra/README.md)
+
+### 相关设计 PR
+
+- [Lingow 模块详细设计（PR #169）](https://github.com/1024XEngineer/xe6-tsy/pull/169)
+- [Lingow P0 协议设计（PR #171）](https://github.com/1024XEngineer/xe6-tsy/pull/171)

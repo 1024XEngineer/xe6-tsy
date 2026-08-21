@@ -5,7 +5,8 @@ cd /d "%~dp0"
 echo ==========================================
 echo   Lingow local one-click start
 echo   API (:8080) + realtime-audio (:8090)
-echo   Loads .env; uses LOCAL Postgres/Redis
+echo   Prefers LOCAL Postgres/Redis from .env
+echo   Docker only if unreachable (prompt) or -UseDocker
 echo ==========================================
 echo.
 
@@ -23,7 +24,7 @@ if not exist "%~dp0.env" (
   exit /b 1
 )
 
-REM Default: both services. Optional: start-local.bat -UseDocker
+REM Default: both services, local infra. Optional: start-local.bat -UseDocker
 REM Single service: powershell -File start-local.ps1 -Service api|realtime
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-local.ps1" %*
 set "ERR=%ERRORLEVEL%"

@@ -27,10 +27,13 @@ var (
 	ErrRuntimeIdentityConflict = errors.New("runtime identity conflict")
 	// ErrRuntimeOperationConflict rejects takeover by another Start operation.
 	ErrRuntimeOperationConflict = errors.New("runtime is owned by another start operation")
+	// ErrInvalidRuntimeErrorCode rejects failure reports outside the contract enum.
+	ErrInvalidRuntimeErrorCode = errors.New("invalid runtime error code")
 )
 
 const (
-	ErrorCodeStartFailed    = string(realtimev1.RuntimeErrorStartFailed)
-	ErrorCodeStopFailed     = string(realtimev1.RuntimeErrorStopFailed)
-	ErrorCodePipelineFailed = string(realtimev1.RuntimeErrorPipelineFailed)
+	ErrorCodeStartFailed         = realtimev1.RuntimeErrorStartFailed
+	ErrorCodeStopFailed          = realtimev1.RuntimeErrorStopFailed
+	ErrorCodePipelineFailed      = realtimev1.RuntimeErrorPipelineFailed
+	ErrorCodeTranslationRejected = realtimev1.RuntimeErrorTranslationRejected
 )

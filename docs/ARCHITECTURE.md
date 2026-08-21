@@ -6,7 +6,7 @@
 - 首期是面对面双向传译，不做多人会议同传。
 - 产品交互是句级轮流传译，不做边听边播。
 - 你们做 SDK 与后端能力，不做硬件制造。
-- 产品名为 Lingow，首期只有语音识别和语音同传，没有字幕和管理后台。
+- 产品名为 Lingow，首期提供语音识别、语音同传和字幕预览，不做独立字幕产品和管理后台。
 - 硬件接入方案需要预设降噪、弱网重连和基础遥测。
 
 ## 2. 模块边界
@@ -19,10 +19,10 @@ Web 是 Lingow 对话入口，负责极简产品交互，不做管理后台。
 
 - 首页支持按钮或语音唤醒进入对话模式
 - 语音唤醒仅在页面已打开且麦克风授权后生效
-- 提供开始传译入口、语言选择区域和基础状态展示区域，首页仅展示最新一条字幕预览，点击后显示完整识别内容
+- 提供助手优先的语音入口、语言选择区域和基础状态展示区域；首页显示最新助手回复或字幕预览，点击后显示完整识别内容
 - 展示“Lingow 已进入对话模式”
 - 展示自动语言识别结果，例如“已识别中文/英语”；首页仅展示最新一条字幕预览，点击后显示完整识别内容；后续可按配置展示“已识别法语/西班牙语”
-- 展示语音识别、双向翻译和 TTS 播放组件的运行状态
+- 展示语音识别、助手回复、双向翻译和 TTS 播放组件的运行状态
 - 预留后续面对面沟通、跨设备会话和多人会议入口
 - 作为实时音频服务的产品验收入口
 
@@ -117,6 +117,8 @@ Web 是 Lingow 对话入口，负责极简产品交互，不做管理后台。
 - 打断/停止播放指令处理
 - 弱网重连和断点恢复
 - 设备遥测：麦克风状态、音量、网络、延迟
+- 在设备本地运行 KWS；ESP32-S3 等硬件可使用自己的板载模型
+- 检测固定唤醒词后只发送统一 `wake_word.detected`，业务语义交由 realtime 处理
 
 ### packages/contracts
 
@@ -151,11 +153,32 @@ Web / Mobile / Device SDK
   -> ASR final
   -> translation draft
   -> context correction
-  -> TTS
-  -> playback.command
+  -> ordinary turn: TTS -> playback.command
+  -> long turn: WeCom subtitle delivery -> fallback TTS when unavailable or finally failed
   -> Lingow UI state update
   -> api: state snapshot query
 ```
+
+客户端唤醒与模式命令复用同一 PeerConnection：
+
+```text
+客户端/设备本地 KWS（Web sherpa-onnx、ESP32-S3 板载模型等）
+  -> wake_word.detected（可靠有序 DataChannel）
+  -> 同一 WebRTC 音轨中的自然语言命令
+  -> Command ASR -> AI Interpreter -> Registry/Validator -> Executor
+  -> 模式动作：Mode Coordinator -> command.result
+  -> 普通提问：Assistant Handler -> assistant.reply -> command.result
+```
+
+后端不运行或分发 KWS 模型。设备只报告固定唤醒结果，不判断开始/停止、Mode 或语言方向；Session
+身份来自已鉴权 PeerConnection。详见 [客户端与设备侧 KWS 接入规范](DEVICE_KWS_INTEGRATION.md)。
+
+`assistant / interpretation` 是后端权威业务模式；`continuous / wake_word` 是客户端交互策略，两者
+正交。常驻策略持续发送当前业务模式的语音；唤醒词策略默认关闭 WebRTC 上行，只让本地 KWS 工作，
+命中唤醒词后通过同一音频桥接轨补发本地有界 pre-roll，再开放一个有界语音轮次；收到对应结果或
+客户端兜底超时后重新关闭。pre-roll 只存在客户端内存中，未唤醒时不会上传环境音频。切换交互策略
+不重建 WebRTC，也不改变业务模式。普通助手问题通过 `assistant_query` 复用现有 Assistant Handler，
+且仅在助手模式执行；同传时要求先切回助手，避免两类输出混流。
 
 ## 4. 会话状态机
 
@@ -173,11 +196,14 @@ idle
 关键规则：
 
 - partial 识别结果可以用于后台纠偏，但不能直接播音。
-- 只有句末确认后的 final 译文才能进入 TTS。
+- 只有句末确认后的 final 译文才能进入 TTS。去除首尾空白后的原文超过 50 个 Unicode 字符，或原声音频时长达到 20 秒时，跳过初始 TTS，仅投递企业微信字幕。
+- 长句企业微信未绑定、未配置、目标无效或最终投递失败时，通过已有 fallback playback 回放 TTS；该恢复不修改会话输出配置。
 - 如果对方在 TTS 播放时开始说话，realtime-audio 发送 `playback.stop` 并进入 `interrupted`。
 - 每个会话只允许两个语言槽，由用户在语言选择页确定，默认 `source=zh-CN,target=en-US` 或反向。
 - `services/realtime-audio` 是 WebRTC 连接和运行时状态机事实来源；`services/api` 只负责业务会话、配置、实时连接票据和状态快照查询。
 - UI 首页只展示最新一条字幕预览，详情页展示完整识别内容。
+
+阶段 16 的入口兼容约定：新 Web 客户端在启动会话时显式发送 `initial_mode=assistant`，旧客户端省略该字段时仍由 realtime 按 `interpretation` 启动。Web 可通过 `NEXT_PUBLIC_LINGOW_INITIAL_MODE=interpretation` 快速回退；英语口语训练仍未加入当前模式枚举。
 
 会话结束链路：
 

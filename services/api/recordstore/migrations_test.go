@@ -10,8 +10,30 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 20 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 20", len(migrations))
+	if len(migrations) != 31 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 31", len(migrations))
+	}
+
+	longSentenceTrigger := migrations[28]
+	if longSentenceTrigger.Version != 29 || longSentenceTrigger.Name != "long_sentence_delivery_trigger" {
+		t.Fatalf("migration = %#v, want version 29 named long_sentence_delivery_trigger", longSentenceTrigger)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN delivery_trigger TEXT NOT NULL DEFAULT 'configured_route'",
+		"automatic_turn_runs_delivery_trigger_valid",
+		"delivery_trigger IN ('configured_route', 'long_sentence')",
+	} {
+		if !strings.Contains(longSentenceTrigger.SQL, expected) {
+			t.Fatalf("long-sentence trigger migration does not contain %q", expected)
+		}
+	}
+	deviceIdentity := migrations[29]
+	if deviceIdentity.Version != 30 || deviceIdentity.Name != "devices" {
+		t.Fatalf("migration = %#v, want version 30 named devices", deviceIdentity)
+	}
+	challengeRetention := migrations[30]
+	if challengeRetention.Version != 31 || challengeRetention.Name != "device_auth_challenge_retention" {
+		t.Fatalf("migration = %#v, want version 31 named device_auth_challenge_retention", challengeRetention)
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {
@@ -70,12 +92,14 @@ func TestEmbeddedMigrations(t *testing.T) {
 		byVersion[item.Version] = item
 	}
 	for version, content := range map[int64][]string{
-		3: {"max_attempts", "lingow_phone_challenges_phone_created_idx"},
-		4: {"lingow_account_lineage", "WITH RECURSIVE lineage"},
-		5: {"phone_hash_v2", "lingow_accounts_phone_hash_v2_key", "expires_at = created_at + INTERVAL '1 second'"},
-		6: {"SET phone_hash = NULL", "phone_hash_v2 IS NOT NULL"},
-		7: {"SET cost_amount = NULL", "lingow_usage_records_pricing_pair_valid"},
-		8: {"CREATE TABLE delivery_retry_requests", "delivery_retry_requests_account_key PRIMARY KEY", "delivery_retry_requests_attempt_key UNIQUE (attempt_id)"},
+		3:  {"max_attempts", "lingow_phone_challenges_phone_created_idx"},
+		4:  {"lingow_account_lineage", "WITH RECURSIVE lineage"},
+		5:  {"phone_hash_v2", "lingow_accounts_phone_hash_v2_key", "expires_at = created_at + INTERVAL '1 second'"},
+		6:  {"SET phone_hash = NULL", "phone_hash_v2 IS NOT NULL"},
+		7:  {"SET cost_amount = NULL", "lingow_usage_records_pricing_pair_valid"},
+		8:  {"CREATE TABLE delivery_retry_requests", "delivery_retry_requests_account_key PRIMARY KEY", "delivery_retry_requests_attempt_key UNIQUE (attempt_id)"},
+		30: {"CREATE TABLE lingow_devices", "public_key BYTEA NOT NULL", "lingow_device_pairing_codes", "lingow_device_auth_challenges", "lingow_device_voice_sessions"},
+		31: {"lingow_device_auth_challenges_one_active_per_device", "WHERE used_at IS NULL"},
 	} {
 		item, ok := byVersion[version]
 		if !ok {
@@ -251,5 +275,120 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if !strings.Contains(historyIndexes.SQL, "voice_turns_session_history_order_idx") {
 		t.Fatal("history index migration does not create voice_turns_session_history_order_idx")
+	}
+
+	automaticSettlements := migrations[20]
+	if automaticSettlements.Version != 21 || automaticSettlements.Name != "automatic_turn_settlements" {
+		t.Fatalf("migration = %#v, want version 21 named automatic_turn_settlements", automaticSettlements)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE automatic_turn_runs",
+		"partially_succeeded",
+		"CREATE TABLE automatic_turn_settlements",
+		"automatic_turn_settlements_identity_key UNIQUE",
+		"automatic_turn_settlements_run_fk FOREIGN KEY",
+		"status IN ('queued', 'succeeded', 'failed')",
+		"automatic_turn_settlements_account_turn_idx",
+	} {
+		if !strings.Contains(automaticSettlements.SQL, expected) {
+			t.Fatalf("automatic-settlement migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackOperations := migrations[21]
+	if fallbackPlaybackOperations.Version != 22 || fallbackPlaybackOperations.Name != "realtime_fallback_playback_operations" {
+		t.Fatalf("migration = %#v, want version 22 named realtime_fallback_playback_operations", fallbackPlaybackOperations)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE realtime_fallback_playback_operations",
+		"PRIMARY KEY (session_id, operation_id)",
+		"payload_hash TEXT NOT NULL",
+	} {
+		if !strings.Contains(fallbackPlaybackOperations.SQL, expected) {
+			t.Fatalf("fallback-playback migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackClaims := migrations[22]
+	if fallbackPlaybackClaims.Version != 23 || fallbackPlaybackClaims.Name != "realtime_fallback_playback_claims" {
+		t.Fatalf("migration = %#v, want version 23 named realtime_fallback_playback_claims", fallbackPlaybackClaims)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'",
+		"ADD COLUMN processing_started_at TIMESTAMPTZ",
+		"status IN ('processing', 'accepted')",
+		"realtime_fallback_playback_processing_idx",
+	} {
+		if !strings.Contains(fallbackPlaybackClaims.SQL, expected) {
+			t.Fatalf("fallback-playback-claims migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackClaimTokens := migrations[23]
+	if fallbackPlaybackClaimTokens.Version != 24 || fallbackPlaybackClaimTokens.Name != "realtime_fallback_playback_claim_tokens" {
+		t.Fatalf("migration = %#v, want version 24 named realtime_fallback_playback_claim_tokens", fallbackPlaybackClaimTokens)
+	}
+	for _, expected := range []string{
+		"ADD COLUMN processing_token TEXT",
+		"WHERE status = 'processing'",
+		"processing_token IS NOT NULL",
+		"processing_token IS NULL",
+	} {
+		if !strings.Contains(fallbackPlaybackClaimTokens.SQL, expected) {
+			t.Fatalf("fallback-playback-claim-token migration does not contain %q", expected)
+		}
+	}
+
+	fallbackPlaybackReclaimable := migrations[24]
+	if fallbackPlaybackReclaimable.Version != 25 || fallbackPlaybackReclaimable.Name != "realtime_fallback_playback_reclaimable" {
+		t.Fatalf("migration = %#v, want version 25 named realtime_fallback_playback_reclaimable", fallbackPlaybackReclaimable)
+	}
+	for _, expected := range []string{
+		"status IN ('processing', 'reclaimable', 'accepted')",
+		"status = 'reclaimable'",
+		"processing_token IS NULL",
+	} {
+		if !strings.Contains(fallbackPlaybackReclaimable.SQL, expected) {
+			t.Fatalf("fallback-playback-reclaimable migration does not contain %q", expected)
+		}
+	}
+
+	targetLevelPreferences := migrations[25]
+	if targetLevelPreferences.Version != 26 || targetLevelPreferences.Name != "target_level_message_preferences" {
+		t.Fatalf("migration = %#v, want version 26 named target_level_message_preferences", targetLevelPreferences)
+	}
+	for _, expected := range []string{
+		"DELETE FROM message_preferences",
+		"ALTER COLUMN destination_ref SET NOT NULL",
+		"PRIMARY KEY (account_id, channel, destination_ref)",
+	} {
+		if !strings.Contains(targetLevelPreferences.SQL, expected) {
+			t.Fatalf("target-level preference migration does not contain %q", expected)
+		}
+	}
+
+	assistantLLMUsage := migrations[26]
+	if assistantLLMUsage.Version != 27 || assistantLLMUsage.Name != "assistant_llm_usage" ||
+		!strings.Contains(assistantLLMUsage.SQL, "'assistant_llm'") {
+		t.Fatalf("migration = %#v, want version 27 assistant LLM usage constraint", assistantLLMUsage)
+	}
+
+	modeProjection := migrations[27]
+	if modeProjection.Version != 28 || modeProjection.Name != "realtime_mode_projection" {
+		t.Fatalf("migration = %#v, want version 28 realtime mode projection", modeProjection)
+	}
+	for _, expected := range []string{
+		"CREATE TABLE realtime_mode_events",
+		"payload_hash BYTEA NOT NULL",
+		"resulting_generation >= 2",
+		"CREATE TRIGGER realtime_mode_events_reject_mutations",
+		"BEFORE UPDATE OR DELETE ON realtime_mode_events",
+		"CREATE TABLE realtime_mode_projections",
+		"latest-observed audit projection",
+		"event_id as a deterministic tie-breaker",
+	} {
+		if !strings.Contains(strings.ToLower(modeProjection.SQL), strings.ToLower(expected)) {
+			t.Fatalf("mode projection migration does not contain %q", expected)
+		}
 	}
 }

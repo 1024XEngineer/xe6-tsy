@@ -20,8 +20,9 @@ Go 实时音频服务。
 
 - 每个会话只支持一组双语语言对，默认 `zh-CN <-> en-US`
 - 只支持两方面对面
-- partial 结果只用于后台纠偏
-- 句末 final 译文才进入 TTS
+- `asr.partial` 在已鉴权的 `translation-events` DataChannel 上作为可丢弃、同 Turn 覆盖的临时原文字幕发送；它不持久化，也不进入翻译、TTS、FinalTurn、用量、命令或投递
+- `phrase.subtitle` 仅在 `REALTIME_PHRASE_SUBTITLES=enabled` 时为同传 Turn 发送稳定原文短语；它按 utterance 内 sequence 有序、best-effort 交付，且不持久化、不进入翻译、TTS、FinalTurn 或用量
+- 只有句末 final 原文才进入翻译和 TTS；`translation.final` 到达后客户端清理对应临时字幕；启用长句投递能力后，原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
 - TTS / 渠道输出可按 target_language 单独关闭
 - TTS 播放中检测到对方发言时，发送 `playback.stop`
 
@@ -36,10 +37,12 @@ services/realtime-audio/
 ├── vad/
 ├── segment/
 ├── asr/
+├── assistant/
 ├── translate/
 ├── tts/
 ├── pipeline/
 ├── playback/
+├── runtime/
 └── session/
 ```
 
@@ -48,7 +51,8 @@ services/realtime-audio/
 The provider packages keep vendor protocol details outside `pipeline`:
 
 - `asr/qwen` uses the Qwen realtime WebSocket endpoint. It sends `session.update`, streams PCM through `input_audio_buffer.append`, and sends `session.finish` before waiting for `session.finished`.
-- `translate/qwen` uses the OpenAI-compatible `POST /chat/completions` endpoint with `qwen3.6-flash`. Thinking is disabled by default for turn-level latency.
+- `assistant/qwen` uses a dedicated assistant request contract over the OpenAI-compatible chat endpoint; it does not reuse translation prompts or publish translation `FinalTurn` records.
+- `translate/qwen` uses the OpenAI-compatible `POST /chat/completions` endpoint with `qwen3.6-flash`. Thinking is disabled by default for turn-level latency. User content nests ASR text inside sanitized `<source>` tags with a language-aware translate instruction; meta-refusals trigger one reinforced retry, then persist `realtime_translation_rejected` while still publishing token usage.
 - `tts/qwen` supports both Qwen3-TTS-Flash (`/services/aigc/multimodal-generation/generation`, `language_type`) and CosyVoice v3/v3.5 (`/services/audio/tts/SpeechSynthesizer`, `instruction`). CosyVoice instructions are generated from the target BCP-47 language so multilingual pairs can use the same stream port. For CosyVoice v3.5, configure a compatible designed voice with `TTS_VOICE`.
 - `tts/qwen` supports Qwen3-TTS-Flash HTTP SSE, Qwen3-TTS-Flash-Realtime WebSocket (`wss://dashscope.aliyuncs.com/api-ws/v1/realtime`), and CosyVoice v3/v3.5 (`/services/audio/tts/SpeechSynthesizer`). Realtime synthesis sends `session.update`, `input_text_buffer.append`, and `input_text_buffer.commit`, then streams `response.audio.delta` PCM. Use `qwen3-tts-flash-realtime` with a multilingual voice such as `Cherry`; CosyVoice instructions are generated from the target BCP-47 language and v3.5 requires a compatible designed voice in `TTS_VOICE`.
 
@@ -64,7 +68,87 @@ prevents a production startup from silently constructing fake behavior. Building
 validates credentials and endpoints but does not make a network request. Ordinary unit tests
 continue to use offline fakes and never call a third-party service.
 
-## Local HTTP control-plane
+`runtime.ModeRouter` 为旧客户端保留 `interpretation` 初始模式。配置 Assistant Provider 后，
+Router 同时注册 `AssistantHandler`；两个 Handler 复用同一个 `SpeechOutput` 和已有 WebRTC 连接。
+助手回复通过 DataChannel 的 `assistant.reply` 事件发送，模型用量记录为 `assistant_llm`。
+
+`GET /realtime/v1/sessions/{id}/mode` 返回 realtime 持有的权威模式快照；
+`POST /realtime/v1/sessions/{id}/mode` 使用 `runtime_instance_id + expected_generation` 执行
+幂等 CAS 切换。调用方应先读取快照，再提交目标模式；generation 或 runtime 实例不匹配时必须
+重新读取，不能盲目覆盖。模式切换只替换 Router 状态，不执行 Session Stop/Start，也不重新建立
+WebRTC。真正发生切换时，Coordinator 会先将 `realtime.mode.changed` 交给 Outbox，收到持久接受
+确认后再提交 ModeState；重复 operation 和未变更模式不会重复产生事件。默认 `memory` 后端只用于
+本地离线运行；生产环境必须配置 `REALTIME_OUTBOX=valkey`，否则启动失败。API 侧长期投影在后续独立阶段接入。
+
+阶段 16 的模式观测使用结构化日志作为可聚合指标来源：`runtime_started` 只在 runtime entry
+成功登记后记录一次，可按 `active_mode` 统计入口分布；`mode_switch` 按请求记录
+`applied`、`unchanged` 或 `failed`，失败率按这些结果统计并用 `error_class` 分组；助手回复延迟
+使用现有 `assistant_reply_done` 检查点，且附带 `mode`、`runtime_instance_id` 和 `generation`。
+这些日志不是独立的 `/metrics` counter，聚合系统应按 `operation_id` 去重重试请求（如需操作级口径）。
+
+## WebRTC 上行控制通道
+
+`GET .../webrtc/config` 通过 `control_data_channel` 公布 v1 控制协议。客户端须在首次 Offer 前创建
+可靠、有序、精确标记为 `lingow-control-v1` 的 DataChannel；服务端忽略其他 label，原有服务端下行
+`translation-events` 保持独立。旧客户端可忽略新字段，Offer、ICE、ticket 和音频 Track 行为不变。
+
+控制消息是最多 8 KiB 的 UTF-8 JSON 文本。v1 接收 `mode.switch`，使用 `request_id` 关联响应，并携带
+`runtime_instance_id`、`operation_id`、`expected_generation` 和 `target_mode`；响应为
+`mode.switch.result` 或 `control.error`。Session 来自 ticket 校验后绑定的 PeerConnection，不来自消息。
+同载荷、同 `operation_id` 的重试返回首次结果；同 ID 不同载荷返回
+`mode_operation_conflict`。二进制、畸形、尾随、未知字段和超限消息返回类型化错误，队列满或依赖
+暂不可用返回 `control_unavailable`；若连错误响应也无法排队，服务端关闭控制通道。客户端可在同一
+PeerConnection 内重建控制通道。连接关闭会先取消排队和执行中的命令；ACK 丢失时，客户端应
+查询模式快照并以原 operation 重试相同载荷。
+
+正常命令由单 worker 按接收顺序执行；队列过载错误通过独立有界发送队列返回，可能先于较早命令的
+执行结果到达。客户端必须以 `request_id` 关联响应，不能依赖不同请求之间的响应到达顺序。
+
+RTP 与 SCTP 之间没有跨协议全序，边界以服务端提交切换并返回成功 ACK 为准。已打开 Turn 固定使用
+打开时的 mode/generation；切换后旧 generation 未提交结果由 gate 丢弃，已提交 FinalTurn 不回滚。
+若必须保证下一句话进入新模式，客户端应暂停新语句、等待成功 ACK，再发送下一段音频。
+
+语义命令复用现有 PeerConnection 和 WebRTC 音轨；`wake_word.detected` 通过双向的
+`translation-events` DataChannel 上行，`lingow-control-v1` 仍只承载显式模式控制协议。KWS 始终在
+客户端或设备本地运行：Web 使用 sherpa-onnx，ESP32-S3 可使用板载 KWS，后端不加载或托管唤醒词
+模型。命中固定唤醒词「小灵小灵」后，客户端只发送唤醒事件，随后自然语言继续走当前上行音轨。
+服务端以绑定的 Session 和自身接收时间打开 Command Gate，经 Command ASR、AI Interpreter、
+Capability Registry/Validator 和 Executor 执行，最终通过 `command.result` 返回结果。新的
+`signal_id` 会取消尚未完成的旧命令，同 ID 网络重试不会重复执行；模式切换不重建 PeerConnection。
+Gate 在唤醒后最多等待 5 秒首段指令语音，首段语音开始后仍受 15 秒命令窗口限制。
+`activate_mode` 可以同时携带显式源语言和目标语言，因此 Qwen 命令入口要求配置 API 内部地址与共享
+令牌：Executor 必须先持久化 API 所有的语言配置，再提交 realtime 模式 CAS，避免成功切换后使用旧语言对。
+命令执行成功后，`command.result` 立即使用 Executor 返回的实际模式、切换状态和 API 已接受的语言配置
+生成确定性文案，不等待额外模型请求。模式切换的语音确认由异步 Feedback worker 调用 Qwen 润色；Qwen
+不参与执行结果判断，也不能再次调用模式或语言配置能力。反馈模型使用独立的 1 秒上限，失败或超时后
+播报 `command.result` 的动态兜底，新唤醒会取消仍在生成或播放的旧反馈。即使模式原本已经是同传，只要
+语言对发生更新，确定性结果也必须确认实际语言对。`assistant_query` 已由 Assistant Handler 生成实际回答，
+不会再调用反馈模型或重复播报确认。反馈模型和 TTS 的已发生用量分别通过现有 UsageFact 链路记录。
+设备字段、时钟和重试要求见 [`docs/DEVICE_KWS_INTEGRATION.md`](../../docs/DEVICE_KWS_INTEGRATION.md)。
+客户端可以独立选择持续上行或唤醒后单轮上行；该交互策略不进入 realtime 的 ModeState。语义解释器
+可把普通问题归一为 `assistant_query`，Executor 复用已注册的 Assistant Handler、TurnOpener、TTS 和
+回复事件，且不改变 mode generation。`assistant_query` 只在当前助手模式执行；同传模式会返回需要
+澄清，要求用户先明确切回助手，防止助手音频与翻译音频混流。
+
+## Local utterance VAD
+
+The realtime entrypoint segments microphone audio with **Silero VAD** before ASR:
+
+```text
+WebRTC Opus → 16 kHz PCM frames → silero.Classifier → vad.Segmenter → ASR
+```
+
+Ordinary-turn segmentation uses the existing `vad.Segmenter`; its classifier switched from
+RMS energy to Silero (512-sample windows + 64-sample rolling context, start/end
+hysteresis). On first Windows start, missing ONNX Runtime is downloaded into
+`third_party/onnxruntime` automatically. Optional override:
+`LOCAL_VAD_PROVIDER=energy`.
+
+The Command Gate owns a separate classifier and `vad.Segmenter` state, but uses the same
+800 ms end-silence and 12 second safety boundary as ordinary turns. A validated wake transfers
+the ordinary Segmenter's complete active utterance into the command Segmenter; there is no fixed
+two-second server pre-roll. A duplicate wake never claims or resets ordinary audio.
+
 
 From the repo root on Windows, start API + realtime together (loads root `.env`):
 
@@ -94,20 +178,51 @@ Required env:
 | --- | --- | --- |
 | `REALTIME_ADDR` | `:8090` | Listen address |
 | `REALTIME_TICKET_SECRET` | _(required)_ | Raw secret (≥32 bytes), must match API `REALTIME_TICKET_SECRET` |
-| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun` (same wiring; offline fakes injected for mock) |
+| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun`; mock ASR returns fixed offline text and cannot validate spoken semantic commands |
+| `COMMAND_LLM_API_KEY` | 与地址同时回退到 `LLM_API_KEY` | 必需的 Qwen Command Interpreter 凭证；没有固定指令回退，不得写入日志 |
+| `COMMAND_LLM_BASE_URL` | 与凭证同时回退到 `LLM_BASE_URL` | 必需的 OpenAI-compatible 地址；必须与 Command 凭证成对配置 |
+| `COMMAND_LLM_MODEL` | 回退到 `LLM_MODEL` | 语义命令模型 |
+| `COMMAND_LLM_TIMEOUT_MS` | provider 默认值 | 单次语义解释超时（毫秒），建议真实 Qwen 环境至少 10000 |
+| `LINGOW_API_BASE_URL` | _(required)_ | API 内部地址；语义命令入口必须与命令令牌同时配置 |
+| `LINGOW_COMMAND_SYSTEM_TOKEN` | _(required)_ | realtime 调用 API 语言配置端点的共享令牌，至少 32 bytes |
+| `COMMAND_CONFIG_TIMEOUT_MS` | `3000` | 命令更新 API 语言配置的超时（毫秒） |
 | `REALTIME_TTS_DOWNLINK` | `none` | `none` = subtitles only (forces mock TTS); `pcm` = whole-clip TTS PCM over DataChannel; `opus` = 120ms-buffered, 20ms-paced WebRTC Opus at 32kbps |
 | `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Fallback pair when API DB link is off |
 | `REALTIME_API_DATABASE` | _(off)_ | `enabled` + `DATABASE_URL` → Postgres session/language readers + FinalTurn outbox |
+| `REALTIME_LONG_SENTENCE_DELIVERY` | `disabled` | 新 API delivery/fallback 已就绪后设为 `enabled`；未启用时长句保持原 TTS 路由 |
+| `REALTIME_PHRASE_SUBTITLES` | `disabled` | Enable ordered, ephemeral stable source phrases before VAD final; translation and TTS remain disabled for these events. |
+| `REALTIME_OUTBOX` | `memory` | `memory` 仅允许 `APP_ENV=local/test/development`；其他环境使用 `valkey`，需要 `REDIS_URL` |
+| `REALTIME_REDIS_MODE` | `standalone` | `standalone` 或 `cluster`；Cluster endpoint 必须显式选择 `cluster`，且 `REDIS_URL` 不带数据库路径 |
+| `LINGOW_MODE_CHANGED_STREAM` | `lingow:realtime:mode:changed` | `realtime.mode.changed` 的 Valkey Stream |
 | `ASR_SERVER_VAD` | _(unset → false in entrypoint)_ | Set `true` to enable Qwen server_vad; the local VAD keeps 500 ms prefix audio and preserves quiet frames inside an utterance |
+| `LOCAL_VAD_PROVIDER` | `silero` | `silero` (default) or `energy` fallback |
+| `LOCAL_VAD_MODEL_PATH` | `vad/silero/silero_vad.onnx` | Silero v5 ONNX model used by the local segmenter |
+| `ONNXRUNTIME_SHARED_LIBRARY_PATH` | auto (`third_party/onnxruntime/lib/...`) | downloaded on first Windows start when missing |
+| `LOCAL_VAD_THRESHOLD` / `LOCAL_VAD_NEG_THRESHOLD` | `0.5` / `threshold-0.15` | Silero speech start/end hysteresis |
+
+真实 Redis Cluster 的 Outbox 路由与幂等验证需显式提供集群地址：
+
+```bash
+REDIS_CLUSTER_URL='redis://user:password@host1:6379?addr=host2:6379&addr=host3:6379' \
+  go test -count=1 -tags=integration ./outbox -run TestValkeyWriterRedisCluster
+```
 
 Provider switch (Phase 3): keep `start-local.bat`, set `ASR_PROVIDER=aliyun` + `LLM_PROVIDER=aliyun` plus Qwen keys in root `.env`, restart. Leave downlink at `none` so TTS stays mock while you validate real subtitles. No control-plane protocol change.
 
-Routes: `/realtime/v1/sessions/{id}/webrtc/config|offer`, `ice-candidates`, `start|stop`, `runtime`, `connection`.
+Routes: `/realtime/v1/sessions/{id}/webrtc/config|offer`, `ice-candidates`, `start|stop`, `runtime`, `mode`, `connection`.
 Local adapters live under `localruntime/` (`TrustSessionReader`, `StaticLanguageConfigReader`, `StaticWebRTCConfig`, WebRTC frame/sink bridges).
 
 `pipeline.NewPostgresFinalTurnSink(pool)` is the production final-turn sink adapter. It writes the
 validated immutable event into the API service's PostgreSQL `final_turn_outbox`; the API consumer
 worker owns receipt settlement and persistence into `voice_turns`.
+
+`REALTIME_LONG_SENTENCE_DELIVERY` 默认 `disabled`。确认 API delivery runtime、企业微信 Provider
+和 realtime fallback 已就绪后设为 `enabled`。启用时，长句判断在 FinalTurn 提交前使用本轮固定事实
+完成：去除首尾空白后的 `source_text` 按 Unicode code point 计数，超过 50 个字符即命中；
+`ended_at - started_at >= 20s` 也命中，两者为 OR 关系。命中后事件记录
+`delivery_trigger=long_sentence`、`tts_enabled=false`、`delivery_enabled=true`，realtime 不发起初始 TTS；
+API 只创建企业微信字幕投递。企业微信不可用或最终投递失败时，API 通过已有 fallback playback
+接口请求 TTS 回放，且不修改会话的输出配置。未启用该能力时，长句保持原 TTS 和 delivery 路由。
 
 Speaker evidence: the pipeline copies a non-empty `asr.FinalResult.ProviderSpeakerID` into the
 FinalTurn event as `provider_speaker_id`. When the ASR/diarization provider returns no speaker key,
@@ -116,9 +231,20 @@ the turn stays `pending`, no attribution task or participant is created, and the
 exists, the API async attribution worker uses it to build the stable participant mapping and
 confirm/correct the turn.
 
-Terminal media worker failures set `last_error_code=realtime_pipeline_failed` and emit a structured
-`realtime pipeline worker failed` log with `session_id`, `operation_id`, `trace_id`, and the complete
-wrapped error. This log is the diagnostic source for failures after signaling and lifecycle Start.
+Terminal media worker failures emit a structured `realtime pipeline worker failed`
+log with `session_id`, `operation_id`, `trace_id`, `error_code`, and the complete
+wrapped error. `last_error_code` is usually `realtime_pipeline_failed`; when the
+translator abandons the task after a reinforced retry it is
+`realtime_translation_rejected` instead. This log is the diagnostic source for
+failures after signaling and lifecycle Start.
+
+FinalTurn 进入可靠投递后，后续 TTS、播放、用量或运行状态上报错误只影响当前 Turn。
+Segment worker 会记录带有会话和 Trace 关联信息的
+`realtime turn post-commit processing failed` 日志，并继续使用现有 WebRTC Runtime；
+已经接受的 Turn 不会被重新翻译。FinalTurn 提交前的错误仍然属于终止 Worker 的错误。
+`ErrUnsupportedSourceLanguage` 是一个明确例外：它在翻译和持久化之前拒绝单个 Turn，
+Segment worker 记录 `realtime turn ignored unsupported source language` 后丢弃该 Turn，
+不终止共享的 WebRTC Runtime。
 
 Official protocol references:
 
@@ -133,6 +259,12 @@ Official protocol references:
 `main.go` 通过 `/realtime/v1` 暴露信令与生命周期 HTTP，并校验 `services/api` 签发的短期
 实时连接票据。部署时可以由 API Gateway 转发该路径，但 PeerConnection 和连接状态始终由本服务管理。
 
+最小多实例部署可以在固定 realtime 节点集合前按路径中的 `session_id` 做一致性哈希。同一会话的
+config、offer、ICE、Start、Stop、runtime、mode 和 fallback playback 请求必须使用相同规则，且
+失败请求不得重试到其他节点。该模式只分担不同会话的负载，不提供活跃会话迁移或容量感知调度。
+本地双实例 Gateway、启动方式和验证脚本见 [`infra/README.md`](../../infra/README.md)。WebRTC 媒体
+不经过 HTTP Gateway；跨主机部署必须另行保证每个 Pion 节点发布的 ICE candidate 可被客户端访问。
+
 当前入口使用 Pion transport factory + 内存 connection manager：Offer 成功后产生初始
 `connecting` 快照，并在 Pion 回调下迁移到 `connected` / `failed` / `closed`。API Start 仍应以
 `connected` 作为启动条件。manager 的 `Close` 成功后删除记录，后续查询返回 `not_found`。
@@ -143,3 +275,51 @@ Official protocol references:
 
 `Stop(session_id)` 必须幂等，并在返回成功前停止 Pipeline、取消 Provider Context、关闭
 DataChannel、Track 和 PeerConnection。连接租约或空闲超时负责兜底清理失去控制面的孤立连接。
+
+## Realtime mode metrics and alerts
+
+`metrics` 包提供进程内、单调递增的实时运行计数器。它不记录
+`session_id`、`turn_id`、`operation_id` 或 provider 名称，因此不会把高基数标识放入指标标签。
+配置非空 `REALTIME_METRICS_TOKEN` 后才会注册 `GET /metrics`；采集请求必须携带
+`Authorization: Bearer <token>`。生产 ingress 仍应限制该路径只允许内部监控访问。采集器应按 5 分钟窗口计算 counter delta；进程重启会将计数器归零，不能把累计值直接当作速率。
+
+`semantic_commands` 统计由客户端 KWS 打开的语义命令链路，不记录唤醒词模型、原始命令文本、
+`session_id` 或 `signal_id`。`interpretations` 是 AI Interpreter 调用次数，
+`interpretation_failures` 是其中失败次数，`interpretation_duration_milliseconds` 是累计耗时；监控系统
+应使用同一窗口内的耗时增量除以调用次数增量计算平均延迟。终态结果
+`applied`、`unchanged`、`clarification_required`、`unsupported`、`failed` 互斥。失败阶段使用
+`capture_failures`、`asr_failures`、`interpretation_stage_failures`、`not_allowed_failures`、
+`execution_failures` 和 `canceled` 定位，不以客户端或模型名称作为指标维度。
+
+`mode_commands.total` 是已经通过鉴权、幂等键和请求校验并进入 runtime Coordinator 的命令数，以下结果字段互斥且总和必须等于 `total`：
+
+- `applied_response` / `unchanged_response`：Coordinator 返回成功；精确重放仍属于响应结果，不代表再次发生状态切换。
+- `generation_conflict` / `runtime_mismatch`：调用方持有的快照已过期或属于旧 runtime；这是客户端一致性信号，不是服务故障。
+- `operation_conflict`：同一 operation 使用了不同 payload；通常表示调用方幂等键复用错误。
+- `mode_unavailable`：目标模式没有在当前 runtime 注册。
+- `event_unavailable` / `other_failure`：模式事件无法持久化或发生未分类错误。
+
+`mode_change_publications.attempted` 只统计真实状态变更的事件发布尝试；在一个已完成的采集窗口内应满足
+`attempted = accepted + failed`。`accepted` 表示事件已被下游 outbox 接受，Coordinator 随后才会提交新的 mode/generation；它与命令响应计数有意分离。
+
+建议告警规则（均要求窗口内分母至少 10 次，避免低流量误报）：
+
+| 告警 | 5 分钟窗口条件 | 处理方向 |
+| --- | --- | --- |
+| 模式事件持久化失败 | `failed / attempted > 1%`，或 `event_unavailable` 增量大于 0 | 检查 Valkey/Outbox 可用性；在恢复前不要把 runtime mode 当作已长期保存 |
+| 模式切换成功率下降 | `accepted / attempted < 99%` | 检查 outbox 延迟、连接和重试；该比例只针对确实发生切换的事件 |
+| 过期客户端集中出现 | `(generation_conflict + runtime_mismatch) / total > 20%`，持续 15 分钟 | 检查客户端快照刷新、runtime 重启通知和请求重试退避；不要直接放宽 CAS |
+| 幂等键冲突 | `operation_conflict / total > 5%`，持续 15 分钟 | 检查 operation_id 生成和重试 payload 是否稳定 |
+| Provider 失败 | `provider_failures` 任一能力 5 分钟增量大于 5 | 结合结构化日志中的 `stage`、`provider`、`model` 定位 ASR、Assistant、翻译或 TTS 依赖 |
+| DataChannel 投递失败 | `data_channel_failures` 5 分钟增量大于 5 | 检查连接状态、客户端消费和发送超时；FinalTurn 的持久提交不因此回滚 |
+| Runtime 异常重启 | `runtimes_started - runtimes_stopped` 持续增长，或同一实例 15 分钟启动量超过正常会话基线 2 倍 | 检查 worker 失败日志、会话清理和控制面重试 |
+
+旧 generation、旧 runtime 和 operation 冲突属于可预期拒绝，默认不触发服务不可用告警；只有持续超过上述阈值才升级为客户端或控制面异常。provider 失败、DataChannel 断开和 runtime 重启仍应沿用带 `session_id`/`turn_id` 的结构化日志及各自边界的阶段计数器，不能把这些标识写入本包的指标维度。
+
+结构化日志按责任边界携带关联字段：
+
+- `realtime mode switch resolved/rejected` 携带 `session_id`、`operation_id`、`runtime_instance_id`、`mode`/`target_mode` 和 `generation`；模式命令没有 `turn_id` 或 provider，因此不填充这两个字段。
+- `realtime latency checkpoint` 和 `realtime provider failed` 携带 `session_id`、`turn_id`、`runtime_instance_id`、`mode`、`generation`，以及 Provider 已返回或配置边界已知的 `provider`、`model`。Provider 尚未创建请求结果时不伪造 `model`；Turn 不拥有模式命令的 `operation_id` 或独立 `activity_id`，因此不把最近一次命令错误关联到当前 Turn。
+- `realtime pipeline worker failed` 在失败发生于 Turn 之外时携带 `session_id`、启动 `operation_id` 和 `trace_id`；如果失败发生在 Provider/Turn 内，则同时使用上面的 Turn 日志。
+
+当前阶段仍未宣称 DataChannel 永久关闭后的重新绑定，以及浏览器与真实 Pion 的跨模式媒体 E2E 已完成验收。上行控制协议和服务端 Command Gate 已由当前实现覆盖；端到端联调仍需使用真实浏览器、音频设备和 Pion 连接单独验证。

@@ -55,21 +55,7 @@ func validateWeChatDeliveryRequest(request SendRequest) error {
 }
 
 func formatWeChatDeliveryBody(request SendRequest) string {
-	var builder strings.Builder
-	builder.WriteString("Your Lingow transcript delivery:\n\n")
-	for index, turn := range request.Message.Turns {
-		if index > 0 {
-			builder.WriteString("\n---\n\n")
-		}
-		fmt.Fprintf(&builder, "Turn: %s\n", turn.TurnID)
-		if turn.SourceText != "" {
-			fmt.Fprintf(&builder, "Source: %s\n", turn.SourceText)
-		}
-		if turn.TranslatedText != "" {
-			fmt.Fprintf(&builder, "Translation: %s\n", turn.TranslatedText)
-		}
-	}
-	return builder.String()
+	return "Your Lingow transcript delivery:\n\n" + formatDeliveryTurns(request.Message.Turns)
 }
 
 func domainErrInvalidDeliveryRequest() error {

@@ -6,14 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 )
 
@@ -30,6 +36,14 @@ var (
 
 const failureReportTimeout = 5 * time.Second
 
+var defaultCommandOptions = command.Options{
+	WindowTTL:        15 * time.Second,
+	NoSpeechTimeout:  5 * time.Second,
+	MaxAudioDuration: 12 * time.Second,
+	EndSilence:       800 * time.Millisecond,
+	PrefixPadding:    500 * time.Millisecond,
+}
+
 // AudioInput is the typed handoff from a WebRTC media adapter to the audio loop.
 // SourceLanguage is an optional ASR hint for the input track. Empty means the
 // provider should auto-detect (required for bilingual sessions). Language-config
@@ -37,6 +51,9 @@ const failureReportTimeout = 5 * time.Second
 type AudioInput struct {
 	Source         segment.FrameSource
 	SourceLanguage string
+	// WakeWords is optional so transports without local wake-word detection
+	// retain the legacy audio-only path.
+	WakeWords segment.WakeWordSource
 }
 
 // FrameSourceFactory opens one normalized input source for a session.
@@ -54,6 +71,20 @@ func (f FrameSourceFactoryFunc) Open(ctx context.Context, snapshot session.Sessi
 // SegmenterFactory creates isolated VAD state for one session.
 type SegmenterFactory func() (*vad.Segmenter, error)
 
+// CommandClassifierFactory creates isolated speech classification state for a
+// command window. It must not share a rolling classifier with ordinary VAD.
+type CommandClassifierFactory func() (vad.Classifier, error)
+
+// CommandInterpreterFactory builds one process-wide semantic boundary from the exact capability
+// descriptors backed by registered mode handlers.
+type CommandInterpreterFactory func([]command.CapabilityDescriptor) (command.Interpreter, error)
+
+// PlaybackInterrupter cancels only the active playback for one session. It
+// deliberately does not close the shared WebRTC track or connection.
+type PlaybackInterrupter interface {
+	InterruptCurrent(context.Context, string, string) error
+}
+
 // RuntimeReporter combines the narrow processing and terminal-failure ports
 // required by a complete manager lifecycle.
 type RuntimeReporter interface {
@@ -63,31 +94,61 @@ type RuntimeReporter interface {
 
 // Dependencies contains member-3-owned adapters and downstream sinks.
 type Dependencies struct {
-	FrameSources FrameSourceFactory
-	NewSegmenter SegmenterFactory
-	Languages    session.LanguageConfigReader
-	FinalTurns   recordsv1.FinalTurnSink
-	Usage        pipeline.UsageFactSink
-	Audio        pipeline.AudioChunkSink
-	Runtime      RuntimeReporter
-	Allocator    pipeline.TurnAllocator
-	VoiceID      string
-	Logger       *slog.Logger
-	Latency      *slog.Logger
-	Now          func() time.Time
+	FrameSources          FrameSourceFactory
+	NewSegmenter          SegmenterFactory
+	NewCommandClassifier  CommandClassifierFactory
+	NewCommandInterpreter CommandInterpreterFactory
+	CommandOptions        command.Options
+	Languages             session.LanguageConfigReader
+	LanguageConfigurator  command.LanguageConfigurator
+	CommandResults        command.ResultSink
+	CommandObserver       command.Observer
+	FinalTurns            recordsv1.FinalTurnSink
+	AssistantReplies      pipeline.AssistantReplySink
+	ASRPartials           pipeline.ASRPartialObserver
+	PhraseSubtitles       pipeline.PhraseSubtitleObserver
+	ModeChanges           ModeChangedSink
+	Usage                 pipeline.UsageFactSink
+	Audio                 pipeline.AudioChunkSink
+	PlaybackInterrupter   PlaybackInterrupter
+	Runtime               RuntimeReporter
+	Allocator             pipeline.TurnAllocator
+	VoiceID               string
+	Logger                *slog.Logger
+	Latency               *slog.Logger
+	ProviderFailures      pipeline.ProviderFailureObserver
+	Lifecycle             LifecycleObserver
+	ModeCommands          ModeCommandObserver
+	Now                   func() time.Time
+	NewRuntimeInstanceID  RuntimeInstanceIDFactory
+	LongDeliveryEnabled   bool
+}
+
+// LifecycleObserver receives process-local lifecycle counters without session
+// identifiers. Calls happen only after a start or stop is committed in memory.
+type LifecycleObserver interface {
+	RecordRuntimeStarted()
+	RecordRuntimeStopped()
 }
 
 // Manager owns one processing context per started realtime session.
 // Start prepares the graph; Activate is used by LifecycleService after it has
 // persisted RuntimeListening, and Stop is safe to retry after a timeout.
 type Manager struct {
-	mu        sync.Mutex
-	locks     keyedLocker
-	processor *pipeline.TurnProcessor
-	failure   session.RuntimeFailureReporter
-	logger    *slog.Logger
-	deps      Dependencies
-	entries   map[string]*entry
+	mu                 sync.Mutex
+	locks              keyedLocker
+	processor          *pipeline.TurnProcessor
+	commandASR         asr.Provider
+	commandInterpreter command.Interpreter
+	commandValidator   command.Validator
+	commandOpener      *pipeline.TurnOpener
+	speech             *pipeline.SpeechOutput
+	playback           *pipeline.PipelineService
+	router             *modeRouter
+	failure            session.RuntimeFailureReporter
+	logger             *slog.Logger
+	deps               Dependencies
+	entries            map[string]*entry
 }
 
 type entry struct {
@@ -98,6 +159,8 @@ type entry struct {
 	ctx         context.Context
 	done        chan struct{}
 	operationID string
+	mode        *modeCoordinator
+	command     *command.Gate
 	err         error
 	active      bool
 	stopping    bool
@@ -111,21 +174,49 @@ func NewManager(providerConfig config.ProviderConfig, offline config.Providers, 
 	if err != nil {
 		return nil, err
 	}
-	return newManager(providers, deps)
+	return newManagerWithLabels(providers, labelsFromConfig(providerConfig), deps)
 }
 
 // NewManagerFromEnvironment loads provider selection without loading .env files.
 func NewManagerFromEnvironment(offline config.Providers, deps Dependencies) (*Manager, error) {
-	providers, err := config.BuildProvidersFromEnvironment(offline)
+	providerConfig, err := config.LoadProviderConfigFromEnvironment()
 	if err != nil {
 		return nil, err
 	}
-	return newManager(providers, deps)
+	return NewManager(providerConfig, offline, deps)
 }
 
 func newManager(providers config.Providers, deps Dependencies) (*Manager, error) {
+	return newManagerWithLabels(providers, providerLabels{}, deps)
+}
+
+type providerLabels struct {
+	asr         string
+	llm         string
+	translation string
+	tts         string
+}
+
+func labelsFromConfig(providerConfig config.ProviderConfig) providerLabels {
+	return providerLabels{
+		asr:         normalizedProviderLabel(providerConfig.ASR.Provider),
+		llm:         normalizedProviderLabel(providerConfig.Translation.Provider),
+		translation: normalizedProviderLabel(providerConfig.Translation.Provider),
+		tts:         normalizedProviderLabel(providerConfig.TTS.Provider),
+	}
+}
+
+func normalizedProviderLabel(provider config.ProviderName) string {
+	label := strings.ToLower(strings.TrimSpace(string(provider)))
+	if label == "" {
+		return string(config.ProviderMock)
+	}
+	return label
+}
+
+func newManagerWithLabels(providers config.Providers, labels providerLabels, deps Dependencies) (*Manager, error) {
 	if deps.FrameSources == nil || deps.NewSegmenter == nil || deps.Languages == nil ||
-		deps.FinalTurns == nil || deps.Usage == nil || deps.Audio == nil || deps.Runtime == nil {
+		deps.FinalTurns == nil || deps.ModeChanges == nil || deps.Usage == nil || deps.Audio == nil || deps.Runtime == nil {
 		return nil, ErrDependencyRequired
 	}
 	if providers.ASR == nil || providers.Translation == nil || providers.TTS == nil {
@@ -137,25 +228,144 @@ func newManager(providers config.Providers, deps Dependencies) (*Manager, error)
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
 	}
-	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages)
-	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
-		Translator: providers.Translation,
-		TTS:        providers.TTS,
-		FinalTurns: deps.FinalTurns,
-		Usage:      deps.Usage,
-		Audio:      deps.Audio,
-		Runtime:    deps.Runtime,
-		VoiceID:    deps.VoiceID,
-		Latency:    pipeline.LatencyLogger{Logger: deps.Latency},
-		Now:        deps.Now,
-	})
-	return &Manager{
-		processor: pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
-			ASR: providers.ASR, Opener: opener, Pipeline: service,
-		}),
+	if deps.Now == nil {
+		deps.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if deps.NewRuntimeInstanceID == nil {
+		deps.NewRuntimeInstanceID = defaultRuntimeInstanceID
+	}
+	manager := &Manager{
 		failure: deps.Runtime, logger: deps.Logger,
 		deps: deps, entries: make(map[string]*entry), locks: newKeyedLocker(),
-	}, nil
+	}
+	opener := pipeline.NewTurnOpener(deps.Allocator, deps.Languages, managerTurnModeReader{manager: manager})
+	manager.commandOpener = opener
+	latency := pipeline.LatencyLogger{Logger: deps.Latency, Observer: deps.ProviderFailures}
+	speech := pipeline.NewSpeechOutput(pipeline.SpeechOutputDependencies{
+		TTS: providers.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
+		VoiceID: deps.VoiceID, Provider: labels.tts, Latency: latency,
+	})
+	commitGate := managerTurnCommitGate{manager: manager}
+	phraseTranslations := pipeline.NewPhraseTranslationCoordinator(providers.Translation, labels.translation, deps.PhraseSubtitles, deps.Now)
+	phraseObserver := deps.PhraseSubtitles
+	if phraseTranslations != nil {
+		phraseObserver = phraseTranslations
+	}
+	service := pipeline.NewPipelineService(pipeline.PipelineDependencies{
+		Translator: providers.Translation, TranslationProvider: labels.translation,
+		FinalTurns:          deps.FinalTurns,
+		FinalGate:           commitGate,
+		Usage:               deps.Usage,
+		Runtime:             deps.Runtime,
+		Now:                 deps.Now,
+		Speech:              speech,
+		Latency:             latency,
+		LongDeliveryEnabled: deps.LongDeliveryEnabled,
+		PhraseTranslations:  phraseTranslations,
+	})
+	// The router registry is the capability source of truth. The coordinator and command
+	// interpreter therefore expose only modes backed by an actual handler.
+	handlers := map[realtimev1.Mode]pipeline.ASRFinalHandler{
+		realtimev1.ModeInterpretation: service,
+	}
+	if providers.Assistant != nil {
+		if deps.AssistantReplies == nil {
+			return nil, fmt.Errorf("%w: assistant reply sink", ErrDependencyRequired)
+		}
+		handlers[realtimev1.ModeAssistant] = pipeline.NewAssistantHandler(pipeline.AssistantHandlerDependencies{
+			LLM: providers.Assistant, Provider: labels.llm, Replies: deps.AssistantReplies, Gate: commitGate,
+			Usage: deps.Usage, Speech: speech, Runtime: deps.Runtime, Now: deps.Now,
+			Latency: latency,
+		})
+	}
+	router, err := newModeRouter(handlers)
+	if err != nil {
+		return nil, fmt.Errorf("create mode router: %w", err)
+	}
+	manager.processor = pipeline.NewTurnProcessor(pipeline.TurnProcessorDependencies{
+		ASR: providers.ASR, ASRProvider: labels.asr, Opener: opener, Pipeline: service, Finals: router,
+		Partials: deps.ASRPartials, Phrases: pipeline.NewPhraseSubtitleProcessor(phraseObserver, pipeline.PhraseStabilizerOptions{}),
+	})
+	manager.commandASR = providers.ASR
+	registry, err := commandRegistry(router.availableModes())
+	if err != nil {
+		return nil, fmt.Errorf("create command capability registry: %w", err)
+	}
+	manager.commandValidator = registry
+	if deps.NewCommandInterpreter == nil {
+		return nil, fmt.Errorf("%w: command interpreter factory", ErrDependencyRequired)
+	}
+	manager.commandInterpreter, err = deps.NewCommandInterpreter(registry.Descriptors())
+	if err != nil {
+		return nil, fmt.Errorf("create command interpreter: %w", err)
+	}
+	if manager.commandInterpreter == nil {
+		return nil, fmt.Errorf("%w: command interpreter", ErrDependencyRequired)
+	}
+	manager.playback = service
+	manager.speech = speech
+	manager.router = router
+	return manager, nil
+}
+
+func commandRegistry(modes []realtimev1.Mode) (*command.Registry, error) {
+	descriptors := make([]command.CapabilityDescriptor, 0, len(modes))
+	for _, mode := range modes {
+		switch mode {
+		case realtimev1.ModeAssistant:
+			descriptors = append(descriptors, command.CapabilityDescriptor{
+				Mode: mode, Description: "通用 AI 助手", SchemaVersion: 1,
+				Actions: []command.Action{command.ActionReturnToAssistant, command.ActionAssistantQuery},
+			})
+		case realtimev1.ModeInterpretation:
+			descriptors = append(descriptors, command.CapabilityDescriptor{
+				Mode: mode, Description: "双语同声传译", SchemaVersion: 1,
+				Actions: []command.Action{command.ActionActivateMode},
+			})
+		}
+	}
+	return command.NewRegistry(descriptors...)
+}
+
+// PlayFallback sends an immutable translated-text snapshot through the active
+// session's playback graph. The session run context cancels playback when Stop
+// begins, while the request context still bounds the caller's wait.
+func (m *Manager) PlayFallback(ctx context.Context, request realtimev1.FallbackPlaybackRequest) error {
+	if err := ctx.Err(); err != nil {
+		return pipeline.MarkFallbackPlaybackNotStarted(err)
+	}
+	if m == nil || m.playback == nil {
+		return pipeline.MarkFallbackPlaybackNotStarted(ErrDependencyRequired)
+	}
+	if request.SessionID == "" {
+		return pipeline.MarkFallbackPlaybackNotStarted(ErrSessionIDRequired)
+	}
+
+	unlock := m.locks.lock(request.SessionID)
+	m.mu.Lock()
+	item := m.entries[request.SessionID]
+	if item == nil || !item.active || item.stopping || item.terminal || item.finished {
+		m.mu.Unlock()
+		unlock()
+		return pipeline.MarkFallbackPlaybackNotStarted(session.ErrRuntimeNotFound)
+	}
+	runCtx := item.ctx
+	accountID := item.request.AccountID
+	m.mu.Unlock()
+	unlock()
+
+	playbackCtx, cancel := context.WithCancel(ctx)
+	stopCancellation := context.AfterFunc(runCtx, cancel)
+	defer func() {
+		stopCancellation()
+		cancel()
+	}()
+	return m.playback.PlayFallback(playbackCtx, pipeline.FallbackPlayback{
+		SessionID: request.SessionID, TurnID: request.TurnID, AccountID: accountID,
+		TraceID: request.TraceID, TargetLanguage: request.TargetLanguage,
+		TranslatedText: request.TranslatedText, LanguageConfigVersion: int64(request.LanguageConfigVersion),
+		PlaybackID: "fallback_" + request.OperationID,
+	})
 }
 
 // Start opens resources and registers the session without consuming media yet.
@@ -164,7 +374,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if m == nil || m.processor == nil || m.deps.FrameSources == nil || m.deps.NewSegmenter == nil {
+	if m == nil || m.processor == nil || m.router == nil || m.deps.FrameSources == nil || m.deps.NewSegmenter == nil {
 		return ErrDependencyRequired
 	}
 	if snapshot.SessionID == "" {
@@ -207,11 +417,30 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			return fmt.Errorf("close previous audio input: %w", err)
 		}
 		m.mu.Lock()
-		if m.entries[snapshot.SessionID] == item {
-			delete(m.entries, snapshot.SessionID)
-		}
+		removed := m.removeEntryLocked(snapshot.SessionID, item)
 		m.mu.Unlock()
+		m.recordRuntimeStopped(removed)
 	}
+	runtimeInstanceID, err := m.deps.NewRuntimeInstanceID()
+	if err != nil {
+		return err
+	}
+	if runtimeInstanceID == "" {
+		return ErrRuntimeInstanceIDRequired
+	}
+	initialMode := snapshot.InitialMode.OrLegacyDefault()
+	mode, err := newModeCoordinator(
+		snapshot.SessionID,
+		runtimeInstanceID,
+		initialMode,
+		m.router.availableModes(),
+		m.deps.ModeChanges,
+		m.deps.Now,
+	)
+	if err != nil {
+		return fmt.Errorf("create mode coordinator: %w", err)
+	}
+	mode.observer = m.deps.ModeCommands
 	input, err := m.deps.FrameSources.Open(ctx, snapshot)
 	if err != nil {
 		return fmt.Errorf("open audio input: %w", err)
@@ -226,8 +455,50 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		closeErr := owned.closeContext(ctx)
 		return errors.Join(fmt.Errorf("create VAD segmenter: %w", err), closeErr)
 	}
+	var commandGate *command.Gate
+	if input.WakeWords != nil && m.deps.NewCommandClassifier != nil {
+		classifier, classifierErr := m.deps.NewCommandClassifier()
+		if classifierErr != nil {
+			closeErr := owned.closeContext(ctx)
+			return errors.Join(fmt.Errorf("create command classifier: %w", classifierErr), closeErr)
+		}
+		options := m.deps.CommandOptions
+		if options == (command.Options{}) {
+			options = defaultCommandOptions
+		}
+		var successFeedback command.SuccessFeedbackGenerator
+		if candidate, ok := m.commandInterpreter.(command.SuccessFeedbackGenerator); ok {
+			successFeedback = candidate
+		}
+		feedback := newCommandSpeechFeedback(commandSpeechFeedbackDependencies{
+			Speech: m.speech, Usage: m.deps.Usage, Runtime: m.deps.Runtime,
+			SuccessFeedback: successFeedback,
+			AccountID:       snapshot.AccountID, TraceID: snapshot.TraceID, Logger: m.logger, Now: m.deps.Now,
+		})
+		gate, gateErr := command.NewGate(command.Dependencies{
+			Classifier:  classifier,
+			ASR:         m.commandASR,
+			Interpreter: m.commandInterpreter,
+			Validator:   m.commandValidator,
+			Executor: commandExecutor{
+				manager: m, languages: m.deps.Languages, configurator: m.deps.LanguageConfigurator,
+			},
+			Results:  m.deps.CommandResults,
+			Feedback: feedback,
+			Observer: m.deps.CommandObserver,
+			Logger:   m.logger,
+			Now:      m.deps.Now,
+		}, options)
+		if gateErr != nil {
+			closeErr := owned.closeContext(ctx)
+			return errors.Join(fmt.Errorf("create command gate: %w", gateErr), closeErr)
+		}
+		commandGate = gate
+	}
 	service, err := segment.NewService(segment.Dependencies{
-		Source: owned, Segmenter: segmenter, Processor: m.processor, Latency: m.deps.Latency,
+		Source: owned, Segmenter: segmenter, Processor: m.processor,
+		Command: newRuntimeCommandGate(commandGate, m.playbackInterrupter()), WakeWords: input.WakeWords,
+		Latency: m.deps.Latency, Now: m.deps.Now,
 	})
 	if err != nil {
 		closeErr := owned.closeContext(ctx)
@@ -240,6 +511,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 		cancel: cancel, source: owned, service: service,
 		ctx:         runCtx,
 		operationID: snapshot.StartOperationID,
+		mode:        mode, command: commandGate,
 		request: segment.Request{
 			SessionID: snapshot.SessionID, AccountID: snapshot.AccountID,
 			TraceID: snapshot.TraceID, SourceLanguage: input.SourceLanguage,
@@ -249,6 +521,17 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	m.mu.Lock()
 	m.entries[snapshot.SessionID] = item
 	m.mu.Unlock()
+	m.logger.Info("realtime mode observation",
+		"event", "runtime_started",
+		"session_id", snapshot.SessionID,
+		"trace_id", snapshot.TraceID,
+		"runtime_instance_id", runtimeInstanceID,
+		"operation_id", snapshot.StartOperationID,
+		"active_mode", initialMode,
+	)
+	if m.deps.Lifecycle != nil {
+		m.deps.Lifecycle.RecordRuntimeStarted()
+	}
 	return nil
 }
 
@@ -306,17 +589,19 @@ func (m *Manager) run(item *entry, ctx context.Context) {
 		reportFailure = true
 	}
 	if reportFailure {
+		errorCode := runtimeFailureCode(err)
 		m.logger.Error("realtime pipeline worker failed",
 			"session_id", item.request.SessionID,
 			"operation_id", item.operationID,
 			"trace_id", item.request.TraceID,
+			"error_code", errorCode,
 			"error", err,
 		)
 		m.mu.Lock()
 		item.terminal = true
 		item.err = err
 		m.mu.Unlock()
-		reportErr = m.reportFailure(ctx, item.request.SessionID)
+		reportErr = m.reportFailure(ctx, item.request.SessionID, errorCode)
 		if reportErr != nil && !errors.Is(reportErr, context.Canceled) {
 			m.logger.Error("realtime pipeline failure state report failed",
 				"session_id", item.request.SessionID,
@@ -333,12 +618,13 @@ func (m *Manager) run(item *entry, ctx context.Context) {
 	}
 	item.err = err
 	item.finished = true
-	if reportFailure && reportErr == nil && ctx.Err() == nil && item.source.closeError() == nil &&
-		m.entries[item.request.SessionID] == item {
-		delete(m.entries, item.request.SessionID)
+	removed := false
+	if reportFailure && reportErr == nil && ctx.Err() == nil && item.source.closeError() == nil {
+		removed = m.removeEntryLocked(item.request.SessionID, item)
 	}
 	close(item.done)
 	m.mu.Unlock()
+	m.recordRuntimeStopped(removed)
 }
 
 // PipelineActive reports whether a worker is active or still settling its
@@ -355,20 +641,78 @@ func (m *Manager) PipelineActive(sessionID string) bool {
 	return item != nil && !item.finished
 }
 
-func (m *Manager) reportFailure(ctx context.Context, sessionID string) error {
+func (m *Manager) reportFailure(ctx context.Context, sessionID string, errorCode realtimev1.RuntimeErrorCode) error {
 	reportCtx, cancel := context.WithTimeout(ctx, failureReportTimeout)
 	defer cancel()
 
 	// Lifecycle Stop may hold its session lock while waiting for this worker.
 	// Keep the report cancelable so Stop cannot deadlock behind failure storage.
 	done := make(chan error, 1)
-	go func() { done <- m.failure.SetRuntimeFailed(reportCtx, sessionID) }()
+	go func() { done <- m.failure.SetRuntimeFailed(reportCtx, sessionID, errorCode) }()
 	select {
 	case err := <-done:
 		return err
 	case <-reportCtx.Done():
 		return reportCtx.Err()
 	}
+}
+
+func runtimeFailureCode(err error) realtimev1.RuntimeErrorCode {
+	if errors.Is(err, translate.ErrUnexpectedBehavior) {
+		return session.ErrorCodeTranslationRejected
+	}
+	return session.ErrorCodePipelineFailed
+}
+
+// runtimeCommandGate adds runtime-owned wake side effects around the bounded
+// command recognizer. Open itself has no context in the command contract, so
+// playback interruption is deliberately best effort and never prevents the
+// command window from quarantining subsequent audio.
+type runtimeCommandGate struct {
+	gate        *command.Gate
+	interrupter PlaybackInterrupter
+}
+
+func newRuntimeCommandGate(gate *command.Gate, interrupter PlaybackInterrupter) segment.CommandGate {
+	if gate == nil {
+		return nil
+	}
+	return runtimeCommandGate{gate: gate, interrupter: interrupter}
+}
+
+func (m *Manager) playbackInterrupter() PlaybackInterrupter {
+	if m == nil {
+		return nil
+	}
+	if m.deps.PlaybackInterrupter != nil {
+		return m.deps.PlaybackInterrupter
+	}
+	interrupter, _ := m.deps.Audio.(PlaybackInterrupter)
+	return interrupter
+}
+
+func (g runtimeCommandGate) Open(request command.OpenRequest) error {
+	if err := g.gate.Open(request); err != nil {
+		return err
+	}
+	if g.interrupter != nil {
+		interruptCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = g.interrupter.InterruptCurrent(interruptCtx, request.SessionID, "wake_word_detected")
+		cancel()
+	}
+	return nil
+}
+
+func (g runtimeCommandGate) Consume(ctx context.Context, frame audio.Frame) command.Result {
+	return g.gate.Consume(ctx, frame)
+}
+
+func (g runtimeCommandGate) Replay(ctx context.Context, frames []audio.Frame) command.Result {
+	return g.gate.Replay(ctx, frames)
+}
+
+func (g runtimeCommandGate) Cancel() {
+	g.gate.Cancel()
 }
 
 // Stop cancels processing, closes the input source, and waits for the loop.
@@ -416,19 +760,37 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	select {
 	case <-item.done:
 		m.mu.Lock()
+		stopped := false
 		err := item.err
 		if closeAttempt.err != nil {
 			err = closeAttempt.err
 		} else if finished {
 			err = nil
 		}
-		if closeAttempt.err == nil && m.entries[sessionID] == item {
-			delete(m.entries, sessionID)
+		if closeAttempt.err == nil {
+			stopped = m.removeEntryLocked(sessionID, item)
 		}
 		m.mu.Unlock()
+		m.recordRuntimeStopped(stopped)
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// removeEntryLocked is the single ownership transition from active/retained to
+// absent. The caller holds m.mu and records the lifecycle counter after unlock.
+func (m *Manager) removeEntryLocked(sessionID string, item *entry) bool {
+	if m.entries[sessionID] != item {
+		return false
+	}
+	delete(m.entries, sessionID)
+	return true
+}
+
+func (m *Manager) recordRuntimeStopped(removed bool) {
+	if removed && m.deps.Lifecycle != nil {
+		m.deps.Lifecycle.RecordRuntimeStopped()
 	}
 }
 

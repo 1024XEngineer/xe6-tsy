@@ -46,13 +46,17 @@ func (c *Consumer) ProcessOnce(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if len(message.Payload) == 0 {
-		_ = c.stream.Ack(ctx, message.Receipt)
+		if err := c.stream.Ack(ctx, message.Receipt); err != nil {
+			return false, err
+		}
 		return false, nil
 	}
 
 	input, err := ParseRecordInput(message.Payload)
 	if err != nil {
-		_ = c.stream.Ack(ctx, message.Receipt)
+		if ackErr := c.stream.Ack(ctx, message.Receipt); ackErr != nil {
+			return true, errors.Join(err, ackErr)
+		}
 		slog.Warn("usage consumer rejected invalid payload", "error", err, "receipt", message.Receipt)
 		metrics.RecordUsageRejected()
 		return true, nil
@@ -60,12 +64,16 @@ func (c *Consumer) ProcessOnce(ctx context.Context) (bool, error) {
 
 	if _, err := c.service.Record(ctx, input); err != nil {
 		if isPermanentUsageError(err) {
-			_ = c.stream.Ack(ctx, message.Receipt)
+			if ackErr := c.stream.Ack(ctx, message.Receipt); ackErr != nil {
+				return true, errors.Join(err, ackErr)
+			}
 			slog.Warn("usage consumer rejected event", "error", err, "idempotency_key", input.IdempotencyKey)
 			metrics.RecordUsageRejected()
 			return true, nil
 		}
-		_ = c.stream.Nack(ctx, message.Receipt)
+		if nackErr := c.stream.Nack(ctx, message.Receipt); nackErr != nil {
+			return true, errors.Join(err, nackErr)
+		}
 		return true, err
 	}
 	if err := c.stream.Ack(ctx, message.Receipt); err != nil {

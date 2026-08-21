@@ -60,6 +60,39 @@ func TestStopRequestCarriesEndIntentFields(t *testing.T) {
 	}
 }
 
+func TestFallbackPlaybackRequestCarriesImmutableTurnSnapshot(t *testing.T) {
+	encoded, err := json.Marshal(FallbackPlaybackRequest{
+		OperationID:           "fallback-1",
+		SessionID:             "session-1",
+		TurnID:                "turn-1",
+		TargetLanguage:        "zh-CN",
+		TranslatedText:        "translated text",
+		LanguageConfigVersion: 3,
+		TraceID:               "trace-1",
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	for _, field := range []string{
+		`"operation_id":"fallback-1"`,
+		`"session_id":"session-1"`,
+		`"turn_id":"turn-1"`,
+		`"target_language":"zh-CN"`,
+		`"translated_text":"translated text"`,
+		`"language_config_version":3`,
+		`"trace_id":"trace-1"`,
+	} {
+		if !strings.Contains(string(encoded), field) {
+			t.Fatalf("FallbackPlaybackRequest JSON = %s, missing %s", encoded, field)
+		}
+	}
+
+	receipt := FallbackPlaybackReceipt{OperationID: "fallback-1", Status: FallbackPlaybackAlreadyAccepted}
+	if receipt.Status != "already_accepted" {
+		t.Fatalf("receipt status = %q", receipt.Status)
+	}
+}
+
 func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 	specData, err := os.ReadFile(filepath.Join("..", "..", "openapi.yaml"))
 	if err != nil {
@@ -76,6 +109,7 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 				} `yaml:"requestBody"`
 				Security  []map[string][]string `yaml:"security"`
 				Responses map[string]struct {
+					Ref     string `yaml:"$ref"`
 					Content map[string]struct {
 						Schema openAPIProperty `yaml:"schema"`
 					} `yaml:"content"`
@@ -83,6 +117,7 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 			} `yaml:"post"`
 			Get struct {
 				Responses map[string]struct {
+					Ref     string `yaml:"$ref"`
 					Content map[string]struct {
 						Schema openAPIProperty `yaml:"schema"`
 					} `yaml:"content"`
@@ -93,6 +128,11 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 		Components struct {
 			SecuritySchemes map[string]openAPISchema `yaml:"securitySchemes"`
 			Schemas         map[string]openAPISchema `yaml:"schemas"`
+			Responses       map[string]struct {
+				Content map[string]struct {
+					Schema openAPIProperty `yaml:"schema"`
+				} `yaml:"content"`
+			} `yaml:"responses"`
 		} `yaml:"components"`
 	}
 	if err := yaml.Unmarshal(specData, &spec); err != nil {
@@ -100,7 +140,20 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 	}
 
 	controlPlaneCodes := spec.Components.Schemas["ControlPlaneErrorCode"].Enum
-	if want := []string{"runtime_operation_conflict"}; !reflect.DeepEqual(controlPlaneCodes, want) {
+	if want := []string{
+		"runtime_not_found",
+		"runtime_operation_conflict",
+		"mode_not_available",
+		"mode_generation_conflict",
+		"mode_runtime_instance_mismatch",
+		"mode_operation_conflict",
+		"control_invalid_message",
+		"control_unsupported_version",
+		"control_unsupported_type",
+		"control_unauthorized_session",
+		"control_connection_closed",
+		"control_unavailable",
+	}; !reflect.DeepEqual(controlPlaneCodes, want) {
 		t.Fatalf("ControlPlaneErrorCode enum = %v, want %v", controlPlaneCodes, want)
 	}
 	for _, code := range spec.Components.Schemas["WebRTCErrorCode"].Enum {
@@ -128,8 +181,8 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 		t.Fatalf("RuntimeOperationConflictError.error ref = %q", got)
 	}
 	bodySchema := spec.Components.Schemas["RuntimeOperationConflictErrorBody"]
-	if got := bodySchema.Properties["code"].Ref; got != "#/components/schemas/ControlPlaneErrorCode" {
-		t.Fatalf("RuntimeOperationConflictErrorBody.code ref = %q", got)
+	if got := bodySchema.Properties["code"].Enum; !reflect.DeepEqual(got, []string{"runtime_operation_conflict"}) {
+		t.Fatalf("RuntimeOperationConflictErrorBody.code enum = %v", got)
 	}
 
 	stop := spec.Paths["/realtime/v1/sessions/{session_id}/stop"]
@@ -151,6 +204,27 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 	if got := runtime.Get.Responses["200"].Content["application/json"].Schema.Ref; got != "#/components/schemas/RealtimeRuntimeSnapshot" {
 		t.Fatalf("Runtime 200 schema ref = %q", got)
 	}
+	mode := spec.Paths["/realtime/v1/sessions/{session_id}/mode"]
+	for method, response := range map[string]struct {
+		Ref string
+	}{
+		"GET":  {Ref: mode.Get.Responses["404"].Ref},
+		"POST": {Ref: mode.Post.Responses["404"].Ref},
+	} {
+		if want := "#/components/responses/RuntimeNotFound"; response.Ref != want {
+			t.Fatalf("Mode %s 404 response ref = %q, want %q", method, response.Ref, want)
+		}
+	}
+	if got := spec.Components.Responses["RuntimeNotFound"].Content["application/json"].Schema.Ref; got != "#/components/schemas/RuntimeNotFoundError" {
+		t.Fatalf("RuntimeNotFound response schema ref = %q", got)
+	}
+	runtimeNotFound := spec.Components.Schemas["RuntimeNotFoundError"]
+	if got := runtimeNotFound.Properties["error"].Ref; got != "#/components/schemas/RuntimeNotFoundErrorBody" {
+		t.Fatalf("RuntimeNotFoundError.error ref = %q", got)
+	}
+	if got := spec.Components.Schemas["RuntimeNotFoundErrorBody"].Properties["code"].Enum; !reflect.DeepEqual(got, []string{"runtime_not_found"}) {
+		t.Fatalf("RuntimeNotFoundErrorBody.code enum = %v", got)
+	}
 	connection := spec.Paths["/realtime/v1/sessions/{session_id}/connection"]
 	assertRealtimeSecurity(t, "connection", connection.Get.Security)
 	if _, ok := connection.Get.Responses["401"]; !ok {
@@ -160,6 +234,23 @@ func TestOpenAPIControlPlaneErrorContract(t *testing.T) {
 	wantFields := []string{"reason", "ended_at"}
 	if !reflect.DeepEqual(stopSchema.Required, wantFields) {
 		t.Fatalf("RealtimeStopRequest required = %v, want %v", stopSchema.Required, wantFields)
+	}
+
+	fallback := spec.Paths["/realtime/v1/sessions/{session_id}/fallback-playback"]
+	assertRealtimeSecurity(t, "fallback playback", fallback.Post.Security)
+	if got := fallback.Post.RequestBody.Content["application/json"].Schema.Ref; got != "#/components/schemas/FallbackPlaybackRequest" {
+		t.Fatalf("Fallback playback request schema ref = %q", got)
+	}
+	if got := fallback.Post.Responses["202"].Content["application/json"].Schema.Ref; got != "#/components/schemas/FallbackPlaybackReceipt" {
+		t.Fatalf("Fallback playback 202 schema ref = %q", got)
+	}
+	fallbackSchema := spec.Components.Schemas["FallbackPlaybackRequest"]
+	wantFallbackFields := []string{"operation_id", "session_id", "turn_id", "target_language", "translated_text", "language_config_version", "trace_id"}
+	if !reflect.DeepEqual(fallbackSchema.Required, wantFallbackFields) {
+		t.Fatalf("FallbackPlaybackRequest required = %v, want %v", fallbackSchema.Required, wantFallbackFields)
+	}
+	if got := spec.Components.Schemas["FallbackPlaybackReceiptStatus"].Enum; !reflect.DeepEqual(got, []string{"accepted", "already_accepted"}) {
+		t.Fatalf("FallbackPlaybackReceiptStatus enum = %v", got)
 	}
 }
 

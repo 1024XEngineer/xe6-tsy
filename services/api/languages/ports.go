@@ -26,3 +26,9 @@ type LanguageTargetResolver interface {
 		sourceLanguage string,
 	) (targetLanguage string, version int, err error)
 }
+
+// DeliveryReadinessReader answers whether an account can route automatic
+// translations to at least one enabled and verified destination.
+type DeliveryReadinessReader interface {
+	HasReadyAutomaticTarget(ctx context.Context, accountID string) (bool, error)
+}

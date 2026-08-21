@@ -4,21 +4,68 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestNewEndRecoveryWorkerRejectsNilService(t *testing.T) {
-	_, err := NewEndRecoveryWorker(nil, EndRecoveryConfig{
+func TestNewEndRecoveryWorkerRejectsInvalidConfig(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	valid := EndRecoveryConfig{
 		WorkerID:       "worker_1",
 		PollInterval:   time.Second,
 		LeaseDuration:  time.Minute,
 		AttemptTimeout: 30 * time.Second,
 		InitialBackoff: time.Second,
 		MaxBackoff:     time.Minute,
-	})
-	if !errors.Is(err, ErrInvalidDependency) {
-		t.Fatalf("NewEndRecoveryWorker() error = %v, want ErrInvalidDependency", err)
+	}
+	tests := []struct {
+		name    string
+		service *Service
+		edit    func(*EndRecoveryConfig)
+	}{
+		{name: "nil service"},
+		{
+			name: "empty worker ID", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.WorkerID = "" },
+		},
+		{
+			name: "zero poll interval", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.PollInterval = 0 },
+		},
+		{
+			name: "zero lease duration", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.LeaseDuration = 0 },
+		},
+		{
+			name: "zero attempt timeout", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.AttemptTimeout = 0 },
+		},
+		{
+			name: "attempt timeout equals lease", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.AttemptTimeout = config.LeaseDuration },
+		},
+		{
+			name: "zero initial backoff", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.InitialBackoff = 0 },
+		},
+		{
+			name: "maximum backoff below initial", service: fixture.worker.service,
+			edit: func(config *EndRecoveryConfig) { config.MaxBackoff = config.InitialBackoff / 2 },
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := valid
+			if test.edit != nil {
+				test.edit(&config)
+			}
+			_, err := NewEndRecoveryWorker(test.service, config)
+			if !errors.Is(err, ErrInvalidDependency) {
+				t.Fatalf("NewEndRecoveryWorker() error = %v, want ErrInvalidDependency", err)
+			}
+		})
 	}
 }
 
@@ -30,6 +77,35 @@ func TestEndRecoveryWorkerRejectsNilContext(t *testing.T) {
 	processed, err := fixture.worker.ProcessNext(nil)
 	if processed || !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("ProcessNext() = %t, %v, want invalid request", processed, err)
+	}
+}
+
+func TestEndRecoveryWorkerProcessNextRejectsCancelledContextWithoutSideEffects(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	clock := fixture.worker.service.deps.Clock.(*fakeClock)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	processed, err := fixture.worker.ProcessNext(ctx)
+	if processed || !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProcessNext() = %t, %v, want false, context.Canceled", processed, err)
+	}
+	if clock.calls != 0 || fixture.repository.claimCalls != 0 ||
+		fixture.repository.startRepository.getCalls != 0 ||
+		fixture.repository.transitionCalls != 0 ||
+		fixture.repository.retryCalls != 0 ||
+		fixture.repository.completeCalls != 0 ||
+		fixture.realtime.stopCalls != 0 {
+		t.Fatalf(
+			"side effects = clock %d, claim %d, get %d, transition %d, retry %d, complete %d, stop %d; want all 0",
+			clock.calls,
+			fixture.repository.claimCalls,
+			fixture.repository.startRepository.getCalls,
+			fixture.repository.transitionCalls,
+			fixture.repository.retryCalls,
+			fixture.repository.completeCalls,
+			fixture.realtime.stopCalls,
+		)
 	}
 }
 
@@ -274,8 +350,50 @@ func TestEndRecoveryWorkerRejectsInvalidClaim(t *testing.T) {
 	if !processed || !errors.Is(err, ErrInvalidDependency) {
 		t.Fatalf("ProcessNext() = %t, %v, want invalid claim", processed, err)
 	}
-	if fixture.realtime.stopCalls != 0 {
-		t.Fatalf("Stop() calls = %d, want 0", fixture.realtime.stopCalls)
+	if fixture.repository.retryCalls != 0 || fixture.repository.completeCalls != 0 ||
+		fixture.repository.transitionCalls != 0 || fixture.realtime.stopCalls != 0 {
+		t.Fatalf(
+			"side effects = retry %d, complete %d, transition %d, stop %d; want all 0",
+			fixture.repository.retryCalls,
+			fixture.repository.completeCalls,
+			fixture.repository.transitionCalls,
+			fixture.realtime.stopCalls,
+		)
+	}
+	leaseExpiresAt := fixture.now.Add(fixture.worker.config.LeaseDuration)
+	if fixture.repository.intent.RetryCount != 0 ||
+		fixture.repository.intent.RecoveryOwner == nil ||
+		*fixture.repository.intent.RecoveryOwner != fixture.worker.config.WorkerID ||
+		fixture.repository.intent.LeaseExpiresAt == nil ||
+		!fixture.repository.intent.LeaseExpiresAt.Equal(leaseExpiresAt) {
+		t.Fatalf("intent = %#v, want unchanged claimed lease", fixture.repository.intent)
+	}
+}
+
+func TestEndRecoveryWorkerRejectsExpiredLeaseWithoutRecoverySideEffects(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	expiredAt := time.Now().Add(-fixture.worker.config.LeaseDuration)
+	fixture.worker.monotonicNow = func() time.Time { return expiredAt }
+
+	processed, err := fixture.worker.ProcessNext(t.Context())
+	if !processed || !errors.Is(err, ErrConcurrentTransition) {
+		t.Fatalf("ProcessNext() = %t, %v, want true, ErrConcurrentTransition", processed, err)
+	}
+	if fixture.repository.claimCalls != 1 ||
+		fixture.repository.startRepository.getCalls != 0 ||
+		fixture.repository.transitionCalls != 0 ||
+		fixture.repository.retryCalls != 0 ||
+		fixture.repository.completeCalls != 0 ||
+		fixture.realtime.stopCalls != 0 {
+		t.Fatalf(
+			"side effects = claim %d, get %d, transition %d, retry %d, complete %d, stop %d; want 1, 0, 0, 0, 0, 0",
+			fixture.repository.claimCalls,
+			fixture.repository.startRepository.getCalls,
+			fixture.repository.transitionCalls,
+			fixture.repository.retryCalls,
+			fixture.repository.completeCalls,
+			fixture.realtime.stopCalls,
+		)
 	}
 }
 
@@ -414,6 +532,65 @@ func TestEndRecoveryWorkerRecoverClaimedRejectsInvalidState(t *testing.T) {
 	}
 }
 
+func TestEndRecoveryWorkerRecoverClaimedStopsAfterSessionReadFailure(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	clock := fixture.worker.service.deps.Clock.(*fakeClock)
+	fixture.repository.startRepository.getErr = errDependency
+	owner := fixture.worker.config.WorkerID
+	leaseExpiresAt := fixture.now.Add(fixture.worker.config.LeaseDuration)
+	intent := fixture.repository.intent
+	intent.RecoveryOwner = &owner
+	intent.LeaseExpiresAt = &leaseExpiresAt
+
+	err := fixture.worker.recoverClaimed(t.Context(), intent)
+	if !errors.Is(err, errDependency) {
+		t.Fatalf("recoverClaimed() error = %v, want errDependency", err)
+	}
+	if fixture.repository.startRepository.getCalls != 1 || clock.calls != 0 ||
+		fixture.repository.transitionCalls != 0 ||
+		fixture.repository.completeCalls != 0 ||
+		fixture.realtime.stopCalls != 0 {
+		t.Fatalf(
+			"side effects = get %d, clock %d, transition %d, complete %d, stop %d; want 1, 0, 0, 0, 0",
+			fixture.repository.startRepository.getCalls,
+			clock.calls,
+			fixture.repository.transitionCalls,
+			fixture.repository.completeCalls,
+			fixture.realtime.stopCalls,
+		)
+	}
+}
+
+func TestEndRecoveryWorkerRecoverClaimedStopsAfterEndTimestampFailure(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	clock := &fakeClock{}
+	fixture.worker.service.deps.Clock = clock
+	owner := fixture.worker.config.WorkerID
+	leaseExpiresAt := fixture.now.Add(fixture.worker.config.LeaseDuration)
+	intent := fixture.repository.intent
+	intent.RecoveryOwner = &owner
+	intent.LeaseExpiresAt = &leaseExpiresAt
+
+	err := fixture.worker.recoverClaimed(t.Context(), intent)
+	if !errors.Is(err, ErrInvalidDependency) ||
+		!strings.Contains(err.Error(), "recovered session end") {
+		t.Fatalf("recoverClaimed() error = %v, want recovered-session-end clock failure", err)
+	}
+	if fixture.repository.startRepository.getCalls != 1 || clock.calls != 1 ||
+		fixture.repository.transitionCalls != 0 ||
+		fixture.repository.completeCalls != 0 ||
+		fixture.realtime.stopCalls != 0 {
+		t.Fatalf(
+			"side effects = get %d, clock %d, transition %d, complete %d, stop %d; want 1, 1, 0, 0, 0",
+			fixture.repository.startRepository.getCalls,
+			clock.calls,
+			fixture.repository.transitionCalls,
+			fixture.repository.completeCalls,
+			fixture.realtime.stopCalls,
+		)
+	}
+}
+
 func TestEndRecoveryWorkerReconcileReturnsReadAndTransitionErrors(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -446,6 +623,21 @@ func TestEndRecoveryWorkerReconcileReturnsReadAndTransitionErrors(t *testing.T) 
 				t.Fatalf("reconcileTransition() error = %v, want %v", err, test.want)
 			}
 		})
+	}
+}
+
+func TestEndRecoveryWorkerReconcileReturnsNonConcurrentErrorWithoutRead(t *testing.T) {
+	fixture := newEndRecoveryFixture(t, StatusActive)
+	transitionErr := errors.New("transition dependency failed")
+
+	err := fixture.worker.reconcileTransition(
+		t.Context(), fixture.repository.intent, transitionErr,
+	)
+	if err != transitionErr {
+		t.Fatalf("reconcileTransition() error = %v, want original error %v", err, transitionErr)
+	}
+	if fixture.repository.startRepository.getCalls != 0 {
+		t.Fatalf("GetOwned() calls = %d, want 0", fixture.repository.startRepository.getCalls)
 	}
 }
 
@@ -572,12 +764,15 @@ type endRecoveryRepository struct {
 	*endRepository
 	intent          EndIntent
 	transitionErr   error
+	transitionCalls int
 	completeErr     error
+	completeCalls   int
 	claimErr        error
 	claimCalls      int
 	claimHook       func(int)
 	claimResultHook func(*EndIntent)
 	retryErr        error
+	retryCalls      int
 	retryAfter      time.Duration
 	storageNow      time.Time
 }
@@ -595,6 +790,7 @@ func (r *endRecoveryRepository) TransitionToEnded(
 	ctx context.Context,
 	params EndTransitionParams,
 ) (VoiceSession, error) {
+	r.transitionCalls++
 	if r.transitionErr != nil {
 		return VoiceSession{}, r.transitionErr
 	}
@@ -631,6 +827,7 @@ func (r *endRecoveryRepository) RetryClaimedEndIntent(
 	_ context.Context,
 	params RetryEndIntentParams,
 ) error {
+	r.retryCalls++
 	if r.retryErr != nil {
 		return r.retryErr
 	}
@@ -651,6 +848,7 @@ func (r *endRecoveryRepository) CompleteClaimedEndIntent(
 	_ context.Context,
 	params CompleteClaimedEndIntentParams,
 ) error {
+	r.completeCalls++
 	if r.completeErr != nil {
 		return r.completeErr
 	}

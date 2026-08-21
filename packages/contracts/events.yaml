@@ -14,6 +14,36 @@ channels:
     messages:
       finalTurn:
         $ref: '#/components/messages/FinalTurn'
+  modeChanged:
+    address: realtime.mode.changed
+    messages:
+      modeChanged:
+        $ref: '#/components/messages/ModeChanged'
+  assistantReply:
+    address: assistant.reply
+    messages:
+      assistantReply:
+        $ref: '#/components/messages/AssistantReply'
+  asrPartial:
+    address: asr.partial
+    description: Ephemeral, replaceable ASR snapshots sent only to the authenticated realtime client.
+    messages:
+      asrPartial:
+        $ref: '#/components/messages/ASRPartial'
+  phraseSubtitle:
+    address: phrase.subtitle
+    description: Ephemeral, ordered subtitle phrases sent only to the authenticated realtime client.
+    messages:
+      phraseSubtitle:
+        $ref: '#/components/messages/PhraseSubtitle'
+  controlDataChannel:
+    address: lingow-control-v1
+    description: Reliable ordered WebRTC DataChannel bound to the authenticated PeerConnection session.
+    messages:
+      modeSwitchRequest: { $ref: '#/components/messages/ControlModeSwitchRequest' }
+      controlResponse: { $ref: '#/components/messages/ControlResponse' }
+      wakeWordDetected: { $ref: '#/components/messages/WakeWordDetected' }
+      commandResult: { $ref: '#/components/messages/CommandResult' }
 operations:
   consumeUsageRecorded:
     action: receive
@@ -27,6 +57,42 @@ operations:
     action: receive
     channel:
       $ref: '#/channels/finalTurn'
+  sendModeChanged:
+    action: send
+    channel:
+      $ref: '#/channels/modeChanged'
+  consumeModeChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/modeChanged'
+  sendAssistantReply:
+    action: send
+    channel:
+      $ref: '#/channels/assistantReply'
+  sendASRPartial:
+    action: send
+    channel:
+      $ref: '#/channels/asrPartial'
+  sendPhraseSubtitle:
+    action: send
+    channel:
+      $ref: '#/channels/phraseSubtitle'
+  receiveControlModeSwitch:
+    action: receive
+    channel: { $ref: '#/channels/controlDataChannel' }
+    messages: [{ $ref: '#/channels/controlDataChannel/messages/modeSwitchRequest' }]
+  sendControlResponse:
+    action: send
+    channel: { $ref: '#/channels/controlDataChannel' }
+    messages: [{ $ref: '#/channels/controlDataChannel/messages/controlResponse' }]
+  receiveWakeWordDetected:
+    action: receive
+    channel: { $ref: '#/channels/controlDataChannel' }
+    messages: [{ $ref: '#/channels/controlDataChannel/messages/wakeWordDetected' }]
+  sendCommandResult:
+    action: send
+    channel: { $ref: '#/channels/controlDataChannel' }
+    messages: [{ $ref: '#/channels/controlDataChannel/messages/commandResult' }]
 components:
   messages:
     UsageRecorded:
@@ -41,6 +107,58 @@ components:
       contentType: application/json
       payload:
         $ref: '#/components/schemas/FinalTurnEvent'
+    ModeChanged:
+      name: realtime.mode.changed
+      title: Realtime mode changed
+      summary: A durable mode-change fact emitted after realtime makes the new mode active.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ModeChangedEvent'
+    AssistantReply:
+      name: assistant.reply
+      title: Assistant reply
+      summary: A finalized realtime assistant reply that is distinct from a translation FinalTurn.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/AssistantReplyEvent'
+    ASRPartial:
+      name: asr.partial
+      title: Ephemeral ASR partial
+      summary: A replaceable transcription snapshot that never enters translation, TTS, FinalTurn, or delivery.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ASRPartialEvent'
+    PhraseSubtitle:
+      name: phrase.subtitle
+      title: Ephemeral phrase subtitle
+      summary: An immutable source phrase that is stable enough for realtime subtitle display.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/PhraseSubtitleEvent'
+    ControlModeSwitchRequest:
+      name: mode.switch
+      summary: Switches the runtime mode without replacing the authenticated PeerConnection.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ControlModeSwitchRequest'
+    ControlResponse:
+      name: realtime.control.response
+      summary: Returns either the mode-switch result or a stable typed control error.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/ControlResponse'
+    WakeWordDetected:
+      name: wake_word.detected
+      summary: Reports a fixed wake-word decision made by the connected client or device.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/WakeWordDetectedSignal'
+    CommandResult:
+      name: command.result
+      summary: Returns the terminal acknowledgement for one wake-word command attempt.
+      contentType: application/json
+      payload:
+        $ref: '#/components/schemas/CommandResultEvent'
   schemas:
     UsageRecordedPayload:
       type: object
@@ -54,7 +172,7 @@ components:
         account_id: { type: string, minLength: 1 }
         session_id: { type: string, minLength: 1 }
         turn_id: { type: string, minLength: 1 }
-        service_type: { type: string, enum: [asr, translation, tts, diarization] }
+        service_type: { type: string, enum: [asr, translation, assistant_llm, tts, diarization] }
         provider: { type: string, minLength: 1 }
         model: { type: string, minLength: 1 }
         input_tokens: { type: integer, format: int64, minimum: 0, description: Translation input usage measured in tokens; zero for non-token services. }
@@ -66,10 +184,149 @@ components:
     AttributionStatus:
       type: string
       enum: [pending, provisional, confirmed, corrected]
+    RealtimeMode:
+      type: string
+      enum: [assistant, interpretation]
+    ControlPlaneErrorCode:
+      type: string
+      enum: [runtime_not_found, runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict, control_invalid_message, control_unsupported_version, control_unsupported_type, control_unauthorized_session, control_connection_closed, control_unavailable]
+    ControlModeSwitchCommand:
+      type: object
+      additionalProperties: false
+      description: Session identity is bound by the authenticated PeerConnection and is never accepted from this payload.
+      required: [runtime_instance_id, operation_id, expected_generation, target_mode]
+      properties:
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        operation_id: { type: string, minLength: 1, maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        expected_generation: { type: integer, format: int64, minimum: 1 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+    ControlModeSwitchRequest:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, type, request_id, command]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        type: { type: string, const: mode.switch }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        command: { $ref: '#/components/schemas/ControlModeSwitchCommand' }
+    ControlError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        message: { type: string, minLength: 1, maxLength: 512 }
+    ModeSwitchStatus: { type: string, enum: [applied, unchanged] }
+    CommandResultStatus: { type: string, enum: [applied, unchanged, clarification_required, unsupported, failed] }
+    ModePhase: { type: string, enum: [active, switching] }
+    ModeStateSnapshot:
+      type: object
+      additionalProperties: false
+      required: [session_id, runtime_instance_id, active_mode, generation, phase, last_operation_id, updated_at]
+      properties:
+        session_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        active_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        generation: { type: integer, format: int64, minimum: 1 }
+        phase: { $ref: '#/components/schemas/ModePhase' }
+        last_operation_id: { type: [string, 'null'], maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$', description: Non-null and equal to result.operation_id in a successful ControlResponse. }
+        updated_at: { type: string, format: date-time }
+    SwitchModeResult:
+      type: object
+      additionalProperties: false
+      required: [operation_id, status, state]
+      properties:
+        operation_id: { type: string, minLength: 1, maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        status: { $ref: '#/components/schemas/ModeSwitchStatus' }
+        state: { $ref: '#/components/schemas/ModeStateSnapshot' }
+    ControlResponse:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, type]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        type: { type: string, enum: [mode.switch.result, control.error] }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        result: { $ref: '#/components/schemas/SwitchModeResult' }
+        error: { $ref: '#/components/schemas/ControlError' }
+      oneOf:
+        - properties: { type: { type: string, const: mode.switch.result } }
+          required: [request_id, result]
+          not: { required: [error] }
+        - properties: { type: { type: string, const: control.error } }
+          required: [error]
+          not: { required: [result] }
+    WakeWordDetectedSignal:
+      type: object
+      additionalProperties: false
+      description: Client-side KWS output. Session identity comes from the authenticated PeerConnection; detected_at is observational and never defines the authoritative server audio boundary.
+      required: [type, event_version, signal_id, detected_at]
+      properties:
+        type: { type: string, const: wake_word.detected }
+        event_version: { type: integer, const: 1 }
+        signal_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        detected_at: { type: string, format: date-time }
+    CommandResultEvent:
+      type: object
+      additionalProperties: false
+      description: Informational command acknowledgement. A client must never replay execution from this event; runtime fields are omitted when failure happened before execution.
+      required: [type, event_version, command_id, session_id, status, message, occurred_at]
+      properties:
+        type: { type: string, const: command.result }
+        event_version: { type: integer, const: 1 }
+        command_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        session_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        runtime_instance_id: { type: string, minLength: 1 }
+        generation: { type: integer, format: int64, minimum: 1 }
+        status: { $ref: '#/components/schemas/CommandResultStatus' }
+        action: { type: string, minLength: 1, maxLength: 64 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        message: { type: string, minLength: 1, maxLength: 512 }
+        occurred_at: { type: string, format: date-time }
+    ModeChangedEvent:
+      type: object
+      additionalProperties: false
+      description: The authoritative mode-change fact. API consumers project it for audit and queries without owning the realtime mode state machine.
+      required: [event_version, event_id, trace_id, session_id, runtime_instance_id, operation_id, from_mode, to_mode, resulting_generation, occurred_at]
+      properties:
+        event_version: { type: integer, const: 1, description: Payload schema version. }
+        event_id: { type: string, minLength: 1, description: Durable event idempotency key. }
+        trace_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        operation_id: { type: string, minLength: 1, description: The switch operation that produced this fact. }
+        from_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        to_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        resulting_generation: { type: integer, format: int64, minimum: 2 }
+        occurred_at: { type: string, format: date-time }
+    AssistantReplyEvent:
+      type: object
+      additionalProperties: false
+      description: A finalized assistant reply. It must never be published as a translation FinalTurn.
+      required: [event_version, event_id, trace_id, session_id, turn_id, runtime_instance_id, generation, text, language, occurred_at]
+      properties:
+        event_version: { type: integer, const: 1, description: Payload schema version. }
+        event_id: { type: string, minLength: 1 }
+        trace_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        turn_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        generation: { type: integer, format: int64, minimum: 1 }
+        text: { type: string, minLength: 1 }
+        language: { type: string, minLength: 1 }
+        occurred_at: { type: string, format: date-time }
     FinalTurnEvent:
       type: object
       additionalProperties: false
-      description: A final translation event. Producers emit it after translation final succeeds and do not wait for TTS acceptance or playback. Partial ASR or translation data must never use this topic. Consumers compare the SHA-256 hash of the complete event JSON for every idempotency-key conflict; only an identical payload is a replay.
+      description: >-
+        A final translation event. Producers emit it after translation final succeeds and do not wait
+        for TTS acceptance or playback. When long-sentence delivery is enabled, source text longer than
+        50 Unicode code points after trimming or source audio lasting at least 20 seconds sets the
+        long_sentence delivery trigger, disables initial TTS, and enables delivery so API can route the
+        translation only to WeCom and request fallback TTS if WeCom is unavailable or finally fails.
+        Partial ASR or translation data must never use this topic.
+        Consumers compare the SHA-256 hash of the complete event JSON for every idempotency-key conflict;
+        only an identical payload is a replay.
       required: [event_version, event_id, trace_id, turn_id, session_id, participant_id, sequence_no, source_language, target_language, language_config_version, source_text, translated_text, speaker_code, speaker_label_snapshot, speaker_confidence, attribution_status, started_at, ended_at, occurred_at]
       properties:
         event_version:
@@ -116,10 +373,14 @@ components:
           minLength: 1
         tts_enabled:
           type: boolean
-          description: Whether this target-language route may synthesize and play TTS.
+          description: Whether this target-language route may synthesize and play initial TTS. Long turns set this to false; fallback TTS remains allowed when WeCom is unavailable or finally fails.
         delivery_enabled:
           type: boolean
-          description: Whether this final turn may create automatic outbound messages.
+          description: Whether this final turn may create automatic outbound messages. Long turns set this to true and API restricts the automatic target to WeCom.
+        delivery_trigger:
+          type: string
+          enum: [long_sentence]
+          description: Optional automatic-delivery behavior. Explicit long_sentence routes only to WeCom and permits fallback TTS; for legacy events without this field, tts_enabled=false plus delivery_enabled=true and a long-source threshold is treated as long_sentence for rolling compatibility.
         speaker_code:
           type: string
           minLength: 1
@@ -142,3 +403,31 @@ components:
         occurred_at:
           type: string
           format: date-time
+    ASRPartialEvent:
+      type: object
+      additionalProperties: false
+      description: An ephemeral full-text ASR snapshot. Consumers replace text for the same turn_id and discard it after final settlement.
+      required: [type, event_version, session_id, turn_id, text, occurred_at]
+      properties:
+        type: { type: string, const: asr.partial }
+        event_version: { type: integer, const: 1 }
+        session_id: { type: string, minLength: 1, maxLength: 128 }
+        turn_id: { type: string, minLength: 1, maxLength: 128 }
+        text: { type: string, minLength: 1, maxLength: 4096 }
+        source_language: { type: string, minLength: 1, maxLength: 128, description: Omitted while provider language detection is incomplete. }
+        occurred_at: { type: string, format: date-time }
+    PhraseSubtitleEvent:
+      type: object
+      additionalProperties: false
+      description: A best-effort subtitle phrase that never enters FinalTurn persistence by itself.
+      required: [type, event_version, session_id, utterance_id, phrase_sequence, source_text, status, occurred_at]
+      properties:
+        type: { type: string, const: phrase.subtitle }
+        event_version: { type: integer, const: 1 }
+        session_id: { type: string, minLength: 1, maxLength: 128 }
+        utterance_id: { type: string, minLength: 1, maxLength: 128 }
+        phrase_sequence: { type: integer, minimum: 1 }
+        source_text: { type: string, minLength: 1, maxLength: 4096 }
+        translated_text: { type: string, minLength: 1, maxLength: 4096 }
+        status: { type: string, enum: [source_stable, translated, translation_failed] }
+        occurred_at: { type: string, format: date-time }

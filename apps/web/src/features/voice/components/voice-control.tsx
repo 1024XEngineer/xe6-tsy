@@ -2,6 +2,7 @@
 
 import { motion } from "motion/react";
 
+import type { VoiceInitialMode } from "../lib/lingow-api";
 import type { SessionPhase } from "../model/session";
 import styles from "../voice.module.css";
 import { AuroraStrands } from "./aurora-strands";
@@ -10,15 +11,25 @@ import { VideoOrb } from "./video-orb";
 export function VoiceControl({
   phase,
   onActivate,
+  mode,
 }: {
   phase: SessionPhase;
   onActivate: () => void;
+  mode: VoiceInitialMode;
 }) {
   const isIdle = phase === "idle";
 
   return (
     <motion.button
-      aria-label={isIdle ? "开始翻译" : "停止翻译"}
+      aria-label={
+        isIdle
+          ? mode === "assistant"
+            ? "开始对话"
+            : "开始翻译"
+          : mode === "assistant"
+            ? "停止对话"
+            : "停止翻译"
+      }
       className={styles.voiceButton}
       onClick={onActivate}
       type="button"

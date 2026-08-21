@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
 	"github.com/pion/rtp"
 	pion "github.com/pion/webrtc/v4"
 )
 
-func TestPionTransportIntegrationAppliesGatheredAnswer(t *testing.T) {
+func TestPionTransportIntegrationSharesControlAndMediaOnOneConnection(t *testing.T) {
 	api, err := newPionAPI(MediaConfig{})
 	if err != nil {
 		t.Fatalf("create client Pion API: %v", err)
@@ -52,6 +53,22 @@ func TestPionTransportIntegrationAppliesGatheredAnswer(t *testing.T) {
 			}
 		})
 	})
+	controlOpened := make(chan struct{})
+	controlResponses := make(chan realtimev1.ControlResponse, 1)
+	control, err := client.CreateDataChannel(realtimev1.ControlDataChannelLabel, nil)
+	if err != nil {
+		t.Fatalf("create client control DataChannel: %v", err)
+	}
+	if !control.Ordered() || control.MaxPacketLifeTime() != nil || control.MaxRetransmits() != nil {
+		t.Fatalf("control DataChannel must be reliable and ordered")
+	}
+	control.OnOpen(func() { close(controlOpened) })
+	control.OnMessage(func(message pion.DataChannelMessage) {
+		var response realtimev1.ControlResponse
+		if message.IsString && json.Unmarshal(message.Data, &response) == nil {
+			controlResponses <- response
+		}
+	})
 	microphone, err := pion.NewTrackLocalStaticRTP(pion.RTPCodecCapability{
 		MimeType: pion.MimeTypeOpus, ClockRate: 48_000, Channels: 2,
 	}, "microphone", "client")
@@ -63,9 +80,6 @@ func TestPionTransportIntegrationAppliesGatheredAnswer(t *testing.T) {
 	}
 	if _, err := client.AddTransceiverFromKind(pion.RTPCodecTypeAudio, pion.RTPTransceiverInit{Direction: pion.RTPTransceiverDirectionRecvonly}); err != nil {
 		t.Fatalf("add client receive audio transceiver: %v", err)
-	}
-	if _, err := client.CreateDataChannel("client-control", nil); err != nil {
-		t.Fatalf("create client DataChannel: %v", err)
 	}
 	offer, err := client.CreateOffer(nil)
 	if err != nil {
@@ -85,7 +99,10 @@ func TestPionTransportIntegrationAppliesGatheredAnswer(t *testing.T) {
 		t.Fatal("client local description is nil")
 	}
 
-	factory, err := NewPionTransportFactory(PionTransportConfig{})
+	controlHandler := &integrationControlHandler{calls: make(chan integrationControlCall, 1)}
+	factory, err := NewPionTransportFactory(PionTransportConfig{
+		Control: ControlConfig{Handler: controlHandler},
+	})
 	if err != nil {
 		t.Fatalf("create Pion transport factory: %v", err)
 	}
@@ -109,8 +126,58 @@ func TestPionTransportIntegrationAppliesGatheredAnswer(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out connecting local PeerConnections")
 	}
+	select {
+	case <-controlOpened:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out opening client control DataChannel")
+	}
 
 	mediaTransport := transport.(*PionTransport)
+	command := realtimev1.ControlModeSwitchCommand{
+		RuntimeInstanceID:  "runtime-1",
+		OperationID:        "operation-1",
+		ExpectedGeneration: 1,
+		TargetMode:         realtimev1.ModeAssistant,
+	}
+	request := realtimev1.ControlModeSwitchRequest{
+		ProtocolVersion: realtimev1.ControlProtocolVersion,
+		Type:            realtimev1.ControlMessageModeSwitch,
+		RequestID:       "request-1",
+		Command:         command,
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal control request: %v", err)
+	}
+	if err := control.SendText(string(payload)); err != nil {
+		t.Fatalf("send mode switch over control DataChannel: %v", err)
+	}
+	select {
+	case call := <-controlHandler.calls:
+		if call.sessionID != "session-1" || call.connectionID != "rtc_1" || call.requestID != request.RequestID {
+			t.Fatalf("control handler binding = %#v", call)
+		}
+		if !reflect.DeepEqual(call.command, command) {
+			t.Fatalf("control handler command = %#v, want %#v", call.command, command)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out receiving mode switch at server handler")
+	}
+	select {
+	case response := <-controlResponses:
+		if err := response.Validate(); err != nil {
+			t.Fatalf("control response validation error = %v; response = %#v", err, response)
+		}
+		if response.RequestID != request.RequestID || response.Result == nil || response.Result.State.ActiveMode != command.TargetMode {
+			t.Fatalf("control response = %#v", response)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out receiving typed mode switch response")
+	}
+	if client.ConnectionState() != pion.PeerConnectionStateConnected {
+		t.Fatalf("client connection state after mode switch = %q", client.ConnectionState())
+	}
+
 	if err := microphone.WriteRTP(&rtp.Packet{
 		Header:  rtp.Header{Version: 2, SequenceNumber: 1, Timestamp: 960},
 		Payload: []byte{0xf8, 0xff, 0xfe},
@@ -150,5 +217,44 @@ func TestPionTransportIntegrationAppliesGatheredAnswer(t *testing.T) {
 		case <-playCtx.Done():
 			t.Fatalf("timed out reading %s event", want)
 		}
+	}
+}
+
+type integrationControlCall struct {
+	sessionID    string
+	connectionID string
+	requestID    string
+	command      realtimev1.ControlModeSwitchCommand
+}
+
+type integrationControlHandler struct {
+	calls chan integrationControlCall
+}
+
+func (h *integrationControlHandler) HandleModeSwitch(
+	_ context.Context,
+	sessionID string,
+	connectionID string,
+	requestID string,
+	command realtimev1.ControlModeSwitchCommand,
+) realtimev1.ControlResponse {
+	h.calls <- integrationControlCall{
+		sessionID: sessionID, connectionID: connectionID, requestID: requestID, command: command,
+	}
+	lastOperationID := command.OperationID
+	return realtimev1.ControlResponse{
+		ProtocolVersion: realtimev1.ControlProtocolVersion,
+		Type:            realtimev1.ControlMessageModeSwitchResult,
+		RequestID:       requestID,
+		Result: &realtimev1.SwitchModeResult{
+			OperationID: command.OperationID,
+			Status:      realtimev1.ModeSwitchApplied,
+			State: realtimev1.ModeStateSnapshot{
+				SessionID: sessionID, RuntimeInstanceID: command.RuntimeInstanceID,
+				ActiveMode: command.TargetMode, Generation: command.ExpectedGeneration + 1,
+				Phase: realtimev1.ModePhaseActive, LastOperationID: &lastOperationID,
+				UpdatedAt: time.Now().UTC(),
+			},
+		},
 	}
 }

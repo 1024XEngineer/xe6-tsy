@@ -250,6 +250,110 @@ func TestRefreshLeavesCurrentSessionUsableWhenSuccessorPersistenceFails(t *testi
 	}
 }
 
+func TestLogoutRevokesSessionUsingRefreshTokenHash(t *testing.T) {
+	repository := newRefreshTestRepository()
+	service := NewPersistentUseCases(repository, &refreshTestIssuer{}, nil, nil)
+
+	if err := service.Logout(context.Background(), "current-token"); err != nil {
+		t.Fatalf("Logout() error = %v", err)
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	if repository.currentActive {
+		t.Fatal("Logout() left the current session active")
+	}
+	if repository.revokeCalls != 1 {
+		t.Fatalf("RevokeSession() calls = %d, want 1", repository.revokeCalls)
+	}
+}
+
+func TestLogoutRejectsMissingInputsAndDependencies(t *testing.T) {
+	revokeErr := errors.New("database unavailable")
+	tests := []struct {
+		name    string
+		service *UseCases
+		token   string
+		want    error
+	}{
+		{name: "missing repository", service: NewPersistentUseCases(nil, &refreshTestIssuer{}, nil, nil), token: "current-token", want: domain.ErrNotImplemented},
+		{name: "missing issuer", service: NewPersistentUseCases(newRefreshTestRepository(), nil, nil, nil), token: "current-token", want: domain.ErrNotImplemented},
+		{name: "empty token", service: NewPersistentUseCases(newRefreshTestRepository(), &refreshTestIssuer{}, nil, nil), token: "", want: domain.ErrInvalidArgument},
+		{name: "missing session", service: NewPersistentUseCases(func() *refreshTestRepository {
+			repository := newRefreshTestRepository()
+			repository.currentActive = false
+			return repository
+		}(), &refreshTestIssuer{}, nil, nil), token: "current-token", want: domain.ErrUnauthorized},
+		{name: "revocation failure", service: NewPersistentUseCases(&logoutErrorRepository{refreshTestRepository: *newRefreshTestRepository(), revokeErr: revokeErr}, &refreshTestIssuer{}, nil, nil), token: "current-token", want: revokeErr},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.service.Logout(context.Background(), test.token)
+			if test.want == nil {
+				if err != nil {
+					t.Fatalf("Logout() error = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Logout() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestMeReturnsAccountAndRejectsMissingContextIdentity(t *testing.T) {
+	repository := newRefreshTestRepository()
+	service := NewPersistentUseCases(repository, nil, nil, nil)
+
+	got, err := service.Me(context.Background(), repository.account.ID)
+	if err != nil {
+		t.Fatalf("Me() error = %v", err)
+	}
+	if got.ID != repository.account.ID || got.Kind != repository.account.Kind {
+		t.Fatalf("Me() account = %#v, want %#v", got, repository.account)
+	}
+	if _, err := service.Me(context.Background(), ""); !errors.Is(err, domain.ErrUnauthorized) {
+		t.Fatalf("Me() empty account error = %v, want unauthorized", err)
+	}
+}
+
+func TestMePropagatesLookupFailure(t *testing.T) {
+	want := errors.New("database unavailable")
+	service := NewPersistentUseCases(&accountErrorRepository{refreshTestRepository: *newRefreshTestRepository(), accountErr: want}, nil, nil, nil)
+
+	if _, err := service.Me(context.Background(), "acct-current"); !errors.Is(err, want) {
+		t.Fatalf("Me() error = %v, want %v", err, want)
+	}
+}
+
+func TestVerifyAccessTokenDelegatesToConfiguredVerifier(t *testing.T) {
+	want := AccessTokenClaims{AccountID: "acct-1", SessionID: "auths-1"}
+	verifier := &accessTokenVerifierStub{claims: want}
+	service := NewPersistentUseCases(newRefreshTestRepository(), nil, verifier, nil)
+
+	got, err := service.VerifyAccessToken(context.Background(), "access-token")
+	if err != nil {
+		t.Fatalf("VerifyAccessToken() error = %v", err)
+	}
+	if got != want {
+		t.Fatalf("VerifyAccessToken() claims = %#v, want %#v", got, want)
+	}
+	if verifier.token != "access-token" {
+		t.Fatalf("VerifyAccessToken() token = %q, want access-token", verifier.token)
+	}
+}
+
+func TestVerifyAccessTokenRejectsMissingVerifierAndPropagatesFailure(t *testing.T) {
+	if _, err := NewPersistentUseCases(newRefreshTestRepository(), nil, nil, nil).VerifyAccessToken(context.Background(), "access-token"); !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("VerifyAccessToken() error = %v, want not implemented", err)
+	}
+	want := errors.New("verification failed")
+	service := NewPersistentUseCases(newRefreshTestRepository(), nil, &accessTokenVerifierStub{err: want}, nil)
+	if _, err := service.VerifyAccessToken(context.Background(), "access-token"); !errors.Is(err, want) {
+		t.Fatalf("VerifyAccessToken() error = %v, want %v", err, want)
+	}
+}
+
 func TestConcurrentRefreshHasSingleSuccessor(t *testing.T) {
 	repository := newRefreshTestRepository()
 	repository.lookupArrived = make(chan struct{}, 2)
@@ -496,6 +600,38 @@ type verificationSenderErrorStub struct{ err error }
 
 func (s verificationSenderErrorStub) SendCode(context.Context, string, string) error { return s.err }
 
+type logoutErrorRepository struct {
+	refreshTestRepository
+	revokeErr error
+}
+
+func (r *logoutErrorRepository) RevokeSession(context.Context, string) error {
+	return r.revokeErr
+}
+
+type accountErrorRepository struct {
+	refreshTestRepository
+	accountErr error
+}
+
+func (r *accountErrorRepository) GetAccount(context.Context, string) (Account, error) {
+	return Account{}, r.accountErr
+}
+
+type accessTokenVerifierStub struct {
+	token  string
+	claims AccessTokenClaims
+	err    error
+}
+
+func (v *accessTokenVerifierStub) VerifyAccessToken(_ context.Context, token string) (AccessTokenClaims, error) {
+	v.token = token
+	if v.err != nil {
+		return AccessTokenClaims{}, v.err
+	}
+	return v.claims, nil
+}
+
 func (i *refreshTestIssuer) Issue(context.Context, Account, Session) (Tokens, error) {
 	if i.issueErr != nil {
 		return Tokens{}, i.issueErr
@@ -514,3 +650,4 @@ func (*refreshTestIssuer) HashRefreshToken(token string) string {
 
 var _ Repository = (*refreshTestRepository)(nil)
 var _ TokenIssuer = (*refreshTestIssuer)(nil)
+var _ AccessTokenVerifier = (*accessTokenVerifierStub)(nil)

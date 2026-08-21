@@ -1,11 +1,13 @@
 package turns
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -64,6 +66,68 @@ func TestAttributionWorkerRetriesResolutionError(t *testing.T) {
 	}
 	if delivery.acked {
 		t.Fatal("task was acked after resolver error")
+	}
+}
+
+func TestAttributionWorkerRetriesOwnerResolutionError(t *testing.T) {
+	ownerErr := errors.New("session owner lookup failed")
+	delivery := &attributionDeliveryStub{task: taskFixture()}
+	worker, err := NewAttributionWorker(
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{},
+		attributionOwnerStub{accountID: "acct_01", err: ownerErr},
+		&attributionReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}},
+		&attributionApplierStub{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatalf("NewAttributionWorker() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	if err := worker.Process(ctx, delivery); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if !delivery.retried {
+		t.Fatal("task was not retried after owner resolution error")
+	}
+	if delivery.acked || delivery.failed {
+		t.Fatal("owner resolution error must neither ack nor fail the task")
+	}
+	if !strings.Contains(delivery.retryLast, ownerErr.Error()) {
+		t.Fatalf("retry reason = %q, want owner error preserved", delivery.retryLast)
+	}
+}
+
+func TestAttributionWorkerRetriesTurnReadError(t *testing.T) {
+	readErr := errors.New("turn store unavailable")
+	delivery := &attributionDeliveryStub{task: taskFixture()}
+	worker, err := NewAttributionWorker(
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{},
+		attributionOwnerStub{accountID: "acct_01"},
+		&attributionReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}, err: readErr},
+		&attributionApplierStub{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatalf("NewAttributionWorker() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	if err := worker.Process(ctx, delivery); err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if !delivery.retried {
+		t.Fatal("task was not retried after turn read error")
+	}
+	if delivery.acked || delivery.failed {
+		t.Fatal("turn read error must neither ack nor fail the task")
+	}
+	if !strings.Contains(delivery.retryLast, readErr.Error()) {
+		t.Fatalf("retry reason = %q, want read error preserved", delivery.retryLast)
 	}
 }
 
@@ -191,6 +255,286 @@ func TestAttributionWorkerStopsOnSettlementFailure(t *testing.T) {
 	}
 }
 
+func TestAttributionWorkerPreservesAckFailure(t *testing.T) {
+	ackErr := errors.New("ack store unavailable")
+	delivery := &attributionDeliveryStub{task: taskFixture(), ackErr: ackErr}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{},
+		&attributionApplierStub{},
+	)
+
+	err := worker.Run(ctx)
+	if !errors.Is(err, ErrAttributionSettlement) {
+		t.Fatalf("Run() error = %v, want settlement error", err)
+	}
+	if !errors.Is(err, ackErr) {
+		t.Fatalf("Run() error = %v, want underlying ack error preserved", err)
+	}
+}
+
+func TestAttributionWorkerPreservesRetryFailure(t *testing.T) {
+	retryErr := errors.New("retry store unavailable")
+	cause := errors.New("resolver outage")
+	delivery := &attributionDeliveryStub{task: taskFixture(), retryErr: retryErr}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{err: cause},
+		&attributionApplierStub{},
+	)
+
+	err := worker.Run(ctx)
+	if !errors.Is(err, ErrAttributionSettlement) {
+		t.Fatalf("Run() error = %v, want settlement error", err)
+	}
+	if !errors.Is(err, cause) || !errors.Is(err, retryErr) {
+		t.Fatalf("Run() error = %v, want cause and retry error preserved", err)
+	}
+}
+
+func TestAttributionWorkerPreservesFailFailure(t *testing.T) {
+	failErr := errors.New("fail store unavailable")
+	cause := errors.New("permanent outage")
+	delivery := &attributionDeliveryStub{task: taskFixture(), failErr: failErr}
+	delivery.task.Attempts = maxAttributionAttempts
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{err: cause},
+		&attributionApplierStub{},
+	)
+
+	err := worker.Run(ctx)
+	if !errors.Is(err, ErrAttributionSettlement) {
+		t.Fatalf("Run() error = %v, want settlement error", err)
+	}
+	if !errors.Is(err, cause) || !errors.Is(err, failErr) {
+		t.Fatalf("Run() error = %v, want cause and fail error preserved", err)
+	}
+}
+
+func TestAttributionWorkerPreservesStaleAckFailure(t *testing.T) {
+	ackErr := errors.New("ack store unavailable")
+	delivery := &attributionDeliveryStub{task: taskFixture(), ackErr: ackErr}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{decision: &AttributionDecision{ParticipantID: "p_02", AttributionStatus: recordsv1.AttributionConfirmed}},
+		&attributionApplierStub{err: ErrStaleAttribution},
+	)
+
+	err := worker.Run(ctx)
+	if !errors.Is(err, ErrAttributionSettlement) {
+		t.Fatalf("Run() error = %v, want settlement error", err)
+	}
+	if !errors.Is(err, ErrStaleAttribution) || !errors.Is(err, ackErr) {
+		t.Fatalf("Run() error = %v, want stale and ack errors preserved", err)
+	}
+}
+
+func TestAttributionWorkerStopsOnContextCancelWithoutSettling(t *testing.T) {
+	tests := []struct {
+		name   string
+		owners AttributionOwnerReader
+		reader AttributionReader
+	}{
+		{"owner read cancelled", ctxAwareOwnerStub{}, &attributionReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}}},
+		{"turn read cancelled", attributionOwnerStub{accountID: "acct_01"}, ctxAwareReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			delivery := &attributionDeliveryStub{task: taskFixture()}
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			worker, err := NewAttributionWorker(
+				&cancelAfterDeliverySource{delivery: delivery, cancel: cancel},
+				&fixedDecisionResolver{},
+				test.owners,
+				test.reader,
+				&attributionApplierStub{},
+				slog.New(slog.NewTextHandler(io.Discard, nil)),
+			)
+			if err != nil {
+				t.Fatalf("NewAttributionWorker() error = %v", err)
+			}
+
+			if err := worker.Run(ctx); err != nil {
+				t.Fatalf("Run() error = %v, want clean exit on cancel", err)
+			}
+			if delivery.acked || delivery.retried || delivery.failed {
+				t.Fatalf("task settled after cancel: acked=%v retried=%v failed=%v", delivery.acked, delivery.retried, delivery.failed)
+			}
+		})
+	}
+}
+
+// TestAttributionWorkerAcksEmptyParticipantDecision pins the worker contract that a non-nil
+// decision without a participant is a no-op: the claim is acked and nothing is applied.
+func TestAttributionWorkerAcksEmptyParticipantDecision(t *testing.T) {
+	delivery := &attributionDeliveryStub{task: taskFixture()}
+	applier := &attributionApplierStub{}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{decision: &AttributionDecision{}},
+		applier,
+	)
+
+	if err := worker.Process(ctx, delivery); err != nil {
+		t.Fatalf("Process() error = %v, want ack without applying", err)
+	}
+	if !delivery.acked || delivery.retried || delivery.failed {
+		t.Fatalf("settlement = acked:%v retried:%v failed:%v, want acked only", delivery.acked, delivery.retried, delivery.failed)
+	}
+	if len(applier.calls) != 0 {
+		t.Fatalf("applier called %d times, want 0", len(applier.calls))
+	}
+}
+
+// TestAttributionWorkerPreservesFinalAckFailure covers the ack right after a successful apply:
+// a settlement error must still surface through ErrAttributionSettlement with the cause kept.
+func TestAttributionWorkerPreservesFinalAckFailure(t *testing.T) {
+	delivery := &attributionDeliveryStub{task: taskFixture(), ackErr: errors.New("ack down")}
+	worker, ctx := newAttributionWorkerStub(t,
+		&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+		&fixedDecisionResolver{decision: &AttributionDecision{ParticipantID: "p_02"}},
+		&attributionApplierStub{},
+	)
+
+	err := worker.Process(ctx, delivery)
+	if !errors.Is(err, ErrAttributionSettlement) {
+		t.Fatalf("Process() error = %v, want ErrAttributionSettlement", err)
+	}
+	if !strings.Contains(err.Error(), "ack down") {
+		t.Fatalf("Process() error = %v, want underlying ack error preserved", err)
+	}
+	if delivery.acked {
+		t.Fatal("delivery acked despite ack error")
+	}
+}
+
+// TestAttributionWorkerLogsSettlementDecisions pins the audit trail of settlement decisions:
+// permanent failures log at error level, retries at warning level, both carrying the task facts.
+func TestAttributionWorkerLogsSettlementDecisions(t *testing.T) {
+	tests := []struct {
+		name     string
+		resolver *fixedDecisionResolver
+		wantLog  string
+		wantFail bool
+	}{
+		{"permanent failure logs error", &fixedDecisionResolver{err: ErrAttributionNoEvidence}, "attribution task failed permanently", true},
+		{"retry logs warning", &fixedDecisionResolver{err: errors.New("resolve down")}, "attribution task failed; scheduling retry", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			delivery := &attributionDeliveryStub{task: taskFixture()}
+			worker, err := NewAttributionWorker(
+				&attributionSourceStub{deliveries: []AttributionTaskDelivery{delivery}},
+				test.resolver,
+				attributionOwnerStub{accountID: "acct_01"},
+				&attributionReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}},
+				&attributionApplierStub{},
+				slog.New(slog.NewTextHandler(&buf, nil)),
+			)
+			if err != nil {
+				t.Fatalf("NewAttributionWorker() error = %v", err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+
+			if err := worker.Process(ctx, delivery); err != nil {
+				t.Fatalf("Process() error = %v, want settlement without error", err)
+			}
+			logged := buf.String()
+			if !strings.Contains(logged, test.wantLog) {
+				t.Fatalf("logger output = %q, want containing %q", logged, test.wantLog)
+			}
+			for _, want := range []string{"task_id=attr_vt_01", "turn_id=vt_01", "attempt=1", "error="} {
+				if !strings.Contains(logged, want) {
+					t.Fatalf("logger output = %q, want containing %q", logged, want)
+				}
+			}
+			if test.wantFail && !delivery.failed {
+				t.Fatal("delivery not failed, want permanent fail")
+			}
+			if !test.wantFail && !delivery.retried {
+				t.Fatal("delivery not retried, want retry")
+			}
+		})
+	}
+}
+
+// TestAttributionWorkerExitsOnCancelWithUnsettledFailure pins that a cancellation during a
+// failed task stops the worker without settling the claim and without draining further
+// deliveries: the first failure is left for lease-expiry redelivery.
+func TestAttributionWorkerExitsOnCancelWithUnsettledFailure(t *testing.T) {
+	first := &attributionDeliveryStub{task: taskFixture()}
+	second := &attributionDeliveryStub{task: taskFixture(), ackErr: errors.New("ack down")}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	worker, err := NewAttributionWorker(
+		&twoDeliveryCancelSource{deliveries: []AttributionTaskDelivery{first, second}, cancel: cancel},
+		&fixedDecisionResolver{},
+		&failFirstOwnerStub{accountID: "acct_01"},
+		&attributionReaderStub{turn: recordsv1.VoiceTurn{ID: "vt_01", SessionID: "vs_01"}},
+		&attributionApplierStub{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	if err != nil {
+		t.Fatalf("NewAttributionWorker() error = %v", err)
+	}
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v, want clean exit on cancel", err)
+	}
+	if first.acked || first.retried || first.failed {
+		t.Fatalf("first task settled after cancel: acked=%v retried=%v failed=%v", first.acked, first.retried, first.failed)
+	}
+	if second.acked || second.retried || second.failed {
+		t.Fatalf("second task settled: acked=%v retried=%v failed=%v", second.acked, second.retried, second.failed)
+	}
+}
+
+func TestNewAttributionWorkerValidatesDependencies(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tests := []struct {
+		name     string
+		source   AttributionTaskSource
+		resolver AttributionResolver
+		owners   AttributionOwnerReader
+		reader   AttributionReader
+		applier  AttributionApplier
+		logger   *slog.Logger
+		wantErr  bool
+	}{
+		{name: "nil source", source: nil, resolver: &fixedDecisionResolver{}, owners: attributionOwnerStub{accountID: "acct_01"}, reader: &attributionReaderStub{}, applier: &attributionApplierStub{}, logger: logger, wantErr: true},
+		{name: "nil resolver", source: &attributionSourceStub{}, resolver: nil, owners: attributionOwnerStub{accountID: "acct_01"}, reader: &attributionReaderStub{}, applier: &attributionApplierStub{}, logger: logger, wantErr: true},
+		{name: "nil owners", source: &attributionSourceStub{}, resolver: &fixedDecisionResolver{}, owners: nil, reader: &attributionReaderStub{}, applier: &attributionApplierStub{}, logger: logger, wantErr: true},
+		{name: "nil reader", source: &attributionSourceStub{}, resolver: &fixedDecisionResolver{}, owners: attributionOwnerStub{accountID: "acct_01"}, reader: nil, applier: &attributionApplierStub{}, logger: logger, wantErr: true},
+		{name: "nil applier", source: &attributionSourceStub{}, resolver: &fixedDecisionResolver{}, owners: attributionOwnerStub{accountID: "acct_01"}, reader: &attributionReaderStub{}, applier: nil, logger: logger, wantErr: true},
+		{name: "nil logger", source: &attributionSourceStub{}, resolver: &fixedDecisionResolver{}, owners: attributionOwnerStub{accountID: "acct_01"}, reader: &attributionReaderStub{}, applier: &attributionApplierStub{}, logger: nil, wantErr: true},
+		{name: "all dependencies", source: &attributionSourceStub{}, resolver: &fixedDecisionResolver{}, owners: attributionOwnerStub{accountID: "acct_01"}, reader: &attributionReaderStub{}, applier: &attributionApplierStub{}, logger: logger},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			worker, err := NewAttributionWorker(test.source, test.resolver, test.owners, test.reader, test.applier, test.logger)
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("NewAttributionWorker() error = nil, want dependency error")
+				}
+				if !strings.Contains(err.Error(), "dependencies are required") {
+					t.Fatalf("NewAttributionWorker() error = %v, want dependency error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NewAttributionWorker() error = %v", err)
+			}
+			if worker == nil || worker.source == nil || worker.resolver == nil || worker.owners == nil || worker.reader == nil || worker.applier == nil || worker.logger == nil {
+				t.Fatalf("NewAttributionWorker() = %#v, want all dependencies wired", worker)
+			}
+		})
+	}
+}
+
 func newAttributionWorkerStub(t *testing.T, source AttributionTaskSource, resolver AttributionResolver, applier AttributionApplier) (*AttributionWorker, context.Context) {
 	t.Helper()
 	reader := &attributionReaderStub{
@@ -231,11 +575,15 @@ func (s *attributionSourceStub) Receive(ctx context.Context) (AttributionTaskDel
 }
 
 type attributionDeliveryStub struct {
-	task    AttributionTask
-	acked   bool
-	retried bool
-	failed  bool
-	ackErr  error
+	task      AttributionTask
+	acked     bool
+	retried   bool
+	failed    bool
+	ackErr    error
+	retryErr  error
+	failErr   error
+	retryLast string
+	failLast  string
 }
 
 func (d *attributionDeliveryStub) Task() AttributionTask { return d.task }
@@ -246,13 +594,15 @@ func (d *attributionDeliveryStub) Ack() error {
 	d.acked = true
 	return nil
 }
-func (d *attributionDeliveryStub) Retry(string) error {
+func (d *attributionDeliveryStub) Retry(lastError string) error {
 	d.retried = true
-	return nil
+	d.retryLast = lastError
+	return d.retryErr
 }
-func (d *attributionDeliveryStub) Fail(string) error {
+func (d *attributionDeliveryStub) Fail(lastError string) error {
 	d.failed = true
-	return nil
+	d.failLast = lastError
+	return d.failErr
 }
 
 type fixedDecisionResolver struct {
@@ -273,6 +623,80 @@ type attributionReaderStub struct {
 func (r *attributionReaderStub) GetTurn(_ context.Context, accountID string, _ string) (recordsv1.VoiceTurn, error) {
 	r.getAccountID = accountID
 	return r.turn, r.err
+}
+
+// twoDeliveryCancelSource hands out two deliveries, cancelling the context right after the
+// first, then reports cancellation.
+type twoDeliveryCancelSource struct {
+	deliveries []AttributionTaskDelivery
+	cancel     context.CancelFunc
+	next       int
+}
+
+func (s *twoDeliveryCancelSource) Receive(ctx context.Context) (AttributionTaskDelivery, error) {
+	if s.next == 0 {
+		s.cancel()
+	}
+	if s.next < len(s.deliveries) {
+		delivery := s.deliveries[s.next]
+		s.next++
+		return delivery, nil
+	}
+	return nil, context.Canceled
+}
+
+// failFirstOwnerStub fails the first owner lookup and then succeeds, letting a later delivery
+// reach settlement even after the context was cancelled.
+type failFirstOwnerStub struct {
+	accountID string
+	failed    bool
+}
+
+func (s *failFirstOwnerStub) AccountIDForSession(context.Context, string) (string, error) {
+	if !s.failed {
+		s.failed = true
+		return "", errors.New("owner unavailable")
+	}
+	return s.accountID, nil
+}
+
+// cancelAfterDeliverySource hands out one delivery and then cancels the context, mimicking a
+// supervisor shutdown right after the task claim.
+type cancelAfterDeliverySource struct {
+	delivery  AttributionTaskDelivery
+	cancel    context.CancelFunc
+	delivered bool
+}
+
+func (s *cancelAfterDeliverySource) Receive(ctx context.Context) (AttributionTaskDelivery, error) {
+	if !s.delivered {
+		s.delivered = true
+		s.cancel()
+		return s.delivery, nil
+	}
+	return nil, context.Canceled
+}
+
+// ctxAwareOwnerStub fails the owner read once the context is cancelled.
+type ctxAwareOwnerStub struct{}
+
+func (ctxAwareOwnerStub) AccountIDForSession(ctx context.Context, _ string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return "acct_01", nil
+}
+
+// ctxAwareReaderStub fails the turn read once the context is cancelled.
+type ctxAwareReaderStub struct {
+	turn recordsv1.VoiceTurn
+}
+
+func (r ctxAwareReaderStub) GetTurn(ctx context.Context, _ string, _ string) (recordsv1.VoiceTurn, error) {
+	if err := ctx.Err(); err != nil {
+		return recordsv1.VoiceTurn{}, err
+	}
+	return r.turn, nil
 }
 
 type attributionOwnerStub struct {

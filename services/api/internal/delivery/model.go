@@ -15,6 +15,20 @@ const (
 	ChannelWeChat Channel = "wechat"
 )
 
+func automaticTurnRunStatus(targetCount, settledCount, succeededCount, failedCount int) AutomaticTurnRunStatus {
+	if targetCount > 0 && settledCount >= targetCount {
+		switch {
+		case failedCount == 0:
+			return AutomaticTurnRunSucceeded
+		case succeededCount == 0:
+			return AutomaticTurnRunFailed
+		default:
+			return AutomaticTurnRunPartiallySucceeded
+		}
+	}
+	return AutomaticTurnRunPending
+}
+
 // IsSupportedChannel reports whether a channel is accepted by the public
 // delivery contract. Keep this central so HTTP and use cases cannot drift.
 func IsSupportedChannel(channel Channel) bool {
@@ -159,4 +173,100 @@ type Preference struct {
 	Enabled        bool      `json:"enabled"`
 	Verified       bool      `json:"verified"`
 	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// AutomaticTurnSettlementStatus is the durable aggregate state for one
+// automatic delivery target of a Final Turn.
+type AutomaticTurnSettlementStatus string
+
+const (
+	AutomaticTurnSettlementQueued    AutomaticTurnSettlementStatus = "queued"
+	AutomaticTurnSettlementSucceeded AutomaticTurnSettlementStatus = "succeeded"
+	AutomaticTurnSettlementFailed    AutomaticTurnSettlementStatus = "failed"
+)
+
+// AutomaticTurnSettlement records target-level delivery outcome without
+// copying provider credentials or mutable message content.
+type AutomaticTurnSettlement struct {
+	AccountID      string                        `json:"account_id"`
+	TurnID         string                        `json:"turn_id"`
+	SessionID      string                        `json:"session_id"`
+	TargetLanguage string                        `json:"target_language"`
+	Channel        Channel                       `json:"channel"`
+	DestinationRef string                        `json:"destination_ref"`
+	Status         AutomaticTurnSettlementStatus `json:"status"`
+	MessageID      string                        `json:"message_id,omitempty"`
+	ErrorCode      *string                       `json:"error_code,omitempty"`
+	CreatedAt      time.Time                     `json:"created_at"`
+	UpdatedAt      time.Time                     `json:"updated_at"`
+}
+
+// AutomaticTurnRunStatus is the aggregate state of all automatic targets for
+// one Final Turn.
+type AutomaticTurnRunStatus string
+
+const (
+	AutomaticTurnRunPending            AutomaticTurnRunStatus = "pending"
+	AutomaticTurnRunSucceeded          AutomaticTurnRunStatus = "succeeded"
+	AutomaticTurnRunPartiallySucceeded AutomaticTurnRunStatus = "partially_succeeded"
+	AutomaticTurnRunFailed             AutomaticTurnRunStatus = "failed"
+	AutomaticTurnRunFallbackPending    AutomaticTurnRunStatus = "fallback_pending"
+	AutomaticTurnRunFallbackPlayed     AutomaticTurnRunStatus = "fallback_played"
+	AutomaticTurnRunRestored           AutomaticTurnRunStatus = "restored"
+)
+
+const maxAutomaticTargetAttempts = 2
+
+// AutomaticTurnTrigger records the closed set of persisted causes for automatic delivery.
+// Recovery restores output settings for AutomaticTurnTriggerConfiguredRoute, completes
+// AutomaticTurnTriggerLongSentence directly, and rejects unknown values as conflicts.
+type AutomaticTurnTrigger string
+
+const (
+	AutomaticTurnTriggerConfiguredRoute AutomaticTurnTrigger = "configured_route"
+	AutomaticTurnTriggerLongSentence    AutomaticTurnTrigger = "long_sentence"
+)
+
+// AutomaticTurnRun keeps the immutable fallback snapshot and target aggregate.
+type AutomaticTurnRun struct {
+	AccountID             string                 `json:"account_id"`
+	TurnID                string                 `json:"turn_id"`
+	SessionID             string                 `json:"session_id"`
+	TraceID               string                 `json:"trace_id"`
+	TargetLanguage        string                 `json:"target_language"`
+	TranslatedText        string                 `json:"translated_text"`
+	LanguageConfigVersion int64                  `json:"language_config_version"`
+	Trigger               AutomaticTurnTrigger   `json:"delivery_trigger"`
+	Status                AutomaticTurnRunStatus `json:"status"`
+	TargetCount           int                    `json:"target_count"`
+	SettledCount          int                    `json:"settled_count"`
+	SucceededCount        int                    `json:"succeeded_count"`
+	FailedCount           int                    `json:"failed_count"`
+	FallbackOperationID   string                 `json:"fallback_operation_id"`
+	CreatedAt             time.Time              `json:"created_at"`
+	UpdatedAt             time.Time              `json:"updated_at"`
+}
+
+// AutomaticOutputStatus is the public recovery state for one automatically
+// delivered Final Turn. It deliberately excludes the content snapshot and
+// internal operation identifiers.
+type AutomaticOutputStatus struct {
+	TurnID    string                 `json:"turn_id"`
+	Status    AutomaticTurnRunStatus `json:"status"`
+	UpdatedAt time.Time              `json:"updated_at"`
+}
+
+// AutomaticTargetRecord contains all rows created atomically for one target.
+type AutomaticTargetRecord struct {
+	Message        Message
+	InitialAttempt DeliveryAttempt
+	Settlement     AutomaticTurnSettlement
+	IdempotencyKey string
+}
+
+// AutomaticTurnScheduleRecord contains one aggregate run and every target to
+// create in the same transaction.
+type AutomaticTurnScheduleRecord struct {
+	Run     AutomaticTurnRun
+	Targets []AutomaticTargetRecord
 }

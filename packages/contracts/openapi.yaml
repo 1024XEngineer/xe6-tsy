@@ -56,6 +56,97 @@ paths:
         '200': { description: Current account, content: { application/json: { schema: { $ref: '#/components/schemas/Account' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/device-pairing-codes:
+    post:
+      operationId: createDevicePairingCode
+      security: [{ accountContext: [] }]
+      responses:
+        '201': { description: One-time pairing code, content: { application/json: { schema: { $ref: '#/components/schemas/DevicePairingCode' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /account/devices:
+    get:
+      operationId: listBoundDevices
+      security: [{ accountContext: [] }]
+      responses:
+        '200': { description: Devices bound to the current account, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceList' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /account/devices/{device_id}:
+    delete:
+      operationId: revokeBoundDevice
+      security: [{ accountContext: [] }]
+      parameters: [{ name: device_id, in: path, required: true, schema: { type: string, minLength: 1 } }]
+      responses:
+        '204': { description: Device revoked and its short-lived credentials invalidated }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /devices/pair:
+    post:
+      operationId: pairDevice
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/PairDeviceRequest' } } } }
+      responses:
+        '200': { description: Device bound to the account that created the pairing code, content: { application/json: { schema: { $ref: '#/components/schemas/Device' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /device-auth/challenges:
+    post:
+      operationId: createDeviceAuthenticationChallenge
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceAuthenticationChallengeRequest' } } } }
+      responses:
+        '201': { description: Short-lived device signature challenge, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceAuthenticationChallenge' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /device-auth/tokens:
+    post:
+      operationId: exchangeDeviceAuthenticationChallenge
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceAuthenticationTokenRequest' } } } }
+      responses:
+        '200': { description: Short-lived device credential, content: { application/json: { schema: { $ref: '#/components/schemas/DeviceAccessToken' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /device/voice-sessions:
+    post:
+      operationId: createDeviceVoiceSession
+      security: [{ deviceContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateVoiceSessionRequest' } } } }
+      responses:
+        '201': { description: Session owned by the authenticated device's bound account, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /device/voice-sessions/{id}/start:
+    post:
+      operationId: startDeviceVoiceSession
+      security: [{ deviceContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: false, content: { application/json: { schema: { $ref: '#/components/schemas/StartVoiceSessionRequest' } } } }
+      responses:
+        '200': { description: Started device session, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /device/voice-sessions/{id}/end:
+    post:
+      operationId: endDeviceVoiceSession
+      security: [{ deviceContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }, { $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody: { required: false, content: { application/json: { schema: { $ref: '#/components/schemas/EndVoiceSessionRequest' } } } }
+      responses:
+        '200': { description: Ended device session, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /device/voice-sessions/{id}/realtime-ticket:
+    post:
+      operationId: mintDeviceRealtimeTicket
+      security: [{ deviceContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200': { description: Short-lived ticket for the authenticated device session, content: { application/json: { schema: { $ref: '#/components/schemas/RealtimeTicket' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /voice-sessions:
     post:
       operationId: createVoiceSession
@@ -96,6 +187,69 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /languages:
+    get:
+      operationId: listSupportedLanguages
+      security: [{ accountContext: [] }]
+      parameters:
+        - { name: active, in: query, required: false, schema: { type: boolean, default: true } }
+      responses:
+        '200': { description: Supported languages, content: { application/json: { schema: { $ref: '#/components/schemas/ListLanguagesResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/language-config:
+    get:
+      operationId: getCurrentLanguageConfig
+      security: [{ accountContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200': { description: Active language configuration, content: { application/json: { schema: { $ref: '#/components/schemas/LanguageConfig' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/language-configs:
+    get:
+      operationId: listLanguageConfigs
+      security: [{ accountContext: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/SessionID' }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        '200': { description: Language configuration history, content: { application/json: { schema: { $ref: '#/components/schemas/ListLanguageConfigsResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    post:
+      operationId: createLanguageConfig
+      security: [{ accountContext: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/SessionID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CreateLanguageConfigRequest' } } } }
+      responses:
+        '201': { description: Created active language configuration, content: { application/json: { schema: { $ref: '#/components/schemas/LanguageConfig' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: Output configuration cannot be applied
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                deliveryTargetRequired:
+                  summary: Single output has no ready target
+                  value:
+                    error:
+                      code: delivery_target_required
+                      message: single output requires an enabled and verified delivery target
+                      request_id: req_language_config
+                      retryable: false
+                      details: {}
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /voice-sessions/{id}/start:
     post:
       operationId: startVoiceSession
@@ -103,6 +257,11 @@ paths:
       parameters:
         - { $ref: '#/components/parameters/SessionID' }
         - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StartVoiceSessionRequest' }
       responses:
         '200': { description: Started session, content: { application/json: { schema: { $ref: '#/components/schemas/VoiceSession' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -142,6 +301,39 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/mode:
+    get:
+      operationId: getVoiceSessionMode
+      security: [{ accountContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200': { description: Authoritative realtime mode snapshot, content: { application/json: { schema: { $ref: '#/components/schemas/ModeStateSnapshot' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+    post:
+      operationId: switchVoiceSessionMode
+      security: [{ accountContext: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/SessionID' }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/RequestID' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SwitchVoiceSessionModeRequest' }
+      responses:
+        '200': { description: Mode switch result from realtime, content: { application/json: { schema: { $ref: '#/components/schemas/SwitchModeResult' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /voice-sessions/{id}/realtime-ticket:
     post:
       operationId: mintVoiceSessionRealtimeTicket
@@ -168,6 +360,18 @@ paths:
         '200': { description: Session usage, content: { application/json: { schema: { $ref: '#/components/schemas/UsageSummary' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /voice-sessions/{id}/automatic-output-status:
+    get:
+      operationId: listAutomaticOutputStatus
+      description: Recent durable automatic-output states for one owned voice session. `fallback_pending` means fallback playback is claimed, `fallback_played` means the fallback was accepted, and `restored` means bidirectional output was restored with the configuration compare-and-swap guard.
+      security: [{ accountContext: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionID' }]
+      responses:
+        '200': { description: Recent automatic-output recovery states, content: { application/json: { schema: { $ref: '#/components/schemas/AutomaticOutputStatusListResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /usage/summary:
     get:
       operationId: getAccountUsage
@@ -181,6 +385,13 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
   /outbound-messages:
+    get:
+      operationId: listOutboundMessages
+      security: [{ accountContext: [] }]
+      responses:
+        '200': { description: Recent account messages, content: { application/json: { schema: { $ref: '#/components/schemas/OutboundMessageListResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
     post:
       operationId: createOutboundMessage
       security: [{ accountContext: [] }]
@@ -216,15 +427,25 @@ paths:
       operationId: listMessagePreferences
       security: [{ accountContext: [] }]
       responses:
-        '200': { description: Preferences, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/Preference' } } } } } } }
+        '200': { description: Preferences, content: { application/json: { schema: { $ref: '#/components/schemas/MessagePreferenceListResponse' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
-  /account/message-preferences/{channel}:
-    put:
-      operationId: putMessagePreference
+  /account/automatic-delivery-readiness:
+    get:
+      operationId: getAutomaticDeliveryReadiness
       security: [{ accountContext: [] }]
-      parameters: [{ name: channel, in: path, required: true, schema: { $ref: '#/components/schemas/Channel' } }]
-      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [enabled], properties: { enabled: { type: boolean }, destination_ref: { type: string, description: 'One verified automatic destination for this channel' } } } } } }
+      responses:
+        '200': { description: Automatic delivery readiness for single output, content: { application/json: { schema: { $ref: '#/components/schemas/AutomaticDeliveryReadiness' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-preferences/{channel}/{destination_ref}:
+    put:
+      operationId: putMessageTargetPreference
+      security: [{ accountContext: [] }]
+      parameters:
+        - { name: channel, in: path, required: true, schema: { $ref: '#/components/schemas/Channel' } }
+        - { name: destination_ref, in: path, required: true, schema: { type: string, minLength: 1 } }
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/UpdateMessagePreferenceRequest' } } } }
       responses:
         '200': { description: Updated, content: { application/json: { schema: { $ref: '#/components/schemas/Preference' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -236,7 +457,7 @@ paths:
       security: [{ accountContext: [] }]
       parameters: [{ name: channel, in: query, required: false, schema: { $ref: '#/components/schemas/Channel' } }]
       responses:
-        '200': { description: Bound targets, content: { application/json: { schema: { type: object, required: [items], properties: { items: { type: array, items: { $ref: '#/components/schemas/MessageTarget' } } } } } } }
+        '200': { description: Bound targets, content: { application/json: { schema: { $ref: '#/components/schemas/MessageTargetListResponse' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '501': { $ref: '#/components/responses/NotImplemented' }
@@ -351,6 +572,32 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /realtime/v1/sessions/{session_id}/fallback-playback:
+    servers:
+      - url: /
+    post:
+      operationId: acceptFallbackPlayback
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FallbackPlaybackRequest' }
+      responses:
+        '202':
+          description: Fallback playback accepted durably or accepted previously
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FallbackPlaybackReceipt' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /realtime/v1/sessions/{session_id}/runtime:
     servers:
       - url: /
@@ -367,6 +614,48 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RealtimeRuntimeSnapshot' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /realtime/v1/sessions/{session_id}/mode:
+    servers:
+      - url: /
+    get:
+      operationId: getRealtimeModeState
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Current authoritative mode state for the realtime runtime
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModeStateSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/RuntimeNotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    post:
+      operationId: switchRealtimeMode
+      security:
+        - realtimeTicket: []
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SwitchModeCommand' }
+      responses:
+        '200':
+          description: Mode switch applied, replayed, or already in the requested mode
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SwitchModeResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/RuntimeNotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /realtime/v1/sessions/{session_id}/connection:
     servers:
       - url: /
@@ -388,6 +677,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WebRTCConnectionError' }
+  /realtime/v1/sessions/{session_id}/webrtc/config:
+    servers: [{ url: / }]
+    get:
+      operationId: getRealtimeWebRTCConfig
+      security: [{ realtimeTicket: [] }]
+      parameters: [{ name: session_id, in: path, required: true, schema: { type: string } }]
+      responses: { '200': { description: WebRTC connection configuration, content: { application/json: { schema: { $ref: '#/components/schemas/WebRTCConfig' } } } }, '401': { $ref: '#/components/responses/Unauthorized' } }
 components:
   securitySchemes:
     accountContext:
@@ -395,6 +691,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Access token validated by authentication middleware; account_id comes from the trusted request context.
+    deviceContext:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived device token. It is restricted to sessions explicitly created by that device and cannot authorize account APIs.
     realtimeTicket:
       type: http
       scheme: bearer
@@ -403,6 +704,7 @@ components:
     SessionID: { name: id, in: path, required: true, schema: { type: string } }
     MessageID: { name: message_id, in: path, required: true, schema: { type: string } }
     IdempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+    RequestID: { name: X-Request-ID, in: header, required: false, schema: { type: string, minLength: 1, maxLength: 200 } }
   requestBodies:
     RefreshToken:
       required: true
@@ -416,17 +718,91 @@ components:
     ServiceUnavailable: { description: Required downstream service is temporarily unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     TooManyRequests: { description: Phone verification requests are temporarily rate limited, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
     NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    RuntimeNotFound: { description: Realtime runtime not found for the requested Session, content: { application/json: { schema: { $ref: '#/components/schemas/RuntimeNotFoundError' } } } }
     NotImplemented: { description: Business implementation is intentionally pending, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
   schemas:
+    Device:
+      type: object
+      additionalProperties: false
+      required: [device_id, product_id, status, bound_at, created_at]
+      properties:
+        device_id: { type: string, minLength: 1 }
+        product_id: { type: string, minLength: 1 }
+        status: { type: string, enum: [active, revoked] }
+        bound_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
+    DevicePairingCode:
+      type: object
+      additionalProperties: false
+      required: [pairing_code, expires_at]
+      properties:
+        pairing_code: { type: string, minLength: 1 }
+        expires_at: { type: string, format: date-time }
+    DeviceList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Device' } }
+    PairDeviceRequest:
+      type: object
+      additionalProperties: false
+      required: [device_id, pairing_code, signature]
+      properties:
+        device_id: { type: string, minLength: 1 }
+        pairing_code: { type: string, minLength: 1 }
+        signature: { type: string, description: Base64URL Ed25519 signature over the pairing payload. }
+    DeviceAuthenticationChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [device_id]
+      properties: { device_id: { type: string, minLength: 1 } }
+    DeviceAuthenticationChallenge:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, nonce, expires_at]
+      properties:
+        challenge_id: { type: string, minLength: 1 }
+        nonce: { type: string, minLength: 1 }
+        expires_at: { type: string, format: date-time }
+    DeviceAuthenticationTokenRequest:
+      type: object
+      additionalProperties: false
+      required: [device_id, challenge_id, signature]
+      properties:
+        device_id: { type: string, minLength: 1 }
+        challenge_id: { type: string, minLength: 1 }
+        signature: { type: string, description: Base64URL Ed25519 signature over the challenge payload. }
+    DeviceAccessToken:
+      type: object
+      additionalProperties: false
+      required: [access_token, expires_at, device_id]
+      properties:
+        access_token: { type: string, description: Short-lived device credential. Clients must not persist it beyond expires_at. }
+        expires_at: { type: string, format: date-time }
+        device_id: { type: string }
     RealtimeRuntimeState:
       type: string
-      enum: [stopped, starting, listening, asr_processing, translating, tts_processing, playing, stopping, failed]
+      enum: [stopped, starting, listening, asr_processing, translating, thinking, assistant_processing, tts_processing, playing, stopping, failed]
     RealtimeRuntimeErrorCode:
       type: string
-      enum: [realtime_start_failed, realtime_stop_failed, realtime_pipeline_failed]
+      enum: [realtime_start_failed, realtime_stop_failed, realtime_pipeline_failed, realtime_translation_rejected]
     ControlPlaneErrorCode:
       type: string
-      enum: [runtime_operation_conflict]
+      enum: [runtime_not_found, runtime_operation_conflict, mode_not_available, mode_generation_conflict, mode_runtime_instance_mismatch, mode_operation_conflict, control_invalid_message, control_unsupported_version, control_unsupported_type, control_unauthorized_session, control_connection_closed, control_unavailable]
+    RuntimeNotFoundError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/RuntimeNotFoundErrorBody' }
+    RuntimeNotFoundErrorBody:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { type: string, enum: [runtime_not_found] }
+        message: { type: string }
     RuntimeOperationConflictError:
       type: object
       additionalProperties: false
@@ -438,7 +814,7 @@ components:
       additionalProperties: false
       required: [code, message]
       properties:
-        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        code: { type: string, enum: [runtime_operation_conflict] }
         message: { type: string }
     RealtimeStartRequest:
       type: object
@@ -448,6 +824,10 @@ components:
         operation_id: { type: string, minLength: 1 }
         trace_id: { type: string }
         started_by: { type: string }
+        initial_mode:
+          $ref: '#/components/schemas/RealtimeMode'
+          default: interpretation
+          description: Optional for rolling compatibility. When omitted, realtime uses interpretation.
     RealtimeStopRequest:
       type: object
       additionalProperties: false
@@ -456,6 +836,28 @@ components:
         trace_id: { type: string }
         reason: { type: string, enum: [user_requested, operator_cancelled, client_disconnected] }
         ended_at: { type: string, format: date-time }
+    FallbackPlaybackRequest:
+      type: object
+      additionalProperties: false
+      required: [operation_id, session_id, turn_id, target_language, translated_text, language_config_version, trace_id]
+      properties:
+        operation_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        turn_id: { type: string, minLength: 1 }
+        target_language: { type: string, minLength: 1 }
+        translated_text: { type: string, minLength: 1 }
+        language_config_version: { type: integer, minimum: 1 }
+        trace_id: { type: string, minLength: 1 }
+    FallbackPlaybackReceiptStatus:
+      type: string
+      enum: [accepted, already_accepted]
+    FallbackPlaybackReceipt:
+      type: object
+      additionalProperties: false
+      required: [operation_id, status]
+      properties:
+        operation_id: { type: string, minLength: 1 }
+        status: { $ref: '#/components/schemas/FallbackPlaybackReceiptStatus' }
     RealtimeRuntimeSnapshot:
       type: object
       additionalProperties: false
@@ -468,6 +870,149 @@ components:
         current_playback_id: { type: [string, 'null'] }
         last_error_code: { type: [string, 'null'] }
         updated_at: { type: string, format: date-time }
+    RealtimeMode:
+      type: string
+      enum: [assistant, interpretation]
+    ModePhase:
+      type: string
+      enum: [active, switching]
+    ModeStateSnapshot:
+      type: object
+      additionalProperties: false
+      required: [session_id, runtime_instance_id, active_mode, generation, phase, last_operation_id, updated_at]
+      properties:
+        session_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        active_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        generation: { type: integer, format: int64, minimum: 1 }
+        phase: { $ref: '#/components/schemas/ModePhase' }
+        last_operation_id: { type: [string, 'null'], maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$', description: Non-null and equal to result.operation_id in a successful ControlResponse. }
+        updated_at: { type: string, format: date-time }
+    SwitchModeCommand:
+      type: object
+      additionalProperties: false
+      required: [session_id, runtime_instance_id, operation_id, trace_id, expected_generation, target_mode]
+      properties:
+        session_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        operation_id: { type: string, minLength: 1 }
+        trace_id: { type: string, minLength: 1 }
+        expected_generation: { type: integer, format: int64, minimum: 1 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+    ModeSwitchStatus:
+      type: string
+      enum: [applied, unchanged]
+    CommandResultStatus:
+      type: string
+      enum: [applied, unchanged, clarification_required, unsupported, failed]
+    WakeWordDetectedSignal:
+      type: object
+      additionalProperties: false
+      description: Client-side KWS output sent over the authenticated reliable ordered DataChannel. It contains no business command or session identity.
+      required: [type, event_version, signal_id, detected_at]
+      properties:
+        type: { type: string, const: wake_word.detected }
+        event_version: { type: integer, const: 1 }
+        signal_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        detected_at: { type: string, format: date-time }
+    CommandResultEvent:
+      type: object
+      additionalProperties: false
+      required: [type, event_version, command_id, session_id, status, message, occurred_at]
+      properties:
+        type: { type: string, const: command.result }
+        event_version: { type: integer, const: 1 }
+        command_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        session_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        runtime_instance_id: { type: string, minLength: 1 }
+        generation: { type: integer, format: int64, minimum: 1 }
+        status: { $ref: '#/components/schemas/CommandResultStatus' }
+        action: { type: string, minLength: 1, maxLength: 64 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        message: { type: string, minLength: 1, maxLength: 512 }
+        occurred_at: { type: string, format: date-time }
+    SwitchModeResult:
+      type: object
+      additionalProperties: false
+      required: [operation_id, status, state]
+      properties:
+        operation_id: { type: string, minLength: 1, maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        status: { $ref: '#/components/schemas/ModeSwitchStatus' }
+        state: { $ref: '#/components/schemas/ModeStateSnapshot' }
+    ControlModeSwitchCommand:
+      type: object
+      additionalProperties: false
+      description: Session identity is bound by the authenticated PeerConnection and is never accepted from this payload.
+      required: [runtime_instance_id, operation_id, expected_generation, target_mode]
+      properties:
+        runtime_instance_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        operation_id: { type: string, minLength: 1, maxLength: 256, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        expected_generation: { type: integer, format: int64, minimum: 1 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
+    ControlModeSwitchRequest:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, type, request_id, command]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        type: { type: string, const: mode.switch }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        command: { $ref: '#/components/schemas/ControlModeSwitchCommand' }
+    ControlError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { $ref: '#/components/schemas/ControlPlaneErrorCode' }
+        message: { type: string, minLength: 1, maxLength: 512 }
+    ControlResponse:
+      type: object
+      additionalProperties: false
+      required: [protocol_version, type]
+      properties:
+        protocol_version: { type: integer, const: 1 }
+        type: { type: string, enum: [mode.switch.result, control.error] }
+        request_id: { type: string, minLength: 1, maxLength: 128, pattern: '^(?:[^\r\n\t]*\S[^\r\n\t]*)$' }
+        result: { $ref: '#/components/schemas/SwitchModeResult' }
+        error: { $ref: '#/components/schemas/ControlError' }
+      oneOf:
+        - properties: { type: { type: string, const: mode.switch.result } }
+          required: [request_id, result]
+          not: { required: [error] }
+        - properties: { type: { type: string, const: control.error } }
+          required: [error]
+          not: { required: [result] }
+    ModeChangedEvent:
+      type: object
+      additionalProperties: false
+      required: [event_version, event_id, trace_id, session_id, runtime_instance_id, operation_id, from_mode, to_mode, resulting_generation, occurred_at]
+      properties:
+        event_version: { type: integer, const: 1 }
+        event_id: { type: string, minLength: 1 }
+        trace_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        operation_id: { type: string, minLength: 1 }
+        from_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        to_mode: { $ref: '#/components/schemas/RealtimeMode' }
+        resulting_generation: { type: integer, format: int64, minimum: 2 }
+        occurred_at: { type: string, format: date-time }
+    AssistantReplyEvent:
+      type: object
+      additionalProperties: false
+      description: A finalized assistant reply. It must never be encoded as a translation FinalTurn.
+      required: [event_version, event_id, trace_id, session_id, turn_id, runtime_instance_id, generation, text, language, occurred_at]
+      properties:
+        event_version: { type: integer, const: 1 }
+        event_id: { type: string, minLength: 1 }
+        trace_id: { type: string, minLength: 1 }
+        session_id: { type: string, minLength: 1 }
+        turn_id: { type: string, minLength: 1 }
+        runtime_instance_id: { type: string, minLength: 1 }
+        generation: { type: integer, format: int64, minimum: 1 }
+        text: { type: string, minLength: 1 }
+        language: { type: string, minLength: 1 }
+        occurred_at: { type: string, format: date-time }
     VoiceSessionStatus:
       type: string
       enum: [created, active, ended, failed]
@@ -502,11 +1047,27 @@ components:
       properties:
         audio_config: { $ref: '#/components/schemas/VoiceSessionAudioConfig' }
         capabilities: { $ref: '#/components/schemas/VoiceSessionCapabilities' }
+    StartVoiceSessionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        initial_mode:
+          $ref: '#/components/schemas/RealtimeMode'
+          default: interpretation
+          description: Optional initial runtime mode. When omitted, existing interpretation behavior is preserved.
     EndVoiceSessionRequest:
       type: object
       additionalProperties: false
       properties:
         reason: { $ref: '#/components/schemas/EndVoiceSessionReason' }
+    SwitchVoiceSessionModeRequest:
+      type: object
+      additionalProperties: false
+      required: [runtime_instance_id, expected_generation, target_mode]
+      properties:
+        runtime_instance_id: { type: string, minLength: 1 }
+        expected_generation: { type: integer, format: int64, minimum: 1 }
+        target_mode: { $ref: '#/components/schemas/RealtimeMode' }
     VoiceSession:
       type: object
       additionalProperties: false
@@ -570,6 +1131,71 @@ components:
         last_error_code: { type: [string, 'null'] }
         retryable: { type: boolean }
         runtime_updated_at: { type: string, format: date-time }
+    InterpretationOutputMode:
+      type: string
+      enum: [bidirectional, single]
+    LanguagePair:
+      type: object
+      additionalProperties: false
+      required: [source, target]
+      properties:
+        source: { type: string }
+        target: { type: string }
+    OutputRoute:
+      type: object
+      additionalProperties: false
+      required: [target_language, tts_enabled, delivery_enabled]
+      properties:
+        target_language: { type: string }
+        tts_enabled: { type: boolean }
+        delivery_enabled: { type: boolean }
+    SupportedLanguage:
+      type: object
+      additionalProperties: false
+      required: [language_code, display_name, display_name_en, supports_as_source, supports_as_target]
+      properties:
+        language_code: { type: string }
+        display_name: { type: string }
+        display_name_en: { type: string }
+        supports_as_source: { type: boolean }
+        supports_as_target: { type: boolean }
+    ListLanguagesResponse:
+      type: object
+      additionalProperties: false
+      required: [languages]
+      properties:
+        languages: { type: array, items: { $ref: '#/components/schemas/SupportedLanguage' } }
+    CreateLanguageConfigRequest:
+      type: object
+      additionalProperties: false
+      required: [languages]
+      properties:
+        languages: { type: array, minItems: 1, items: { $ref: '#/components/schemas/LanguagePair' } }
+        output_routes: { type: array, minItems: 1, maxItems: 2, items: { $ref: '#/components/schemas/OutputRoute' } }
+        expected_version: { type: integer, minimum: 1 }
+    LanguageConfig:
+      type: object
+      additionalProperties: false
+      required: [id, session_id, version, language_pairs, output_routes, output_mode, status, effective_from, effective_until, created_by, created_at]
+      properties:
+        id: { type: string }
+        session_id: { type: string }
+        version: { type: integer, minimum: 1 }
+        language_pairs: { type: array, items: { $ref: '#/components/schemas/LanguagePair' } }
+        output_routes: { type: array, items: { $ref: '#/components/schemas/OutputRoute' } }
+        output_mode: { $ref: '#/components/schemas/InterpretationOutputMode' }
+        status: { type: string, enum: [active, superseded, expired] }
+        effective_from: { type: string, format: date-time }
+        effective_until: { type: [string, 'null'], format: date-time }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+    ListLanguageConfigsResponse:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/LanguageConfig' } }
+        next_cursor: { type: [string, 'null'] }
     RealtimeTicket:
       type: object
       additionalProperties: false
@@ -607,6 +1233,11 @@ components:
         state: { $ref: '#/components/schemas/WebRTCConnectionState' }
         version: { type: integer, format: int64, minimum: 1 }
         updated_at: { type: string, format: date-time }
+    WebRTCConfig: { type: object, additionalProperties: false, required: [session_id, expires_at, ice_servers, ice_transport_policy, data_channel, control_data_channel, audio], properties: { session_id: { type: string }, expires_at: { type: string, format: date-time }, ice_servers: { type: array, items: { $ref: '#/components/schemas/WebRTCICEServer' } }, ice_transport_policy: { type: string, enum: [all] }, data_channel: { $ref: '#/components/schemas/WebRTCDataChannelConfig' }, control_data_channel: { $ref: '#/components/schemas/WebRTCControlDataChannelConfig' }, audio: { $ref: '#/components/schemas/WebRTCAudioConfig' } } }
+    WebRTCICEServer: { type: object, additionalProperties: false, required: [urls], properties: { urls: { type: array, items: { type: string } }, username: { type: string }, credential: { type: string } } }
+    WebRTCDataChannelConfig: { type: object, additionalProperties: false, required: [label, ordered], properties: { label: { type: string }, ordered: { type: boolean } } }
+    WebRTCControlDataChannelConfig: { type: object, additionalProperties: false, required: [label, ordered, protocol_version], properties: { label: { type: string, const: lingow-control-v1 }, ordered: { type: boolean, const: true }, protocol_version: { type: integer, const: 1 } } }
+    WebRTCAudioConfig: { type: object, additionalProperties: false, required: [uplink_codec, downlink_codec, sample_rate_hz, channels], properties: { uplink_codec: { type: string }, downlink_codec: { type: string }, sample_rate_hz: { type: integer, minimum: 1 }, channels: { type: integer, minimum: 1 } } }
     Account:
       type: object
       required: [id, kind, created_at]
@@ -634,7 +1265,7 @@ components:
         anonymous_account_id:
           type: string
           description: When supplied, the request must include a Bearer access token for this same anonymous account.
-    Stage: { type: string, enum: [asr, translation, tts, diarization] }
+    Stage: { type: string, enum: [asr, translation, assistant_llm, tts, diarization] }
     UsageSummary:
       type: object
       required: [account_id, period_start, period_end, totals]
@@ -690,10 +1321,50 @@ components:
         last_error_code: { type: [string, 'null'] }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    OutboundMessageListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Message' } }
     Preference:
       type: object
       required: [account_id, channel, destination_ref, enabled, verified, updated_at]
       properties: { account_id: { type: string }, channel: { $ref: '#/components/schemas/Channel' }, destination_ref: { type: string }, enabled: { type: boolean }, verified: { type: boolean }, updated_at: { type: string, format: date-time } }
+    MessagePreferenceListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Preference' } }
+    UpdateMessagePreferenceRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+    AutomaticOutputStatus:
+      type: object
+      additionalProperties: false
+      required: [turn_id, status, updated_at]
+      properties:
+        turn_id: { type: string }
+        status:
+          type: string
+          enum: [pending, succeeded, partially_succeeded, failed, fallback_pending, fallback_played, restored]
+        updated_at: { type: string, format: date-time }
+    AutomaticOutputStatusListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AutomaticOutputStatus' } }
+    AutomaticDeliveryReadiness:
+      type: object
+      additionalProperties: false
+      required: [ready]
+      properties:
+        ready: { type: boolean }
     MessageTarget:
       type: object
       required: [destination_ref, channel, verified, updated_at]
@@ -703,6 +1374,12 @@ components:
         verified: { type: boolean }
         revoked_at: { type: [string, 'null'], format: date-time }
         updated_at: { type: string, format: date-time }
+    MessageTargetListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/MessageTarget' } }
     BindWeChatRequest:
       type: object
       additionalProperties: false

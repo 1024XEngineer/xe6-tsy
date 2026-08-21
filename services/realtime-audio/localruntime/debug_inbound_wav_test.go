@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +80,46 @@ func TestEncodePCM16MonoWAVHeader(t *testing.T) {
 	}
 	if string(raw[44:]) != string(pcm) {
 		t.Fatalf("pcm payload mismatch")
+	}
+}
+
+func TestEncodePCM16MonoWAVCalculatesPCM16RateFields(t *testing.T) {
+	pcm := []byte{0, 1, 2, 3, 4, 5}
+	for _, sampleRate := range []int{audio.SupportedSampleRate - 1, audio.SupportedSampleRate, audio.SupportedSampleRate + 1} {
+		t.Run(fmt.Sprintf("%d Hz", sampleRate), func(t *testing.T) {
+			raw := encodePCM16MonoWAV(pcm, sampleRate)
+			if got := binary.LittleEndian.Uint32(raw[4:8]); got != uint32(len(raw)-8) {
+				t.Fatalf("RIFF size = %d, want %d", got, len(raw)-8)
+			}
+			if got := binary.LittleEndian.Uint16(raw[32:34]); got != debugInboundWAVChannels*(debugInboundWAVBitsPerSample/8) {
+				t.Fatalf("block align = %d", got)
+			}
+			if got := binary.LittleEndian.Uint32(raw[28:32]); got != uint32(sampleRate*debugInboundWAVChannels*(debugInboundWAVBitsPerSample/8)) {
+				t.Fatalf("byte rate = %d", got)
+			}
+		})
+	}
+}
+
+func TestPCMDurationMillisUsesPCM16SampleCounts(t *testing.T) {
+	tests := []struct {
+		name       string
+		pcmBytes   int
+		sampleRate int
+		want       int
+	}{
+		{name: "zero sample rate", pcmBytes: 32_000, sampleRate: 0, want: 0},
+		{name: "negative sample rate", pcmBytes: 32_000, sampleRate: -1, want: 0},
+		{name: "one second at 16 kHz", pcmBytes: 32_000, sampleRate: 16_000, want: 1_000},
+		{name: "one second of samples above 16 kHz", pcmBytes: 32_000, sampleRate: 16_001, want: 999},
+		{name: "odd trailing byte is not a sample", pcmBytes: 3, sampleRate: 1_000, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pcmDurationMillis(make([]byte, tt.pcmBytes), tt.sampleRate); got != tt.want {
+				t.Fatalf("pcmDurationMillis() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 

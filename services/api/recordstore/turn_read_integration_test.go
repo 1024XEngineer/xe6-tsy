@@ -60,6 +60,14 @@ func TestTurnReadRepositoryListsSessionAndFindsOwnedTurn(t *testing.T) {
 		t.Fatalf("second ListSession() error = %v", err)
 	}
 	assertTurnIDs(t, second.Items, "turn_03")
+	_, err = repository.ListSession(t.Context(), "account_01", "session_01", recordsv1.ListTurnsQuery{
+		Limit:          2,
+		SourceLanguage: "zh-CN",
+		Cursor:         *first.NextCursor,
+	})
+	if !errors.Is(err, turns.ErrInvalidRequest) {
+		t.Fatalf("filtered cursor error = %v, want invalid request", err)
+	}
 
 	filtered, err := repository.ListSession(t.Context(), "account_01", "session_01", recordsv1.ListTurnsQuery{
 		Limit:             10,

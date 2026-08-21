@@ -60,6 +60,40 @@ control-plane 客户端接入。
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
 
+## 硬件身份与绑定
+
+硬件不是免认证白名单。`product_id` 仅表示产品型号或能力版本；每台设备必须拥有唯一
+`device_id` 和出厂写入的 Ed25519 私钥。服务端只保存设备公钥，不保存出厂私钥。
+
+已登录的**注册账户**通过 `POST /api/v1/account/device-pairing-codes` 创建一次性配对码；设备对
+`lingow-device-pair-v1\n{device_id}\n{pairing_code}` 签名后调用 `POST /api/v1/devices/pair` 完成绑定。
+随后设备通过 `POST /api/v1/device-auth/challenges` 获取 2 分钟、一次性的 nonce，对
+`lingow-device-auth-v1\n{challenge_id}\n{device_id}\n{nonce}` 签名，并在
+`POST /api/v1/device-auth/tokens` 换取 15 分钟 device token。
+同一设备在存在未过期、未消费 challenge 时重复请求会获得该 challenge；服务端会清理该设备
+已消费和已过期的 challenge，并且数据库约束最多保留一个可用 challenge。
+
+device token 不能调用账户、用量、历史或普通 `/voice-sessions` 路由；只能调用
+`/api/v1/device/voice-sessions/*`。设备创建会话时，API 在同一事务中记录该设备与会话的关联，
+后续 start、end 和 realtime ticket 都再次校验关联。设备状态变为 revoked 后，签发过的
+device token 会在下一次请求的状态校验中失效。出厂设备公钥的灌装是受信任制造流程，不暴露为公网 API。
+账户可通过 `GET /api/v1/account/devices` 查看已绑定设备，使用
+`DELETE /api/v1/account/devices/{device_id}` 撤销丢失或转交的设备。
+
+## 模式控制 API
+
+当 `LINGOW_SESSION_RUNTIME=enabled` 时，Session API 额外挂载：
+
+- `GET /api/v1/voice-sessions/{id}/mode`：返回 realtime 当前权威 `ModeStateSnapshot`；
+- `POST /api/v1/voice-sessions/{id}/mode`：在已认证账户拥有且处于 `active` 的 Session 上转发一次模式切换。
+
+切换请求的 JSON 只包含 `runtime_instance_id`、`expected_generation` 和 `target_mode`。操作 ID 必须来自
+`Idempotency-Key`。`X-Request-ID` 只跟踪单次 HTTP 尝试；交给 realtime 的命令追踪 ID 由 API 按
+Session 和 operation ID 稳定生成，确保客户端更换请求 ID 重试时仍是同一命令。API 会先执行 Session 归属校验，再把这些字段交给 realtime
+的 compare-and-switch 协调器。API 不保存 `active_mode`、不实现本地幂等缓存，也不通过 Stop/Start 模拟切换。
+重复操作、代次冲突和 runtime 实例冲突均由 realtime 返回，API 只做稳定错误映射。旧的 Session state 查询
+仍只读取原有媒体 RuntimeSnapshot，避免模式依赖故障改变旧接口的失败路径。
+
 `services/realtime-audio` 提供本地可运行的 `/realtime/v1` HTTP 入口（`go run .`，默认
 `:8090`）；当前使用 Pion + `localruntime` 适配器，真实 ASR/TTS pipeline 仍为后续工作。
 `LINGOW_SESSION_RUNTIME` 默认 `disabled`；disabled 时 Session 路由明确返回 501，
@@ -74,6 +108,12 @@ fragment。`REALTIME_HTTP_TIMEOUT` 可选，默认 `5s`，最大 `5s`。API 会�
 realtime ticket 调用 WebRTC connection、Start、Stop 和 runtime state 接口，ticket secret
 必须与 realtime-audio 验证端一致，不能与 JWT secret 混用或写入日志。
 
+语义命令需要调整同传语言方向时，`services/realtime-audio` 调用 API 内部语言配置端点。两服务必须
+配置相同的 `LINGOW_COMMAND_SYSTEM_TOKEN`，令牌至少 32 bytes；API 只负责持久化权威语言配置，
+不接收唤醒词事件、不运行 KWS 或命令语义模型。命令幂等键在 API 内部按 `session_id + command_id`
+作用域化；已经被后续配置替代的旧命令重放返回 `stale_command` 冲突，不会把历史配置当作当前配置。
+Realtime 侧同时配置 `LINGOW_API_BASE_URL`。
+
 结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
 本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。
 
@@ -87,8 +127,10 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 和 Delivery Worker。未接入真实 Email Provider 的发送仍保持 fail-closed。
 生产组合必须先基于最新鉴权迁移（包括账户 lineage 函数）完成，再启用异步投递。
 
-运行时启用还要求 `DATABASE_URL`、`REDIS_URL`、至少 32 字节的 `JWT_SECRET` 和
-`LINGOW_DELIVERY_DESTINATION_KEY`。enabled 路径还会启动 usage stream consumer，
+运行时启用还要求 `DATABASE_URL`、`REDIS_URL`、至少 32 字节的 `JWT_SECRET`、
+`LINGOW_DELIVERY_DESTINATION_KEY`、`REALTIME_BASE_URL` 和至少 32 字节的
+`REALTIME_TICKET_SECRET`；后两项用于企业微信不可用或最终失败时认证调用 realtime fallback
+playback，即使 `LINGOW_SESSION_RUNTIME` 未启用也必须配置。enabled 路径还会启动 usage stream consumer，
 并暴露 `/api/v1/account/message-targets/*`（email bind 在 local 环境支持 `dev:` token；
 非 local 环境通过 `POST /api/v1/account/message-targets/email/verification-codes` 发送一次性
 验证 token，再调用 bind）。`LINGOW_DELIVERY_PROVIDER` 默认是
@@ -96,6 +138,16 @@ records HTTP、`FinalTurnWorker`、`AuthMaintainer`、持久化账户/用量/消
 并配置 `LINGOW_SMTP_*`。WeChat Work 通道通过 `POST /api/v1/account/message-targets/wechat/bind`
 绑定 OAuth code（local/test 支持 `dev:<userid>` 或 `dev:<destination_ref>:<userid>`），
 出站投递在配置 `LINGOW_WECOM_*` 后由 `WeComProvider` 发送应用消息。
+语言配置的单向输出只有在 delivery runtime 已启用且目标 channel provider 已配置时才会接受；
+否则返回 `delivery_target_required`，保持反向译文不被静默丢弃。
+
+FinalTurn 的长句降级复用同一套 Message、Attempt、delivery outbox 和 Worker。API 优先使用显式
+`delivery_trigger=long_sentence` 建立长句自动投递 run；为兼容旧 realtime，缺少 trigger 但同时为
+`tts_enabled=false`、`delivery_enabled=true` 且正文超过 50 字或音频至少 20 秒的事件，也按长句处理。
+其他缺少 trigger 的旧事件保持原有 `delivery_enabled` 路由。长句 run 只选择已启用、已验证且
+Provider 已配置的企业微信目标，不创建 Email 消息。未绑定、未配置、目标已失效或企业微信最终
+投递失败时，fallback worker 请求 realtime 回放 TTS；长句恢复完成后不会调用双向输出恢复器，
+因此不会改变会话输出配置。投递成功的 run 不进入 fallback 候选。
 
 ## 语音记录 HTTP 装配
 
@@ -124,6 +176,22 @@ API 同时运行 PostgreSQL `final_turn_outbox` consumer。事件使用 `event_i
 保证发布重放一致，worker 通过 receipt lease 领取消息：成功写入后 Ack，临时存储错误 Nack 并延迟
 重试，非法事件或幂等冲突 Reject。服务关闭时停止领取新事件，并在数据库 pool 关闭前等待当前结算；
 如果结算失败，进程以错误退出而不会把它伪装成正常关闭。
+
+## 模式变更审计投影
+
+启用 `LINGOW_SESSION_RUNTIME` 时，API 会从 `LINGOW_MODE_CHANGED_STREAM` 消费
+`realtime.mode.changed`，在同一事务内写入不可变的 `realtime_mode_events` 审计事实，并更新
+`realtime_mode_projections`。后者只表示 API **最新已观察**的模式，不是实时状态权威；需要当前状态时
+仍必须查询 `services/realtime-audio`。
+
+同一 `runtime_instance_id` 内仅更高 `generation` 可以推进投影；跨 runtime 以 `occurred_at` 排序，
+时间相同再以稳定 `event_id` 决定结果。跨 runtime 的排序依赖主机时钟，因此部署必须保持时钟同步，
+查询方也不能把该投影用于实时并发控制。相同 `event_id` 和完整契约 payload 可安全重放，异载荷冲突、
+非法事件和不存在的 Session 会被确认并拒绝，临时 PostgreSQL 错误保留 pending 等待重试。
+
+本地默认使用 `lingow:realtime:mode:changed`、`lingow-mode-projection` 和
+`mode-projection-worker`；生产环境必须为每个 API 实例配置唯一的
+`LINGOW_MODE_CHANGED_CONSUMER`。启用 Session runtime 后 `REDIS_URL` 为必填项。
 
 ## 语音记录存储集成测试
 

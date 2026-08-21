@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
@@ -52,6 +53,7 @@ func (f WebRTCFrameSources) Open(
 			sessionID: sessionID,
 		}, sessionID),
 		SourceLanguage: language,
+		WakeWords:      &lazyWakeWordSource{media: f.Media, sessionID: sessionID},
 	}, nil
 }
 
@@ -87,6 +89,51 @@ type lazyWebRTCSource struct {
 	err    error
 	closed bool
 	mu     sync.Mutex
+}
+
+// lazyWakeWordSource keeps Start compatible with callers that prepare a
+// runtime before WebRTC negotiation completes. The transport is resolved only
+// when the segment loop starts listening for a local wake signal.
+type lazyWakeWordSource struct {
+	media     MediaLookup
+	sessionID string
+
+	once   sync.Once
+	source segment.WakeWordSource
+	err    error
+}
+
+func (s *lazyWakeWordSource) resolve(ctx context.Context) {
+	s.once.Do(func() {
+		media, err := s.media.CurrentMedia(ctx, s.sessionID)
+		if err != nil {
+			s.err = fmt.Errorf("resolve wake-word media transport: %w", err)
+			return
+		}
+		transport, ok := media.(webrtc.WakeWordTransport)
+		if !ok {
+			s.err = webrtc.ErrMediaUnavailable
+			return
+		}
+		s.source = transport.WakeWordSource()
+		if s.source == nil {
+			s.err = webrtc.ErrMediaUnavailable
+		}
+	})
+}
+
+func (s *lazyWakeWordSource) Receive(ctx context.Context) (realtimev1.WakeWordDetectedSignal, error) {
+	if s == nil || s.media == nil {
+		return realtimev1.WakeWordDetectedSignal{}, webrtc.ErrMediaUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return realtimev1.WakeWordDetectedSignal{}, err
+	}
+	s.resolve(ctx)
+	if s.err != nil {
+		return realtimev1.WakeWordDetectedSignal{}, s.err
+	}
+	return s.source.Receive(ctx)
 }
 
 func (s *lazyWebRTCSource) resolve(ctx context.Context) error {

@@ -16,6 +16,8 @@ func TestRuntimeStateValues(t *testing.T) {
 		{name: "listening", state: RuntimeListening, want: "listening"},
 		{name: "asr processing", state: RuntimeASRProcessing, want: "asr_processing"},
 		{name: "translating", state: RuntimeTranslating, want: "translating"},
+		{name: "thinking compatibility", state: RuntimeThinking, want: "thinking"},
+		{name: "assistant processing", state: RuntimeAssistantProcessing, want: "assistant_processing"},
 		{name: "tts processing", state: RuntimeTTSProcessing, want: "tts_processing"},
 		{name: "playing", state: RuntimePlaying, want: "playing"},
 		{name: "stopping", state: RuntimeStopping, want: "stopping"},

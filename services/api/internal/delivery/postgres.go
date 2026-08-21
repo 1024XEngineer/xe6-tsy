@@ -13,7 +13,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type PostgresRepository struct{ pool *pgxpool.Pool }
+type postgresPool interface {
+	Begin(context.Context) (pgx.Tx, error)
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type PostgresRepository struct{ pool postgresPool }
 
 const deliveryAttemptTopic = "delivery.attempt.queued"
 
@@ -208,6 +215,9 @@ func (r *PostgresRepository) CompleteAttempt(ctx context.Context, attemptID, mes
 		if result.RowsAffected() != 1 {
 			return domain.ErrConflict
 		}
+		if err := settleAutomaticTurnTarget(ctx, tx, messageID, attemptStatus, code, now); err != nil {
+			return err
+		}
 		return nil
 	})
 	return mapDeliveryError(err)
@@ -237,7 +247,21 @@ func (r *PostgresRepository) SetAttemptStatus(ctx context.Context, id string, st
 }
 
 func (r *PostgresRepository) ListPreferences(ctx context.Context, accountID string) ([]Preference, error) {
-	rows, err := r.pool.Query(ctx, `SELECT DISTINCT ON (p.channel) p.account_id,p.channel,COALESCE(p.destination_ref,''),p.enabled,EXISTS (SELECT 1 FROM account_destinations d WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1)) AND d.channel=p.channel AND d.destination_ref=p.destination_ref AND d.verified_at IS NOT NULL AND d.revoked_at IS NULL),p.updated_at FROM message_preferences p WHERE p.account_id IN (SELECT account_id FROM lingow_account_lineage($1)) ORDER BY p.channel,(p.account_id=$1) DESC,p.updated_at DESC`, accountID)
+	if r == nil || r.pool == nil || accountID == "" {
+		return nil, domain.ErrInvalidArgument
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT ON (p.channel,p.destination_ref)
+			p.account_id,p.channel,p.destination_ref,p.enabled,
+			EXISTS (
+				SELECT 1 FROM account_destinations d
+				WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1))
+				  AND d.channel=p.channel AND d.destination_ref=p.destination_ref
+				  AND d.verified_at IS NOT NULL AND d.revoked_at IS NULL
+			),p.updated_at
+		FROM message_preferences p
+		WHERE p.account_id IN (SELECT account_id FROM lingow_account_lineage($1))
+		ORDER BY p.channel,p.destination_ref,(p.account_id=$1) DESC,p.updated_at DESC`, accountID)
 	if err != nil {
 		return nil, mapDeliveryError(err)
 	}
@@ -253,38 +277,37 @@ func (r *PostgresRepository) ListPreferences(ctx context.Context, accountID stri
 	return result, rows.Err()
 }
 
+// HasReadyAutomaticTarget implements the language-configuration readiness
+// port without exposing delivery models across the module boundary.
+func (r *PostgresRepository) HasReadyAutomaticTarget(ctx context.Context, accountID string) (bool, error) {
+	preferences, err := r.ListPreferences(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	for _, preference := range preferences {
+		if preference.Enabled && preference.Verified && preference.DestinationRef != "" && IsSupportedChannel(preference.Channel) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (r *PostgresRepository) PutPreference(ctx context.Context, preference Preference) (Preference, error) {
+	if r == nil || r.pool == nil || preference.AccountID == "" || !IsSupportedChannel(preference.Channel) || preference.DestinationRef == "" {
+		return Preference{}, domain.ErrInvalidArgument
+	}
 	var stored Preference
 	err := r.pool.QueryRow(ctx, `
 		INSERT INTO message_preferences (account_id,channel,destination_ref,enabled,verified,updated_at)
-		VALUES (
-			$1,
-			$2,
-			COALESCE(NULLIF($3, ''), (
-				SELECT d.destination_ref
-				FROM account_destinations d
-				WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1))
-				  AND d.channel=$2
-				  AND d.verified_at IS NOT NULL
-				  AND d.revoked_at IS NULL
-				ORDER BY d.verified_at DESC, d.destination_ref ASC
-				LIMIT 1
-			)),
-			$4,
-			EXISTS (
-				SELECT 1
-				FROM account_destinations d
-				WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1))
-				  AND d.channel=$2
-				  AND (NULLIF($3, '') IS NULL OR d.destination_ref=$3)
-				  AND d.verified_at IS NOT NULL
-				  AND d.revoked_at IS NULL
-			),
-			$5
-		)
-		ON CONFLICT (account_id,channel) DO UPDATE
-		SET destination_ref=EXCLUDED.destination_ref,enabled=EXCLUDED.enabled,verified=EXCLUDED.verified,updated_at=EXCLUDED.updated_at
-		RETURNING account_id,channel,COALESCE(destination_ref,''),enabled,verified,updated_at`,
+		VALUES ($1,$2,$3,$4,EXISTS (
+			SELECT 1 FROM account_destinations d
+			WHERE d.account_id IN (SELECT account_id FROM lingow_account_lineage($1))
+			  AND d.channel=$2 AND d.destination_ref=$3
+			  AND d.verified_at IS NOT NULL AND d.revoked_at IS NULL
+		),$5)
+		ON CONFLICT (account_id,channel,destination_ref) DO UPDATE
+		SET enabled=EXCLUDED.enabled,verified=EXCLUDED.verified,updated_at=EXCLUDED.updated_at
+		RETURNING account_id,channel,destination_ref,enabled,verified,updated_at`,
 		preference.AccountID, preference.Channel, preference.DestinationRef, preference.Enabled, preference.UpdatedAt,
 	).Scan(&stored.AccountID, &stored.Channel, &stored.DestinationRef, &stored.Enabled, &stored.Verified, &stored.UpdatedAt)
 	if err != nil {
@@ -360,10 +383,18 @@ func (r *PostgresRepository) MarkOutboxFailed(ctx context.Context, id, reason st
 }
 
 func (r *PostgresRepository) scanMessage(ctx context.Context, query string, args ...any) (Message, error) {
+	return scanMessageRow(r.pool.QueryRow(ctx, query, args...))
+}
+
+type messageRowScanner interface {
+	Scan(...any) error
+}
+
+func scanMessageRow(row messageRowScanner) (Message, error) {
 	var message Message
 	var turns []byte
 	var lastError *string
-	err := r.pool.QueryRow(ctx, query, args...).Scan(&message.ID, &message.AccountID, &message.Channel, &message.DestinationRef, &message.SnapshotVersion, &turns, &message.Status, &message.Attempts, &lastError, &message.CreatedAt, &message.UpdatedAt)
+	err := row.Scan(&message.ID, &message.AccountID, &message.Channel, &message.DestinationRef, &message.SnapshotVersion, &turns, &message.Status, &message.Attempts, &lastError, &message.CreatedAt, &message.UpdatedAt)
 	if err != nil {
 		return Message{}, mapDeliveryError(err)
 	}

@@ -15,6 +15,8 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/config"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
+	"github.com/1024XEngineer/xe6-tsy/services/api/internal/modeprojection"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 	"github.com/1024XEngineer/xe6-tsy/services/api/languages"
 	"github.com/1024XEngineer/xe6-tsy/services/api/recordstore"
@@ -29,12 +31,15 @@ const (
 	runtimeStartupTimeout       = 30 * time.Second
 )
 
+var configuredRuntimeShutdownTimeout = 10 * time.Second
+
 type configuredRuntime struct {
 	pool                  *pgxpool.Pool
 	redis                 *redis.Client
 	dispatcher            *delivery.OutboxDispatcher
 	worker                *delivery.Worker
 	usageConsumer         *usage.Consumer
+	modeConsumer          backgroundWorker
 	accountService        accounts.Service
 	usageService          usage.Service
 	deliveryService       delivery.Service
@@ -42,10 +47,30 @@ type configuredRuntime struct {
 	sessionRuntimeEnabled bool
 	sessionHandler        *sessions.Handler
 	sessionRecovery       backgroundWorker
+	fallbackWorker        *delivery.AutomaticTurnFallbackWorker
 	recordsHandler        *recordswebapi.Server
 	finalTurnWorker       finalTurnWorker
 	attributionWorker     backgroundWorker
 	authMaintainer        backgroundWorker
+}
+
+type automaticOutputOwnedSessionReader interface {
+	GetOwned(context.Context, string, string) (sessions.VoiceSession, error)
+}
+
+type automaticOutputSessionReader struct {
+	reader automaticOutputOwnedSessionReader
+}
+
+func (r automaticOutputSessionReader) RequireOwnedSession(ctx context.Context, accountID, sessionID string) error {
+	if r.reader == nil {
+		return domain.ErrNotImplemented
+	}
+	_, err := r.reader.GetOwned(ctx, accountID, sessionID)
+	if errors.Is(err, sessions.ErrVoiceSessionNotFound) {
+		return domain.ErrNotFound
+	}
+	return err
 }
 
 func runConfigured(config config.Config) error {
@@ -55,6 +80,10 @@ func runConfigured(config config.Config) error {
 	}
 	defer runtime.Close()
 
+	deviceHandler, err := newDeviceHandler(runtime.pool, config)
+	if err != nil {
+		return err
+	}
 	mux := buildMuxWithServices(
 		languageHandler,
 		runtime.sessionHandler,
@@ -63,6 +92,7 @@ func runConfigured(config config.Config) error {
 		runtime.deliveryService,
 		runtime.tokenVerifier,
 		runtime.recordsHandler,
+		deviceHandler,
 	)
 	return runtime.Serve(config.APIAddr, mux)
 }
@@ -88,14 +118,32 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		return nil, nil, err
 	}
 	sessionRepository := sessions.NewPostgresRepository(pool)
+	smtpMailer, err := newConfiguredSMTPMailer(processConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	wecomClient, err := newConfiguredWeComClient(processConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+	provider, err := configuredProvider(processConfig, smtpMailer, wecomClient)
+	if err != nil {
+		return nil, nil, err
+	}
+	providerRouter, ok := provider.(*delivery.ChannelRouter)
+	if !ok || providerRouter == nil {
+		return nil, nil, errors.New("configured provider does not expose channel capabilities")
+	}
 	languageDependencies, err := newLanguageDependenciesWithPool(
 		startupCtx,
 		pool,
 		sessionOwnerReader{reader: sessionRepository},
+		delivery.NewRuntimeReadiness(delivery.NewPostgresRepository(pool), providerRouter),
 	)
 	if err != nil {
 		return nil, nil, err
 	}
+	languageDependencies.handler.ConfigureSystemCommands(processConfig.CommandSystemToken)
 
 	records, err := newRecordsHTTPDependenciesFromPool(
 		startupCtx,
@@ -112,22 +160,22 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 
 	sessionHandler := newSessionHandler(nil)
 	var sessionRecovery backgroundWorker
+	sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
+		Repository:     sessionRepository,
+		SessionReader:  sessionRepository,
+		LanguageReader: languageDependencies.service,
+		HTTPClient: &http.Client{
+			Timeout: realtimeHTTPTimeout(processConfig),
+		},
+		IDs:    newSessionIDGenerator(),
+		Clock:  utcClock{},
+		Config: processConfig,
+		Logger: slog.Default(),
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("initialize configured realtime fallback: %w", err)
+	}
 	if processConfig.SessionRuntimeEnabled {
-		sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
-			Repository:     sessionRepository,
-			SessionReader:  sessionRepository,
-			LanguageReader: languageDependencies.service,
-			HTTPClient: &http.Client{
-				Timeout: realtimeHTTPTimeout(processConfig),
-			},
-			IDs:    newSessionIDGenerator(),
-			Clock:  utcClock{},
-			Config: processConfig,
-			Logger: slog.Default(),
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("initialize configured session HTTP: %w", err)
-		}
 		sessionHandler = sessionDependencies.handler
 		sessionRecovery = sessionDependencies.endRecovery
 	} else {
@@ -137,14 +185,9 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		)
 	}
 
-	redisOptions, err := redis.ParseURL(processConfig.RedisURL)
+	redisClient, err := openValkeyClient(startupCtx, processConfig.RedisURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse REDIS_URL: %w", err)
-	}
-	redisClient := redis.NewClient(redisOptions)
-	if err := redisClient.Ping(startupCtx).Err(); err != nil {
-		redisClient.Close()
-		return nil, nil, fmt.Errorf("ping Valkey: %w", err)
+		return nil, nil, err
 	}
 
 	accountRepository := accounts.NewPostgresRepository(pool)
@@ -174,22 +217,19 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		destinationReader,
 		queue,
 	)
+	deliveryService.ConfigureChannelRouter(providerRouter)
+	deliveryService.ConfigureAutomaticOutputSessionReader(
+		automaticOutputSessionReader{reader: sessionRepository},
+	)
 	if records.turns != nil {
 		records.turns.SetFinalTurnScheduler(deliveryService)
 	}
 	deliveryService.ConfigureTargetBinding(destinationKey, processConfig.AppEnv)
-	smtpMailer, err := newConfiguredSMTPMailer(processConfig)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, err
-	}
 	deliveryService.ConfigureEmailVerification(deliveryRepository, newEmailBindSender(processConfig, smtpMailer))
-	wecomClient, err := newConfiguredWeComClient(processConfig)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, err
-	}
 	deliveryService.ConfigureWeChatBinding(wecomClient)
+	deliveryService.ConfigureAutomaticFallback(sessionDependencies.realtime)
+	deliveryService.ConfigureAutomaticOutputRestorer(languageOutputRestorer{service: languageDependencies.service})
+	fallbackWorker := delivery.NewAutomaticTurnFallbackWorker(deliveryService, time.Second)
 
 	usageConsumerName := processConfig.UsageConsumer
 	if usageConsumerName == "" {
@@ -201,12 +241,15 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		return nil, nil, fmt.Errorf("initialize usage stream: %w", err)
 	}
 	usageConsumer := usage.NewConsumer(usageStream, usageService)
-
-	provider, err := configuredProvider(processConfig, smtpMailer, wecomClient)
-	if err != nil {
-		redisClient.Close()
-		return nil, nil, err
+	var modeConsumer backgroundWorker
+	if processConfig.SessionRuntimeEnabled {
+		modeConsumer, err = newModeProjectionConsumer(startupCtx, pool, redisClient, processConfig)
+		if err != nil {
+			redisClient.Close()
+			return nil, nil, err
+		}
 	}
+
 	runtime := &configuredRuntime{
 		pool:       pool,
 		redis:      redisClient,
@@ -217,6 +260,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 			Provider:     provider,
 		}),
 		usageConsumer:         usageConsumer,
+		modeConsumer:          modeConsumer,
 		accountService:        records.accounts,
 		usageService:          usageService,
 		deliveryService:       deliveryService,
@@ -224,6 +268,7 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 		sessionRuntimeEnabled: processConfig.SessionRuntimeEnabled,
 		sessionHandler:        sessionHandler,
 		sessionRecovery:       sessionRecovery,
+		fallbackWorker:        fallbackWorker,
 		recordsHandler:        records.handler,
 		finalTurnWorker:       records.worker,
 		attributionWorker:     records.attributionWorker,
@@ -231,6 +276,38 @@ func newConfiguredRuntime(ctx context.Context, processConfig config.Config) (*co
 	}
 	closeOnError = false
 	return runtime, languageDependencies.handler, nil
+}
+
+func openValkeyClient(ctx context.Context, rawURL string) (*redis.Client, error) {
+	redisOptions, err := redis.ParseURL(rawURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse REDIS_URL: %w", err)
+	}
+	client := redis.NewClient(redisOptions)
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("ping Valkey: %w", err)
+	}
+	return client, nil
+}
+
+func newModeProjectionConsumer(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	client *redis.Client,
+	processConfig config.Config,
+) (*modeprojection.Consumer, error) {
+	stream, err := modeprojection.NewValkeyStream(
+		ctx,
+		client,
+		processConfig.ModeChangedStream,
+		processConfig.ModeChangedGroup,
+		processConfig.ModeChangedConsumer,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initialize mode changed stream: %w", err)
+	}
+	return modeprojection.NewConsumer(stream, modeprojection.NewPostgresRepository(pool)), nil
 }
 
 func configuredProvider(processConfig config.Config, smtpMailer *delivery.SMTPMailer, wecomClient *delivery.WeComClient) (delivery.Provider, error) {
@@ -312,6 +389,9 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	if r.sessionRuntimeEnabled && r.sessionRecovery == nil {
 		return errors.New("configured runtime is incomplete")
 	}
+	if r.sessionRuntimeEnabled && r.modeConsumer == nil {
+		return errors.New("configured runtime is incomplete")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	componentCtx, cancelComponents := context.WithCancel(ctx)
@@ -334,6 +414,10 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 		components.Add(1)
 		go runDeliveryComponent(componentCtx, "usage consumer", r.usageConsumer.Run, errs, &components)
 	}
+	if r.modeConsumer != nil {
+		components.Add(1)
+		go runDeliveryComponent(componentCtx, "mode projection consumer", r.modeConsumer.Run, errs, &components)
+	}
 	if r.authMaintainer != nil {
 		components.Add(1)
 		go runDeliveryComponent(componentCtx, "auth maintainer", r.authMaintainer.Run, errs, &components)
@@ -347,6 +431,10 @@ func (r *configuredRuntime) Serve(address string, handler http.Handler) error {
 	if r.sessionRecovery != nil {
 		components.Add(1)
 		go runFailFastBackgroundWorker(componentCtx, "session end recovery worker", r.sessionRecovery.Run, errs, &components)
+	}
+	if r.fallbackWorker != nil {
+		components.Add(1)
+		go runDeliveryComponent(componentCtx, "automatic fallback worker", r.fallbackWorker.Run, errs, &components)
 	}
 	go func() {
 		slog.Info("Lingow API listening", "address", address, "delivery_runtime", "enabled")
@@ -407,7 +495,7 @@ func runFailFastBackgroundWorker(ctx context.Context, name string, run func(cont
 }
 
 func shutdownConfiguredServer(server *http.Server, components *sync.WaitGroup) error {
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), configuredRuntimeShutdownTimeout)
 	defer cancel()
 	shutdownErr := server.Shutdown(shutdownCtx)
 	done := make(chan struct{})

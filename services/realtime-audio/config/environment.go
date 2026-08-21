@@ -32,6 +32,7 @@ type ProviderConfig struct {
 	ASR         ASRConfig
 	Translation TranslationConfig
 	TTS         TTSConfig
+	Command     CommandConfig
 }
 
 type ASRConfig struct {
@@ -66,6 +67,15 @@ type TTSConfig struct {
 	Timeout    time.Duration
 }
 
+// CommandConfig configures the mandatory semantic command boundary independently from ordinary
+// assistant replies. Qwen may reuse transport credentials while retaining its own timeout and model.
+type CommandConfig struct {
+	APIKey  string
+	BaseURL string
+	Model   string
+	Timeout time.Duration
+}
+
 type LookupEnv func(key string) (string, bool)
 
 // LoadProviderConfig reads settings through an injected lookup for deterministic tests.
@@ -86,7 +96,6 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 	if err != nil {
 		return ProviderConfig{}, err
 	}
-
 	sampleRate, err := readInt(lookup, "ASR_SAMPLE_RATE")
 	if err != nil {
 		return ProviderConfig{}, err
@@ -132,6 +141,26 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 	if err != nil {
 		return ProviderConfig{}, err
 	}
+	commandTimeout, err := readMilliseconds(lookup, "COMMAND_LLM_TIMEOUT_MS")
+	if err != nil {
+		return ProviderConfig{}, err
+	}
+	commandModel := value(lookup, "COMMAND_LLM_MODEL")
+	if commandModel == "" {
+		commandModel = translationModel
+	}
+	commandAPIKey := value(lookup, "COMMAND_LLM_API_KEY")
+	commandBaseURL := value(lookup, "COMMAND_LLM_BASE_URL")
+	if (commandAPIKey == "") != (commandBaseURL == "") {
+		return ProviderConfig{}, fmt.Errorf(
+			"%w: COMMAND_LLM_API_KEY and COMMAND_LLM_BASE_URL must be configured together",
+			ErrInvalidEnvironmentValue,
+		)
+	}
+	if commandAPIKey == "" {
+		commandAPIKey = value(lookup, "LLM_API_KEY")
+		commandBaseURL = value(lookup, "LLM_BASE_URL")
+	}
 
 	return ProviderConfig{
 		ASR: ASRConfig{
@@ -149,6 +178,9 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 			Provider: ttsProvider, APIKey: value(lookup, "TTS_API_KEY"),
 			BaseURL: value(lookup, "TTS_BASE_URL"), Model: value(lookup, "TTS_MODEL"),
 			Voice: value(lookup, "TTS_VOICE"), SampleRate: ttsSampleRate, Timeout: ttsTimeout,
+		},
+		Command: CommandConfig{
+			APIKey: commandAPIKey, BaseURL: commandBaseURL, Model: commandModel, Timeout: commandTimeout,
 		},
 	}, nil
 }

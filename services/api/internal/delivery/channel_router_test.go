@@ -48,4 +48,10 @@ func TestChannelRouterReturnsNotConfiguredForMissingProvider(t *testing.T) {
 	if !errors.Is(err, ErrProviderNotConfigured) {
 		t.Fatalf("Send() error = %v, want provider not configured", err)
 	}
+	if !router.SupportsChannel(ChannelEmail) {
+		t.Fatal("SupportsChannel(email) = false, want true")
+	}
+	if router.SupportsChannel(ChannelWeChat) {
+		t.Fatal("SupportsChannel(wechat) = true, want false")
+	}
 }

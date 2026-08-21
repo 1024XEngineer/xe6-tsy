@@ -16,6 +16,7 @@ import (
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 )
@@ -27,15 +28,17 @@ const (
 	defaultReplayTTL                  = 10 * time.Minute
 	defaultReplayMaxEntries           = 4096
 	defaultReplayMaxEntriesPerSession = 64
+	defaultFallbackClaimRenewInterval = time.Minute
 )
 
 var (
-	ErrInvalidDependency     = errors.New("invalid control-plane dependency")
-	ErrInvalidRequest        = errors.New("invalid control-plane request")
-	ErrTicketRequired        = errors.New("realtime ticket is required")
-	ErrConfigSession         = errors.New("WebRTC config session mismatch")
-	ErrReplayCapacity        = errors.New("control-plane replay capacity exhausted")
-	ErrIdempotencyKeyTooLong = errors.New("idempotency key exceeds maximum length")
+	ErrInvalidDependency          = errors.New("invalid control-plane dependency")
+	ErrInvalidRequest             = errors.New("invalid control-plane request")
+	ErrTicketRequired             = errors.New("realtime ticket is required")
+	ErrConfigSession              = errors.New("WebRTC config session mismatch")
+	ErrReplayCapacity             = errors.New("control-plane replay capacity exhausted")
+	ErrIdempotencyKeyTooLong      = errors.New("idempotency key exceeds maximum length")
+	ErrFallbackPlaybackInProgress = errors.New("fallback playback is already in progress")
 )
 
 // Lifecycle is the realtime media lifecycle owned by session.LifecycleService.
@@ -43,6 +46,42 @@ type Lifecycle interface {
 	Start(context.Context, session.StartRealtimeCommand) (session.RuntimeSnapshot, error)
 	Stop(context.Context, session.StopRealtimeCommand) (session.RuntimeSnapshot, error)
 	GetRuntimeState(context.Context, string) (session.RuntimeSnapshot, error)
+}
+
+// FallbackPlayback accepts one immutable translated-text snapshot for media
+// playback. Implementations must deduplicate by request.OperationID.
+type FallbackPlayback interface {
+	PlayFallback(context.Context, realtimev1.FallbackPlaybackRequest) error
+}
+
+// FallbackPlaybackClaimStatus reports whether a caller owns, is waiting on,
+// or is replaying one durable fallback operation.
+type FallbackPlaybackClaimStatus string
+
+const (
+	FallbackPlaybackClaimed    FallbackPlaybackClaimStatus = "claimed"
+	FallbackPlaybackProcessing FallbackPlaybackClaimStatus = "processing"
+	FallbackPlaybackAccepted   FallbackPlaybackClaimStatus = "accepted"
+)
+
+// FallbackPlaybackClaim describes durable ownership of one immutable fallback
+// command before the media side effect starts.
+type FallbackPlaybackClaim struct {
+	Status FallbackPlaybackClaimStatus
+	Token  string
+}
+
+// FallbackPlaybackReplayStore atomically claims fallback operations before
+// media I/O and resolves the claim after playback outcome is known.
+type FallbackPlaybackReplayStore interface {
+	Claim(context.Context, string, string, string) (FallbackPlaybackClaim, error)
+	Renew(context.Context, string, string, string, string) error
+	Complete(context.Context, string, string, string, string) error
+	Abort(context.Context, string, string, string, string) error
+}
+
+type fallbackPlaybackNotStarted interface {
+	FallbackPlaybackNotStarted()
 }
 
 // Signaling is the existing ticket-aware WebRTC signaling service boundary.
@@ -64,12 +103,13 @@ type ConfigReader interface {
 
 // WebRTCConfig is the public, transport-neutral runtime configuration response.
 type WebRTCConfig struct {
-	SessionID          string            `json:"session_id"`
-	ExpiresAt          time.Time         `json:"expires_at"`
-	ICEServers         []ICEServer       `json:"ice_servers"`
-	ICETransportPolicy string            `json:"ice_transport_policy"`
-	DataChannel        DataChannelConfig `json:"data_channel"`
-	Audio              AudioConfig       `json:"audio"`
+	SessionID          string                   `json:"session_id"`
+	ExpiresAt          time.Time                `json:"expires_at"`
+	ICEServers         []ICEServer              `json:"ice_servers"`
+	ICETransportPolicy string                   `json:"ice_transport_policy"`
+	DataChannel        DataChannelConfig        `json:"data_channel"`
+	ControlDataChannel ControlDataChannelConfig `json:"control_data_channel"`
+	Audio              AudioConfig              `json:"audio"`
 }
 
 type ICEServer struct {
@@ -83,6 +123,14 @@ type DataChannelConfig struct {
 	Ordered bool   `json:"ordered"`
 }
 
+// ControlDataChannelConfig advertises the optional client-created uplink channel while leaving
+// the legacy data_channel field scoped to translation and playback events.
+type ControlDataChannelConfig struct {
+	Label           string `json:"label"`
+	Ordered         bool   `json:"ordered"`
+	ProtocolVersion int    `json:"protocol_version"`
+}
+
 type AudioConfig struct {
 	UplinkCodec   string `json:"uplink_codec"`
 	DownlinkCodec string `json:"downlink_codec"`
@@ -93,6 +141,9 @@ type AudioConfig struct {
 // Dependencies wires existing lifecycle, ticket, signaling, and config ports.
 type Dependencies struct {
 	Lifecycle                  Lifecycle
+	Modes                      ModeControl
+	Fallback                   FallbackPlayback
+	FallbackReplays            FallbackPlaybackReplayStore
 	Signaling                  Signaling
 	Connections                ConnectionReader
 	Tickets                    webrtc.TicketValidator
@@ -105,13 +156,16 @@ type Dependencies struct {
 
 // Handler serves the realtime control-plane routes.
 type Handler struct {
-	lifecycle   Lifecycle
-	signaling   Signaling
-	connections ConnectionReader
-	tickets     webrtc.TicketValidator
-	config      ConfigReader
-	now         func() time.Time
-	mux         *http.ServeMux
+	lifecycle       Lifecycle
+	modes           ModeControl
+	fallback        FallbackPlayback
+	fallbackReplays FallbackPlaybackReplayStore
+	signaling       Signaling
+	connections     ConnectionReader
+	tickets         webrtc.TicketValidator
+	config          ConfigReader
+	now             func() time.Time
+	mux             *http.ServeMux
 
 	replayMu                   sync.Mutex
 	replays                    map[string]*replayRecord
@@ -119,6 +173,7 @@ type Handler struct {
 	replayTTL                  time.Duration
 	replayMaxEntries           int
 	replayMaxEntriesPerSession int
+	fallbackClaimRenewInterval time.Duration
 }
 
 type replayRecord struct {
@@ -132,7 +187,7 @@ type replayRecord struct {
 
 // New validates dependencies and registers the default /realtime/v1 routes.
 func New(dependencies Dependencies) (*Handler, error) {
-	if dependencies.Lifecycle == nil || dependencies.Signaling == nil ||
+	if dependencies.Lifecycle == nil || dependencies.Modes == nil || dependencies.Signaling == nil ||
 		dependencies.Connections == nil || dependencies.Tickets == nil ||
 		dependencies.Config == nil {
 		return nil, ErrInvalidDependency
@@ -154,6 +209,9 @@ func New(dependencies Dependencies) (*Handler, error) {
 	}
 	h := &Handler{
 		lifecycle:                  dependencies.Lifecycle,
+		modes:                      dependencies.Modes,
+		fallback:                   dependencies.Fallback,
+		fallbackReplays:            dependencies.FallbackReplays,
 		signaling:                  dependencies.Signaling,
 		connections:                dependencies.Connections,
 		tickets:                    dependencies.Tickets,
@@ -165,6 +223,7 @@ func New(dependencies Dependencies) (*Handler, error) {
 		replayTTL:                  dependencies.ReplayTTL,
 		replayMaxEntries:           dependencies.ReplayMaxEntries,
 		replayMaxEntriesPerSession: dependencies.ReplayMaxEntriesPerSession,
+		fallbackClaimRenewInterval: defaultFallbackClaimRenewInterval,
 	}
 	h.registerRoutes(defaultRoutePrefix)
 	return h, nil
@@ -173,11 +232,142 @@ func New(dependencies Dependencies) (*Handler, error) {
 func (h *Handler) registerRoutes(prefix string) {
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/start", h.start)
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/stop", h.stop)
+	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/fallback-playback", h.fallbackPlayback)
 	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/runtime", h.runtime)
+	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/mode", h.modeState)
+	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/mode", h.switchMode)
 	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/connection", h.connection)
 	h.mux.HandleFunc("GET "+prefix+"/sessions/{session_id}/webrtc/config", h.configHandler)
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/webrtc/offer", h.offer)
 	h.mux.HandleFunc("POST "+prefix+"/sessions/{session_id}/ice-candidates", h.candidates)
+}
+
+func (h *Handler) fallbackPlayback(writer http.ResponseWriter, request *http.Request) {
+	if h.fallback == nil {
+		h.writeError(writer, request, ErrInvalidDependency)
+		return
+	}
+	sessionID := request.PathValue("session_id")
+	if _, err := h.authorize(request.Context(), request, sessionID); err != nil {
+		h.writeError(writer, request, err)
+		return
+	}
+	if _, err := requiredIdempotencyKey(request); err != nil {
+		h.writeError(writer, request, err)
+		return
+	}
+	var body realtimev1.FallbackPlaybackRequest
+	if err := decodeJSON(request, &body, false); err != nil {
+		h.writeError(writer, request, err)
+		return
+	}
+	if strings.TrimSpace(body.OperationID) == "" || strings.TrimSpace(body.SessionID) != sessionID ||
+		strings.TrimSpace(body.TurnID) == "" || strings.TrimSpace(body.TargetLanguage) == "" ||
+		strings.TrimSpace(body.TranslatedText) == "" || body.LanguageConfigVersion < 1 || strings.TrimSpace(body.TraceID) == "" {
+		h.writeError(writer, request, ErrInvalidRequest)
+		return
+	}
+	payloadHash, err := bodyHash(body)
+	if err != nil {
+		h.writeError(writer, request, err)
+		return
+	}
+	replayKey := "fallback\x00" + sessionID + "\x00" + body.OperationID
+	h.handleReplayStatus(writer, request.Context(), sessionID, replayKey, body, http.StatusAccepted,
+		func() (any, error) {
+			claimToken := ""
+			if h.fallbackReplays != nil {
+				claim, err := h.fallbackReplays.Claim(request.Context(), sessionID, body.OperationID, payloadHash)
+				if err != nil {
+					return nil, err
+				}
+				switch claim.Status {
+				case FallbackPlaybackClaimed:
+					claimToken = claim.Token
+				case FallbackPlaybackProcessing:
+					return nil, ErrFallbackPlaybackInProgress
+				case FallbackPlaybackAccepted:
+					return realtimev1.FallbackPlaybackReceipt{OperationID: body.OperationID, Status: realtimev1.FallbackPlaybackAlreadyAccepted}, nil
+				default:
+					return nil, ErrInvalidDependency
+				}
+			}
+			playbackContext, stopHeartbeat := h.startFallbackClaimHeartbeat(
+				request.Context(), sessionID, body.OperationID, payloadHash, claimToken,
+			)
+			playbackErr := h.fallback.PlayFallback(playbackContext, body)
+			heartbeatErr := stopHeartbeat()
+			if playbackErr != nil {
+				if heartbeatErr != nil {
+					return nil, heartbeatErr
+				}
+				if h.fallbackReplays != nil && claimToken != "" && isFallbackPlaybackNotStarted(playbackErr) {
+					if abortErr := h.fallbackReplays.Abort(request.Context(), sessionID, body.OperationID, payloadHash, claimToken); abortErr != nil {
+						return nil, errors.Join(playbackErr, abortErr)
+					}
+				}
+				return nil, playbackErr
+			}
+			// Successful playback must be completed even when stopping the heartbeat cancels an in-flight renewal.
+			if h.fallbackReplays != nil {
+				if err := h.fallbackReplays.Complete(request.Context(), sessionID, body.OperationID, payloadHash, claimToken); err != nil {
+					return nil, err
+				}
+			}
+			return realtimev1.FallbackPlaybackReceipt{OperationID: body.OperationID, Status: realtimev1.FallbackPlaybackAccepted}, nil
+		}, func(value any, replay bool) any {
+			receipt, ok := value.(realtimev1.FallbackPlaybackReceipt)
+			if !ok {
+				return value
+			}
+			if replay {
+				receipt.Status = realtimev1.FallbackPlaybackAlreadyAccepted
+			}
+			return receipt
+		})
+}
+
+func isFallbackPlaybackNotStarted(err error) bool {
+	var marker fallbackPlaybackNotStarted
+	return errors.As(err, &marker)
+}
+
+func (h *Handler) startFallbackClaimHeartbeat(ctx context.Context, sessionID, operationID, payloadHash, claimToken string) (context.Context, func() error) {
+	if h.fallbackReplays == nil || claimToken == "" || h.fallbackClaimRenewInterval <= 0 {
+		return ctx, func() error { return nil }
+	}
+
+	heartbeatContext, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(h.fallbackClaimRenewInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatContext.Done():
+				return
+			case <-ticker.C:
+				if err := h.fallbackReplays.Renew(heartbeatContext, sessionID, operationID, payloadHash, claimToken); err != nil {
+					errCh <- err
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	return heartbeatContext, func() error {
+		cancel()
+		<-done
+		select {
+		case err := <-errCh:
+			return err
+		default:
+			return nil
+		}
+	}
 }
 
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -204,6 +394,10 @@ func (h *Handler) start(writer http.ResponseWriter, request *http.Request) {
 		h.writeError(writer, request, session.ErrStartOperationIDRequired)
 		return
 	}
+	if body.InitialMode != "" && !body.InitialMode.Valid() {
+		h.writeError(writer, request, ErrInvalidRequest)
+		return
+	}
 	traceID := strings.TrimSpace(body.TraceID)
 	if traceID == "" {
 		traceID = body.OperationID
@@ -211,7 +405,7 @@ func (h *Handler) start(writer http.ResponseWriter, request *http.Request) {
 	h.handleReplay(writer, request.Context(), sessionID, "start\x00"+sessionID+"\x00"+idempotencyKey, body, func() (any, error) {
 		return h.lifecycle.Start(request.Context(), session.StartRealtimeCommand{
 			SessionID: sessionID, OperationID: body.OperationID,
-			TraceID: traceID, StartedBy: body.StartedBy,
+			TraceID: traceID, StartedBy: body.StartedBy, InitialMode: body.InitialMode,
 		})
 	})
 }
@@ -375,6 +569,10 @@ func (h *Handler) authorize(ctx context.Context, request *http.Request, sessionI
 }
 
 func (h *Handler) handleReplay(writer http.ResponseWriter, ctx context.Context, sessionID, key string, body any, operation func() (any, error)) {
+	h.handleReplayStatus(writer, ctx, sessionID, key, body, http.StatusOK, operation, nil)
+}
+
+func (h *Handler) handleReplayStatus(writer http.ResponseWriter, ctx context.Context, sessionID, key string, body any, status int, operation func() (any, error), transform func(any, bool) any) {
 	hash, err := bodyHash(body)
 	if err != nil {
 		h.writeError(writer, nil, err)
@@ -392,7 +590,11 @@ func (h *Handler) handleReplay(writer http.ResponseWriter, ctx context.Context, 
 				h.writeError(writer, nil, record.err)
 				return
 			}
-			h.writeJSON(writer, http.StatusOK, record.value)
+			value := record.value
+			if transform != nil {
+				value = transform(value, true)
+			}
+			h.writeJSON(writer, status, value)
 		case <-ctx.Done():
 			h.writeError(writer, nil, ctx.Err())
 		}
@@ -413,7 +615,10 @@ func (h *Handler) handleReplay(writer http.ResponseWriter, ctx context.Context, 
 	record.expiresAt = h.now().Add(h.replayTTL)
 	close(record.ready)
 	h.replayMu.Unlock()
-	h.writeJSON(writer, http.StatusOK, value)
+	if transform != nil {
+		value = transform(value, false)
+	}
+	h.writeJSON(writer, status, value)
 }
 
 func (h *Handler) reserveReplay(sessionID, key, hash string) (*replayRecord, bool, error) {
@@ -530,6 +735,7 @@ func mapError(err error) (int, string) {
 		return http.StatusInternalServerError, "internal_error"
 	case errors.Is(err, ErrInvalidRequest), errors.Is(err, webrtc.ErrSessionIDRequired),
 		errors.Is(err, session.ErrStartOperationIDRequired),
+		errors.Is(err, runtime.ErrSessionIDRequired), errors.Is(err, runtime.ErrModeCommandInvalid),
 		errors.Is(err, webrtc.ErrOfferSDPRequired), errors.Is(err, webrtc.ErrOfferTypeInvalid),
 		errors.Is(err, webrtc.ErrIdempotencyKeyRequired), errors.Is(err, ErrIdempotencyKeyTooLong),
 		errors.Is(err, webrtc.ErrConnectionIDRequired), errors.Is(err, webrtc.ErrCandidateIDRequired),
@@ -541,8 +747,22 @@ func mapError(err error) (int, string) {
 		errors.Is(err, webrtc.ErrTicketExpired), errors.Is(err, webrtc.ErrTicketSessionMismatch),
 		errors.Is(err, webrtc.ErrTicketAccountRequired):
 		return http.StatusUnauthorized, "unauthorized"
+	case errors.Is(err, errModeRuntimeNotFound):
+		return http.StatusNotFound, string(realtimev1.ErrorRuntimeNotFound)
 	case errors.Is(err, session.ErrRuntimeNotFound):
 		return http.StatusNotFound, "not_found"
+	case errors.Is(err, runtime.ErrModeNotAvailable):
+		return http.StatusUnprocessableEntity, string(realtimev1.ErrorModeNotAvailable)
+	case errors.Is(err, runtime.ErrModeGenerationConflict):
+		return http.StatusConflict, string(realtimev1.ErrorModeGenerationConflict)
+	case errors.Is(err, runtime.ErrModeRuntimeInstanceMismatch):
+		return http.StatusConflict, string(realtimev1.ErrorModeRuntimeInstanceMismatch)
+	case errors.Is(err, runtime.ErrModeOperationConflict):
+		return http.StatusConflict, string(realtimev1.ErrorModeOperationConflict)
+	case errors.Is(err, runtime.ErrModeEventUnavailable):
+		return http.StatusServiceUnavailable, "service_unavailable"
+	case errors.Is(err, session.ErrInvalidRuntimeTransition):
+		return http.StatusConflict, "conflict"
 	case errors.Is(err, webrtc.ErrConnectionNotFound):
 		return http.StatusNotFound, string(realtimev1.ErrorConnectionNotFound)
 	case errors.Is(err, session.ErrRuntimeOperationConflict):
@@ -554,6 +774,12 @@ func mapError(err error) (int, string) {
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, ErrReplayCapacity):
 		return http.StatusServiceUnavailable, "replay_capacity_exhausted"
+	case errors.Is(err, runtime.ErrDependencyRequired):
+		return http.StatusServiceUnavailable, "service_unavailable"
+	case errors.Is(err, ErrFallbackPlaybackInProgress):
+		return http.StatusConflict, "fallback_playback_in_progress"
+	case errors.Is(err, ErrInvalidDependency):
+		return http.StatusNotImplemented, "not_implemented"
 	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout, "request_timeout"
 	case errors.Is(err, context.Canceled):
@@ -565,5 +791,6 @@ func mapError(err error) (int, string) {
 
 var _ http.Handler = (*Handler)(nil)
 var _ Lifecycle = (*session.LifecycleService)(nil)
+var _ ModeControl = (*runtime.Manager)(nil)
 var _ Signaling = (*webrtc.SignalingService)(nil)
 var _ ConnectionReader = (webrtc.ConnectionManager)(nil)

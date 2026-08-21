@@ -373,8 +373,8 @@ export async function createKeywordSpotter(
     },
     maxActivePaths: 4,
     numTrailingBlanks: 1,
-    keywordsScore: options.keywordsScore ?? 1.8,
-    keywordsThreshold: options.keywordsThreshold ?? 0.22,
+    keywordsScore: options.keywordsScore ?? 2.2,
+    keywordsThreshold: options.keywordsThreshold ?? 0.08,
     keywords: keywordsText,
   };
 

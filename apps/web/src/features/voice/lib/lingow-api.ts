@@ -1,5 +1,23 @@
-import { bilingualPairs, type VoiceSessionConfig } from "./languages";
+import {
+  bilingualPairs,
+  outputRoutes,
+  type InterpretationOutputMode,
+  type VoiceSessionConfig,
+} from "./languages";
 import { ApiError, newIdempotencyKey, parseJson } from "./http";
+
+export type VoiceInitialMode = "assistant" | "interpretation";
+
+// The Web experience is the assistant-first client. Invalid configuration
+// fails closed to interpretation so rollback never produces an unknown mode.
+export function resolveVoiceInitialMode(
+  configured = process.env.NEXT_PUBLIC_LINGOW_INITIAL_MODE,
+): VoiceInitialMode {
+  const normalized = configured?.trim().toLowerCase();
+  if (!normalized || normalized === "assistant") return "assistant";
+  if (normalized === "interpretation") return "interpretation";
+  return "interpretation";
+}
 
 export type AuthTokens = {
   access_token: string;
@@ -32,16 +50,27 @@ export type RuntimeState =
   | "listening"
   | "asr_processing"
   | "translating"
+  | "assistant_processing"
   | "tts_processing"
   | "playing"
   | "stopping"
   | "failed";
 
+/** Mirrors packages/contracts RealtimeRuntimeErrorCode / openapi.yaml. */
+export type RuntimeErrorCode =
+  | "realtime_start_failed"
+  | "realtime_stop_failed"
+  | "realtime_pipeline_failed"
+  | "realtime_translation_rejected";
+
+export const RUNTIME_ERROR_TRANSLATION_REJECTED: RuntimeErrorCode =
+  "realtime_translation_rejected";
+
 export type VoiceSessionDetail = VoiceSession & {
   runtime_state: RuntimeState;
   current_turn_id: string | null;
   current_playback_id: string | null;
-  last_error_code: string | null;
+  last_error_code: RuntimeErrorCode | string | null;
   retryable: boolean;
   runtime_updated_at: string;
 };
@@ -52,7 +81,7 @@ export type VoiceSessionStateSnapshot = {
   runtime_state: RuntimeState;
   current_turn_id: string | null;
   current_playback_id: string | null;
-  last_error_code: string | null;
+  last_error_code: RuntimeErrorCode | string | null;
   retryable: boolean;
   runtime_updated_at: string;
 };
@@ -71,6 +100,24 @@ export type VoiceTurn = {
 export type VoiceTurnListResponse = {
   items: VoiceTurn[];
   next_cursor: string | null;
+};
+
+export type LanguageConfigResponse = {
+  id: string;
+  session_id: string;
+  version: number;
+  language_pairs: Array<{ source: string; target: string }>;
+  output_routes: Array<{
+    target_language: string;
+    tts_enabled: boolean;
+    delivery_enabled: boolean;
+  }>;
+  output_mode: InterpretationOutputMode;
+  status: "active" | "superseded" | "expired";
+  effective_from: string;
+  effective_until: string | null;
+  created_by: string;
+  created_at: string;
 };
 
 export type SupportedLanguage = {
@@ -99,6 +146,73 @@ export type UsageSummary = {
   period_start: string;
   period_end: string;
   totals: UsageStageTotal[];
+};
+
+export type DeliveryChannel = "email" | "wechat";
+
+export type MessageTarget = {
+  destination_ref: string;
+  channel: DeliveryChannel;
+  verified: boolean;
+  revoked_at: string | null;
+  updated_at: string;
+};
+
+export type MessagePreference = {
+  account_id: string;
+  channel: DeliveryChannel;
+  destination_ref: string;
+  enabled: boolean;
+  verified: boolean;
+  updated_at: string;
+};
+
+export type FinalTurnSnapshot = {
+  turn_id: string;
+  session_id: string;
+  participant_id: string | null;
+  speaker_label_snapshot: string | null;
+  source_language: string;
+  target_language: string;
+  language_config_version: number;
+  source_text: string;
+  translated_text: string;
+  created_at: string;
+};
+
+export type OutboundMessageStatus =
+  | "queued"
+  | "sending"
+  | "sent"
+  | "failed"
+  | "retrying"
+  | "cancelled";
+
+export type OutboundMessage = {
+  id: string;
+  account_id: string;
+  channel: DeliveryChannel;
+  destination_ref: string;
+  snapshot_version: number;
+  turns: FinalTurnSnapshot[];
+  status: OutboundMessageStatus;
+  attempts: number;
+  last_error_code: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AutomaticOutputStatus = {
+  turn_id: string;
+  status:
+    | "pending"
+    | "succeeded"
+    | "partially_succeeded"
+    | "failed"
+    | "fallback_pending"
+    | "fallback_played"
+    | "restored";
+  updated_at: string;
 };
 
 function authHeaders(accessToken: string, idempotencyKey?: string): HeadersInit {
@@ -152,7 +266,8 @@ export async function createLanguageConfig(
   accessToken: string,
   sessionId: string,
   config: VoiceSessionConfig,
-) {
+  expectedVersion?: number,
+): Promise<LanguageConfigResponse> {
   const response = await fetch(
     `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/language-configs`,
     {
@@ -163,10 +278,28 @@ export async function createLanguageConfig(
       },
       body: JSON.stringify({
         languages: bilingualPairs(config),
+        output_routes: outputRoutes(config),
+        ...(expectedVersion === undefined
+          ? {}
+          : { expected_version: expectedVersion }),
       }),
     },
   );
-  return parseJson(response);
+  return parseJson<LanguageConfigResponse>(response);
+}
+
+export async function getCurrentLanguageConfig(
+  accessToken: string,
+  sessionId: string,
+): Promise<LanguageConfigResponse> {
+  const response = await fetch(
+    `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/language-config`,
+    {
+      headers: authHeaders(accessToken),
+      cache: "no-store",
+    },
+  );
+  return parseJson<LanguageConfigResponse>(response);
 }
 
 export type RealtimeTicket = {
@@ -195,6 +328,7 @@ export async function startVoiceSession(
   sessionId: string,
   idempotencyKey = newIdempotencyKey("start"),
   signal?: AbortSignal,
+  initialMode?: VoiceInitialMode,
 ): Promise<VoiceSession> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     signal?.throwIfAborted();
@@ -203,7 +337,13 @@ export async function startVoiceSession(
         `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/start`,
         {
           method: "POST",
-          headers: authHeaders(accessToken, idempotencyKey),
+          headers: {
+            ...authHeaders(accessToken, idempotencyKey),
+            ...(initialMode ? { "Content-Type": "application/json" } : {}),
+          },
+          ...(initialMode
+            ? { body: JSON.stringify({ initial_mode: initialMode }) }
+            : {}),
           signal,
         },
       );
@@ -246,6 +386,17 @@ export async function listSupportedLanguages(
   return parseJson<SupportedLanguageListResponse>(response);
 }
 
+export async function hasReadyAutomaticTarget(
+  accessToken: string,
+): Promise<boolean> {
+  const response = await fetch("/api/v1/account/automatic-delivery-readiness", {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  const result = await parseJson<{ ready: boolean }>(response);
+  return result.ready;
+}
+
 export async function getAccountUsageSummary(
   accessToken: string,
   periodStart: string,
@@ -260,6 +411,127 @@ export async function getAccountUsageSummary(
     cache: "no-store",
   });
   return parseJson<UsageSummary>(response);
+}
+
+export async function listMessageTargets(
+  accessToken: string,
+  channel?: DeliveryChannel,
+): Promise<{ items: MessageTarget[] }> {
+  const query = channel ? `?channel=${encodeURIComponent(channel)}` : "";
+  const response = await fetch(`/api/v1/account/message-targets${query}`, {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<{ items: MessageTarget[] }>(response);
+}
+
+export async function listMessagePreferences(
+  accessToken: string,
+): Promise<{ items: MessagePreference[] }> {
+  const response = await fetch("/api/v1/account/message-preferences", {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<{ items: MessagePreference[] }>(response);
+}
+
+export async function putMessagePreference(
+  accessToken: string,
+  channel: DeliveryChannel,
+  destinationRef: string,
+  enabled: boolean,
+): Promise<MessagePreference> {
+  const response = await fetch(
+    `/api/v1/account/message-preferences/${encodeURIComponent(channel)}/${encodeURIComponent(destinationRef)}`,
+    {
+      method: "PUT",
+      headers: {
+        ...authHeaders(accessToken, newIdempotencyKey("preference")),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ enabled }),
+    },
+  );
+  return parseJson<MessagePreference>(response);
+}
+
+export async function requestEmailBindVerification(
+  accessToken: string,
+  email: string,
+  destinationRef?: string,
+): Promise<void> {
+  const response = await fetch(
+    "/api/v1/account/message-targets/email/verification-codes",
+    {
+      method: "POST",
+      headers: { ...authHeaders(accessToken), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email,
+        ...(destinationRef ? { destination_ref: destinationRef } : {}),
+      }),
+    },
+  );
+  if (!response.ok) await parseJson<never>(response);
+}
+
+export async function bindEmailTarget(
+  accessToken: string,
+  token: string,
+): Promise<MessageTarget> {
+  const response = await fetch("/api/v1/account/message-targets/email/bind", {
+    method: "POST",
+    headers: { ...authHeaders(accessToken), "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  return parseJson<MessageTarget>(response);
+}
+
+export async function bindWeChatTarget(
+  accessToken: string,
+  code: string,
+): Promise<MessageTarget> {
+  const response = await fetch("/api/v1/account/message-targets/wechat/bind", {
+    method: "POST",
+    headers: { ...authHeaders(accessToken), "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  return parseJson<MessageTarget>(response);
+}
+
+export async function revokeMessageTarget(
+  accessToken: string,
+  channel: DeliveryChannel,
+  destinationRef: string,
+): Promise<void> {
+  const response = await fetch(
+    `/api/v1/account/message-targets/${encodeURIComponent(channel)}/${encodeURIComponent(destinationRef)}`,
+    { method: "DELETE", headers: authHeaders(accessToken) },
+  );
+  if (!response.ok) await parseJson<never>(response);
+}
+
+export async function listOutboundMessages(
+  accessToken: string,
+): Promise<{ items: OutboundMessage[] }> {
+  const response = await fetch("/api/v1/outbound-messages", {
+    headers: authHeaders(accessToken),
+    cache: "no-store",
+  });
+  return parseJson<{ items: OutboundMessage[] }>(response);
+}
+
+export async function listAutomaticOutputStatus(
+  accessToken: string,
+  sessionId: string,
+): Promise<{ items: AutomaticOutputStatus[] }> {
+  const response = await fetch(
+    `/api/v1/voice-sessions/${encodeURIComponent(sessionId)}/automatic-output-status`,
+    {
+      headers: authHeaders(accessToken),
+      cache: "no-store",
+    },
+  );
+  return parseJson<{ items: AutomaticOutputStatus[] }>(response);
 }
 
 export async function refreshAccountTokens(

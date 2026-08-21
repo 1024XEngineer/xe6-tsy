@@ -1,9 +1,11 @@
 # One-click local Lingow stack: API (:8080) + realtime-audio (:8090).
 # Loads root .env into the process environment (go run does NOT read .env itself).
 #
-# Default: start both (realtime in a child window, API in this window).
-# Optional:
-#   .\start-local.ps1 -UseDocker          also start infra/docker-compose.yml
+# Default: use LOCAL Postgres/Redis from .env. Docker is not started unless
+# they are unreachable and you confirm, or you pass -UseDocker.
+#
+#   .\start-local.ps1                     both services; prefer local infra
+#   .\start-local.ps1 -UseDocker          force infra/docker-compose.yml
 #   .\start-local.ps1 -Service api        API only
 #   .\start-local.ps1 -Service realtime   realtime only
 
@@ -59,6 +61,63 @@ function Invoke-Compose {
   }
 }
 
+function Get-EndpointFromUrl {
+  param(
+    [Parameter(Mandatory = $true)][string]$Url,
+    [Parameter(Mandatory = $true)][int]$DefaultPort
+  )
+
+  $normalized = $Url.Trim()
+  $normalized = $normalized -replace '^(postgres|postgresql|redis)://', 'http://'
+  try {
+    $uri = [Uri]$normalized
+  } catch {
+    throw "Cannot parse URL for host/port: $Url"
+  }
+  $hostName = $uri.Host
+  if ([string]::IsNullOrWhiteSpace($hostName)) {
+    throw "URL has no host: $Url"
+  }
+  $port = $uri.Port
+  if ($port -le 0) {
+    $port = $DefaultPort
+  }
+  return @{ Host = $hostName; Port = $port }
+}
+
+function Test-TcpOpen {
+  param(
+    [Parameter(Mandatory = $true)][string]$HostName,
+    [Parameter(Mandatory = $true)][int]$Port,
+    [int]$TimeoutMs = 800
+  )
+
+  $client = New-Object System.Net.Sockets.TcpClient
+  try {
+    $async = $client.BeginConnect($HostName, $Port, $null, $null)
+    if (-not $async.AsyncWaitHandle.WaitOne($TimeoutMs, $false)) {
+      return $false
+    }
+    $client.EndConnect($async)
+    return $true
+  } catch {
+    return $false
+  } finally {
+    $client.Close()
+  }
+}
+
+function Start-DockerInfra {
+  $composeFile = Join-Path $Root "infra\docker-compose.yml"
+  Write-Host "==> Starting Postgres / Redis via docker compose..."
+  Write-Host "    (This may launch Docker Desktop / WSL and use significant RAM.)"
+  $upCode = Invoke-Compose -ComposeArgs @("-f", $composeFile, "up", "-d")
+  if ($upCode -ne 0) {
+    throw "docker compose failed (is Docker Desktop running?)"
+  }
+  Wait-PostgresReady -ComposeFile $composeFile
+}
+
 function Wait-PostgresReady {
   param(
     [Parameter(Mandatory = $true)][string]$ComposeFile,
@@ -78,6 +137,61 @@ function Wait-PostgresReady {
     Start-Sleep -Seconds 1
   }
   throw "Docker Postgres did not become ready within ${TimeoutSeconds}s"
+}
+
+function Ensure-Infra {
+  if ($UseDocker) {
+    Start-DockerInfra
+    return
+  }
+
+  $pg = Get-EndpointFromUrl -Url $env:DATABASE_URL -DefaultPort 5432
+  $pgOk = Test-TcpOpen -HostName $pg.Host -Port $pg.Port
+
+  $redisUrl = [Environment]::GetEnvironmentVariable("REDIS_URL", "Process")
+  $rd = $null
+  $rdOk = $true
+  if (-not [string]::IsNullOrWhiteSpace($redisUrl)) {
+    $rd = Get-EndpointFromUrl -Url $redisUrl -DefaultPort 6379
+    $rdOk = Test-TcpOpen -HostName $rd.Host -Port $rd.Port
+  }
+
+  if ($pgOk -and $rdOk) {
+    Write-Host "==> Local Postgres reachable at $($pg.Host):$($pg.Port)"
+    if ($rd) {
+      Write-Host "==> Local Redis reachable at $($rd.Host):$($rd.Port)"
+    } else {
+      Write-Host "==> REDIS_URL not set; skipping Redis check"
+    }
+    Write-Host "    Docker Compose not started."
+    return
+  }
+
+  Write-Host "==> Local infra not ready (Docker not started yet):"
+  if (-not $pgOk) {
+    Write-Host "    Postgres $($pg.Host):$($pg.Port) — not accepting connections"
+  } else {
+    Write-Host "    Postgres $($pg.Host):$($pg.Port) — ok"
+  }
+  if ($rd -and -not $rdOk) {
+    Write-Host "    Redis $($rd.Host):$($rd.Port) — not accepting connections"
+  } elseif ($rd) {
+    Write-Host "    Redis $($rd.Host):$($rd.Port) — ok"
+  }
+
+  Write-Host ""
+  Write-Host "Start your local Postgres/Redis (from .env), or use Docker Compose."
+  Write-Host "Docker may launch Docker Desktop / WSL and consume a lot of RAM."
+  $answer = Read-Host "Start Docker Compose now? [y/N]"
+  if ($answer -match '^[Yy]') {
+    Start-DockerInfra
+    return
+  }
+
+  throw @"
+Postgres/Redis not reachable and Docker was not started.
+Fix: start local services, or re-run with -UseDocker.
+"@
 }
 
 function Assert-ApiEnv {
@@ -114,7 +228,22 @@ function Assert-RealtimeEnv {
   if ([string]::IsNullOrWhiteSpace($secret) -or $secret.Length -lt 32) {
     throw "REALTIME_TICKET_SECRET must be set in .env (>= 32 bytes)"
   }
+  $commandKey = $env:COMMAND_LLM_API_KEY
+  $commandBaseUrl = $env:COMMAND_LLM_BASE_URL
+  if ([string]::IsNullOrWhiteSpace($commandKey) -and [string]::IsNullOrWhiteSpace($commandBaseUrl)) {
+    $commandKey = $env:LLM_API_KEY
+    $commandBaseUrl = $env:LLM_BASE_URL
+  }
+  if ([string]::IsNullOrWhiteSpace($commandKey) -or [string]::IsNullOrWhiteSpace($commandBaseUrl)) {
+    throw "Semantic commands require COMMAND_LLM_API_KEY + COMMAND_LLM_BASE_URL (or LLM_API_KEY + LLM_BASE_URL)"
+  }
+  $commandToken = [Environment]::GetEnvironmentVariable("LINGOW_COMMAND_SYSTEM_TOKEN", "Process")
+  if ([string]::IsNullOrWhiteSpace($env:LINGOW_API_BASE_URL) -or
+      [string]::IsNullOrWhiteSpace($commandToken) -or $commandToken.Length -lt 32) {
+    throw "Semantic commands require LINGOW_API_BASE_URL and LINGOW_COMMAND_SYSTEM_TOKEN (>= 32 bytes)"
+  }
   Write-Host "    REALTIME_ADDR=$($env:REALTIME_ADDR)"
+  Write-Host "    Command interpreter=Qwen semantic intent"
 }
 
 function Start-RealtimeProcess {
@@ -176,17 +305,7 @@ switch ($Service) {
   }
   "api" {
     Assert-ApiEnv
-    if ($UseDocker) {
-      $composeFile = Join-Path $Root "infra\docker-compose.yml"
-      Write-Host "==> -UseDocker: starting Postgres / Redis via docker compose..."
-      $upCode = Invoke-Compose -ComposeArgs @("-f", $composeFile, "up", "-d")
-      if ($upCode -ne 0) {
-        throw "docker compose failed (is Docker Desktop running?)"
-      }
-      Wait-PostgresReady -ComposeFile $composeFile
-    } else {
-      Write-Host "==> Using your local Postgres/Redis from .env (Docker infra skipped)."
-    }
+    Ensure-Infra
     Write-Host "==> Starting API on $($env:API_ADDR)"
     Write-Host "    Keep this window open. Ctrl+C to stop."
     Write-Host ""
@@ -195,17 +314,7 @@ switch ($Service) {
   default {
     Assert-ApiEnv
     Assert-RealtimeEnv
-    if ($UseDocker) {
-      $composeFile = Join-Path $Root "infra\docker-compose.yml"
-      Write-Host "==> -UseDocker: starting Postgres / Redis via docker compose..."
-      $upCode = Invoke-Compose -ComposeArgs @("-f", $composeFile, "up", "-d")
-      if ($upCode -ne 0) {
-        throw "docker compose failed (is Docker Desktop running?)"
-      }
-      Wait-PostgresReady -ComposeFile $composeFile
-    } else {
-      Write-Host "==> Using your local Postgres/Redis from .env (Docker infra skipped)."
-    }
+    Ensure-Infra
     Start-RealtimeProcess
     Start-Sleep -Seconds 1
     Write-Host "==> Starting API on $($env:API_ADDR)"

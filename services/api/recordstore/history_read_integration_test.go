@@ -57,6 +57,14 @@ func TestTurnReadRepositoryPaginatesAccountHistory(t *testing.T) {
 		t.Fatalf("second ListHistory() error = %v", err)
 	}
 	assertTurnIDs(t, second.Items, "history_03_a", "history_01")
+	_, err = repository.ListHistory(t.Context(), "account_01", recordsv1.ListTurnsQuery{
+		Limit:     2,
+		SessionID: "session_01",
+		Cursor:    *first.NextCursor,
+	})
+	if !errors.Is(err, turns.ErrInvalidRequest) {
+		t.Fatalf("filtered cursor error = %v, want invalid request", err)
+	}
 
 	from := baseTime.Add(3 * time.Second)
 	to := baseTime.Add(3 * time.Second)

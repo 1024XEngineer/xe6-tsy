@@ -1,2 +1,1 @@
-x iǎo l íng k āi sh ǐ f ān y ì :1.8 #0.22 @小灵，开始翻译
-x iǎo l íng t íng zh ǐ f ān y ì :1.8 #0.22 @小灵，停止翻译
+x iǎo l íng x iǎo l íng :2.2 #0.08 @小灵小灵

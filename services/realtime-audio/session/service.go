@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 const defaultCleanupTimeout = 5 * time.Second
@@ -54,7 +56,7 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 	defer unlock()
 
 	current, err := s.deps.Runtimes.Get(ctx, command.SessionID)
-	if err == nil && current.RuntimeState == RuntimeFailed && current.LastErrorCode != nil && *current.LastErrorCode == ErrorCodeStopFailed {
+	if err == nil && current.RuntimeState == RuntimeFailed && current.LastErrorCode != nil && *current.LastErrorCode == string(ErrorCodeStopFailed) {
 		return current, ErrRuntimeCleanupRequired
 	}
 	if err == nil && current.RuntimeState != RuntimeStopped && current.RuntimeState != RuntimeFailed {
@@ -62,7 +64,7 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 			return current, ErrRuntimeOperationConflict
 		}
 		processingState := current.RuntimeState == RuntimeListening ||
-			current.RuntimeState == RuntimeASRProcessing || current.RuntimeState == RuntimeTranslating ||
+			current.RuntimeState == RuntimeASRProcessing || current.RuntimeState == RuntimeTranslating || current.RuntimeState == RuntimeThinking || current.RuntimeState == RuntimeAssistantProcessing ||
 			current.RuntimeState == RuntimeTTSProcessing || current.RuntimeState == RuntimePlaying
 		if !processingState {
 			return current, nil
@@ -86,6 +88,7 @@ func (s *LifecycleService) Start(ctx context.Context, command StartRealtimeComma
 	// business session state.
 	business.StartOperationID = command.OperationID
 	business.TraceID = command.TraceID
+	business.InitialMode = command.InitialMode
 	if business.TraceID == "" {
 		business.TraceID = command.OperationID
 	}
@@ -207,12 +210,13 @@ func (s *LifecycleService) GetRuntimeState(ctx context.Context, sessionID string
 	return s.deps.Runtimes.Get(ctx, sessionID)
 }
 
-func failureSnapshot(sessionID string, operationID string, errorCode string, now time.Time) RuntimeSnapshot {
+func failureSnapshot(sessionID string, operationID string, errorCode realtimev1.RuntimeErrorCode, now time.Time) RuntimeSnapshot {
+	code := string(errorCode)
 	return RuntimeSnapshot{
 		SessionID:        sessionID,
 		StartOperationID: operationID,
 		RuntimeState:     RuntimeFailed,
-		LastErrorCode:    &errorCode,
+		LastErrorCode:    &code,
 		UpdatedAt:        now,
 	}
 }

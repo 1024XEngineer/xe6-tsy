@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,14 @@ func TestValidateAllowsCompleteOrUnavailablePricing(t *testing.T) {
 				t.Fatalf("validate() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestValidateAllowsAssistantLLMStage(t *testing.T) {
+	input := validRecordInput()
+	input.ServiceType = StageAssistantLLM
+	if err := validate(input); err != nil {
+		t.Fatalf("validate() error = %v", err)
 	}
 }
 
@@ -296,6 +305,21 @@ func TestRecordStoresOriginalSessionOwnerAfterAccountMerge(t *testing.T) {
 	}
 }
 
+func TestRecordRejectsMismatchedSessionOwnerWithoutCanonicalResolver(t *testing.T) {
+	repository := &captureRepository{}
+	input := validRecordInput()
+	input.AccountID = "account-registered"
+
+	_, err := NewPersistentUseCases(repository, staticSessionOwner{accountID: "account-anonymous"}).Record(t.Context(), input)
+
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("Record() error = %v, want forbidden", err)
+	}
+	if repository.input != (RecordInput{}) {
+		t.Fatalf("repository input = %#v, want no persistence", repository.input)
+	}
+}
+
 type captureRepository struct {
 	input RecordInput
 }
@@ -324,4 +348,10 @@ func (mergedSessionOwner) CanonicalAccountID(_ context.Context, accountID string
 		return "account-registered", nil
 	}
 	return accountID, nil
+}
+
+type staticSessionOwner struct{ accountID string }
+
+func (o staticSessionOwner) AccountIDForSession(context.Context, string) (string, error) {
+	return o.accountID, nil
 }

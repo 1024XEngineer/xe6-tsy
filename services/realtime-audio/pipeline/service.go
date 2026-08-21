@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -15,14 +16,40 @@ import (
 )
 
 var (
-	// ErrUnsupportedSourceLanguage indicates that the captured Turn direction rejects the ASR source.
+	// ErrUnsupportedSourceLanguage rejects one Turn before translation or durable side effects.
+	// Long-lived media loops may discard that Turn and continue processing later audio.
 	ErrUnsupportedSourceLanguage = errors.New("unsupported source language")
 	// ErrPipelineDependencyRequired indicates that a required processing boundary is missing.
 	ErrPipelineDependencyRequired = errors.New("pipeline dependency is required")
 	// ErrFinalTurnAccepted marks a failure after the immutable FinalTurn entered durable delivery.
 	// Callers must not retry HandleASRFinal because doing so can rerun providers under the same ID.
 	ErrFinalTurnAccepted = errors.New("final turn accepted")
+	// ErrFinalSettlementQueueFull rejects a new streaming final before its
+	// durable settlement is accepted, avoiding unbounded memory growth.
+	ErrFinalSettlementQueueFull = errors.New("final settlement queue full")
 )
+
+const finalSettlementQueueCapacity = 32
+
+// IsRecoverableUnsupportedSourceLanguage reports whether unsupported language is the only
+// failure in an error chain. A joined error means cleanup or runtime-state recovery also failed
+// and must be propagated instead of being discarded with the Turn.
+func IsRecoverableUnsupportedSourceLanguage(err error) bool {
+	for err != nil {
+		if err == ErrUnsupportedSourceLanguage {
+			return true
+		}
+		if _, joined := err.(interface{ Unwrap() []error }); joined {
+			return false
+		}
+		wrapped, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = wrapped.Unwrap()
+	}
+	return false
+}
 
 // AudioChunk is the media-plane chunk emitted to the playback boundary.
 type AudioChunk struct {
@@ -46,30 +73,64 @@ type AudioPlaybackLifecycle interface {
 	Cancel(ctx context.Context, sessionID, playbackID, reason string) error
 }
 
+// FinalTurnCommit publishes one immutable FinalTurn while the runtime mode
+// generation remains protected by its coordinator.
+type FinalTurnCommit func(ctx context.Context) error
+
+// FinalTurnCommitGate atomically validates a Turn's runtime mode snapshot and
+// runs its FinalTurn publication. committed=false with a nil error means the
+// Turn was superseded by a runtime restart or mode switch and must be dropped.
+type FinalTurnCommitGate interface {
+	CommitFinalTurn(ctx context.Context, turn TurnContext, commit FinalTurnCommit) (committed bool, err error)
+}
+
 // PipelineDependencies wires provider and event boundaries for one service.
 type PipelineDependencies struct {
-	Translator translate.Provider
-	TTS        tts.Provider
-	FinalTurns recordsv1.FinalTurnSink
-	Usage      UsageFactSink
-	Audio      AudioChunkSink
-	Runtime    session.RuntimeStateReporter
-	VoiceID    string
-	Now        func() time.Time
-	Latency    LatencyLogger
+	Translator           translate.Provider
+	TranslationProvider  string
+	TTS                  tts.Provider
+	TTSProvider          string
+	FinalTurns           recordsv1.FinalTurnSink
+	FinalGate            FinalTurnCommitGate
+	Usage                UsageFactSink
+	Audio                AudioChunkSink
+	Runtime              session.RuntimeStateReporter
+	VoiceID              string
+	Now                  func() time.Time
+	Latency              LatencyLogger
+	Speech               *SpeechOutput
+	LongDeliveryEnabled  bool
+	PhraseTranslations   *PhraseTranslationCoordinator
+	FinalSettlementError func(TurnContext, error)
 }
 
 // PipelineService orchestrates one final ASR result through translation and TTS.
 type PipelineService struct {
-	translator translate.Provider
-	tts        tts.Provider
-	finalTurns recordsv1.FinalTurnSink
-	usage      UsageFactSink
-	audio      AudioChunkSink
-	runtime    session.RuntimeStateReporter
-	voiceID    string
-	now        func() time.Time
-	latency    LatencyLogger
+	translator           translate.Provider
+	translationProvider  string
+	finalTurns           recordsv1.FinalTurnSink
+	finalGate            FinalTurnCommitGate
+	usage                UsageFactSink
+	runtime              session.RuntimeStateReporter
+	speech               *SpeechOutput
+	now                  func() time.Time
+	latency              LatencyLogger
+	longDeliveryEnabled  bool
+	phraseTranslations   *PhraseTranslationCoordinator
+	latePhraseUsage      *latePhraseUsageQueue
+	settlementCtx        context.Context
+	settlementCancel     context.CancelFunc
+	settlementMu         sync.Mutex
+	settlementQueue      chan finalSettlementTask
+	settlementWorkerDone chan struct{}
+	settlementError      func(TurnContext, error)
+	settlementClosed     bool
+	closeOnce            sync.Once
+}
+
+type finalSettlementTask struct {
+	turn   TurnContext
+	result asr.FinalResult
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
@@ -80,10 +141,51 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 	if now == nil {
 		now = func() time.Time { return time.Now().UTC() }
 	}
-	return &PipelineService{
-		translator: deps.Translator, tts: deps.TTS,
-		finalTurns: deps.FinalTurns, usage: deps.Usage, audio: deps.Audio, runtime: deps.Runtime,
-		voiceID: deps.VoiceID, now: now, latency: deps.Latency,
+	speech := deps.Speech
+	if speech == nil {
+		speech = NewSpeechOutput(SpeechOutputDependencies{
+			TTS: deps.TTS, Audio: deps.Audio, Runtime: deps.Runtime,
+			VoiceID: deps.VoiceID, Provider: deps.TTSProvider, Latency: deps.Latency,
+		})
+	}
+	settlementCtx, settlementCancel := context.WithCancel(context.Background())
+	service := &PipelineService{
+		translator: deps.Translator, translationProvider: deps.TranslationProvider,
+		finalTurns: deps.FinalTurns, finalGate: deps.FinalGate,
+		usage: deps.Usage, runtime: deps.Runtime,
+		speech: speech,
+		now:    now, latency: deps.Latency,
+		longDeliveryEnabled: deps.LongDeliveryEnabled,
+		phraseTranslations:  deps.PhraseTranslations,
+		settlementCtx:       settlementCtx, settlementCancel: settlementCancel,
+		settlementError: deps.FinalSettlementError,
+	}
+	service.latePhraseUsage = newLatePhraseUsageQueue(service.usage, service.latency)
+	if service.phraseTranslations != nil {
+		service.phraseTranslations.SetLatePhraseUsageReporter(service.latePhraseUsage.Enqueue)
+	}
+	return service
+}
+
+// Close stops the service-owned late usage worker during process shutdown.
+func (s *PipelineService) Close() {
+	if s != nil {
+		s.closeOnce.Do(func() {
+			s.settlementMu.Lock()
+			s.settlementClosed = true
+			if s.settlementCancel != nil {
+				s.settlementCancel()
+			}
+			workerDone := s.settlementWorkerDone
+			if s.settlementQueue != nil {
+				close(s.settlementQueue)
+			}
+			s.settlementMu.Unlock()
+			if workerDone != nil {
+				<-workerDone
+			}
+			s.latePhraseUsage.Close()
+		})
 	}
 }
 
@@ -102,28 +204,91 @@ func (s *PipelineService) HandleASREvent(ctx context.Context, turn TurnContext, 
 // stage failed; callers must not rerun this method, while Usage and TTS recover
 // at their own processing boundaries.
 func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) (returnErr error) {
+	return s.handleASRFinal(ctx, turn, result, true)
+}
+
+// HandleASRFinalAsync hands a streaming final to the service-owned settlement
+// worker. The media path returns immediately; tasks remain ordered by VAD final
+// while each task can wait for its original pending phrase future.
+func (s *PipelineService) HandleASRFinalAsync(ctx context.Context, turn TurnContext, result asr.FinalResult) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
+	if _, _, ok := targetRoute(turn.LanguageConfig, result.SourceLanguage); !ok {
+		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
+	}
+	if s.phraseTranslations == nil {
+		return s.HandleASRFinal(ctx, turn, result)
+	}
+	s.settlementMu.Lock()
+	if s.settlementClosed {
+		s.settlementMu.Unlock()
+		return context.Canceled
+	}
+	if s.settlementQueue == nil {
+		s.settlementQueue = make(chan finalSettlementTask, finalSettlementQueueCapacity)
+		s.settlementWorkerDone = make(chan struct{})
+		go s.runFinalSettlementWorker(s.settlementQueue, s.settlementWorkerDone)
+	}
+	select {
+	case s.settlementQueue <- finalSettlementTask{turn: turn, result: result}:
+		s.settlementMu.Unlock()
+		return nil
+	default:
+		s.settlementMu.Unlock()
+		return ErrFinalSettlementQueueFull
+	}
+}
+
+func (s *PipelineService) runFinalSettlementWorker(tasks <-chan finalSettlementTask, done chan<- struct{}) {
+	defer close(done)
+	for task := range tasks {
+		if err := s.handleASRFinal(s.settlementCtx, task.turn, task.result, false); err != nil && !errors.Is(err, context.Canceled) {
+			s.reportFinalSettlementError(task.turn, err)
+		}
+	}
+}
+
+func (s *PipelineService) reportFinalSettlementError(turn TurnContext, err error) {
+	if err == nil {
+		return
+	}
+	if s.settlementError != nil {
+		s.settlementError(turn, err)
+		return
+	}
+	s.latency.ProviderFailure("final_settlement", turn, "", "", err)
+}
+
+func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult, reportRuntime bool) (returnErr error) {
 	if err := s.validate(); err != nil {
 		return err
 	}
 	// Runtime state is a media-plane observable fact. Report each long-running
 	// stage and restore listening on every exit unless the report itself fails.
-	if err := s.reportRuntime(ctx, turn, session.RuntimeTranslating, ""); err != nil {
-		return fmt.Errorf("report translating runtime: %w", err)
+	if reportRuntime {
+		if err := s.reportRuntime(ctx, turn, session.RuntimeTranslating, ""); err != nil {
+			if runtimeUpdateSuperseded(err) {
+				return fmt.Errorf("%w: report translating runtime: %w", ErrTurnSuperseded, err)
+			}
+			return fmt.Errorf("report translating runtime: %w", err)
+		}
 	}
 	acceptedFinalTurn := false
-	defer func() {
-		if err := s.reportListening(ctx, turn); err != nil {
-			restoreErr := fmt.Errorf("restore listening runtime: %w", err)
-			if acceptedFinalTurn {
-				restoreErr = finalTurnAcceptedError("restore listening runtime", err)
+	if reportRuntime {
+		defer func() {
+			if err := s.reportListening(ctx, turn); err != nil {
+				restoreErr := fmt.Errorf("restore listening runtime: %w", err)
+				if acceptedFinalTurn {
+					restoreErr = finalTurnAcceptedError("restore listening runtime", err)
+				}
+				returnErr = errors.Join(returnErr, restoreErr)
 			}
-			returnErr = errors.Join(returnErr, restoreErr)
-		}
-	}()
-	// ASR usage describes a completed recognition operation. Record it before
-	// calling the next provider so a usage failure cannot hide an untracked call.
-	if err := s.publishUsage(ctx, turn, "asr", result.Provider, result.Model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
-		return fmt.Errorf("publish ASR usage: %w", err)
+		}()
 	}
 	// Turn owns the versioned language snapshot captured at start. Do not reread
 	// the current session config or a mid-turn change would alter this direction.
@@ -133,35 +298,58 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
 	}
 	translateStartedAt := time.Now()
-	translationResult, err := s.translator.Translate(ctx, translate.Request{
-		SessionID: turn.SessionID, TurnID: turn.ID, Text: result.Text,
-		SourceLanguage: result.SourceLanguage, TargetLanguage: target,
-	})
+	translationResult, residualText, reusedPhrases, err := s.phraseTranslation(ctx, turn, result.Text, result.SourceLanguage, target)
 	if err != nil {
-		return fmt.Errorf("translate Turn %s: %w", turn.ID, err)
+		return fmt.Errorf("publish phrase translation usage: %w", err)
 	}
-	s.logLatencyCheckpoint("translate_done", turn, translateStartedAt,
+	if !reusedPhrases {
+		residualResult, translateErr := s.translator.Translate(ctx, translate.Request{
+			SessionID: turn.SessionID, TurnID: turn.ID, Text: residualText,
+			SourceLanguage: result.SourceLanguage, TargetLanguage: target,
+		})
+		if translateErr != nil {
+			s.latency.ProviderFailure("translation", turn, observedProvider(s.translationProvider, residualResult.Provider), residualResult.Model, translateErr)
+			if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, residualResult); usageErr != nil {
+				return errors.Join(fmt.Errorf("translate Turn %s: %w", turn.ID, translateErr), usageErr)
+			}
+			return fmt.Errorf("translate Turn %s: %w", turn.ID, translateErr)
+		}
+		residualResult.Text = translationResult.Text + residualResult.Text
+		translationResult = residualResult
+	}
+	s.latency.ProviderCheckpoint("translate_done", turn, translateStartedAt, observedProvider(s.translationProvider, translationResult.Provider), translationResult.Model,
 		"source_language", result.SourceLanguage,
 		"target_language", target,
 		"provider_latency_ms", translationResult.LatencyMS,
 		"input_tokens", translationResult.InputTokens,
 		"output_tokens", translationResult.OutputTokens,
 	)
-	translationUsage, err := s.buildUsageFact(
-		turn,
-		"translation",
-		translationResult.Provider,
-		translationResult.Model,
-		0,
-		translationResult.InputTokens,
-		translationResult.OutputTokens,
-		translationResult.CostAmount,
-		translationResult.Currency,
-	)
-	if err != nil {
-		return fmt.Errorf("prepare translation usage: %w", err)
+	var translationUsage UsageFact
+	hasTranslationUsage := true
+	if hasTranslationUsage {
+		translationUsage, err = s.buildUsageFact(
+			turn,
+			"translation",
+			translationResult.Provider,
+			translationResult.Model,
+			0,
+			translationResult.InputTokens,
+			translationResult.OutputTokens,
+			translationResult.CostAmount,
+			translationResult.Currency,
+		)
+		if err != nil {
+			return fmt.Errorf("prepare translation usage: %w", err)
+		}
 	}
 	startedAt, endedAt := turnBounds(turn, result, s.now())
+	longSource := s.longDeliveryEnabled && recordsv1.IsLongSourceTurn(result.Text, endedAt.Sub(startedAt))
+	ttsEnabled := route.TTSEnabled && !longSource
+	deliveryEnabled := route.DeliveryEnabled || longSource
+	var deliveryTrigger recordsv1.FinalTurnDeliveryTrigger
+	if longSource {
+		deliveryTrigger = recordsv1.FinalTurnDeliveryTriggerLongSentence
+	}
 	var providerSpeakerID *string
 	if id := strings.TrimSpace(result.ProviderSpeakerID); id != "" {
 		providerSpeakerID = &id
@@ -170,8 +358,8 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 		EventVersion: recordsv1.FinalTurnEventVersion,
 		EventID:      "final_" + turn.ID, TraceID: turn.TraceID, SessionID: turn.SessionID, TurnID: turn.ID,
 		SequenceNo: turn.SequenceNo, SourceLanguage: result.SourceLanguage, TargetLanguage: target,
-		SourceText: result.Text, TranslatedText: translationResult.Text, TTSEnabled: route.TTSEnabled,
-		DeliveryEnabled: route.DeliveryEnabled, SpeakerCode: recordsv1.PendingSpeakerCode,
+		SourceText: result.Text, TranslatedText: translationResult.Text, TTSEnabled: ttsEnabled,
+		DeliveryEnabled: deliveryEnabled, DeliveryTrigger: deliveryTrigger, SpeakerCode: recordsv1.PendingSpeakerCode,
 		AttributionStatus: recordsv1.AttributionPending, LanguageConfigVersion: turn.LanguageConfig.Version,
 		StartedAt: startedAt, EndedAt: endedAt, OccurredAt: s.now(),
 		ProviderSpeakerID: providerSpeakerID,
@@ -179,49 +367,43 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	if err := finalEvent.Validate(); err != nil {
 		return fmt.Errorf("validate FinalTurn: %w", err)
 	}
-	// Reliable FinalTurn publication is the turn commit point. A failure here may
-	// retry the whole turn; after success the immutable body is accepted and later
-	// failures must not retranslate or publish a second logical turn.
-	if err := s.finalTurns.Publish(ctx, finalEvent); err != nil {
-		return fmt.Errorf("publish FinalTurn: %w", err)
+	// Reliable FinalTurn publication is the turn commit point. The gate keeps the
+	// runtime generation stable across validation and publication. A superseded
+	// Turn exits normally; after a successful commit later failures must not
+	// retranslate or publish a second logical turn.
+	committed, err := s.finalGate.CommitFinalTurn(ctx, turn, func(commitCtx context.Context) error {
+		return s.finalTurns.Publish(commitCtx, finalEvent)
+	})
+	if err != nil {
+		return fmt.Errorf("commit FinalTurn: %w", err)
 	}
-	acceptedFinalTurn = true
-	if err := s.usage.Publish(ctx, translationUsage); err != nil {
-		return finalTurnAcceptedError("publish translation usage", err)
-	}
-	if !route.TTSEnabled {
+	if !committed {
+		// Translation already completed before the generation check. Even when a
+		// mode switch supersedes the Turn and FinalTurn is dropped, its provider
+		// usage remains billable and must be recorded exactly once.
+		if hasTranslationUsage {
+			if err := s.usage.Publish(ctx, translationUsage); err != nil {
+				return fmt.Errorf("publish superseded translation usage: %w", err)
+			}
+		}
 		return nil
 	}
-	if s.tts == nil {
-		return finalTurnAcceptedError("start TTS", ErrPipelineDependencyRequired)
+	acceptedFinalTurn = true
+	if hasTranslationUsage {
+		if err := s.usage.Publish(ctx, translationUsage); err != nil {
+			return finalTurnAcceptedError("publish translation usage", err)
+		}
 	}
-	// TTS runs after durable text publication. TTS or playback failures therefore
-	// return ErrFinalTurnAccepted; callers may show degraded playback but must
-	// not create another FinalTurn.
+	if !ttsEnabled {
+		return nil
+	}
 	playbackID := "playback_" + turn.ID
-	if err := s.reportRuntime(ctx, turn, session.RuntimeTTSProcessing, playbackID); err != nil {
-		return finalTurnAcceptedError("report TTS runtime", err)
-	}
-	ttsStartedAt := time.Now()
-	stream, err := s.tts.StartStream(ctx, tts.Request{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, Text: translationResult.Text, TargetLanguage: target, VoiceID: s.voiceID})
+	ttsResult, err := s.speech.Play(ctx, SpeechOutputRequest{
+		Turn: turn, Language: target, Text: translationResult.Text, PlaybackID: playbackID,
+		SkipRuntime: !reportRuntime,
+	})
 	if err != nil {
-		return finalTurnAcceptedError("start TTS", err)
-	}
-	s.logLatencyCheckpoint("tts_stream_started", turn, ttsStartedAt,
-		"playback_id", playbackID,
-		"target_language", target,
-	)
-	defer stream.Close()
-	played, err := s.publishTTSChunks(ctx, turn, playbackID, ttsStartedAt, stream.Chunks())
-	if err != nil {
-		return finalTurnAcceptedError("stream TTS audio", errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_stream_failed", played)))
-	}
-	ttsResult, err := stream.Finish(ctx)
-	if err != nil {
-		return finalTurnAcceptedError("finish TTS", errors.Join(err, s.cancelPlayback(ctx, turn.SessionID, playbackID, "tts_finish_failed", played)))
-	}
-	if err := s.completePlayback(ctx, turn.SessionID, playbackID, played); err != nil {
-		return finalTurnAcceptedError("complete playback", err)
+		return finalTurnAcceptedError("play translated text", err)
 	}
 	if err := s.publishUsage(ctx, turn, "tts", ttsResult.Provider, ttsResult.Model, ttsResult.AudioDuration.Milliseconds(), 0, 0, ttsResult.CostAmount, ttsResult.Currency); err != nil {
 		return finalTurnAcceptedError("publish TTS usage", err)
@@ -229,42 +411,63 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	return nil
 }
 
-func finalTurnAcceptedError(operation string, err error) error {
-	return fmt.Errorf("%w: %s: %w", ErrFinalTurnAccepted, operation, err)
-}
-
-func (s *PipelineService) publishTTSChunks(ctx context.Context, turn TurnContext, playbackID string, ttsStartedAt time.Time, chunks <-chan tts.AudioChunk) (bool, error) {
-	playing := false
-	firstChunkLogged := false
-	for {
-		select {
-		case <-ctx.Done():
-			return playing, ctx.Err()
-		case chunk, ok := <-chunks:
-			if !ok {
-				return playing, nil
-			}
-			if !playing {
-				// A created TTS stream is not playing until its first real audio chunk;
-				// that chunk is the externally observable playback start.
-				if err := s.reportRuntime(ctx, turn, session.RuntimePlaying, playbackID); err != nil {
-					return false, fmt.Errorf("report playing runtime: %w", err)
-				}
-				playing = true
-			}
-			if err := s.audio.Publish(ctx, AudioChunk{SessionID: turn.SessionID, TurnID: turn.ID, PlaybackID: playbackID, SequenceNo: chunk.SequenceNo, Encoding: chunk.Encoding, Data: append([]byte(nil), chunk.Data...)}); err != nil {
-				return playing, fmt.Errorf("publish audio chunk: %w", err)
-			}
-			if !firstChunkLogged {
-				firstChunkLogged = true
-				s.logLatencyCheckpoint("tts_first_chunk", turn, ttsStartedAt,
-					"playback_id", playbackID,
-					"encoding", chunk.Encoding,
-					"bytes", len(chunk.Data),
-				)
-			}
+func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContext, text, sourceLanguage, targetLanguage string) (translate.Result, string, bool, error) {
+	if s.phraseTranslations == nil {
+		return translate.Result{}, text, false, nil
+	}
+	summary, residual, usage, ok, err := s.phraseTranslations.FinalizePhraseSubtitleTurn(ctx, turn, text)
+	if err != nil {
+		return translate.Result{}, "", false, err
+	}
+	for _, fact := range usage {
+		if err := s.usage.Publish(ctx, fact); err != nil {
+			return translate.Result{}, "", false, err
 		}
 	}
+	if !ok {
+		return translate.Result{Text: summary.Text}, residual, false, nil
+	}
+	result := translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}
+	for _, segment := range summary.ResidualSegments {
+		residualResult, translateErr := s.translator.Translate(ctx, translate.Request{
+			SessionID: turn.SessionID, TurnID: turn.ID, Text: segment,
+			SourceLanguage: sourceLanguage, TargetLanguage: targetLanguage,
+		})
+		if translateErr != nil {
+			if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, residualResult); usageErr != nil {
+				return translate.Result{}, "", false, errors.Join(translateErr, usageErr)
+			}
+			return translate.Result{}, "", false, translateErr
+		}
+		if err := mergeTranslationResult(&result, residualResult); err != nil {
+			return translate.Result{}, "", false, err
+		}
+		result.Text = strings.Replace(result.Text, phraseResidualMarker, residualResult.Text, 1)
+	}
+	return result, "", true, nil
+}
+
+func mergeTranslationResult(total *translate.Result, next translate.Result) error {
+	hadUsage := total.Provider != ""
+	if !hadUsage {
+		total.Provider, total.Model, total.CostAmount, total.Currency = next.Provider, next.Model, next.CostAmount, next.Currency
+	} else if total.Provider != next.Provider || total.Model != next.Model || total.Currency != next.Currency {
+		return fmt.Errorf("translation providers differ across phrase settlement: %s/%s and %s/%s", total.Provider, total.Model, next.Provider, next.Model)
+	}
+	if hadUsage && next.CostAmount != "" {
+		var ok bool
+		total.CostAmount, ok = addPhraseCost(total.CostAmount, next.CostAmount)
+		if !ok {
+			return fmt.Errorf("cannot aggregate translation cost %q and %q", total.CostAmount, next.CostAmount)
+		}
+	}
+	total.InputTokens += next.InputTokens
+	total.OutputTokens += next.OutputTokens
+	return nil
+}
+
+func finalTurnAcceptedError(operation string, err error) error {
+	return fmt.Errorf("%w: %s: %w", ErrFinalTurnAccepted, operation, err)
 }
 
 func (s *PipelineService) logLatencyCheckpoint(stage string, turn TurnContext, since time.Time, attrs ...any) {
@@ -274,29 +477,8 @@ func (s *PipelineService) logLatencyCheckpoint(stage string, turn TurnContext, s
 	s.latency.Checkpoint(stage, turn, since, attrs...)
 }
 
-func (s *PipelineService) completePlayback(ctx context.Context, sessionID, playbackID string, played bool) error {
-	lifecycle, ok := s.audio.(AudioPlaybackLifecycle)
-	if !played || !ok {
-		return nil
-	}
-	return lifecycle.Complete(ctx, sessionID, playbackID)
-}
-
-func (s *PipelineService) cancelPlayback(ctx context.Context, sessionID, playbackID, reason string, played bool) error {
-	lifecycle, ok := s.audio.(AudioPlaybackLifecycle)
-	if !played || !ok {
-		return nil
-	}
-	// Playback cleanup must continue even when the request or provider context is
-	// cancelled, otherwise a failed TTS stream may keep playing. Use an
-	// independent timeout to bound cleanup.
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-	defer cancel()
-	return lifecycle.Cancel(cleanupCtx, sessionID, playbackID, reason)
-}
-
 func (s *PipelineService) validate() error {
-	if s == nil || s.translator == nil || s.finalTurns == nil || s.usage == nil || s.audio == nil || s.runtime == nil {
+	if s == nil || s.translator == nil || s.finalTurns == nil || s.finalGate == nil || s.usage == nil || s.runtime == nil || s.speech == nil {
 		return ErrPipelineDependencyRequired
 	}
 	return nil
@@ -310,18 +492,45 @@ func (s *PipelineService) publishUsage(ctx context.Context, turn TurnContext, se
 	return s.usage.Publish(ctx, fact)
 }
 
+// publishTranslationUsageIfPresent records provider spend from a failed Translate
+// call when the adapter still returned usage metadata.
+func (s *PipelineService) publishTranslationUsageIfPresent(ctx context.Context, turn TurnContext, result translate.Result) error {
+	if strings.TrimSpace(result.Provider) == "" || strings.TrimSpace(result.Model) == "" {
+		return nil
+	}
+	if result.InputTokens == 0 && result.OutputTokens == 0 {
+		return nil
+	}
+	return s.publishUsage(ctx, turn, "translation", result.Provider, result.Model, 0, result.InputTokens, result.OutputTokens, result.CostAmount, result.Currency)
+}
+
 func (s *PipelineService) buildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string) (UsageFact, error) {
+	return buildUsageFact(turn, serviceType, provider, model, durationMS, inputTokens, outputTokens, cost, currency, s.now())
+}
+
+func buildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string, occurredAt time.Time) (UsageFact, error) {
+	return buildUsageFactWithIdentity(turn, serviceType, provider, model, durationMS, inputTokens, outputTokens, cost, currency,
+		fmt.Sprintf("usage_%s_%s", turn.ID, serviceType), fmt.Sprintf("usage:%s:%s", turn.ID, serviceType), occurredAt)
+}
+
+func buildUsageFactWithIdentity(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency, id, idempotencyKey string, occurredAt time.Time) (UsageFact, error) {
 	fact := UsageFact{
-		EventVersion: UsageEventVersion, ID: fmt.Sprintf("usage_%s_%s", turn.ID, serviceType),
-		TraceID: turn.TraceID, IdempotencyKey: fmt.Sprintf("usage:%s:%s", turn.ID, serviceType),
+		EventVersion: UsageEventVersion, ID: id,
+		TraceID: turn.TraceID, IdempotencyKey: idempotencyKey,
 		AccountID: turn.AccountID, SessionID: turn.SessionID, TurnID: turn.ID, ServiceType: serviceType,
 		Provider: provider, Model: model, InputTokens: inputTokens, OutputTokens: outputTokens,
-		AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: s.now(),
+		AudioDurationMS: durationMS, CostAmount: cost, Currency: currency, OccurredAt: occurredAt,
 	}
 	if err := fact.Validate(); err != nil {
 		return UsageFact{}, fmt.Errorf("validate UsageFact: %w", err)
 	}
 	return fact, nil
+}
+
+// BuildUsageFact creates the shared durable usage contract for non-Turn callers that reuse
+// provider infrastructure, such as command confirmation speech.
+func BuildUsageFact(turn TurnContext, serviceType, provider, model string, durationMS, inputTokens, outputTokens int64, cost, currency string, occurredAt time.Time) (UsageFact, error) {
+	return buildUsageFact(turn, serviceType, provider, model, durationMS, inputTokens, outputTokens, cost, currency, occurredAt)
 }
 
 func turnBounds(turn TurnContext, result asr.FinalResult, fallback time.Time) (time.Time, time.Time) {

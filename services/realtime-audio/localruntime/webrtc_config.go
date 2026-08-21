@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
 )
 
@@ -65,6 +66,11 @@ func (c StaticWebRTCConfig) GetConfig(_ context.Context, sessionID string) (cont
 		DataChannel: controlplane.DataChannelConfig{
 			Label:   "translation-events",
 			Ordered: true,
+		},
+		ControlDataChannel: controlplane.ControlDataChannelConfig{
+			Label:           realtimev1.ControlDataChannelLabel,
+			Ordered:         true,
+			ProtocolVersion: realtimev1.ControlProtocolVersion,
 		},
 		Audio: controlplane.AudioConfig{
 			UplinkCodec:   uplink,

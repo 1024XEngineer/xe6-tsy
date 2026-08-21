@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"fmt"
+
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
 // SetProcessingState serializes pipeline progress with lifecycle Start and Stop.
@@ -24,11 +26,16 @@ func (s *LifecycleService) SetProcessingState(ctx context.Context, update Proces
 	if current.SessionID != update.SessionID {
 		return fmt.Errorf("%w: runtime belongs to %q", ErrRuntimeIdentityConflict, current.SessionID)
 	}
+	if !matchesExpectedIdentity(current.CurrentTurnID, update.ExpectedTurnID) ||
+		!matchesExpectedIdentity(current.CurrentPlaybackID, update.ExpectedPlaybackID) {
+		return ErrRuntimeIdentityConflict
+	}
 	if !validRuntimeProgressTransition(current.RuntimeState, update.RuntimeState) {
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidRuntimeTransition, current.RuntimeState, update.RuntimeState)
 	}
-	if conflictingIdentity(current.CurrentTurnID, update.CurrentTurnID) ||
-		conflictingIdentity(current.CurrentPlaybackID, update.CurrentPlaybackID) {
+	preemptingTurn := isActiveRuntimeState(current.RuntimeState) && update.RuntimeState == RuntimeASRProcessing
+	if !preemptingTurn && (conflictingIdentity(current.CurrentTurnID, update.CurrentTurnID) ||
+		conflictingIdentity(current.CurrentPlaybackID, update.CurrentPlaybackID)) {
 		return ErrRuntimeIdentityConflict
 	}
 	if sameRuntimeState(current, update) {
@@ -48,12 +55,19 @@ func (s *LifecycleService) SetProcessingState(ctx context.Context, update Proces
 
 // SetRuntimeFailed records a terminal media-pipeline failure without changing
 // business session state. Stop transitions win if shutdown is already active.
-func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID string) error {
+// Empty errorCode defaults to realtime_pipeline_failed.
+func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID string, errorCode realtimev1.RuntimeErrorCode) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if sessionID == "" {
 		return ErrSessionIDRequired
+	}
+	if errorCode == "" {
+		errorCode = ErrorCodePipelineFailed
+	}
+	if !errorCode.Valid() {
+		return fmt.Errorf("%w: %q", ErrInvalidRuntimeErrorCode, errorCode)
 	}
 
 	unlock := s.locks.lock(sessionID)
@@ -72,8 +86,8 @@ func (s *LifecycleService) SetRuntimeFailed(ctx context.Context, sessionID strin
 	current.RuntimeState = RuntimeFailed
 	current.CurrentTurnID = nil
 	current.CurrentPlaybackID = nil
-	errorCode := ErrorCodePipelineFailed
-	current.LastErrorCode = &errorCode
+	code := string(errorCode)
+	current.LastErrorCode = &code
 	current.UpdatedAt = s.deps.Now()
 	if err := s.deps.Runtimes.Save(ctx, current); err != nil {
 		return fmt.Errorf("save runtime failure: %w", err)
@@ -85,6 +99,10 @@ func validateRuntimeUpdate(update ProcessingStateUpdate) error {
 	if update.SessionID == "" {
 		return ErrSessionIDRequired
 	}
+	if invalidExpectedIdentity(update.ExpectedTurnID) || invalidExpectedIdentity(update.ExpectedPlaybackID) ||
+		(update.ExpectedPlaybackID != nil && update.ExpectedTurnID == nil) {
+		return ErrInvalidRuntimeUpdate
+	}
 	turnRequired := func() bool { return update.CurrentTurnID != nil && *update.CurrentTurnID != "" }
 	playbackRequired := func() bool { return update.CurrentPlaybackID != nil && *update.CurrentPlaybackID != "" }
 
@@ -93,7 +111,7 @@ func validateRuntimeUpdate(update ProcessingStateUpdate) error {
 		if update.CurrentTurnID == nil && update.CurrentPlaybackID == nil {
 			return nil
 		}
-	case RuntimeASRProcessing, RuntimeTranslating:
+	case RuntimeASRProcessing, RuntimeTranslating, RuntimeThinking, RuntimeAssistantProcessing:
 		if turnRequired() && update.CurrentPlaybackID == nil {
 			return nil
 		}
@@ -105,21 +123,42 @@ func validateRuntimeUpdate(update ProcessingStateUpdate) error {
 	return ErrInvalidRuntimeUpdate
 }
 
+func invalidExpectedIdentity(identity *string) bool {
+	return identity != nil && *identity == ""
+}
+
+func matchesExpectedIdentity(current, expected *string) bool {
+	return expected == nil || current != nil && *current == *expected
+}
+
 func validRuntimeProgressTransition(current, next RuntimeState) bool {
 	if current == next {
 		return true
 	}
 	switch current {
 	case RuntimeListening:
-		return next == RuntimeASRProcessing || next == RuntimeTranslating
+		return next == RuntimeASRProcessing || next == RuntimeTranslating || next == RuntimeThinking || next == RuntimeAssistantProcessing || next == RuntimeTTSProcessing
 	case RuntimeASRProcessing:
-		return next == RuntimeTranslating || next == RuntimeListening
+		return next == RuntimeASRProcessing || next == RuntimeTranslating || next == RuntimeThinking || next == RuntimeAssistantProcessing || next == RuntimeListening
 	case RuntimeTranslating:
-		return next == RuntimeTTSProcessing || next == RuntimeListening
+		return next == RuntimeASRProcessing || next == RuntimeTTSProcessing || next == RuntimeListening
+	case RuntimeAssistantProcessing:
+		return next == RuntimeASRProcessing || next == RuntimeTTSProcessing || next == RuntimeListening
+	case RuntimeThinking:
+		return next == RuntimeASRProcessing || next == RuntimeTTSProcessing || next == RuntimeListening
 	case RuntimeTTSProcessing:
-		return next == RuntimePlaying || next == RuntimeListening
+		return next == RuntimePlaying || next == RuntimeListening || next == RuntimeASRProcessing
 	case RuntimePlaying:
-		return next == RuntimeListening
+		return next == RuntimeListening || next == RuntimeASRProcessing
+	default:
+		return false
+	}
+}
+
+func isActiveRuntimeState(state RuntimeState) bool {
+	switch state {
+	case RuntimeASRProcessing, RuntimeTranslating, RuntimeThinking, RuntimeAssistantProcessing, RuntimeTTSProcessing, RuntimePlaying:
+		return true
 	default:
 		return false
 	}

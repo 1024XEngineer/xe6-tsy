@@ -1,13 +1,33 @@
-/** Wake-word command labels matching public/kws/keywords.txt display names. */
-export const WAKE_START_KEYWORD = "小灵，开始翻译";
-export const WAKE_STOP_KEYWORD = "小灵，停止翻译";
+/**
+ * Fixed wake-word catalog matching public/kws/keywords.txt @display names.
+ * Business commands are interpreted by realtime only after this local gate fires.
+ */
 
-export type WakeCommand = "start" | "stop";
+export type WakeTrigger = {
+  id: "attention";
+  /** Canonical display name; also a keywords.txt `@…` suffix. */
+  label: string;
+};
 
-export function classifyWakeKeyword(keyword: string): WakeCommand | null {
+export const WAKE_TRIGGERS: readonly WakeTrigger[] = [
+  {
+    id: "attention",
+    label: "小灵小灵",
+  },
+];
+
+export const WAKE_LISTEN_KEYWORD =
+  WAKE_TRIGGERS.find((t) => t.id === "attention")!.label;
+
+export type WakePhraseMatch = { trigger: WakeTrigger; phrase: string };
+
+export function resolveWakePhrase(keyword: string): WakePhraseMatch | null {
   const text = keyword.trim();
   if (!text) return null;
-  if (text.includes("停止")) return "stop";
-  if (text.includes("开始")) return "start";
-  return null;
+  const trigger = WAKE_TRIGGERS.find((item) => item.label === text);
+  return trigger ? { trigger, phrase: trigger.label } : null;
+}
+
+export function resolveWakeTrigger(keyword: string): WakeTrigger | null {
+  return resolveWakePhrase(keyword)?.trigger ?? null;
 }

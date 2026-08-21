@@ -421,8 +421,27 @@ WHERE turn_id = 'turn_stale_01'`); err != nil {
 	if err := second.Ack(); err != nil {
 		t.Fatalf("second Ack() error = %v", err)
 	}
-	if err := first.Ack(); err != nil {
-		t.Fatalf("stale first Ack() error = %v", err)
+	if second.Task().Attempts != 2 {
+		t.Fatalf("second task attempts = %d, want 2 after lease expiry", second.Task().Attempts)
+	}
+	if err := first.Retry("late worker"); err != nil {
+		t.Fatalf("stale first Retry() error = %v", err)
+	}
+	var (
+		status      string
+		attempts    int
+		receipt     *string
+		lockedUntil *string
+		lastError   *string
+	)
+	if err := pool.QueryRow(t.Context(), `
+SELECT status, attempts, receipt, locked_until::TEXT, last_error
+FROM attribution_tasks
+WHERE turn_id = 'turn_stale_01'`).Scan(&status, &attempts, &receipt, &lockedUntil, &lastError); err != nil {
+		t.Fatalf("read stale receipt settlement: %v", err)
+	}
+	if status != "completed" || attempts != 2 || receipt != nil || lockedUntil != nil || lastError != nil {
+		t.Fatalf("stale receipt settlement status=%q attempts=%d receipt=%v locked_until=%v last_error=%v", status, attempts, receipt, lockedUntil, lastError)
 	}
 }
 

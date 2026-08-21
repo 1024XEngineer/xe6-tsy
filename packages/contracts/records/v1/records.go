@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type AttributionStatus string
@@ -18,6 +20,14 @@ const (
 	AttributionProvisional AttributionStatus = "provisional"
 	AttributionConfirmed   AttributionStatus = "confirmed"
 	AttributionCorrected   AttributionStatus = "corrected"
+)
+
+// FinalTurnDeliveryTrigger identifies an explicit producer-selected automatic delivery behavior.
+// The zero value preserves the legacy delivery_enabled route semantics.
+type FinalTurnDeliveryTrigger string
+
+const (
+	FinalTurnDeliveryTriggerLongSentence FinalTurnDeliveryTrigger = "long_sentence"
 )
 
 const CorrectedBySystem = "system"
@@ -31,12 +41,22 @@ const (
 	FinalTurnEventVersion = 1
 	// MaxFinalTurnBatchSize bounds one immutable outbound-message snapshot request.
 	MaxFinalTurnBatchSize = 100
+	// LongSourceTextThreshold is the maximum source-text length that remains eligible for initial TTS.
+	LongSourceTextThreshold = 50
+	// LongSourceAudioThreshold is the source-audio duration at which a Turn uses long-source delivery.
+	LongSourceAudioThreshold = 20 * time.Second
 )
 
 var ErrInvalidFinalTurnEvent = errors.New("invalid final turn event")
 
 // FinalTurnPayloadHash is the fixed-size digest stored for FinalTurn idempotency checks.
 type FinalTurnPayloadHash [sha256.Size]byte
+
+// IsLongSourceTurn reports whether source text or source audio reaches a long-source threshold.
+func IsLongSourceTurn(sourceText string, audioDuration time.Duration) bool {
+	return utf8.RuneCountInString(strings.TrimSpace(sourceText)) > LongSourceTextThreshold ||
+		audioDuration >= LongSourceAudioThreshold
+}
 
 type ErrorCode string
 
@@ -172,10 +192,11 @@ type FinalTurnEvent struct {
 	TranslatedText        string  `json:"translated_text"`
 	// omitempty keeps zero-value route flags out of legacy payload hashes while enabled
 	// routes remain explicit in the immutable event payload.
-	TTSEnabled           bool    `json:"tts_enabled,omitempty"`
-	DeliveryEnabled      bool    `json:"delivery_enabled,omitempty"`
-	SpeakerCode          string  `json:"speaker_code"`
-	SpeakerLabelSnapshot *string `json:"speaker_label_snapshot"`
+	TTSEnabled           bool                     `json:"tts_enabled,omitempty"`
+	DeliveryEnabled      bool                     `json:"delivery_enabled,omitempty"`
+	DeliveryTrigger      FinalTurnDeliveryTrigger `json:"delivery_trigger,omitempty"`
+	SpeakerCode          string                   `json:"speaker_code"`
+	SpeakerLabelSnapshot *string                  `json:"speaker_label_snapshot"`
 	// ProviderSpeakerID is the stable provider or diarization cluster key for this session, not a
 	// global identity. It is optional: when absent the async resolver must not guess attribution.
 	// omitempty keeps the nil-field JSON identical to pre-provider payloads so replay hashes remain
@@ -222,6 +243,15 @@ func (event FinalTurnEvent) Validate() error {
 	case event.OccurredAt.IsZero():
 		return invalidFinalTurnField("occurred_at")
 	}
+	switch event.DeliveryTrigger {
+	case "":
+	case FinalTurnDeliveryTriggerLongSentence:
+		if event.TTSEnabled || !event.DeliveryEnabled || !IsLongSourceTurn(event.SourceText, event.EndedAt.Sub(event.StartedAt)) {
+			return invalidFinalTurnField("delivery_trigger")
+		}
+	default:
+		return invalidFinalTurnField("delivery_trigger")
+	}
 
 	switch event.AttributionStatus {
 	case AttributionPending, AttributionProvisional, AttributionConfirmed, AttributionCorrected:
@@ -245,10 +275,8 @@ func FinalTurnEventPayloadHash(event FinalTurnEvent) (FinalTurnPayloadHash, erro
 	return sha256.Sum256(payload), nil
 }
 
-// FinalTurnEventPayloadHashMatches accepts the current hash and the pre-route-fields hash during
-// rolling upgrades. Older API consumers ignore the route fields when they decode a newer event and
-// therefore persist the legacy hash; accepting that one form preserves replay idempotency without
-// weakening conflict detection for events already written by the current version.
+// FinalTurnEventPayloadHashMatches accepts hashes produced by older consumers that omitted optional
+// route fields or delivery_trigger during rolling upgrades. All other event fields remain immutable.
 func FinalTurnEventPayloadHashMatches(event FinalTurnEvent, stored []byte) (bool, error) {
 	current, err := FinalTurnEventPayloadHash(event)
 	if err != nil {
@@ -257,18 +285,33 @@ func FinalTurnEventPayloadHashMatches(event FinalTurnEvent, stored []byte) (bool
 	if bytes.Equal(stored, current[:]) {
 		return true, nil
 	}
-	if !event.TTSEnabled && !event.DeliveryEnabled {
-		return false, nil
-	}
 
-	legacyEvent := event
-	legacyEvent.TTSEnabled = false
-	legacyEvent.DeliveryEnabled = false
-	legacy, err := FinalTurnEventPayloadHash(legacyEvent)
-	if err != nil {
-		return false, err
+	legacyEvents := make([]FinalTurnEvent, 0, 3)
+	if event.DeliveryTrigger != "" {
+		withoutTrigger := event
+		withoutTrigger.DeliveryTrigger = ""
+		legacyEvents = append(legacyEvents, withoutTrigger)
 	}
-	return bytes.Equal(stored, legacy[:]), nil
+	if event.TTSEnabled || event.DeliveryEnabled {
+		withoutRoutes := event
+		withoutRoutes.TTSEnabled = false
+		withoutRoutes.DeliveryEnabled = false
+		legacyEvents = append(legacyEvents, withoutRoutes)
+		if event.DeliveryTrigger != "" {
+			withoutRoutes.DeliveryTrigger = ""
+			legacyEvents = append(legacyEvents, withoutRoutes)
+		}
+	}
+	for _, legacyEvent := range legacyEvents {
+		legacy, hashErr := FinalTurnEventPayloadHash(legacyEvent)
+		if hashErr != nil {
+			return false, hashErr
+		}
+		if bytes.Equal(stored, legacy[:]) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // SpeakerObservation carries the session-scoped stable key generated by a provider or diarization

@@ -11,17 +11,22 @@ const (
 	RuntimeListening     RuntimeState = "listening"
 	RuntimeASRProcessing RuntimeState = "asr_processing"
 	RuntimeTranslating   RuntimeState = "translating"
-	RuntimeTTSProcessing RuntimeState = "tts_processing"
-	RuntimePlaying       RuntimeState = "playing"
-	RuntimeStopping      RuntimeState = "stopping"
-	RuntimeFailed        RuntimeState = "failed"
+	// RuntimeThinking is retained for clients that consumed the pre-assistant
+	// generic LLM progress state. New assistant turns report the more precise
+	// RuntimeAssistantProcessing state below.
+	RuntimeThinking            RuntimeState = "thinking"
+	RuntimeAssistantProcessing RuntimeState = "assistant_processing"
+	RuntimeTTSProcessing       RuntimeState = "tts_processing"
+	RuntimePlaying             RuntimeState = "playing"
+	RuntimeStopping            RuntimeState = "stopping"
+	RuntimeFailed              RuntimeState = "failed"
 )
 
 // Valid reports whether the state belongs to the public media-runtime contract.
 func (s RuntimeState) Valid() bool {
 	switch s {
 	case RuntimeStopped, RuntimeStarting, RuntimeListening, RuntimeASRProcessing,
-		RuntimeTranslating, RuntimeTTSProcessing, RuntimePlaying, RuntimeStopping,
+		RuntimeTranslating, RuntimeThinking, RuntimeAssistantProcessing, RuntimeTTSProcessing, RuntimePlaying, RuntimeStopping,
 		RuntimeFailed:
 		return true
 	default:
@@ -45,7 +50,18 @@ type RuntimeSnapshot struct {
 type RuntimeErrorCode string
 
 const (
-	RuntimeErrorStartFailed    RuntimeErrorCode = "realtime_start_failed"
-	RuntimeErrorStopFailed     RuntimeErrorCode = "realtime_stop_failed"
-	RuntimeErrorPipelineFailed RuntimeErrorCode = "realtime_pipeline_failed"
+	RuntimeErrorStartFailed         RuntimeErrorCode = "realtime_start_failed"
+	RuntimeErrorStopFailed          RuntimeErrorCode = "realtime_stop_failed"
+	RuntimeErrorPipelineFailed      RuntimeErrorCode = "realtime_pipeline_failed"
+	RuntimeErrorTranslationRejected RuntimeErrorCode = "realtime_translation_rejected"
 )
+
+// Valid reports whether the code belongs to the public runtime-error contract.
+func (c RuntimeErrorCode) Valid() bool {
+	switch c {
+	case RuntimeErrorStartFailed, RuntimeErrorStopFailed, RuntimeErrorPipelineFailed, RuntimeErrorTranslationRejected:
+		return true
+	default:
+		return false
+	}
+}

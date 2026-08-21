@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 )
 
@@ -131,10 +132,10 @@ type Service interface {
 	Get(context.Context, string, string) (Message, error)
 	// Retry creates the next attempt for an eligible failed message idempotently.
 	Retry(context.Context, string, string, string) (Message, error)
-	// Preferences returns the current account's channel settings.
+	// Preferences returns the current account's target-level automatic delivery settings.
 	Preferences(context.Context, string) ([]Preference, error)
-	// PutPreference updates whether the account enables one supported channel.
-	PutPreference(context.Context, string, Channel, bool) (Preference, error)
+	// PutPreference updates whether one verified destination receives automatic delivery.
+	PutPreference(context.Context, string, Channel, string, bool) (Preference, error)
 	// ListMessageTargets returns account-owned destination bindings.
 	ListMessageTargets(context.Context, string, *Channel) ([]MessageTarget, error)
 	// BindEmailTarget verifies and stores one email destination for the account.
@@ -147,15 +148,61 @@ type Service interface {
 	RevokeMessageTarget(context.Context, string, Channel, string) error
 }
 
-// AutomaticPreferenceService is an optional extension used by the HTTP
-// adapter to select the single automatic destination for a channel without
-// breaking older lightweight Service fakes.
-type AutomaticPreferenceService interface {
-	PutPreferenceForDestination(context.Context, string, Channel, bool, string) (Preference, error)
+// MessageListingService exposes recent account-owned delivery state without
+// expanding lightweight Service implementations that do not persist messages.
+type MessageListingService interface {
+	ListMessages(context.Context, string, int) ([]Message, error)
+}
+
+// AutomaticOutputStatusService exposes durable automatic-output recovery
+// state without expanding lightweight Service implementations.
+type AutomaticOutputStatusService interface {
+	ListAutomaticOutputStatus(context.Context, string, string, int) ([]AutomaticOutputStatus, error)
 }
 
 // FinalTurnScheduler creates one immutable asynchronous message for an
 // eligible Final Turn after it has been durably stored.
 type FinalTurnScheduler interface {
 	ScheduleFinalTurn(context.Context, string, recordsv1.FinalTurnEvent) error
+}
+
+// AutomaticTurnSchedulerRepository persists a complete automatic schedule.
+type AutomaticTurnSchedulerRepository interface {
+	GetAutomaticTurnRun(context.Context, string, string) (AutomaticTurnRun, error)
+	ScheduleAutomaticTurn(context.Context, AutomaticTurnScheduleRecord) error
+}
+
+// AutomaticTurnRetryRepository stores and claims failed automatic target attempts.
+type AutomaticTurnRetryRepository interface {
+	ListAutomaticTurnRetryCandidates(context.Context, int) ([]AutomaticTurnRun, error)
+	ListAutomaticTurnSettlements(context.Context, string, string) ([]AutomaticTurnSettlement, error)
+	RetryAutomaticTurnTarget(context.Context, string, string, string, string) (Message, error)
+}
+
+// AutomaticTurnFallbackRepository claims and records fallback playback lifecycle state.
+type AutomaticTurnFallbackRepository interface {
+	ListAutomaticTurnRecoveryCandidates(context.Context, int) ([]AutomaticTurnRun, error)
+	ListAutomaticTurnRestoreCandidates(context.Context, int) ([]AutomaticTurnRun, error)
+	ClaimAutomaticTurnFallback(context.Context, string, string) (AutomaticTurnRun, bool, error)
+	MarkAutomaticTurnFallbackPlayed(context.Context, string, string) error
+	MarkAutomaticTurnRestored(context.Context, string, string) error
+}
+
+// AutomaticTurnOutputRestorer restores bidirectional output after fallback playback.
+type AutomaticTurnOutputRestorer interface {
+	RestoreBidirectionalOutput(context.Context, string, string, int, string) error
+}
+
+// AutomaticTurnFallbackPlayer plays the immutable translation fallback snapshot.
+type AutomaticTurnFallbackPlayer interface {
+	PlayFallback(context.Context, string, realtimev1.FallbackPlaybackRequest) (realtimev1.FallbackPlaybackReceipt, error)
+}
+
+// AutomaticTurnSettlementRepository stores and reads target-level outcomes.
+// It is an optional extension so existing lightweight repositories remain
+// source-compatible while production uses the durable implementation.
+type AutomaticTurnSettlementRepository interface {
+	CreateAutomaticTurnSettlement(context.Context, AutomaticTurnSettlement) error
+	ListAutomaticTurnSettlements(context.Context, string, string) ([]AutomaticTurnSettlement, error)
+	UpdateAutomaticTurnSettlement(context.Context, AutomaticTurnSettlement) error
 }

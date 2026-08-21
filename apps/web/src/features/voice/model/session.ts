@@ -14,11 +14,35 @@ export type TranslationTurn = {
   translation: string;
 };
 
+export type AssistantReply = {
+  replyId: string;
+  turnId: string;
+  text: string;
+  language: string;
+};
+
+export type TransientASRSubtitle = {
+  turnId: string;
+  text: string;
+  sourceLanguage: string;
+};
+
+export type TransientPhraseSubtitle = {
+  utteranceId: string;
+  phraseSequence: number;
+  sourceText: string;
+  translatedText: string;
+  status: "source_stable" | "translated" | "translation_failed";
+};
+
 export type SessionState = {
   phase: SessionPhase;
   audioMode: AudioMode;
   notice: string | null;
   turns: TranslationTurn[];
+  assistantReplies: AssistantReply[];
+  asrPartial: TransientASRSubtitle | null;
+  phraseSubtitles: TransientPhraseSubtitle[];
 };
 
 export const initialSession: SessionState = {
@@ -26,6 +50,9 @@ export const initialSession: SessionState = {
   audioMode: null,
   notice: null,
   turns: [],
+  assistantReplies: [],
+  asrPartial: null,
+  phraseSubtitles: [],
 };
 
 export type SessionEvent =
@@ -35,6 +62,10 @@ export type SessionEvent =
   | { type: "PLAYING" }
   | { type: "SET_TURNS"; turns: TranslationTurn[] }
   | { type: "ADD_TURN"; turn: TranslationTurn }
+  | { type: "ADD_ASSISTANT_REPLY"; reply: AssistantReply }
+  | { type: "SET_ASR_PARTIAL"; partial: TransientASRSubtitle }
+  | { type: "ADD_PHRASE_SUBTITLE"; subtitle: TransientPhraseSubtitle }
+  | { type: "CLEAR_ASR_PARTIAL" }
   | { type: "FALLBACK"; message: string }
   | { type: "ERROR"; message: string }
   | { type: "END" };
@@ -94,25 +125,86 @@ export function sessionReducer(
       };
     case "ADD_TURN":
       if (state.turns.some((turn) => turn.id === event.turn.id)) {
-        return state;
+        return state.asrPartial?.turnId === event.turn.id
+          ? { ...state, asrPartial: null }
+          : state;
       }
       return {
         ...state,
         phase: "active",
         turns: [...state.turns, event.turn],
+        asrPartial:
+          state.asrPartial?.turnId === event.turn.id ? null : state.asrPartial,
+        phraseSubtitles: state.phraseSubtitles.filter(
+          (subtitle) => subtitle.utteranceId !== event.turn.id,
+        ),
         notice: null,
       };
+    case "ADD_ASSISTANT_REPLY":
+      if (state.assistantReplies.some((reply) => reply.replyId === event.reply.replyId)) {
+        return state;
+      }
+      return {
+        ...state,
+        phase: "active",
+        assistantReplies: [...state.assistantReplies, event.reply],
+        notice: null,
+      };
+    case "SET_ASR_PARTIAL":
+      if (state.turns.some((turn) => turn.id === event.partial.turnId)) {
+        return state;
+      }
+      return { ...state, asrPartial: event.partial };
+    case "ADD_PHRASE_SUBTITLE": {
+      if (state.turns.some((turn) => turn.id === event.subtitle.utteranceId)) {
+        return state;
+      }
+      const existing = state.phraseSubtitles.find(
+        (subtitle) =>
+          subtitle.utteranceId === event.subtitle.utteranceId &&
+          subtitle.phraseSequence === event.subtitle.phraseSequence,
+      );
+      if (existing) {
+        const terminal = existing.status === "translated" || existing.status === "translation_failed";
+        const incomingSource = event.subtitle.status === "source_stable";
+        if (terminal && incomingSource) {
+          return state;
+        }
+        return {
+          ...state,
+          phraseSubtitles: state.phraseSubtitles.map((subtitle) =>
+            subtitle === existing ? event.subtitle : subtitle,
+          ),
+        };
+      }
+      return {
+        ...state,
+        phraseSubtitles: [...state.phraseSubtitles, event.subtitle].sort(
+          (left, right) =>
+            left.utteranceId.localeCompare(right.utteranceId) ||
+            left.phraseSequence - right.phraseSequence,
+        ),
+      };
+    }
+    case "CLEAR_ASR_PARTIAL":
+      return state.asrPartial || state.phraseSubtitles.length > 0
+        ? { ...state, asrPartial: null, phraseSubtitles: [] }
+        : state;
     case "FALLBACK":
       return {
         ...state,
         phase: "listening",
         audioMode: "simulated",
+        asrPartial: null,
+        phraseSubtitles: [],
         notice: event.message,
       };
     case "ERROR":
       return {
         ...state,
         phase: state.phase === "idle" ? "idle" : "active",
+        asrPartial: null,
+        phraseSubtitles: [],
         notice: event.message,
       };
     case "END":

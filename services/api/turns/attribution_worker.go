@@ -140,11 +140,11 @@ func (w *AttributionWorker) handle(ctx context.Context, delivery AttributionTask
 	task := delivery.Task()
 	accountID, err := w.owners.AccountIDForSession(ctx, task.SessionID)
 	if err != nil {
-		return w.settleFailure(delivery, task, fmt.Errorf("resolve owner for session %s: %w", task.SessionID, err))
+		return w.settleFailure(ctx, delivery, task, fmt.Errorf("resolve owner for session %s: %w", task.SessionID, err))
 	}
 	decision, err := w.resolve(ctx, task, accountID)
 	if err != nil {
-		return w.settleFailure(delivery, task, err)
+		return w.settleFailure(ctx, delivery, task, err)
 	}
 	if decision == nil || decision.ParticipantID == "" {
 		if err := delivery.Ack(); err != nil {
@@ -163,7 +163,7 @@ func (w *AttributionWorker) handle(ctx context.Context, delivery AttributionTask
 			}
 			return nil
 		}
-		return w.settleFailure(delivery, task, fmt.Errorf("apply attribution decision: %w", err))
+		return w.settleFailure(ctx, delivery, task, fmt.Errorf("apply attribution decision: %w", err))
 	}
 	if err := delivery.Ack(); err != nil {
 		return fmt.Errorf("%w: ack attribution task: %w", ErrAttributionSettlement, err)
@@ -172,8 +172,13 @@ func (w *AttributionWorker) handle(ctx context.Context, delivery AttributionTask
 }
 
 // settleFailure fails the task permanently when the cause is not retryable or the attempt limit is
-// reached, otherwise schedules a retry. Settlement errors still fail the worker supervisor.
-func (w *AttributionWorker) settleFailure(delivery AttributionTaskDelivery, task AttributionTask, cause error) error {
+// reached, otherwise schedules a retry. Settlement errors still fail the worker supervisor. A
+// cancelled context means shutdown: nothing is settled and the claim lease expires so the task is
+// redelivered after the supervisor restarts the worker.
+func (w *AttributionWorker) settleFailure(ctx context.Context, delivery AttributionTaskDelivery, task AttributionTask, cause error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if errors.Is(cause, ErrAttributionNoEvidence) || task.Attempts >= maxAttributionAttempts {
 		w.logger.Error("attribution task failed permanently",
 			"task_id", task.TaskID, "turn_id", task.TurnID, "attempt", task.Attempts, "error", cause)

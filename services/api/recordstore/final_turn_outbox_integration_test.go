@@ -56,6 +56,7 @@ func TestFinalTurnOutboxReplaysIdenticalPayloadAndRejectsConflict(t *testing.T) 
 	}
 	outbox := NewFinalTurnOutbox(pool)
 	event := finalTurnEvent("event_01", "turn_01", "session_01", 1)
+	originalTranslation := event.TranslatedText
 	if err := outbox.Append(t.Context(), recordsv1.FinalTurnTopic, event.EventID, event); err != nil {
 		t.Fatalf("first Append() error = %v", err)
 	}
@@ -65,6 +66,13 @@ func TestFinalTurnOutboxReplaysIdenticalPayloadAndRejectsConflict(t *testing.T) 
 	event.TranslatedText = "different translation"
 	if err := outbox.Append(t.Context(), recordsv1.FinalTurnTopic, event.EventID, event); !errors.Is(err, ErrFinalTurnOutboxConflict) {
 		t.Fatalf("conflicting Append() error = %v, want outbox conflict", err)
+	}
+	var storedTranslation string
+	if err := pool.QueryRow(t.Context(), `SELECT payload->>'translated_text' FROM final_turn_outbox WHERE event_id = $1`, event.EventID).Scan(&storedTranslation); err != nil {
+		t.Fatalf("read stored replay payload: %v", err)
+	}
+	if storedTranslation != originalTranslation {
+		t.Fatalf("stored translation = %q, want original %q", storedTranslation, originalTranslation)
 	}
 }
 
@@ -121,6 +129,11 @@ WHERE event_id = 'event_invalid'`).Scan(&status, &lastError, &rejectedAt); err !
 	}
 	if status != "rejected" || lastError == nil || *lastError != "invalid payload" || rejectedAt == nil {
 		t.Fatalf("rejected row status=%q last_error=%v rejected_at=%v", status, lastError, rejectedAt)
+	}
+	if _, found, err := NewFinalTurnOutbox(pool).receiveOnce(t.Context()); err != nil {
+		t.Fatalf("receiveOnce() after Reject error = %v", err)
+	} else if found {
+		t.Fatal("receiveOnce() returned rejected event")
 	}
 }
 
@@ -199,8 +212,27 @@ func TestFinalTurnOutboxAcceptsStaleReceiptAfterAnotherWorkerSettles(t *testing.
 	if err := second.Ack(); err != nil {
 		t.Fatalf("second Ack() error = %v", err)
 	}
-	if err := first.Ack(); err != nil {
-		t.Fatalf("stale first Ack() error = %v", err)
+	if second.Attempts() != 2 {
+		t.Fatalf("second Attempts() = %d, want 2 after lease expiry", second.Attempts())
+	}
+	if err := first.Nack("late worker"); err != nil {
+		t.Fatalf("stale first Nack() error = %v", err)
+	}
+	var (
+		status      string
+		attempts    int
+		receipt     *string
+		lockedUntil *string
+		lastError   *string
+	)
+	if err := pool.QueryRow(t.Context(), `
+SELECT status, attempts, receipt, locked_until::TEXT, last_error
+FROM final_turn_outbox
+WHERE event_id = $1`, event.EventID).Scan(&status, &attempts, &receipt, &lockedUntil, &lastError); err != nil {
+		t.Fatalf("read stale receipt settlement: %v", err)
+	}
+	if status != "acked" || attempts != 2 || receipt != nil || lockedUntil != nil || lastError != nil {
+		t.Fatalf("stale receipt settlement status=%q attempts=%d receipt=%v locked_until=%v last_error=%v", status, attempts, receipt, lockedUntil, lastError)
 	}
 }
 

@@ -7,18 +7,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/runtime"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 )
 
 func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
 	fixture := newFixture(t)
-	startBody := `{"operation_id":"operation-1","trace_id":"trace-start","started_by":"browser"}`
+	startBody := `{"operation_id":"operation-1","trace_id":"trace-start","started_by":"browser","initial_mode":"assistant"}`
 
 	first := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/start", startBody, "start-key")
 	if first.Code != http.StatusOK {
@@ -33,7 +35,8 @@ func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
 	}
 	if fixture.lifecycle.startCommand.OperationID != "operation-1" ||
 		fixture.lifecycle.startCommand.TraceID != "trace-start" ||
-		fixture.lifecycle.startCommand.StartedBy != "browser" {
+		fixture.lifecycle.startCommand.StartedBy != "browser" ||
+		fixture.lifecycle.startCommand.InitialMode != realtimev1.ModeAssistant {
 		t.Fatalf("start command = %#v, want complete request mapping", fixture.lifecycle.startCommand)
 	}
 
@@ -56,6 +59,342 @@ func TestHandlerStartStopDelegatesAndReplaysIdempotently(t *testing.T) {
 		fixture.lifecycle.stopCommand.Reason != "user_requested" ||
 		!fixture.lifecycle.stopCommand.EndedAt.Equal(time.Unix(1700000060, 0).UTC()) {
 		t.Fatalf("stop command = %#v, want first request mapping", fixture.lifecycle.stopCommand)
+	}
+}
+
+func TestHandlerAcceptsFallbackPlaybackIdempotently(t *testing.T) {
+	fixture := newFixture(t)
+	fallback := &fallbackPlaybackFake{}
+	fixture.controlHandler.fallback = fallback
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+
+	first := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	second := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if first.Code != http.StatusAccepted || second.Code != http.StatusAccepted {
+		t.Fatalf("fallback statuses = %d, %d", first.Code, second.Code)
+	}
+	if fallback.calls != 1 {
+		t.Fatalf("fallback calls = %d, want 1", fallback.calls)
+	}
+	var firstReceipt, secondReceipt realtimev1.FallbackPlaybackReceipt
+	if err := json.NewDecoder(first.Body).Decode(&firstReceipt); err != nil {
+		t.Fatalf("decode first receipt: %v", err)
+	}
+	if err := json.NewDecoder(second.Body).Decode(&secondReceipt); err != nil {
+		t.Fatalf("decode second receipt: %v", err)
+	}
+	if firstReceipt.Status != realtimev1.FallbackPlaybackAccepted || secondReceipt.Status != realtimev1.FallbackPlaybackAlreadyAccepted {
+		t.Fatalf("fallback receipts = %#v, %#v", firstReceipt, secondReceipt)
+	}
+}
+
+func TestHandlerKeepsFallbackPlaybackIdempotentAcrossInstances(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
+	firstFixture := newFixture(t)
+	firstFallback := &fallbackPlaybackFake{}
+	firstFixture.controlHandler.fallback = firstFallback
+	firstFixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+
+	first := firstFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	secondFixture := newFixture(t)
+	secondFallback := &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallback = secondFallback
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+
+	if first.Code != http.StatusAccepted || second.Code != http.StatusAccepted {
+		t.Fatalf("fallback statuses = %d, %d", first.Code, second.Code)
+	}
+	if firstFallback.calls != 1 || secondFallback.calls != 0 {
+		t.Fatalf("fallback calls = %d, %d, want 1, 0", firstFallback.calls, secondFallback.calls)
+	}
+	var receipt realtimev1.FallbackPlaybackReceipt
+	if err := json.NewDecoder(second.Body).Decode(&receipt); err != nil {
+		t.Fatalf("decode replay receipt: %v", err)
+	}
+	if receipt.Status != realtimev1.FallbackPlaybackAlreadyAccepted {
+		t.Fatalf("replay receipt = %#v", receipt)
+	}
+}
+
+func TestHandlerClaimsFallbackBeforeConcurrentCrossInstancePlayback(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
+	firstFixture := newFixture(t)
+	firstFallback := &blockingFallbackPlaybackFake{entered: make(chan struct{}), release: make(chan struct{})}
+	firstFixture.controlHandler.fallback = firstFallback
+	firstFixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firstDone <- firstFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	}()
+	<-firstFallback.entered
+
+	secondFixture := newFixture(t)
+	secondFallback := &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallback = secondFallback
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("concurrent replay status = %d, body=%s", second.Code, second.Body.String())
+	}
+	if secondFallback.calls != 0 {
+		t.Fatalf("second fallback calls = %d, want 0", secondFallback.calls)
+	}
+
+	close(firstFallback.release)
+	if first := <-firstDone; first.Code != http.StatusAccepted {
+		t.Fatalf("first fallback status = %d, body=%s", first.Code, first.Body.String())
+	}
+	if firstFallback.calls.Load() != 1 {
+		t.Fatalf("first fallback calls = %d, want 1", firstFallback.calls.Load())
+	}
+}
+
+func TestHandlerRenewsActiveFallbackClaim(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string), renewed: make(chan struct{})}
+	fixture := newFixture(t)
+	fixture.controlHandler.fallbackClaimRenewInterval = 10 * time.Millisecond
+	firstFallback := &blockingFallbackPlaybackFake{entered: make(chan struct{}), release: make(chan struct{})}
+	fixture.controlHandler.fallback = firstFallback
+	fixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	}()
+	<-firstFallback.entered
+	select {
+	case <-store.renewed:
+	case <-time.After(time.Second):
+		t.Fatal("fallback claim was not renewed while playback was active")
+	}
+	secondFixture := newFixture(t)
+	secondFixture.controlHandler.fallback = &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("active replay status = %d, body=%s; want conflict", second.Code, second.Body.String())
+	}
+	close(firstFallback.release)
+	if first := <-done; first.Code != http.StatusAccepted {
+		t.Fatalf("first fallback status = %d, body=%s", first.Code, first.Body.String())
+	}
+}
+
+func TestHandlerStopsFallbackWhenClaimRenewalFails(t *testing.T) {
+	store := &fallbackReplayStoreFake{
+		accepted: make(map[string]string),
+		renewed:  make(chan struct{}),
+		renewErr: errors.New("renew unavailable"),
+	}
+	fixture := newFixture(t)
+	fixture.controlHandler.fallbackClaimRenewInterval = 10 * time.Millisecond
+	firstFallback := &blockingFallbackPlaybackFake{entered: make(chan struct{}), release: make(chan struct{})}
+	fixture.controlHandler.fallback = firstFallback
+	fixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	}()
+	<-firstFallback.entered
+	select {
+	case <-store.renewed:
+	case <-time.After(time.Second):
+		t.Fatal("fallback claim renewal was not attempted")
+	}
+	select {
+	case first := <-done:
+		if first.Code != http.StatusInternalServerError {
+			t.Fatalf("renewal failure status = %d, body=%s", first.Code, first.Body.String())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fallback did not stop after claim renewal failure")
+	}
+	secondFixture := newFixture(t)
+	secondFixture.controlHandler.fallback = &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("retry after renewal failure status = %d, body=%s; want conflict", second.Code, second.Body.String())
+	}
+}
+
+func TestHandlerCompletesFallbackWhenStoppingInFlightRenewal(t *testing.T) {
+	baseStore := &fallbackReplayStoreFake{accepted: make(map[string]string)}
+	store := &blockingRenewFallbackStore{
+		fallbackReplayStoreFake: baseStore,
+		renewEntered:            make(chan struct{}),
+	}
+	fixture := newFixture(t)
+	fixture.controlHandler.fallbackClaimRenewInterval = 10 * time.Millisecond
+	fixture.controlHandler.fallbackReplays = store
+	fixture.controlHandler.fallback = &blockingFallbackPlaybackFake{
+		entered: make(chan struct{}),
+		release: store.renewEntered,
+	}
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firstDone <- fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	}()
+
+	select {
+	case <-store.renewEntered:
+	case <-time.After(time.Second):
+		t.Fatal("fallback claim renewal did not start")
+	}
+	var first *httptest.ResponseRecorder
+	select {
+	case first = <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("fallback request did not finish after heartbeat stopped")
+	}
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("fallback status = %d, body=%s; want accepted", first.Code, first.Body.String())
+	}
+
+	secondFixture := newFixture(t)
+	secondFallback := &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallback = secondFallback
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("replayed fallback status = %d, body=%s; want accepted", second.Code, second.Body.String())
+	}
+	var receipt realtimev1.FallbackPlaybackReceipt
+	if err := json.NewDecoder(second.Body).Decode(&receipt); err != nil {
+		t.Fatalf("decode replay receipt: %v", err)
+	}
+	if receipt.Status != realtimev1.FallbackPlaybackAlreadyAccepted {
+		t.Fatalf("replay receipt = %#v, want already accepted", receipt)
+	}
+	if secondFallback.calls != 0 {
+		t.Fatalf("replayed fallback calls = %d, want 0", secondFallback.calls)
+	}
+}
+
+func TestHandlerRetriesFallbackAfterExpiredProcessingClaim(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
+	firstFixture := newFixture(t)
+	firstFixture.controlHandler.fallback = &fallbackPlaybackFake{err: errors.New("playback outcome unknown")}
+	firstFixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	first := firstFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("failed fallback status = %d, body=%s", first.Code, first.Body.String())
+	}
+
+	secondFixture := newFixture(t)
+	secondFallback := &fallbackPlaybackFake{}
+	secondFixture.controlHandler.fallback = secondFallback
+	secondFixture.controlHandler.fallbackReplays = store
+	store.reconcileProcessing = true
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("ambiguous replay status = %d, body=%s", second.Code, second.Body.String())
+	}
+	if secondFallback.calls != 1 {
+		t.Fatalf("fallback replay calls = %d, want 1", secondFallback.calls)
+	}
+}
+
+func TestHandlerReleasesFallbackClaimWhenPlaybackDidNotStart(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string)}
+	firstFixture := newFixture(t)
+	firstFixture.controlHandler.fallback = &fallbackPlaybackFake{err: fallbackPlaybackNotStartedTestError{err: errors.New("runtime unavailable")}}
+	firstFixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+
+	first := firstFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("failed fallback status = %d, body=%s", first.Code, first.Body.String())
+	}
+	if store.aborted != 1 {
+		t.Fatalf("abort calls = %d, want 1", store.aborted)
+	}
+
+	retryFallback := &fallbackPlaybackFake{}
+	secondFixture := newFixture(t)
+	secondFixture.controlHandler.fallback = retryFallback
+	secondFixture.controlHandler.fallbackReplays = store
+	second := secondFixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("retry status = %d, body=%s", second.Code, second.Body.String())
+	}
+	if retryFallback.calls != 1 {
+		t.Fatalf("retry fallback calls = %d, want 1", retryFallback.calls)
+	}
+}
+
+func TestHandlerKeepsFallbackClaimWhenAbortFails(t *testing.T) {
+	store := &fallbackReplayStoreFake{
+		accepted: make(map[string]string),
+		abortErr: errors.New("abort unavailable"),
+	}
+	fixture := newFixture(t)
+	fixture.controlHandler.fallback = &fallbackPlaybackFake{err: fallbackPlaybackNotStartedTestError{err: errors.New("runtime unavailable")}}
+	fixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+
+	first := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if first.Code != http.StatusInternalServerError {
+		t.Fatalf("failed fallback status = %d, body=%s", first.Code, first.Body.String())
+	}
+	store.abortErr = nil
+	second := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if second.Code != http.StatusConflict {
+		t.Fatalf("retry status = %d, body=%s; want conflict", second.Code, second.Body.String())
+	}
+}
+
+func TestHandlerRejectsInvalidFallbackRequests(t *testing.T) {
+	fixture := newFixture(t)
+	fixture.controlHandler.fallback = &fallbackPlaybackFake{}
+	validBody := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	tests := []struct {
+		name           string
+		body           string
+		idempotencyKey string
+	}{
+		{name: "missing idempotency key", body: validBody},
+		{name: "missing trace", body: `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3}`, idempotencyKey: "fallback:fallback-1"},
+		{name: "session mismatch", body: `{"operation_id":"fallback-1","session_id":"other-session","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`, idempotencyKey: "fallback:fallback-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", tt.body, tt.idempotencyKey)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("fallback status = %d, body=%s; want bad request", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerReturnsCompletionFailureAndPayloadConflict(t *testing.T) {
+	store := &fallbackReplayStoreFake{accepted: make(map[string]string), completeErr: errors.New("replay store unavailable")}
+	fixture := newFixture(t)
+	fixture.controlHandler.fallback = &fallbackPlaybackFake{}
+	fixture.controlHandler.fallbackReplays = store
+	body := `{"operation_id":"fallback-1","session_id":"session-1","turn_id":"turn-1","target_language":"zh-CN","translated_text":"translated","language_config_version":3,"trace_id":"trace-1"}`
+	failed := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("completion failure status = %d, body=%s; want internal error", failed.Code, failed.Body.String())
+	}
+
+	store.completeErr = nil
+	store.reconcileProcessing = true
+	accepted := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", body, "fallback:fallback-1")
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("retry status = %d, body=%s; want accepted", accepted.Code, accepted.Body.String())
+	}
+	conflictBody := strings.Replace(body, "translated", "changed", 1)
+	conflict := fixture.request(http.MethodPost, "/realtime/v1/sessions/session-1/fallback-playback", conflictBody, "fallback:fallback-1")
+	if conflict.Code != http.StatusBadRequest {
+		t.Fatalf("payload conflict status = %d, body=%s; want bad request", conflict.Code, conflict.Body.String())
 	}
 }
 
@@ -134,6 +473,20 @@ func TestMapErrorTTSCodecUnsupported(t *testing.T) {
 	status, code := mapError(webrtc.ErrTTSCodecUnsupported)
 	if status != http.StatusBadRequest || code != "tts_codec_unsupported" {
 		t.Fatalf("mapError(ErrTTSCodecUnsupported) = %d %q", status, code)
+	}
+}
+
+func TestMapErrorTreatsModeEventFailureAsUnavailable(t *testing.T) {
+	status, code := mapError(runtime.ErrModeEventUnavailable)
+	if status != http.StatusServiceUnavailable || code != "service_unavailable" {
+		t.Fatalf("mapError(ErrModeEventUnavailable) = %d %q", status, code)
+	}
+}
+
+func TestMapErrorKeepsLegacyRuntimeNotFoundOutsideModeControl(t *testing.T) {
+	status, code := mapError(session.ErrRuntimeNotFound)
+	if status != http.StatusNotFound || code != "not_found" {
+		t.Fatalf("mapError(ErrRuntimeNotFound) = %d %q", status, code)
 	}
 }
 
@@ -406,12 +759,14 @@ func TestHandlerRejectsWrongSessionTicketAndAcceptsRepeatedCandidate(t *testing.
 }
 
 type fixture struct {
-	handler     http.Handler
-	lifecycle   *lifecycleFake
-	signaling   *signalingFake
-	connections *connectionFake
-	tickets     *ticketFake
-	config      *configFake
+	handler        http.Handler
+	controlHandler *Handler
+	lifecycle      *lifecycleFake
+	modes          *modeControlFake
+	signaling      *signalingFake
+	connections    *connectionFake
+	tickets        *ticketFake
+	config         *configFake
 }
 
 func newFixture(t *testing.T) fixture {
@@ -430,15 +785,19 @@ func newFixture(t *testing.T) fixture {
 		SessionID: "session-1", ConnectionID: "connection-1",
 		State: realtimev1.ConnectionConnected, Version: 1, UpdatedAt: now,
 	}}
+	modes := &modeControlFake{state: realtimev1.ModeStateSnapshot{
+		SessionID: "session-1", RuntimeInstanceID: "runtime-1", ActiveMode: realtimev1.ModeInterpretation,
+		Generation: 1, Phase: realtimev1.ModePhaseActive, UpdatedAt: now,
+	}}
 	handler, err := New(Dependencies{
-		Lifecycle: lifecycle, Signaling: &signalingFake{}, Connections: connections,
+		Lifecycle: lifecycle, Modes: modes, Signaling: &signalingFake{}, Connections: connections,
 		Tickets: tickets, Config: config, Now: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 	return fixture{
-		handler: handler, lifecycle: lifecycle,
+		handler: handler, controlHandler: handler, lifecycle: lifecycle, modes: modes,
 		signaling: handler.signaling.(*signalingFake), connections: connections,
 		tickets: tickets, config: config,
 	}
@@ -454,7 +813,7 @@ func newReplayHandlerWithLimits(t *testing.T, lifecycle Lifecycle, now func() ti
 	tickets := &sessionTicketFake{expiresAt: baseNow.Add(time.Hour)}
 	config := &configFake{value: WebRTCConfig{SessionID: "session-1", ExpiresAt: baseNow.Add(time.Hour), ICETransportPolicy: "all"}}
 	handler, err := New(Dependencies{
-		Lifecycle: lifecycle, Signaling: &signalingFake{}, Connections: &connectionFake{},
+		Lifecycle: lifecycle, Modes: &modeControlFake{}, Signaling: &signalingFake{}, Connections: &connectionFake{},
 		Tickets: tickets, Config: config, Now: now,
 		ReplayTTL: replayTTL, ReplayMaxEntries: replayMax, ReplayMaxEntriesPerSession: replayMaxPerSession,
 	})
@@ -581,6 +940,166 @@ func (f *lifecycleFake) GetRuntimeState(context.Context, string) (session.Runtim
 type signalingFake struct {
 	offerCalls     int
 	candidateCalls int
+}
+
+type fallbackPlaybackFake struct {
+	calls int
+	err   error
+}
+
+type fallbackReplayStoreFake struct {
+	mu                  sync.Mutex
+	accepted            map[string]string
+	processing          map[string]bool
+	tokens              map[string]string
+	reconcileProcessing bool
+	renewErr            error
+	renewed             chan struct{}
+	renewCount          int
+	completeErr         error
+	abortErr            error
+	aborted             int
+}
+
+type blockingRenewFallbackStore struct {
+	*fallbackReplayStoreFake
+	renewEntered chan struct{}
+}
+
+func (s *blockingRenewFallbackStore) Renew(ctx context.Context, _ string, _ string, _ string, _ string) error {
+	close(s.renewEntered)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *fallbackReplayStoreFake) Claim(_ context.Context, sessionID, operationID, payloadHash string) (FallbackPlaybackClaim, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := sessionID + "\x00" + operationID
+	storedHash, ok := s.accepted[key]
+	if !ok {
+		s.accepted[key] = payloadHash
+		if s.processing == nil {
+			s.processing = make(map[string]bool)
+		}
+		if s.tokens == nil {
+			s.tokens = make(map[string]string)
+		}
+		s.processing[key] = true
+		s.tokens[key] = "token-" + key
+		return FallbackPlaybackClaim{Status: FallbackPlaybackClaimed, Token: s.tokens[key]}, nil
+	}
+	if storedHash != payloadHash {
+		return FallbackPlaybackClaim{}, webrtc.ErrIdempotencyPayloadConflict
+	}
+	if s.processing[key] {
+		if s.reconcileProcessing {
+			if s.tokens == nil {
+				s.tokens = make(map[string]string)
+			}
+			s.tokens[key] = "reclaimed-" + key
+			return FallbackPlaybackClaim{Status: FallbackPlaybackClaimed, Token: s.tokens[key]}, nil
+		}
+		return FallbackPlaybackClaim{Status: FallbackPlaybackProcessing}, nil
+	}
+	return FallbackPlaybackClaim{Status: FallbackPlaybackAccepted}, nil
+}
+
+func (s *fallbackReplayStoreFake) Renew(_ context.Context, sessionID, operationID, payloadHash, claimToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.renewCount++
+	if s.renewCount == 1 && s.renewed != nil {
+		close(s.renewed)
+	}
+	if s.renewErr != nil {
+		return s.renewErr
+	}
+	key := sessionID + "\x00" + operationID
+	storedHash, ok := s.accepted[key]
+	if !ok || storedHash != payloadHash || !s.processing[key] || s.tokens[key] != claimToken {
+		return errors.New("claim is no longer owned")
+	}
+	return nil
+}
+
+func (s *fallbackReplayStoreFake) Complete(_ context.Context, sessionID, operationID, payloadHash, claimToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.completeErr != nil {
+		return s.completeErr
+	}
+	key := sessionID + "\x00" + operationID
+	if storedHash, ok := s.accepted[key]; !ok || storedHash != payloadHash {
+		return webrtc.ErrIdempotencyPayloadConflict
+	}
+	if s.processing[key] && s.tokens[key] != claimToken {
+		return errors.New("claim is no longer owned")
+	}
+	if s.processing == nil {
+		s.processing = make(map[string]bool)
+	}
+	s.processing[key] = false
+	delete(s.tokens, key)
+	return nil
+}
+
+func (s *fallbackReplayStoreFake) Abort(_ context.Context, sessionID, operationID, payloadHash, claimToken string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.abortErr != nil {
+		return s.abortErr
+	}
+	key := sessionID + "\x00" + operationID
+	storedHash, ok := s.accepted[key]
+	if !ok {
+		return nil
+	}
+	if storedHash != payloadHash {
+		return webrtc.ErrIdempotencyPayloadConflict
+	}
+	if !s.processing[key] {
+		return nil
+	}
+	if s.tokens[key] != claimToken {
+		return errors.New("claim is no longer owned")
+	}
+	delete(s.accepted, key)
+	delete(s.processing, key)
+	delete(s.tokens, key)
+	s.aborted++
+	return nil
+}
+
+func (f *fallbackPlaybackFake) PlayFallback(_ context.Context, _ realtimev1.FallbackPlaybackRequest) error {
+	f.calls++
+	return f.err
+}
+
+type fallbackPlaybackNotStartedTestError struct {
+	err error
+}
+
+func (e fallbackPlaybackNotStartedTestError) Error() string             { return e.err.Error() }
+func (e fallbackPlaybackNotStartedTestError) Unwrap() error             { return e.err }
+func (fallbackPlaybackNotStartedTestError) FallbackPlaybackNotStarted() {}
+
+type blockingFallbackPlaybackFake struct {
+	entered chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (f *blockingFallbackPlaybackFake) PlayFallback(ctx context.Context, _ realtimev1.FallbackPlaybackRequest) error {
+	if f.calls.Add(1) == 1 {
+		close(f.entered)
+	}
+	select {
+	case <-f.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 type connectionFake struct {

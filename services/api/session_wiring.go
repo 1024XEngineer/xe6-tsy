@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+var newRealtimeTicketCodec = realtimev1.NewHMACTicketCodec
+
 // newSessionHandlerFromPool builds the voice-session HTTP boundary with a real
 // languages.Service for start readiness. When REALTIME_BASE_URL is unset,
 // Start stays deferred (501) because WebRTC readiness and Realtime.Start are
@@ -71,7 +73,7 @@ func realtimeSessionAdapters(
 		return nil, nil, errors.New("REALTIME_BASE_URL requires JWT_SECRET for ticket signing")
 	}
 	ticketKey := sha256.Sum256([]byte("lingow-realtime-ticket\x00" + ticketSecret))
-	codec, err := realtimev1.NewHMACTicketCodec(realtimev1.TicketConfig{
+	codec, err := newRealtimeTicketCodec(realtimev1.TicketConfig{
 		Secret: ticketKey[:],
 		TTL:    time.Minute,
 	})

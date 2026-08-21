@@ -1,11 +1,18 @@
 package languages
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+
+	languagesv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/languages/v1"
 )
 
 // AccountIDFromContext extracts the authenticated account ID set by trusted middleware.
@@ -13,9 +20,12 @@ type AccountIDFromContext func(r *http.Request) (accountID string, ok bool)
 
 // Handler serves the language-configuration HTTP surface from issue #88 §3.
 type Handler struct {
-	svc       *Service
-	accountID AccountIDFromContext
+	svc         *Service
+	accountID   AccountIDFromContext
+	systemToken string
 }
+
+const systemTokenHeader = "X-Lingow-System-Token"
 
 // NewHandler returns HTTP handlers backed by Service.
 // accountID must read only middleware-injected identity (never client body fields).
@@ -26,15 +36,87 @@ func NewHandler(svc *Service, accountID AccountIDFromContext) *Handler {
 	return &Handler{svc: svc, accountID: accountID}
 }
 
-// Register attaches language routes behind the caller's authentication boundary.
+// ConfigureSystemCommands enables the fail-closed internal endpoint used by realtime command
+// orchestration. An empty token keeps the endpoint registered but unavailable.
+func (h *Handler) ConfigureSystemCommands(token string) {
+	if h != nil {
+		h.systemToken = strings.TrimSpace(token)
+	}
+}
+
+// Register attaches account language routes behind caller authentication and the
+// internal command route behind its fail-closed system-token boundary.
 func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) http.Handler) {
 	if authenticate == nil {
 		panic("language authentication middleware is required")
 	}
 	mux.Handle("GET /api/v1/languages", authenticate(http.HandlerFunc(h.listLanguages)))
+	mux.Handle("GET /api/v1/account/automatic-delivery-readiness", authenticate(http.HandlerFunc(h.automaticDeliveryReadiness)))
 	mux.Handle("GET /api/v1/voice-sessions/{id}/language-config", authenticate(http.HandlerFunc(h.getCurrentConfig)))
 	mux.Handle("POST /api/v1/voice-sessions/{id}/language-configs", authenticate(http.HandlerFunc(h.createConfig)))
 	mux.Handle("GET /api/v1/voice-sessions/{id}/language-configs", authenticate(http.HandlerFunc(h.listConfigHistory)))
+	mux.Handle("POST /internal/v1/voice-sessions/{id}/language-config", http.HandlerFunc(h.configureFromCommand))
+}
+
+func (h *Handler) configureFromCommand(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.svc == nil || h.systemToken == "" ||
+		subtle.ConstantTimeCompare([]byte(r.Header.Get(systemTokenHeader)), []byte(h.systemToken)) != 1 {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var request languagesv1.CommandConfigRequest
+	if err := decodeJSONBody(r, &request); err != nil || request.Validate() != nil || request.SessionID != r.PathValue("id") {
+		writeServiceError(w, r, invalidRequest("command language configuration"))
+		return
+	}
+	accountID, err := h.svc.sessions.GetOwnerAccountID(r.Context(), request.SessionID)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	config, err := h.svc.CreateConfig(r.Context(), accountID, request.SessionID, commandIdempotencyKey(request.SessionID, request.CommandID), CreateLanguageConfigRequest{
+		Languages: []LanguagePair{
+			{Source: request.SourceLanguage, Target: request.TargetLanguage},
+			{Source: request.TargetLanguage, Target: request.SourceLanguage},
+		},
+	})
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	if config.Status != StatusActive {
+		writeServiceError(w, r, ErrStaleCommand)
+		return
+	}
+	writeJSON(w, http.StatusOK, languagesv1.CommandConfigResult{
+		SessionID: request.SessionID, CommandID: request.CommandID, Version: config.Version,
+	})
+}
+
+// commandIdempotencyKey scopes command retries to one session while keeping the
+// existing language-config idempotency column's 128-byte limit.
+func commandIdempotencyKey(sessionID, commandID string) string {
+	payload, _ := json.Marshal([2]string{sessionID, commandID})
+	digest := sha256.Sum256(payload)
+	return "command_" + hex.EncodeToString(digest[:])
+}
+
+func (h *Handler) automaticDeliveryReadiness(w http.ResponseWriter, r *http.Request) {
+	accountID, err := h.requireAccount(r)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	if h.svc == nil {
+		writeServiceError(w, r, ErrNotImplemented)
+		return
+	}
+	ready, err := h.svc.AutomaticDeliveryReady(r.Context(), accountID)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, AutomaticDeliveryReadinessResponse{Ready: ready})
 }
 
 func (h *Handler) listLanguages(w http.ResponseWriter, r *http.Request) {
@@ -154,9 +236,15 @@ func (h *Handler) requireAccount(r *http.Request) (string, error) {
 	return accountID, nil
 }
 
+const maxRequestBodyBytes = 1 << 20
+
 func decodeJSONBody(r *http.Request, target any) error {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	payload, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodyBytes+1))
+	if err != nil || len(payload) > maxRequestBodyBytes {
+		return invalidRequest("json body")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return invalidRequest("json body")

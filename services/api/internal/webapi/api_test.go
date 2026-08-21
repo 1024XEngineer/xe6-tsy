@@ -19,22 +19,39 @@ import (
 )
 
 type deliveryFake struct {
-	created              delivery.CreateInput
-	retryAccountID       string
-	retryMessageID       string
-	retryIdempotency     string
-	targets              []delivery.MessageTarget
-	listAccountID        string
-	listChannel          *delivery.Channel
-	bindAccountID        string
-	bindToken            string
-	revokeAccountID      string
-	revokeChannel        delivery.Channel
-	revokeRef            string
-	bindEmailErr         error
-	emailVerificationErr error
-	listTargetsErr       error
-	revokeErr            error
+	created                delivery.CreateInput
+	retryAccountID         string
+	retryMessageID         string
+	retryIdempotency       string
+	getAccountID           string
+	getMessageID           string
+	targets                []delivery.MessageTarget
+	messages               []delivery.Message
+	automaticStatuses      []delivery.AutomaticOutputStatus
+	messageListAccountID   string
+	messageListLimit       int
+	automaticStatusAccount string
+	automaticStatusSession string
+	automaticStatusLimit   int
+	automaticStatusErr     error
+	listAccountID          string
+	listChannel            *delivery.Channel
+	preferences            []delivery.Preference
+	preferencesErr         error
+	putPreferenceAccount   string
+	putPreferenceChannel   delivery.Channel
+	putPreferenceRef       string
+	putPreferenceEnabled   bool
+	putPreferenceErr       error
+	bindAccountID          string
+	bindToken              string
+	revokeAccountID        string
+	revokeChannel          delivery.Channel
+	revokeRef              string
+	bindEmailErr           error
+	emailVerificationErr   error
+	listTargetsErr         error
+	revokeErr              error
 }
 
 type tokenVerifierFake struct{}
@@ -47,20 +64,40 @@ func (tokenVerifierFake) VerifyAccessToken(_ context.Context, token string) (acc
 }
 
 type accountFake struct {
-	verifyPhoneCalled bool
-	verifyPhoneCtx    context.Context
-	verifyPhoneAnon   string
-	phoneChallengeErr error
+	verifyPhoneCalled    bool
+	verifyPhoneCtx       context.Context
+	verifyPhoneAnon      string
+	phoneChallengeCalled bool
+	phoneChallengeErr    error
 }
 
 func (f *accountFake) CreateAnonymous(context.Context) (accounts.AuthResult, error) {
 	return accounts.AuthResult{}, domain.ErrNotImplemented
 }
 func (f *accountFake) CreatePhoneChallenge(context.Context, string) (string, error) {
+	f.phoneChallengeCalled = true
 	if f.phoneChallengeErr != nil {
 		return "", f.phoneChallengeErr
 	}
 	return "", domain.ErrNotImplemented
+}
+
+func TestPhoneChallengeRejectsOversizedJSONBody(t *testing.T) {
+	accounts := &accountFake{}
+	handler := webapi.New(accounts, usage.NewUseCases(), &deliveryFake{}, tokenVerifierFake{})
+	validBody := `{"phone":"15500000000"}`
+	body := validBody + strings.Repeat(" ", 1<<20-len(validBody)+1)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verification-codes", strings.NewReader(body))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+	}
+	if accounts.phoneChallengeCalled {
+		t.Fatal("oversized request reached service")
+	}
 }
 func (f *accountFake) VerifyPhone(ctx context.Context, _, _, anonymousAccountID string) (accounts.AuthResult, error) {
 	f.verifyPhoneCalled = true
@@ -85,8 +122,24 @@ func (f *deliveryFake) Create(_ context.Context, input delivery.CreateInput) (de
 	f.created = input
 	return delivery.Message{ID: "message-1", AccountID: input.AccountID, Channel: input.Channel}, nil
 }
-func (*deliveryFake) Get(context.Context, string, string) (delivery.Message, error) {
-	return delivery.Message{}, domain.ErrNotImplemented
+func (f *deliveryFake) ListMessages(_ context.Context, accountID string, limit int) ([]delivery.Message, error) {
+	f.messageListAccountID = accountID
+	f.messageListLimit = limit
+	return f.messages, nil
+}
+func (f *deliveryFake) ListAutomaticOutputStatus(_ context.Context, accountID, sessionID string, limit int) ([]delivery.AutomaticOutputStatus, error) {
+	f.automaticStatusAccount = accountID
+	f.automaticStatusSession = sessionID
+	f.automaticStatusLimit = limit
+	if f.automaticStatusErr != nil {
+		return nil, f.automaticStatusErr
+	}
+	return f.automaticStatuses, nil
+}
+func (f *deliveryFake) Get(_ context.Context, accountID, messageID string) (delivery.Message, error) {
+	f.getAccountID = accountID
+	f.getMessageID = messageID
+	return delivery.Message{ID: messageID, AccountID: accountID, Status: delivery.MessageStatusSent}, nil
 }
 func (f *deliveryFake) Retry(_ context.Context, accountID, messageID, idempotencyKey string) (delivery.Message, error) {
 	f.retryAccountID = accountID
@@ -94,11 +147,22 @@ func (f *deliveryFake) Retry(_ context.Context, accountID, messageID, idempotenc
 	f.retryIdempotency = idempotencyKey
 	return delivery.Message{ID: messageID, AccountID: accountID, Status: delivery.MessageStatusRetrying}, nil
 }
-func (*deliveryFake) Preferences(context.Context, string) ([]delivery.Preference, error) {
-	return nil, domain.ErrNotImplemented
+func (f *deliveryFake) Preferences(_ context.Context, accountID string) ([]delivery.Preference, error) {
+	f.listAccountID = accountID
+	if f.preferencesErr != nil {
+		return nil, f.preferencesErr
+	}
+	return f.preferences, nil
 }
-func (*deliveryFake) PutPreference(context.Context, string, delivery.Channel, bool) (delivery.Preference, error) {
-	return delivery.Preference{}, domain.ErrNotImplemented
+func (f *deliveryFake) PutPreference(_ context.Context, accountID string, channel delivery.Channel, destinationRef string, enabled bool) (delivery.Preference, error) {
+	f.putPreferenceAccount = accountID
+	f.putPreferenceChannel = channel
+	f.putPreferenceRef = destinationRef
+	f.putPreferenceEnabled = enabled
+	if f.putPreferenceErr != nil {
+		return delivery.Preference{}, f.putPreferenceErr
+	}
+	return delivery.Preference{AccountID: accountID, Channel: channel, DestinationRef: destinationRef, Enabled: enabled, Verified: true}, nil
 }
 func (f *deliveryFake) ListMessageTargets(_ context.Context, accountID string, channel *delivery.Channel) ([]delivery.MessageTarget, error) {
 	f.listAccountID = accountID
@@ -157,6 +221,82 @@ func TestCreateMessagePassesAuthenticatedAccount(t *testing.T) {
 	}
 	if fake.created.AccountID != "account-1" || fake.created.IdempotencyKey != "create-message-1" || len(fake.created.TurnIDs) != 1 {
 		t.Fatalf("unexpected input: %#v", fake.created)
+	}
+}
+
+func TestListMessagesUsesAuthenticatedAccount(t *testing.T) {
+	fake := &deliveryFake{messages: []delivery.Message{{ID: "message-1", Status: delivery.MessageStatusSent}}}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := authenticate(httptest.NewRequest(http.MethodGet, "/api/v1/outbound-messages", nil))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+	}
+	if fake.messageListAccountID != "account-1" || fake.messageListLimit != 20 {
+		t.Fatalf("list input = %q, %d", fake.messageListAccountID, fake.messageListLimit)
+	}
+	if !strings.Contains(response.Body.String(), `"id":"message-1"`) {
+		t.Fatalf("body = %s", response.Body.String())
+	}
+}
+
+func TestGetMessagePassesAuthenticatedAccountAndResourceID(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := authenticate(httptest.NewRequest(http.MethodGet, "/api/v1/outbound-messages/message-1", nil))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.getAccountID != "account-1" || fake.getMessageID != "message-1" {
+		t.Fatalf("get input = (%q, %q), want (account-1, message-1)", fake.getAccountID, fake.getMessageID)
+	}
+	if !strings.Contains(response.Body.String(), `"id":"message-1"`) {
+		t.Fatalf("body = %s, want message id", response.Body.String())
+	}
+}
+
+func TestAutomaticOutputStatusUsesAuthenticatedAccountAndSession(t *testing.T) {
+	fake := &deliveryFake{automaticStatuses: []delivery.AutomaticOutputStatus{{
+		TurnID: "turn-1", Status: delivery.AutomaticTurnRunRestored, UpdatedAt: time.Now().UTC(),
+	}}}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := authenticate(httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/session-1/automatic-output-status", nil))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.automaticStatusAccount != "account-1" || fake.automaticStatusSession != "session-1" || fake.automaticStatusLimit != 20 {
+		t.Fatalf("status input = (%q, %q, %d)", fake.automaticStatusAccount, fake.automaticStatusSession, fake.automaticStatusLimit)
+	}
+	var payload struct {
+		Items []delivery.AutomaticOutputStatus `json:"items"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].TurnID != "turn-1" || payload.Items[0].Status != delivery.AutomaticTurnRunRestored {
+		t.Fatalf("status payload = %#v", payload.Items)
+	}
+}
+
+func TestAutomaticOutputStatusReturnsServiceError(t *testing.T) {
+	fake := &deliveryFake{automaticStatusErr: domain.ErrNotFound}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := authenticate(httptest.NewRequest(http.MethodGet, "/api/v1/voice-sessions/session-1/automatic-output-status", nil))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNotFound, response.Body.String())
 	}
 }
 
@@ -405,12 +545,13 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 		{"log out", http.MethodPost, "/api/v1/auth/logout", `{"refresh_token":"opaque"}`, false, false},
 		{"get account", http.MethodGet, "/api/v1/account/me", "", true, false},
 		{"get session usage", http.MethodGet, "/api/v1/voice-sessions/session-1/usage", "", true, false},
+		{"get automatic output status", http.MethodGet, "/api/v1/voice-sessions/session-1/automatic-output-status", "", true, false},
 		{"get account usage", http.MethodGet, "/api/v1/usage/summary?period_start=2026-07-01T00:00:00Z&period_end=2026-08-01T00:00:00Z", "", true, false},
 		{"create outbound message", http.MethodPost, "/api/v1/outbound-messages", `{"channel":"email","destination_ref":"verified-email","turn_ids":["turn-1"]}`, true, true},
 		{"get outbound message", http.MethodGet, "/api/v1/outbound-messages/message-1", "", true, false},
 		{"retry outbound delivery", http.MethodPost, "/api/v1/outbound-deliveries/message-1/retry", "", true, true},
 		{"get message preferences", http.MethodGet, "/api/v1/account/message-preferences", "", true, false},
-		{"update message preference", http.MethodPut, "/api/v1/account/message-preferences/email", `{"enabled":true}`, true, false},
+		{"update message preference", http.MethodPut, "/api/v1/account/message-preferences/email/primary-email", `{"enabled":true}`, true, false},
 		{"list message targets", http.MethodGet, "/api/v1/account/message-targets", "", true, false},
 		{"request email bind verification", http.MethodPost, "/api/v1/account/message-targets/email/verification-codes", `{"email":"user@example.test"}`, true, false},
 		{"bind email target", http.MethodPost, "/api/v1/account/message-targets/email/bind", `{"token":"dev:user@example.test"}`, true, false},
@@ -583,6 +724,70 @@ func TestListMessageTargetsRejectsUnsupportedChannel(t *testing.T) {
 	}
 	if fake.listAccountID != "" {
 		t.Fatal("unsupported channel reached service")
+	}
+}
+
+func TestPutMessagePreferencePassesAuthenticatedTarget(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/account/message-preferences/email/work-email", strings.NewReader(`{"enabled":true}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.putPreferenceAccount != "account-1" || fake.putPreferenceChannel != delivery.ChannelEmail || fake.putPreferenceRef != "work-email" || !fake.putPreferenceEnabled {
+		t.Fatalf("preference input = (%q, %q, %q, %t)", fake.putPreferenceAccount, fake.putPreferenceChannel, fake.putPreferenceRef, fake.putPreferenceEnabled)
+	}
+}
+
+func TestPutMessagePreferenceRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "unsupported channel", path: "/api/v1/account/message-preferences/sms/work-email", body: `{"enabled":true}`},
+		{name: "missing enabled", path: "/api/v1/account/message-preferences/email/work-email", body: `{}`},
+		{name: "invalid json", path: "/api/v1/account/message-preferences/email/work-email", body: `{`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &deliveryFake{}
+			handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+			request := httptest.NewRequest(http.MethodPut, test.path, strings.NewReader(test.body))
+			request = authenticate(request)
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
+			}
+			if fake.putPreferenceAccount != "" {
+				t.Fatal("invalid preference request reached service")
+			}
+		})
+	}
+}
+
+func TestPutMessagePreferenceReturnsServiceError(t *testing.T) {
+	fake := &deliveryFake{putPreferenceErr: domain.ErrNotFound}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/account/message-preferences/email/missing", strings.NewReader(`{"enabled":true}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNotFound, response.Body.String())
 	}
 }
 

@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 const voiceButton = (page: import("@playwright/test").Page) =>
-  page.getByRole("button", { name: /翻译/ });
+  page.getByRole("button", { name: /^(开始|停止)(对话|翻译)$/ });
 
 async function mockLingowApis(page: import("@playwright/test").Page) {
   await page.route("**/api/v1/auth/anonymous", async (route) => {

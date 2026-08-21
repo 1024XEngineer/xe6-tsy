@@ -7,6 +7,7 @@ import { useState } from "react";
 import { useVoiceSession } from "../hooks/use-voice-session";
 import styles from "../voice.module.css";
 import { HistoryOverlay } from "./history-overlay";
+import { LatestAssistantReply } from "./latest-assistant-reply";
 import { LatestTranslation } from "./latest-translation";
 import { SettingsPanel } from "./settings-panel";
 import { VoiceControl } from "./voice-control";
@@ -14,16 +15,29 @@ import { VoiceControl } from "./voice-control";
 export function VoiceExperience() {
   const {
     state,
+    transientASRSubtitle,
+    transientPhraseSubtitles,
     latestTurn,
+    latestAssistantReply,
+    activeMode,
     statusMessage,
     hintMessage,
+    automaticOutputMessage,
     voiceConfig,
     updateConfig,
     debug,
+    configSyncStatus,
+    commandFeedback,
+    interactionPolicy,
+    interactionPolicyLocked,
+    setInteractionPolicy,
+    switchMode,
     toggle,
   } = useVoiceSession();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const hasVisibleLatest =
+    activeMode === "assistant" ? Boolean(latestAssistantReply) : Boolean(latestTurn);
 
   const handleToggle = () => {
     setSettingsOpen(false);
@@ -63,12 +77,81 @@ export function VoiceExperience() {
 
         <motion.section
           animate={{
-            y: state.phase === "active" && latestTurn ? "-9dvh" : 0,
+            y: state.phase === "active" && hasVisibleLatest ? "-9dvh" : 0,
           }}
           className={styles.voiceStage}
           transition={{ type: "spring", stiffness: 110, damping: 21 }}
         >
-          <VoiceControl phase={state.phase} onActivate={handleToggle} />
+          <VoiceControl mode={activeMode} phase={state.phase} onActivate={handleToggle} />
+          {state.phase !== "idle" ? (
+            <div aria-label="实时状态" className={styles.runtimeStatus}>
+              <span>连接：{debug.connectionState ?? "未知"}</span>
+              <span>Runtime：{debug.runtimeState ?? "未知"}</span>
+              <span>
+                Mode：{debug.modeState?.active_mode ?? "传统同传"}
+              </span>
+            </div>
+          ) : null}
+          {debug.modeState ? (
+            <div aria-label="模式切换" className={styles.modeControls} role="group">
+              {(["assistant", "interpretation"] as const).map((mode) => (
+                <button
+                  aria-pressed={debug.modeState?.active_mode === mode}
+                  disabled={debug.modeCommandPending || debug.modeState?.phase === "switching"}
+                  key={mode}
+                  onClick={() => void switchMode(mode)}
+                  type="button"
+                >
+                  {mode === "assistant" ? "AI 助手" : "同声传译"}
+                </button>
+              ))}
+              {debug.modeCommandPending || debug.modeState?.phase === "switching" ? (
+                <span role="status">模式切换中…</span>
+              ) : null}
+            </div>
+          ) : null}
+          {state.phase !== "idle" ? (
+            <div
+              aria-label="对话监听方式"
+              className={styles.interactionPolicyControls}
+              role="group"
+            >
+              <button
+                aria-pressed={interactionPolicy === "continuous"}
+                onClick={() => setInteractionPolicy("continuous")}
+                type="button"
+              >
+                常驻模式
+              </button>
+              <button
+                aria-pressed={interactionPolicy === "wake_word"}
+                disabled={interactionPolicyLocked}
+                onClick={() => setInteractionPolicy("wake_word")}
+                title={
+                  interactionPolicyLocked
+                    ? "同声传译保持常驻上行，唤醒词仍可用于退出指令"
+                    : undefined
+                }
+                type="button"
+              >
+                唤醒词模式
+              </button>
+            </div>
+          ) : null}
+          {automaticOutputMessage ? (
+            <p className={styles.automaticOutputText} role="status">
+              {automaticOutputMessage}
+            </p>
+          ) : null}
+          {commandFeedback ? (
+            <p
+              className={styles.commandFeedback}
+              data-status={commandFeedback.status}
+              role="status"
+            >
+              {commandFeedback.message}
+            </p>
+          ) : null}
           <motion.p
             animate={{ opacity: 1, y: 0 }}
             aria-live="polite"
@@ -95,9 +178,30 @@ export function VoiceExperience() {
               {hintMessage}
             </motion.p>
           ) : null}
+          {transientASRSubtitle ? (
+            <p aria-label="临时识别结果" aria-live="polite" className={styles.transientASRSubtitle}>
+              {transientASRSubtitle.text}
+            </p>
+          ) : null}
+          {transientPhraseSubtitles.length > 0 ? (
+            <p aria-label="稳定识别短语" aria-live="polite" className={styles.stablePhraseSubtitle}>
+              {transientPhraseSubtitles.map((subtitle) => subtitle.sourceText).join(" ")}
+              {transientPhraseSubtitles.some((subtitle) => subtitle.status === "translated")
+                ? ` ${transientPhraseSubtitles
+                    .filter((subtitle) => subtitle.status === "translated")
+                    .map((subtitle) => subtitle.translatedText)
+                    .join(" ")}`
+                : ""}
+            </p>
+          ) : null}
         </motion.section>
 
-        {latestTurn && !historyOpen ? (
+        {!historyOpen && activeMode === "assistant" && latestAssistantReply ? (
+          <div className={styles.latestSlot}>
+            <LatestAssistantReply reply={latestAssistantReply} />
+          </div>
+        ) : null}
+        {!historyOpen && activeMode === "interpretation" && latestTurn ? (
           <div className={styles.latestSlot}>
             <LatestTranslation
               onOpen={() => setHistoryOpen(true)}
@@ -119,6 +223,7 @@ export function VoiceExperience() {
           {settingsOpen ? (
             <SettingsPanel
               debug={debug}
+              configSyncStatus={configSyncStatus}
               onClose={() => setSettingsOpen(false)}
               onConfigChange={updateConfig}
               voiceConfig={voiceConfig}

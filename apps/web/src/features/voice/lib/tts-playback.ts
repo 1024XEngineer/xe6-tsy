@@ -23,6 +23,27 @@ type PendingPlayback = {
 let sharedContext: AudioContext | null = null;
 let playChain: Promise<void> = Promise.resolve();
 const pendingByPlayback = new Map<string, PendingPlayback>();
+const scheduledPlaybackIds = new Set<string>();
+const canceledPlaybackIds = new Set<string>();
+const canceledPlaybackOrder: string[] = [];
+const MAX_CANCELED_PLAYBACK_IDS = 128;
+let playbackGeneration = 0;
+let cancelActivePlayback: (() => void) | null = null;
+
+function markCanceledPlayback(playbackId: string): void {
+  if (!playbackId || canceledPlaybackIds.has(playbackId)) return;
+  canceledPlaybackIds.add(playbackId);
+  canceledPlaybackOrder.push(playbackId);
+  if (canceledPlaybackOrder.length <= MAX_CANCELED_PLAYBACK_IDS) return;
+  const oldest = canceledPlaybackOrder.shift();
+  if (oldest) canceledPlaybackIds.delete(oldest);
+}
+
+function releaseCanceledPlayback(playbackId: string): void {
+  if (!canceledPlaybackIds.delete(playbackId)) return;
+  const index = canceledPlaybackOrder.indexOf(playbackId);
+  if (index >= 0) canceledPlaybackOrder.splice(index, 1);
+}
 
 function getAudioContext(sampleRateHz: number): AudioContext {
   if (!sharedContext || sharedContext.state === "closed") {
@@ -104,11 +125,16 @@ async function toAudioBuffer(
 }
 
 async function playAssembled(event: {
+  playbackId: string;
   sampleRateHz: number;
   channels: number;
   encoding: string;
   pcm: ArrayBuffer;
-}, listener?: TTSAudioPlaybackListener): Promise<void> {
+}, listener: TTSAudioPlaybackListener | undefined, generation: number): Promise<void> {
+  if (generation !== playbackGeneration) {
+    scheduledPlaybackIds.delete(event.playbackId);
+    return;
+  }
   listener?.(true);
   try {
     const ctx = getAudioContext(event.sampleRateHz);
@@ -123,6 +149,7 @@ async function playAssembled(event: {
       }
     }
     const audioBuffer = await toAudioBuffer(ctx, event);
+    if (generation !== playbackGeneration) return;
     await new Promise<void>((resolve, reject) => {
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
@@ -132,15 +159,30 @@ async function playAssembled(event: {
       const finish = () => {
         if (settled) return;
         settled = true;
+        if (cancelActivePlayback === cancel) {
+          cancelActivePlayback = null;
+        }
         if (fallbackTimer !== null) {
           window.clearTimeout(fallbackTimer);
         }
         resolve();
       };
+      const cancel = () => {
+        try {
+          source.stop();
+        } catch {
+          // The source may not have started or may already be stopped.
+        }
+        finish();
+      };
       source.onended = finish;
+      cancelActivePlayback = cancel;
       try {
         source.start();
       } catch (error) {
+        if (cancelActivePlayback === cancel) {
+          cancelActivePlayback = null;
+        }
         reject(error);
         return;
       }
@@ -148,16 +190,12 @@ async function playAssembled(event: {
         Number.isFinite(audioBuffer.duration) && audioBuffer.duration > 0
           ? Math.ceil(audioBuffer.duration * 1000) + 250
           : 1000;
-      fallbackTimer = window.setTimeout(() => {
-        try {
-          source.stop();
-        } catch {
-          // The source may already be stopped by the browser.
-        }
-        finish();
-      }, durationMs);
+      if (!settled) {
+        fallbackTimer = window.setTimeout(cancel, durationMs);
+      }
     });
   } finally {
+    scheduledPlaybackIds.delete(event.playbackId);
     listener?.(false);
   }
 }
@@ -168,6 +206,10 @@ export function enqueueTTSAudio(
   listener?: TTSAudioPlaybackListener,
 ): void {
   const playbackId = event.playbackId || "default";
+  if (canceledPlaybackIds.has(playbackId)) {
+    if (event.final) releaseCanceledPlayback(playbackId);
+    return;
+  }
   let pending = pendingByPlayback.get(playbackId);
   if (!pending) {
     pending = {
@@ -190,14 +232,32 @@ export function enqueueTTSAudio(
   }
   pendingByPlayback.delete(playbackId);
   const assembled = {
+    playbackId,
     sampleRateHz: pending.sampleRateHz,
     channels: pending.channels,
     encoding: pending.encoding,
     pcm: concatChunks(pending.chunks),
   };
+  const generation = playbackGeneration;
+  scheduledPlaybackIds.add(playbackId);
   playChain = playChain
     .catch(() => undefined)
-    .then(() => playAssembled(assembled, pending.listener));
+    .then(() => playAssembled(assembled, pending.listener, generation));
+}
+
+/** Stop the current clip and discard every incomplete or queued TTS clip. */
+export function cancelAllTTSAudioPlayback(): void {
+  playbackGeneration += 1;
+  for (const playbackId of pendingByPlayback.keys()) {
+    markCanceledPlayback(playbackId);
+  }
+  for (const playbackId of scheduledPlaybackIds) {
+    markCanceledPlayback(playbackId);
+  }
+  pendingByPlayback.clear();
+  const cancel = cancelActivePlayback;
+  cancelActivePlayback = null;
+  cancel?.();
 }
 
 export function parseTTSAudioEvent(payload: unknown): TTSAudioEvent | null {

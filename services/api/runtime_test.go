@@ -308,6 +308,33 @@ func TestConfiguredRuntimeServeRejectsIncompleteRuntime(t *testing.T) {
 			handler: http.NewServeMux(),
 		},
 		{name: "missing handler", runtime: newRuntimeServeFixture(t), handler: nil},
+		{
+			name: "missing session handler",
+			runtime: func() *configuredRuntime {
+				runtime := newRuntimeServeFixture(t)
+				runtime.sessionHandler = nil
+				return runtime
+			}(),
+			handler: http.NewServeMux(),
+		},
+		{
+			name: "missing records handler",
+			runtime: func() *configuredRuntime {
+				runtime := newRuntimeServeFixture(t)
+				runtime.recordsHandler = nil
+				return runtime
+			}(),
+			handler: http.NewServeMux(),
+		},
+		{
+			name: "missing final turn worker",
+			runtime: func() *configuredRuntime {
+				runtime := newRuntimeServeFixture(t)
+				runtime.finalTurnWorker = nil
+				return runtime
+			}(),
+			handler: http.NewServeMux(),
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -350,10 +377,26 @@ func TestConfiguredRuntimeServeRejectsEnabledSessionRuntimeWithoutRecovery(t *te
 	}
 }
 
+func TestConfiguredRuntimeServeRejectsEnabledSessionRuntimeWithoutModeConsumer(t *testing.T) {
+	runtime := newRuntimeServeFixture(t)
+	runtime.sessionRuntimeEnabled = true
+	runtime.sessionRecovery = stubFinalTurnWorker{}
+	runtime.modeConsumer = nil
+
+	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
+	if err == nil {
+		t.Fatal("Serve() succeeded with enabled session runtime and nil mode consumer")
+	}
+	if errors.Is(err, delivery.ErrWorkerNotConfigured) {
+		t.Fatalf("Serve() error = %v, want incomplete runtime before delivery worker starts", err)
+	}
+}
+
 func TestConfiguredRuntimeServeSupervisesSessionRecoveryWorker(t *testing.T) {
 	runtime := newRuntimeBlockingServeFixture(t)
 	runtime.sessionRuntimeEnabled = true
 	runtime.sessionRecovery = failFastFinalTurnWorker{err: sessions.ErrInvalidDependency}
+	runtime.modeConsumer = stubFinalTurnWorker{}
 
 	err := runtime.Serve("127.0.0.1:0", http.NewServeMux())
 	if err == nil || !errors.Is(err, sessions.ErrInvalidDependency) {
@@ -404,6 +447,21 @@ func TestRunFailFastBackgroundWorkerReportsWorkerError(t *testing.T) {
 	err := <-errs
 	if err == nil || !errors.Is(err, turns.ErrFinalTurnSettlement) {
 		t.Fatalf("runFailFastBackgroundWorker() error = %v, want settlement failure", err)
+	}
+}
+
+func TestRunFailFastBackgroundWorkerReportsUnexpectedStop(t *testing.T) {
+	errs := make(chan error, 1)
+	var components sync.WaitGroup
+	components.Add(1)
+	go runFailFastBackgroundWorker(t.Context(), "final turn worker", func(context.Context) error {
+		return nil
+	}, errs, &components)
+	components.Wait()
+
+	err := <-errs
+	if err == nil || !strings.Contains(err.Error(), "stopped unexpectedly") {
+		t.Fatalf("runFailFastBackgroundWorker() error = %v, want unexpected stop", err)
 	}
 }
 
@@ -529,5 +587,26 @@ func TestShutdownConfiguredServerWaitsForComponents(t *testing.T) {
 
 	if err := shutdownConfiguredServer(server, &components); err != nil {
 		t.Fatalf("shutdownConfiguredServer() error = %v", err)
+	}
+}
+
+func TestShutdownConfiguredServerReportsComponentShutdownTimeout(t *testing.T) {
+	originalTimeout := configuredRuntimeShutdownTimeout
+	configuredRuntimeShutdownTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { configuredRuntimeShutdownTimeout = originalTimeout })
+
+	var components sync.WaitGroup
+	release := make(chan struct{})
+	components.Add(1)
+	go func() {
+		defer components.Done()
+		<-release
+	}()
+
+	err := shutdownConfiguredServer(&http.Server{}, &components)
+	close(release)
+	components.Wait()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdownConfiguredServer() error = %v, want context deadline exceeded", err)
 	}
 }

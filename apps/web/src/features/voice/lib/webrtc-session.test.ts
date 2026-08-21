@@ -24,7 +24,28 @@ function fakeTrack(id: string) {
   } as unknown as MediaStreamTrack;
 }
 
+let dataChannelInitialState: RTCDataChannelState = "open";
+
+class FakeDataChannel extends EventTarget {
+  readyState: RTCDataChannelState;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  readonly close = vi.fn(() => {
+    this.readyState = "closed";
+  });
+
+  constructor(readonly label: string) {
+    super();
+    this.readyState = dataChannelInitialState;
+  }
+
+  open(): void {
+    this.readyState = "open";
+    this.dispatchEvent(new Event("open"));
+  }
+}
+
 class FakePeerConnection {
+  static readonly instances: FakePeerConnection[] = [];
   connectionState: RTCPeerConnectionState = "new";
   iceConnectionState: RTCIceConnectionState = "new";
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
@@ -32,10 +53,12 @@ class FakePeerConnection {
   onconnectionstatechange: (() => void) | null = null;
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
   addTrack = vi.fn();
-  createDataChannel = vi.fn(() => ({
-    onmessage: null,
-    close: vi.fn(),
-  }));
+  readonly dataChannels: FakeDataChannel[] = [];
+  createDataChannel = vi.fn((label: string) => {
+    const channel = new FakeDataChannel(label);
+    this.dataChannels.push(channel);
+    return channel;
+  });
   createOffer = vi.fn(async () => ({ type: "offer", sdp: "v=0" }));
   setLocalDescription = vi.fn(async () => undefined);
   setRemoteDescription = vi.fn(async () => undefined);
@@ -53,6 +76,47 @@ class FakePeerConnection {
     },
   );
   removeEventListener = vi.fn();
+
+  constructor() {
+    FakePeerConnection.instances.push(this);
+  }
+}
+
+function latestPeerConnection(): FakePeerConnection {
+  const peerConnection = FakePeerConnection.instances.at(-1);
+  if (!peerConnection) throw new Error("FakePeerConnection was not created");
+  return peerConnection;
+}
+
+function mockSuccessfulSignaling(): void {
+  getWebRTCConfig.mockResolvedValue({
+    session_id: "vs-1",
+    expires_at: "2099-01-01T00:00:00Z",
+    ice_servers: [],
+    ice_transport_policy: "all",
+    data_channel: { label: "translation-events", ordered: true },
+    control_data_channel: {
+      label: "lingow-control-v1",
+      ordered: true,
+      protocol_version: 1,
+    },
+    audio: {
+      uplink_codec: "opus",
+      downlink_codec: "opus",
+      sample_rate_hz: 48000,
+      channels: 1,
+    },
+  });
+  postWebRTCOffer.mockResolvedValue({
+    sdp: "v=0",
+    type: "answer",
+    session_id: "vs-1",
+    connection_id: "conn-1",
+    data_channel_label: "translation-events",
+    tts_track_id: "tts-1",
+    connection_state: "connecting",
+  });
+  waitUntilRealtimeConnectionReady.mockResolvedValue(undefined);
 }
 
 describe("openWebRTCSession", () => {
@@ -61,6 +125,8 @@ describe("openWebRTCSession", () => {
     postWebRTCOffer.mockReset();
     postICECandidates.mockReset();
     waitUntilRealtimeConnectionReady.mockReset();
+    dataChannelInitialState = "open";
+    FakePeerConnection.instances.length = 0;
     vi.stubGlobal("RTCPeerConnection", FakePeerConnection);
     vi.stubGlobal(
       "MediaStream",
@@ -106,29 +172,7 @@ describe("openWebRTCSession", () => {
       mediaDevices: { getUserMedia },
     });
 
-    getWebRTCConfig.mockResolvedValue({
-      session_id: "vs-1",
-      expires_at: "2099-01-01T00:00:00Z",
-      ice_servers: [],
-      ice_transport_policy: "all",
-      data_channel: { label: "translation-events", ordered: true },
-      audio: {
-        uplink_codec: "opus",
-        downlink_codec: "opus",
-        sample_rate_hz: 48000,
-        channels: 1,
-      },
-    });
-    postWebRTCOffer.mockResolvedValue({
-      sdp: "v=0",
-      type: "answer",
-      session_id: "vs-1",
-      connection_id: "conn-1",
-      data_channel_label: "translation-events",
-      tts_track_id: "tts-1",
-      connection_state: "connecting",
-    });
-    waitUntilRealtimeConnectionReady.mockResolvedValue(undefined);
+    mockSuccessfulSignaling();
 
     const session = await openWebRTCSession({
       ticket: "ticket",
@@ -139,8 +183,73 @@ describe("openWebRTCSession", () => {
     expect(getUserMedia).not.toHaveBeenCalled();
     expect(session.connectionId).toBe("conn-1");
     expect(session.localStream.getTracks()).toEqual([track]);
+    expect(session.wakeWordChannel.label).toBe("translation-events");
+    expect(session.controlDataChannel.label).toBe("lingow-control-v1");
+    const peerConnection = latestPeerConnection();
+    expect(peerConnection.createDataChannel).toHaveBeenCalledTimes(2);
+    const createChannelOrder = vi.mocked(peerConnection.createDataChannel).mock
+      .invocationCallOrder;
+    const createOfferOrder = vi.mocked(peerConnection.createOffer).mock
+      .invocationCallOrder[0]!;
+    expect(createChannelOrder.every((order) => order < createOfferOrder)).toBe(
+      true,
+    );
 
     session.close();
     expect(track.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits until both negotiated data channels are open", async () => {
+    dataChannelInitialState = "connecting";
+    const track = fakeTrack("clone-3");
+    mockSuccessfulSignaling();
+
+    let settled = false;
+    const opening = openWebRTCSession({
+      ticket: "ticket",
+      sessionId: "vs-1",
+      audioTracks: [track],
+    }).finally(() => {
+      settled = true;
+    });
+
+    await vi.waitFor(() => {
+      expect(latestPeerConnection().dataChannels).toHaveLength(2);
+      expect(waitUntilRealtimeConnectionReady).toHaveBeenCalled();
+    });
+    latestPeerConnection().dataChannels[0]!.open();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    latestPeerConnection().dataChannels[1]!.open();
+    const session = await opening;
+    expect(settled).toBe(true);
+    session.close();
+  });
+
+  it("closes all WebRTC resources when a data channel fails to open", async () => {
+    dataChannelInitialState = "connecting";
+    const track = fakeTrack("clone-4");
+    mockSuccessfulSignaling();
+
+    const opening = openWebRTCSession({
+      ticket: "ticket",
+      sessionId: "vs-1",
+      audioTracks: [track],
+    });
+    await vi.waitFor(() => {
+      expect(latestPeerConnection().dataChannels).toHaveLength(2);
+      expect(waitUntilRealtimeConnectionReady).toHaveBeenCalled();
+    });
+    latestPeerConnection().dataChannels[0]!.dispatchEvent(new Event("error"));
+
+    await expect(opening).rejects.toThrow(
+      "DataChannel translation-events 在打开前失效",
+    );
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    expect(latestPeerConnection().close).toHaveBeenCalledTimes(1);
+    for (const channel of latestPeerConnection().dataChannels) {
+      expect(channel.close).toHaveBeenCalledTimes(1);
+    }
   });
 });

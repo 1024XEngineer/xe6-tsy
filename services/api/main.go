@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/config"
+	"github.com/1024XEngineer/xe6-tsy/services/api/devices"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/delivery"
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
@@ -99,6 +100,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	langDependencies.handler.ConfigureSystemCommands(processConfig.CommandSystemToken)
 	records, err := newRecordsHTTPDependenciesFromPool(
 		context.Background(),
 		pool,
@@ -113,6 +115,7 @@ func run() error {
 
 	sessionHandler := newSessionHandler(nil)
 	var sessionRecovery backgroundWorker
+	var modeConsumer backgroundWorker
 	if processConfig.SessionRuntimeEnabled {
 		sessionDependencies, err := newSessionHTTPDependencies(sessionCompositionInputs{
 			Repository:     sessionRepository,
@@ -131,6 +134,20 @@ func run() error {
 		}
 		sessionHandler = sessionDependencies.handler
 		sessionRecovery = sessionDependencies.endRecovery
+
+		startupCtx, cancelStartup := context.WithTimeout(context.Background(), runtimeStartupTimeout)
+		redisClient, err := openValkeyClient(startupCtx, processConfig.RedisURL)
+		if err != nil {
+			cancelStartup()
+			return err
+		}
+		modeConsumer, err = newModeProjectionConsumer(startupCtx, pool, redisClient, processConfig)
+		cancelStartup()
+		if err != nil {
+			_ = redisClient.Close()
+			return err
+		}
+		defer func() { _ = redisClient.Close() }()
 	} else {
 		slog.Warn(
 			"voice session runtime disabled",
@@ -138,12 +155,17 @@ func run() error {
 		)
 	}
 
+	deviceHandler, err := newDeviceHandler(pool, processConfig)
+	if err != nil {
+		return err
+	}
 	mux := buildMux(
 		langDependencies.handler,
 		sessionHandler,
 		records.handler,
 		records.accounts,
 		records.tokens,
+		deviceHandler,
 	)
 
 	server := &http.Server{
@@ -181,6 +203,12 @@ func run() error {
 		workers = append(workers, namedBackgroundWorker{
 			name: "session end recovery worker",
 			run:  sessionRecovery.Run,
+		})
+	}
+	if modeConsumer != nil {
+		workers = append(workers, namedBackgroundWorker{
+			name: "mode projection consumer",
+			run:  modeConsumer.Run,
 		})
 	}
 	return runHTTPAndBackgroundWorkers(ctx, server, workers...)
@@ -242,6 +270,7 @@ func newLanguageDependenciesWithPool(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	sessions languages.SessionOwnerReader,
+	readiness ...languages.DeliveryReadinessReader,
 ) (*languageHTTPDependencies, error) {
 	if pool == nil {
 		return nil, errors.New("language handler requires PostgreSQL pool")
@@ -249,7 +278,11 @@ func newLanguageDependenciesWithPool(
 	if err := languages.ApplyMigrations(ctx, pool); err != nil {
 		return nil, err
 	}
-	svc := languages.NewService(languages.NewPostgresStore(pool, nil), sessions)
+	var deliveryReadiness languages.DeliveryReadinessReader
+	if len(readiness) > 0 {
+		deliveryReadiness = readiness[0]
+	}
+	svc := languages.NewService(languages.NewPostgresStore(pool, nil), sessions, deliveryReadiness)
 	slog.Info("language configuration service enabled")
 	accountID := func(r *http.Request) (string, bool) {
 		return internalwebapi.AccountIDFromContext(r.Context())
@@ -405,7 +438,12 @@ func buildMux(
 	records *recordswebapi.Server,
 	accountUseCases accounts.Service,
 	tokens accounts.AccessTokenVerifier,
+	deviceHandlers ...*devices.Handler,
 ) *http.ServeMux {
+	var deviceHandler *devices.Handler
+	if len(deviceHandlers) > 0 {
+		deviceHandler = deviceHandlers[0]
+	}
 	return buildMuxWithServices(
 		lang,
 		sessionHandler,
@@ -414,6 +452,7 @@ func buildMux(
 		delivery.NewUseCases(),
 		tokens,
 		records,
+		deviceHandler,
 	)
 }
 
@@ -425,7 +464,12 @@ func buildMuxWithServices(
 	deliveryService delivery.Service,
 	tokens accounts.AccessTokenVerifier,
 	records *recordswebapi.Server,
+	deviceHandlers ...*devices.Handler,
 ) *http.ServeMux {
+	var deviceHandler *devices.Handler
+	if len(deviceHandlers) > 0 {
+		deviceHandler = deviceHandlers[0]
+	}
 	mux := internalwebapi.New(accountService, usageService, deliveryService, tokens)
 	lang.Register(mux, func(next http.Handler) http.Handler {
 		return internalwebapi.Authenticate(tokens, next)
@@ -434,6 +478,13 @@ func buildMuxWithServices(
 		sessionHandler.Register(mux, func(next http.Handler) http.Handler {
 			return internalwebapi.Authenticate(tokens, next)
 		})
+	}
+	if deviceHandler != nil {
+		accountAuth := func(next http.Handler) http.Handler { return internalwebapi.Authenticate(tokens, next) }
+		deviceHandler.Register(mux, accountAuth, deviceHandler.Authenticate)
+		if sessionHandler != nil {
+			deviceHandler.RegisterSessions(mux, sessionHandler, deviceHandler.Authenticate)
+		}
 	}
 	if records != nil {
 		records.Register(mux, recordswebapi.RouteMiddleware{
@@ -452,6 +503,24 @@ func buildMuxWithServices(
 		System: notImplemented.SystemAuthenticate,
 	})
 	return mux
+}
+
+func newDeviceHandler(pool *pgxpool.Pool, processConfig config.Config) (*devices.Handler, error) {
+	repository := devices.NewPostgresRepository(pool)
+	issuer, err := devices.NewHMACIssuer(
+		processConfig.JWTSecret,
+		processConfig.JWTIssuer,
+		"lingow-device",
+		repository.ActiveBound,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initialize device token issuer: %w", err)
+	}
+	service, err := devices.NewService(repository, issuer)
+	if err != nil {
+		return nil, fmt.Errorf("initialize device service: %w", err)
+	}
+	return devices.NewHandler(service), nil
 }
 
 func newSessionHandler(service sessions.UseCases) *sessions.Handler {

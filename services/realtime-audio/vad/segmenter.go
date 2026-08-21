@@ -54,6 +54,33 @@ type Segmenter struct {
 	prefixFrames  []audio.Frame
 }
 
+// Reset abandons the current utterance and all timestamp/prefix history.
+//
+// A wake-word command is a separate input boundary from ordinary turns. The
+// caller must reset the segmenter before feeding the first command frame so
+// audio buffered before the wake signal cannot be joined to a later turn.
+func (s *Segmenter) Reset() {
+	if s == nil {
+		return
+	}
+	s.reset()
+}
+
+// ClaimActiveUtterance transfers the complete in-flight utterance to another
+// consumer and resets ordinary segmentation. The returned frames are owned by
+// the caller; an inactive segmenter never exposes prefix-only silence.
+func (s *Segmenter) ClaimActiveUtterance() []audio.Frame {
+	if s == nil || !s.active {
+		return nil
+	}
+	frames := make([]audio.Frame, len(s.frames))
+	for index, frame := range s.frames {
+		frames[index] = frame.Clone()
+	}
+	s.reset()
+	return frames
+}
+
 func NewSegmenter(classifier Classifier, options Options) (*Segmenter, error) {
 	if classifier == nil {
 		return nil, ErrClassifierRequired
@@ -91,7 +118,7 @@ func (s *Segmenter) Push(ctx context.Context, frame audio.Frame) ([]Event, error
 		events := s.finalize(s.startedAt.Add(s.maxDuration))
 		if isSpeech {
 			s.start(frame)
-			events = append(events, Event{Type: EventOpened, StartedAt: s.startedAt}, s.audioEvent(frame))
+			events = append(events, s.openedEvent(), s.audioEvent(frame))
 		} else {
 			s.rememberPrefix(frame)
 		}
@@ -101,7 +128,7 @@ func (s *Segmenter) Push(ctx context.Context, frame audio.Frame) ([]Event, error
 	if isSpeech {
 		if !s.active {
 			s.start(frame)
-			return []Event{{Type: EventOpened, StartedAt: s.startedAt}, s.audioEvent(frame)}, nil
+			return []Event{s.openedEvent(), s.audioEvent(frame)}, nil
 		}
 		s.lastSpeech = frame.CapturedAt
 		s.frames = append(s.frames, frame.Clone())
@@ -178,6 +205,17 @@ func (s *Segmenter) rememberPrefix(frame audio.Frame) {
 func (s *Segmenter) audioEvent(frame audio.Frame) Event {
 	copy := frame.Clone()
 	return Event{Type: EventAudio, Frame: &copy, StartedAt: s.startedAt}
+}
+
+// openedEvent exposes only the prefix frames retained before the first speech frame. Consumers
+// that stream EventAudio to ASR can push this prefix once when opening without duplicating the
+// first speech frame; consumers that wait for EventFinal remain unchanged.
+func (s *Segmenter) openedEvent() Event {
+	prefix := make([]audio.Frame, 0, len(s.frames)-1)
+	for _, frame := range s.frames[:len(s.frames)-1] {
+		prefix = append(prefix, frame.Clone())
+	}
+	return Event{Type: EventOpened, Frames: prefix, StartedAt: s.startedAt}
 }
 
 func (s *Segmenter) finalize(endedAt time.Time) []Event {

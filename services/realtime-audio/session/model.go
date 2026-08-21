@@ -11,21 +11,25 @@ import (
 type RuntimeState = realtimev1.RuntimeState
 
 const (
-	RuntimeStopped       = realtimev1.RuntimeStopped
-	RuntimeStarting      = realtimev1.RuntimeStarting
-	RuntimeListening     = realtimev1.RuntimeListening
-	RuntimeASRProcessing = realtimev1.RuntimeASRProcessing
-	RuntimeTranslating   = realtimev1.RuntimeTranslating
-	RuntimeTTSProcessing = realtimev1.RuntimeTTSProcessing
-	RuntimePlaying       = realtimev1.RuntimePlaying
-	RuntimeStopping      = realtimev1.RuntimeStopping
-	RuntimeFailed        = realtimev1.RuntimeFailed
+	RuntimeStopped             = realtimev1.RuntimeStopped
+	RuntimeStarting            = realtimev1.RuntimeStarting
+	RuntimeListening           = realtimev1.RuntimeListening
+	RuntimeASRProcessing       = realtimev1.RuntimeASRProcessing
+	RuntimeTranslating         = realtimev1.RuntimeTranslating
+	RuntimeThinking            = realtimev1.RuntimeThinking
+	RuntimeAssistantProcessing = realtimev1.RuntimeAssistantProcessing
+	RuntimeTTSProcessing       = realtimev1.RuntimeTTSProcessing
+	RuntimePlaying             = realtimev1.RuntimePlaying
+	RuntimeStopping            = realtimev1.RuntimeStopping
+	RuntimeFailed              = realtimev1.RuntimeFailed
 )
 
 // SessionSnapshot is the read-only business session view supplied by member 1.
 type SessionSnapshot struct {
 	SessionID string
 	AccountID string
+	// InitialMode is captured at runtime creation; empty preserves legacy interpretation behavior.
+	InitialMode realtimev1.Mode
 	// StartOperationID is runtime ownership metadata copied from StartRealtimeCommand.
 	// It is not business session state and is never persisted by member 3 there.
 	StartOperationID string
@@ -72,6 +76,10 @@ type ProcessingStateUpdate struct {
 	RuntimeState      RuntimeState
 	CurrentTurnID     *string
 	CurrentPlaybackID *string
+	// Expected identities are compare-only cleanup preconditions and are never persisted.
+	// A mismatch means a newer Turn or playback already owns the Runtime state.
+	ExpectedTurnID     *string
+	ExpectedPlaybackID *string
 }
 
 // StartRealtimeCommand binds one durable control-plane operation to startup.
@@ -80,6 +88,7 @@ type StartRealtimeCommand struct {
 	OperationID string
 	TraceID     string
 	StartedBy   string
+	InitialMode realtimev1.Mode
 }
 
 // StopRealtimeCommand carries the requested shutdown reason and timestamp.

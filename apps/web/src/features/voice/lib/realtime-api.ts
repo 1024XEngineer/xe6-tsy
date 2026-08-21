@@ -10,6 +10,11 @@ export type WebRTCConfig = {
   }>;
   ice_transport_policy: string;
   data_channel: { label: string; ordered: boolean };
+  control_data_channel?: {
+    label: string;
+    ordered: boolean;
+    protocol_version: number;
+  };
   audio: {
     uplink_codec: string;
     downlink_codec: string;
@@ -38,9 +43,48 @@ export type CandidateResponse = {
 export type ConnectionSnapshot = {
   session_id: string;
   connection_id: string;
-  state: string;
+  state: RealtimeConnectionState;
   version: number;
   updated_at: string;
+};
+
+export type RealtimeConnectionState =
+  | "new"
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "failed"
+  | "closed";
+
+export type RealtimeMode = "assistant" | "interpretation";
+
+export type ModePhase = "active" | "switching";
+
+export type ModeStateSnapshot = {
+  session_id: string;
+  runtime_instance_id: string;
+  active_mode: RealtimeMode;
+  generation: number;
+  phase: ModePhase;
+  last_operation_id: string | null;
+  updated_at: string;
+};
+
+export type SwitchModeCommand = {
+  session_id: string;
+  runtime_instance_id: string;
+  operation_id: string;
+  trace_id: string;
+  expected_generation: number;
+  target_mode: RealtimeMode;
+};
+
+export type ModeSwitchStatus = "applied" | "unchanged";
+
+export type SwitchModeResult = {
+  operation_id: string;
+  status: ModeSwitchStatus;
+  state: ModeStateSnapshot;
 };
 
 function ticketHeaders(
@@ -152,6 +196,50 @@ export async function getRealtimeConnection(
     },
   );
   return parseJson<ConnectionSnapshot>(response);
+}
+
+/**
+ * Reads the authoritative mode snapshot owned by realtime-audio.
+ * The browser keeps this as an observation only; it never locally increments
+ * generation or treats an API projection as the source of truth.
+ */
+export async function getRealtimeModeState(
+  ticket: string,
+  sessionId: string,
+): Promise<ModeStateSnapshot> {
+  const response = await fetch(
+    `/realtime/v1/sessions/${encodeURIComponent(sessionId)}/mode`,
+    {
+      headers: ticketHeaders(ticket),
+      cache: "no-store",
+    },
+  );
+  return parseJson<ModeStateSnapshot>(response);
+}
+
+/**
+ * Sends one typed compare-and-switch command. A caller must use the snapshot's
+ * runtime instance and generation; conflict responses are intentionally left
+ * to the caller so it can refresh without replaying a stale operation.
+ */
+export async function switchRealtimeMode(
+  ticket: string,
+  sessionId: string,
+  command: SwitchModeCommand,
+  idempotencyKey = newIdempotencyKey("mode"),
+): Promise<SwitchModeResult> {
+  const response = await fetch(
+    `/realtime/v1/sessions/${encodeURIComponent(sessionId)}/mode`,
+    {
+      method: "POST",
+      headers: {
+        ...ticketHeaders(ticket, idempotencyKey),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(command),
+    },
+  );
+  return parseJson<SwitchModeResult>(response);
 }
 
 export async function waitUntilRealtimeConnectionReady(

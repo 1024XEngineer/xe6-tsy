@@ -1,23 +1,30 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyWakeKeyword } from "./keywords";
+import {
+  WAKE_LISTEN_KEYWORD,
+  WAKE_TRIGGERS,
+  resolveWakeTrigger,
+} from "./keywords";
 
-describe("classifyWakeKeyword", () => {
-  it("maps start and stop display names", () => {
-    expect(classifyWakeKeyword("小灵，开始翻译")).toBe("start");
-    expect(classifyWakeKeyword("小灵，停止翻译")).toBe("stop");
+describe("WAKE_TRIGGERS catalog", () => {
+  it("exposes only the fixed attention phrase", () => {
+    expect(WAKE_LISTEN_KEYWORD).toBe("小灵小灵");
+    expect(WAKE_TRIGGERS).toHaveLength(1);
   });
+});
 
-  it("prefers stop when both cues appear", () => {
-    expect(classifyWakeKeyword("开始后停止翻译")).toBe("stop");
-  });
-
+describe("resolveWakeTrigger", () => {
   it("trims whitespace before matching", () => {
-    expect(classifyWakeKeyword("  小灵，开始翻译  ")).toBe("start");
+    expect(resolveWakeTrigger("  小灵小灵  ")?.id).toBe("attention");
   });
 
-  it("returns null for unrelated text", () => {
-    expect(classifyWakeKeyword("")).toBeNull();
-    expect(classifyWakeKeyword("小灵")).toBeNull();
+  it("rejects aliases and does not classify business commands locally", () => {
+    expect(resolveWakeTrigger("")).toBeNull();
+    expect(resolveWakeTrigger("小灵")).toBeNull();
+    expect(resolveWakeTrigger("小林小林")).toBeNull();
+    expect(resolveWakeTrigger("小灵小灵开始翻译")).toBeNull();
+    expect(resolveWakeTrigger("小灵，开始翻译")).toBeNull();
+    expect(resolveWakeTrigger("小灵，停止翻译")).toBeNull();
+    expect(resolveWakeTrigger("你好")).toBeNull();
   });
 });

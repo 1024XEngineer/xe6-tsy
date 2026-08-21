@@ -16,6 +16,7 @@ func (s *Service) startPendingOperation(
 		OperationID: operation.ID,
 		TraceID:     input.TraceID,
 		StartedBy:   input.StartedBy,
+		InitialMode: input.InitialMode,
 	})
 	if startErr == nil {
 		return s.continueOwnedStartRuntime(ctx, input, operation, runtime, nil)
@@ -75,6 +76,8 @@ func (s *Service) continueOwnedStartRuntime(
 	case RuntimeListening,
 		RuntimeASRProcessing,
 		RuntimeTranslating,
+		RuntimeThinking,
+		RuntimeAssistantProcessing,
 		RuntimeTTSProcessing,
 		RuntimePlaying:
 		return s.activateOwnedStartRuntime(ctx, input, operation)

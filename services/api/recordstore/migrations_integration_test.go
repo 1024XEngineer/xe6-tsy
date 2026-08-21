@@ -52,6 +52,17 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{18, "final_turn_outbox_dead_letter"},
 		{19, "auto_delivery_destination"},
 		{20, "record_history_indexes"},
+		{21, "automatic_turn_settlements"},
+		{22, "realtime_fallback_playback_operations"},
+		{23, "realtime_fallback_playback_claims"},
+		{24, "realtime_fallback_playback_claim_tokens"},
+		{25, "realtime_fallback_playback_reclaimable"},
+		{26, "target_level_message_preferences"},
+		{27, "assistant_llm_usage"},
+		{28, "realtime_mode_projection"},
+		{29, "long_sentence_delivery_trigger"},
+		{30, "devices"},
+		{31, "device_auth_challenge_retention"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))

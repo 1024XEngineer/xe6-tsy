@@ -64,6 +64,60 @@ func TestProviderAttributionResolverKeepsFinalizedTurn(t *testing.T) {
 	}
 }
 
+func TestProviderAttributionResolverStateMatrix(t *testing.T) {
+	resolver := NewProviderAttributionResolver(&participantMapperStub{participant: recordsv1.Participant{ID: "p_02", SpeakerCode: "speaker_02"}})
+
+	tests := []struct {
+		name          string
+		status        recordsv1.AttributionStatus
+		participantID *string
+		wantDecision  bool
+		wantStatus    recordsv1.AttributionStatus
+	}{
+		{"pending without participant", recordsv1.AttributionPending, nil, true, recordsv1.AttributionConfirmed},
+		{"pending with same participant", recordsv1.AttributionPending, strPtr("p_02"), true, recordsv1.AttributionConfirmed},
+		{"pending with different participant", recordsv1.AttributionPending, strPtr("p_01"), true, recordsv1.AttributionConfirmed},
+		{"provisional without participant", recordsv1.AttributionProvisional, nil, true, recordsv1.AttributionConfirmed},
+		{"provisional with same participant", recordsv1.AttributionProvisional, strPtr("p_02"), true, recordsv1.AttributionConfirmed},
+		{"provisional with different participant", recordsv1.AttributionProvisional, strPtr("p_01"), true, recordsv1.AttributionCorrected},
+		{"confirmed without participant", recordsv1.AttributionConfirmed, nil, false, ""},
+		{"confirmed with same participant", recordsv1.AttributionConfirmed, strPtr("p_02"), false, ""},
+		{"confirmed with different participant", recordsv1.AttributionConfirmed, strPtr("p_01"), false, ""},
+		{"corrected without participant", recordsv1.AttributionCorrected, nil, false, ""},
+		{"corrected with same participant", recordsv1.AttributionCorrected, strPtr("p_02"), false, ""},
+		{"corrected with different participant", recordsv1.AttributionCorrected, strPtr("p_01"), false, ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			decision, err := resolver.Resolve(context.Background(), AttributionResolutionInput{
+				AccountID: "acct_01", SessionID: "vs_01", TurnID: "vt_01",
+				Turn: recordsv1.VoiceTurn{
+					ID: "vt_01", SessionID: "vs_01", AttributionStatus: test.status,
+					ParticipantID: test.participantID, ProviderSpeakerID: strPtr("diar_02"),
+				},
+			})
+			if err != nil {
+				t.Fatalf("Resolve() error = %v", err)
+			}
+			if !test.wantDecision {
+				if decision != nil {
+					t.Fatalf("Resolve() decision = %#v, want nil to keep final attribution", decision)
+				}
+				return
+			}
+			if decision == nil {
+				t.Fatal("Resolve() decision = nil, want confirmed decision")
+			}
+			if decision.ParticipantID != "p_02" {
+				t.Fatalf("Resolve() participant = %q, want p_02", decision.ParticipantID)
+			}
+			if decision.AttributionStatus != test.wantStatus {
+				t.Fatalf("Resolve() status = %q, want %q", decision.AttributionStatus, test.wantStatus)
+			}
+		})
+	}
+}
+
 func TestProviderAttributionResolverRequiresEvidence(t *testing.T) {
 	resolver := NewProviderAttributionResolver(&participantMapperStub{participant: recordsv1.Participant{ID: "p_01"}})
 

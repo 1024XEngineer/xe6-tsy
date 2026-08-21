@@ -91,6 +91,14 @@ func (i *HMACIssuer) VerifyAccessToken(ctx context.Context, token string) (Acces
 		Expires  int64  `json:"exp"`
 		Issued   int64  `json:"iat"`
 	}
+	var header struct {
+		Algorithm string `json:"alg"`
+		Type      string `json:"typ"`
+	}
+	headerDecoded, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil || json.Unmarshal(headerDecoded, &header) != nil || header.Algorithm != "HS256" || header.Type != "JWT" {
+		return AccessTokenClaims{}, domain.ErrUnauthorized
+	}
 	decoded, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil || json.Unmarshal(decoded, &payload) != nil {
 		return AccessTokenClaims{}, domain.ErrUnauthorized

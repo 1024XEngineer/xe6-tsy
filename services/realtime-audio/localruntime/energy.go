@@ -7,7 +7,8 @@ import (
 )
 
 // EnergySpeechClassifier treats frames above an RMS energy threshold as speech.
-// Used by the local HTTP entrypoint until a production VAD classifier is wired.
+// Kept as an explicit LOCAL_VAD_PROVIDER=energy fallback when Silero/ONNX Runtime
+// is unavailable; the default realtime entrypoint uses Silero.
 type EnergySpeechClassifier struct {
 	// Threshold is peak-normalized RMS in [0, 1]. Zero defaults to a quiet mic floor.
 	Threshold float64

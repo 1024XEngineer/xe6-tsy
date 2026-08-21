@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/config"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/translate"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 )
 
 func secretEnv(secret string) func(string) string {
@@ -51,6 +54,15 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	if cfg.SourceLanguage != "zh-CN" || cfg.TargetLanguage != "en-US" {
 		t.Fatalf("languages = %s→%s", cfg.SourceLanguage, cfg.TargetLanguage)
 	}
+	if cfg.LongDelivery {
+		t.Fatal("LongDelivery = true, want false by default")
+	}
+	if cfg.PhraseSubtitles {
+		t.Fatal("PhraseSubtitles = true, want false by default")
+	}
+	if cfg.CommandConfigTimeout != defaultCommandConfigTimeout {
+		t.Fatalf("command config timeout = %s, want %s", cfg.CommandConfigTimeout, defaultCommandConfigTimeout)
+	}
 
 	if _, err := loadProcessConfig(func(string) string { return "" }); err == nil {
 		t.Fatal("loadProcessConfig() error = nil, want secret validation error")
@@ -58,6 +70,161 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	t.Setenv("REALTIME_TICKET_SECRET", "")
 	if _, err := loadProcessConfig(nil); err == nil {
 		t.Fatal("loadProcessConfig(nil) error = nil, want secret validation error")
+	}
+}
+
+func TestLoadProcessConfigLongSentenceDeliveryCapability(t *testing.T) {
+	tests := []struct {
+		value   string
+		want    bool
+		wantErr bool
+	}{
+		{value: "enabled", want: true},
+		{value: "disabled"},
+		{value: "invalid", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.value, func(t *testing.T) {
+			cfg, err := loadProcessConfig(func(key string) string {
+				switch key {
+				case "REALTIME_TICKET_SECRET":
+					return strings.Repeat("s", 32)
+				case "REALTIME_LONG_SENTENCE_DELIVERY":
+					return test.value
+				default:
+					return ""
+				}
+			})
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("loadProcessConfig() error = nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadProcessConfig() error = %v", err)
+			}
+			if cfg.LongDelivery != test.want {
+				t.Fatalf("LongDelivery = %v, want %v", cfg.LongDelivery, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadProcessConfigPhraseSubtitleCapability(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  bool
+		err   bool
+	}{
+		{value: "enabled", want: true},
+		{value: "disabled"},
+		{value: "invalid", err: true},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			cfg, err := loadProcessConfig(func(key string) string {
+				if key == "REALTIME_TICKET_SECRET" {
+					return strings.Repeat("s", 32)
+				}
+				if key == "REALTIME_PHRASE_SUBTITLES" {
+					return test.value
+				}
+				return ""
+			})
+			if test.err {
+				if err == nil {
+					t.Fatal("loadProcessConfig() error = nil")
+				}
+				return
+			}
+			if err != nil || cfg.PhraseSubtitles != test.want {
+				t.Fatalf("config = %#v, error = %v", cfg, err)
+			}
+		})
+	}
+}
+
+func TestLoadProcessConfigReadsCommandAPISettings(t *testing.T) {
+	token := strings.Repeat("c", minCommandTokenBytes)
+	cfg, err := loadProcessConfig(func(key string) string {
+		switch key {
+		case "REALTIME_TICKET_SECRET":
+			return strings.Repeat("s", 32)
+		case "LINGOW_API_BASE_URL":
+			return "http://api:8080"
+		case "LINGOW_COMMAND_SYSTEM_TOKEN":
+			return token
+		case "COMMAND_CONFIG_TIMEOUT_MS":
+			return "1750"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("loadProcessConfig() error = %v", err)
+	}
+	if cfg.APIBaseURL != "http://api:8080" || cfg.CommandToken != token || cfg.CommandConfigTimeout != 1750*time.Millisecond {
+		t.Fatalf("command API config = %#v", cfg)
+	}
+}
+
+func TestLoadProcessConfigRejectsIncompleteCommandAPISettings(t *testing.T) {
+	tests := []map[string]string{
+		{"LINGOW_API_BASE_URL": "http://api:8080"},
+		{"LINGOW_COMMAND_SYSTEM_TOKEN": strings.Repeat("c", minCommandTokenBytes)},
+		{"LINGOW_API_BASE_URL": "http://api:8080", "LINGOW_COMMAND_SYSTEM_TOKEN": "short"},
+		{"COMMAND_CONFIG_TIMEOUT_MS": "none"},
+		{"COMMAND_CONFIG_TIMEOUT_MS": "0"},
+	}
+	for _, values := range tests {
+		_, err := loadProcessConfig(func(key string) string {
+			if key == "REALTIME_TICKET_SECRET" {
+				return strings.Repeat("s", 32)
+			}
+			return values[key]
+		})
+		if err == nil {
+			t.Fatalf("loadProcessConfig(%#v) error = nil", values)
+		}
+	}
+}
+
+func TestLoadProcessConfigCommandTimeoutBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		raw       string
+		want      time.Duration
+		wantError bool
+	}{
+		{name: "one millisecond", raw: "1", want: time.Millisecond},
+		{name: "zero", raw: "0", wantError: true},
+		{name: "negative", raw: "-1", wantError: true},
+		{name: "not a number", raw: "invalid", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := loadProcessConfig(func(key string) string {
+				switch key {
+				case "REALTIME_TICKET_SECRET":
+					return strings.Repeat("s", minTicketSecretBytes)
+				case "COMMAND_CONFIG_TIMEOUT_MS":
+					return test.raw
+				default:
+					return ""
+				}
+			})
+			if test.wantError {
+				if err == nil {
+					t.Fatal("loadProcessConfig() error = nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadProcessConfig() error = %v", err)
+			}
+			if cfg.CommandConfigTimeout != test.want {
+				t.Fatalf("CommandConfigTimeout = %s, want %s", cfg.CommandConfigTimeout, test.want)
+			}
+		})
 	}
 }
 
@@ -83,6 +250,18 @@ func TestApplySubtitleOnlyOverridesForcesMockTTS(t *testing.T) {
 	}
 }
 
+func TestWebRTCConfigSampleRateMatchesDownlink(t *testing.T) {
+	if got := webrtcConfigSampleRate(processConfig{DownlinkMode: "pcm"}); got != 24000 {
+		t.Fatalf("PCM sample rate = %d, want 24000", got)
+	}
+	if got := webrtcConfigSampleRate(processConfig{DownlinkMode: "opus"}); got != 48000 {
+		t.Fatalf("Opus sample rate = %d, want 48000", got)
+	}
+	if got := webrtcConfigSampleRate(processConfig{}); got != 48000 {
+		t.Fatalf("default sample rate = %d, want 48000", got)
+	}
+}
+
 func TestLoadProcessConfigPCMDownlinkKeepsRealTTS(t *testing.T) {
 	cfg, err := loadProcessConfig(func(key string) string {
 		switch key {
@@ -104,10 +283,87 @@ func TestLoadProcessConfigPCMDownlinkKeepsRealTTS(t *testing.T) {
 
 func setMockProviderEnv(t *testing.T) {
 	t.Helper()
+	t.Setenv("APP_ENV", "test")
 	t.Setenv("ASR_PROVIDER", "mock")
 	t.Setenv("LLM_PROVIDER", "mock")
 	t.Setenv("TTS_PROVIDER", "mock")
 	t.Setenv("REALTIME_API_DATABASE", "")
+	// Unit tests stay offline: Silero needs ONNX Runtime shared libs.
+	t.Setenv("LOCAL_VAD_PROVIDER", "energy")
+	t.Setenv("REALTIME_METRICS_TOKEN", "")
+	t.Setenv("COMMAND_LLM_API_KEY", "test-command-key")
+	t.Setenv("COMMAND_LLM_BASE_URL", "https://example.invalid/v1")
+	t.Setenv("COMMAND_LLM_MODEL", "")
+	t.Setenv("COMMAND_LLM_TIMEOUT_MS", "")
+	t.Setenv("LINGOW_API_BASE_URL", "http://api:8080")
+	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", strings.Repeat("c", minCommandTokenBytes))
+	t.Setenv("COMMAND_CONFIG_TIMEOUT_MS", "")
+}
+
+func TestNewControlPlaneHandlerWiresSemanticCommands(t *testing.T) {
+	setMockProviderEnv(t)
+
+	handler, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+	if handler == nil {
+		t.Fatal("newControlPlaneHandler() = nil")
+	}
+}
+
+func TestNewControlPlaneHandlerRejectsSemanticCommandsWithoutCommandAPI(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("LINGOW_API_BASE_URL", "")
+	t.Setenv("LINGOW_COMMAND_SYSTEM_TOKEN", "")
+
+	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err == nil || !strings.Contains(err.Error(), "LINGOW_API_BASE_URL") {
+		t.Fatalf("newControlPlaneHandler() error = %v, want missing command API configuration", err)
+	}
+}
+
+func TestNewControlPlaneHandlerRejectsMissingSemanticCommandCredentials(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("COMMAND_LLM_API_KEY", "")
+	t.Setenv("COMMAND_LLM_BASE_URL", "")
+
+	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err == nil || !strings.Contains(err.Error(), "command API key is required") {
+		t.Fatalf("newControlPlaneHandler() error = %v, want missing semantic command credentials", err)
+	}
+}
+
+func TestNewControlPlaneHandlerRejectsInvalidProviderConfiguration(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("ASR_PROVIDER", "unsupported")
+
+	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err == nil || !strings.Contains(err.Error(), "load provider config") {
+		t.Fatalf("newControlPlaneHandler() error = %v, want provider configuration error", err)
+	}
+}
+
+func TestNewControlPlaneHandlerRejectsDatabaseWithoutURL(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("REALTIME_API_DATABASE", "enabled")
+	t.Setenv("DATABASE_URL", "")
+
+	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL is empty") {
+		t.Fatalf("newControlPlaneHandler() error = %v, want missing database URL", err)
+	}
+}
+
+func TestNewControlPlaneHandlerRejectsValkeyWithoutURL(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("REALTIME_OUTBOX", "valkey")
+	t.Setenv("REDIS_URL", "")
+
+	_, err := newControlPlaneHandler(strings.Repeat("s", minTicketSecretBytes))
+	if err == nil || !strings.Contains(err.Error(), "REDIS_URL is required") {
+		t.Fatalf("newControlPlaneHandler() error = %v, want missing Redis URL", err)
+	}
 }
 
 func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {
@@ -143,13 +399,64 @@ func TestNewControlPlaneHandlerServesWebRTCConfig(t *testing.T) {
 	}
 
 	var body struct {
-		SessionID string `json:"session_id"`
+		SessionID          string `json:"session_id"`
+		ControlDataChannel struct {
+			Label           string `json:"label"`
+			Ordered         bool   `json:"ordered"`
+			ProtocolVersion int    `json:"protocol_version"`
+		} `json:"control_data_channel"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if body.SessionID != "vs_test" {
 		t.Fatalf("session_id = %q", body.SessionID)
+	}
+	if body.ControlDataChannel.Label != realtimev1.ControlDataChannelLabel ||
+		!body.ControlDataChannel.Ordered ||
+		body.ControlDataChannel.ProtocolVersion != realtimev1.ControlProtocolVersion {
+		t.Fatalf("control_data_channel = %#v", body.ControlDataChannel)
+	}
+}
+
+func TestNewControlPlaneHandlerProtectsRealtimeMetrics(t *testing.T) {
+	setMockProviderEnv(t)
+	t.Setenv("REALTIME_METRICS_TOKEN", "metrics-secret")
+	handler, err := newControlPlaneHandler(strings.Repeat("m", 32))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, request)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized metrics status = %d", unauthorized.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request.Header.Set("Authorization", "Bearer metrics-secret")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf("metrics Content-Type = %q, want application/json", contentType)
+	}
+	if body := strings.TrimSpace(response.Body.String()); body == "" || !strings.Contains(body, "mode_commands") {
+		t.Fatalf("metrics body = %q, want mode_commands snapshot", body)
+	}
+}
+
+func TestNewControlPlaneHandlerDoesNotExposeMetricsByDefault(t *testing.T) {
+	setMockProviderEnv(t)
+	handler, err := newControlPlaneHandler(strings.Repeat("m", 32))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("metrics status = %d, want 404 while disabled", response.Code)
 	}
 }
 
@@ -202,6 +509,7 @@ func TestRunRejectsMissingSecretWithoutListening(t *testing.T) {
 }
 
 func TestRunShutsDownAfterStart(t *testing.T) {
+	setMockProviderEnv(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})
 
@@ -235,6 +543,7 @@ func TestRunShutsDownAfterStart(t *testing.T) {
 }
 
 func TestRunReturnsListenError(t *testing.T) {
+	setMockProviderEnv(t)
 	want := errors.New("listen failed")
 	err := run(context.Background(), secretEnv(strings.Repeat("v", 32)), func(*http.Server) error {
 		return want
@@ -245,6 +554,7 @@ func TestRunReturnsListenError(t *testing.T) {
 }
 
 func TestRunAcceptsListenerExit(t *testing.T) {
+	setMockProviderEnv(t)
 	err := run(context.Background(), secretEnv(strings.Repeat("w", 32)), func(*http.Server) error {
 		return nil
 	})
@@ -254,11 +564,60 @@ func TestRunAcceptsListenerExit(t *testing.T) {
 }
 
 func TestRunAcceptsServerClosedListenerExit(t *testing.T) {
+	setMockProviderEnv(t)
 	err := run(context.Background(), secretEnv(strings.Repeat("x", 32)), func(*http.Server) error {
 		return http.ErrServerClosed
 	})
 	if err != nil {
 		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func TestRunReturnsShutdownTimeout(t *testing.T) {
+	setMockProviderEnv(t)
+	previousTimeout := shutdownTimeout
+	shutdownTimeout = time.Millisecond
+	t.Cleanup(func() { shutdownTimeout = previousTimeout })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listenerReady := make(chan net.Listener, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- run(ctx, secretEnv(strings.Repeat("y", 32)), func(server *http.Server) error {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				return err
+			}
+			listenerReady <- listener
+			return server.Serve(listener)
+		})
+	}()
+
+	var listener net.Listener
+	select {
+	case listener = <-listenerReady:
+	case <-time.After(time.Second):
+		t.Fatal("listener did not start")
+	}
+	defer listener.Close()
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\n")); err != nil {
+		t.Fatalf("write partial request: %v", err)
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("run() error = %v, want shutdown deadline", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("run() did not return after shutdown timeout")
 	}
 }
 
@@ -345,6 +704,45 @@ func TestMockOfflineProvidersSwitchWithSourceLanguage(t *testing.T) {
 	}
 	if translated.Text != "你好" {
 		t.Fatalf("translated = %#v", translated)
+	}
+}
+
+func TestMockOfflineProvidersDefaultLanguageAndTTSChunk(t *testing.T) {
+	providers := mockOfflineProviders("")
+	asrStream, err := providers.ASR.StartStream(context.Background(), asr.StreamRequest{})
+	if err != nil {
+		t.Fatalf("ASR StartStream: %v", err)
+	}
+	final, err := asrStream.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("ASR Finish: %v", err)
+	}
+	if final.SourceLanguage != "zh-CN" || final.Text != "你好" {
+		t.Fatalf("default ASR final = %#v", final)
+	}
+
+	ttsStream, err := providers.TTS.StartStream(context.Background(), tts.Request{Text: "hello", TargetLanguage: "en-US"})
+	if err != nil {
+		t.Fatalf("TTS StartStream: %v", err)
+	}
+	var chunks []struct {
+		sequence int64
+		data     []byte
+	}
+	for chunk := range ttsStream.Chunks() {
+		chunks = append(chunks, struct {
+			sequence int64
+			data     []byte
+		}{sequence: chunk.SequenceNo, data: append([]byte(nil), chunk.Data...)})
+	}
+	if _, err := ttsStream.Finish(context.Background()); err != nil {
+		t.Fatalf("TTS Finish: %v", err)
+	}
+	if err := ttsStream.Close(); err != nil {
+		t.Fatalf("TTS Close: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].sequence != 1 || !bytes.Equal(chunks[0].data, []byte{0, 0, 0, 0}) {
+		t.Fatalf("TTS chunks = %#v, want one zero PCM chunk with sequence 1", chunks)
 	}
 }
 

@@ -122,7 +122,7 @@ func validate(input RecordInput) error {
 		return domain.ErrInvalidArgument
 	}
 	switch input.ServiceType {
-	case StageASR, StageTranslation, StageTTS, StageDiarization:
+	case StageASR, StageTranslation, StageAssistantLLM, StageTTS, StageDiarization:
 	default:
 		return domain.ErrInvalidArgument
 	}
@@ -233,7 +233,7 @@ func summarize(facts []Detail, accountID, sessionID string, start, end time.Time
 		}
 	}
 	result := Summary{AccountID: accountID, SessionID: sessionID, PeriodStart: start, PeriodEnd: end, Totals: make([]StageTotal, 0)}
-	for _, stage := range []Stage{StageASR, StageTranslation, StageTTS, StageDiarization} {
+	for _, stage := range []Stage{StageASR, StageTranslation, StageAssistantLLM, StageTTS, StageDiarization} {
 		if total := totals[stage]; total != nil {
 			result.Totals = append(result.Totals, *total)
 		}

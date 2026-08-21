@@ -50,6 +50,30 @@ jobs:
       - name: Download Go modules
         run: go mod download
 
+      - name: Install ONNX Runtime for Silero coverage
+        if: matrix.module == 'services/realtime-audio'
+        run: |
+          set -euo pipefail
+          lib="third_party/onnxruntime/lib/libonnxruntime.so"
+          if [[ -f "$lib" ]]; then
+            echo "already present: $lib"
+            exit 0
+          fi
+          version=1.24.1
+          mkdir -p third_party/onnxruntime
+          url="https://github.com/microsoft/onnxruntime/releases/download/v${version}/onnxruntime-linux-x64-${version}.tgz"
+          curl -fsSL "$url" -o /tmp/ort.tgz
+          mkdir -p /tmp/ort-extract
+          tar -xzf /tmp/ort.tgz -C /tmp/ort-extract
+          inner="$(find /tmp/ort-extract -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          cp -a "$inner"/. third_party/onnxruntime/
+          if [[ ! -f "$lib" ]]; then
+            versioned="$(ls third_party/onnxruntime/lib/libonnxruntime.so.* | head -n 1)"
+            ln -sfn "$(basename "$versioned")" "$lib"
+          fi
+          test -f "$lib"
+          echo "installed $lib"
+
       - name: Verify Go formatting
         run: |
           unformatted="$(gofmt -l .)"

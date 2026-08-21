@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad"
 )
@@ -30,6 +32,23 @@ type TurnProcessor interface {
 	ProcessAudio(ctx context.Context, request pipeline.TurnProcessRequest) (pipeline.TurnContext, error)
 }
 
+// WakeWordSource exposes validated local wake-word detections. The source is
+// optional: transports without a local detector continue through the ordinary
+// VAD path unchanged.
+type WakeWordSource interface {
+	Receive(context.Context) (realtimev1.WakeWordDetectedSignal, error)
+}
+
+// CommandGate is the narrow command-channel contract consumed before ordinary
+// VAD. Implementations quarantine every frame while armed and return to a
+// dormant state after success or any bounded failure.
+type CommandGate interface {
+	Open(command.OpenRequest) error
+	Replay(context.Context, []audio.Frame) command.Result
+	Consume(context.Context, audio.Frame) command.Result
+	Cancel()
+}
+
 // Request carries immutable session metadata used for every utterance read from a source.
 type Request struct {
 	SessionID      string
@@ -43,7 +62,10 @@ type Dependencies struct {
 	Source    FrameSource
 	Segmenter *vad.Segmenter
 	Processor TurnProcessor
+	Command   CommandGate
+	WakeWords WakeWordSource
 	Latency   *slog.Logger
+	Now       func() time.Time
 }
 
 // Service reads normalized frames, applies VAD, and sends only finalized utterances downstream.
@@ -51,7 +73,10 @@ type Service struct {
 	source    FrameSource
 	segmenter *vad.Segmenter
 	processor TurnProcessor
+	command   CommandGate
+	wakeWords WakeWordSource
 	latency   *slog.Logger
+	now       func() time.Time
 }
 
 // finalizedEventQueueCapacity bounds audio-turn backlog while provider calls run.
@@ -61,7 +86,15 @@ func NewService(deps Dependencies) (*Service, error) {
 	if deps.Source == nil || deps.Segmenter == nil || deps.Processor == nil {
 		return nil, ErrDependencyRequired
 	}
-	return &Service{source: deps.Source, segmenter: deps.Segmenter, processor: deps.Processor, latency: deps.Latency}, nil
+	now := deps.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	return &Service{
+		source: deps.Source, segmenter: deps.Segmenter, processor: deps.Processor,
+		command: deps.Command, wakeWords: deps.WakeWords,
+		latency: deps.Latency, now: now,
+	}, nil
 }
 
 // Run owns the source until EOF, context cancellation, or a processing error closes the loop.
@@ -82,14 +115,47 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	finalizedEvents := make(chan vad.Event, finalizedEventQueueCapacity)
+	streamingFinals := make(chan *pipeline.AudioTurn, finalizedEventQueueCapacity)
 	processingErrors := make(chan error, 1)
 	workerDone := make(chan struct{})
 	go func() {
 		defer close(workerDone)
-		for event := range finalizedEvents {
-			if err := s.handleEvents(runCtx, request, []vad.Event{event}); err != nil {
+		pendingFinalized := finalizedEvents
+		pendingStreaming := streamingFinals
+		for pendingFinalized != nil || pendingStreaming != nil {
+			var err error
+			select {
+			case event, ok := <-pendingFinalized:
+				if !ok {
+					pendingFinalized = nil
+					continue
+				}
+				err = s.handleEvents(runCtx, request, []vad.Event{event})
+			case audioTurn, ok := <-pendingStreaming:
+				if !ok {
+					pendingStreaming = nil
+					continue
+				}
+				_, err = audioTurn.FinishStreaming(runCtx)
+				audioTurn.Close()
+			}
+			if err != nil {
+				if pipeline.IsRecoverableUnsupportedSourceLanguage(err) {
+					s.logUnsupportedSourceLanguage(request, err)
+					continue
+				}
+				if errors.Is(err, pipeline.ErrTurnSuperseded) {
+					s.logRecoverableTurn(request, err)
+					continue
+				}
+				if errors.Is(err, pipeline.ErrFinalTurnAccepted) {
+					// FinalTurn is already durable at this point. TTS, playback, usage, or
+					// runtime-reporting failures belong to this Turn and must not tear down
+					// the shared WebRTC session or cause the Turn to be translated again.
+					s.logPostCommitFailure(request, err)
+					continue
+				}
 				processingErrors <- err
 				cancel()
 				return
@@ -111,9 +177,97 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 			}
 		}
 	}
+	enqueueStreamingFinal := func(audioTurn *pipeline.AudioTurn) error {
+		select {
+		case streamingFinals <- audioTurn:
+			return nil
+		case err := <-processingErrors:
+			return err
+		case <-runCtx.Done():
+			select {
+			case err := <-processingErrors:
+				return err
+			default:
+				return runCtx.Err()
+			}
+		}
+	}
+	wakeSignals := make(chan receivedWakeWord, 1)
+	wakeDone := make(chan struct{})
+	if s.command != nil && s.wakeWords != nil {
+		go s.receiveWakeWords(runCtx, wakeSignals, wakeDone)
+	} else {
+		close(wakeDone)
+	}
+	defer func() {
+		cancel()
+		if s.command != nil {
+			s.command.Cancel()
+		}
+		<-wakeDone
+	}()
+
 	var lastSeen time.Time
+	streaming, _ := s.processor.(pipeline.StreamingTurnProcessor)
+	var activeTurn *pipeline.AudioTurn
+	openPendingWake := func() {
+		for {
+			select {
+			case wake := <-wakeSignals:
+				if s.openCommandWindow(runCtx, request, wake) && activeTurn != nil {
+					activeTurn.Close()
+					activeTurn = nil
+				}
+			default:
+				return
+			}
+		}
+	}
+	processStreamingEvent := func(event vad.Event) error {
+		switch event.Type {
+		case vad.EventOpened:
+			if activeTurn != nil {
+				activeTurn.Close()
+			}
+			turn, err := streaming.StartAudio(runCtx, pipeline.TurnProcessRequest{
+				SessionID: request.SessionID, AccountID: request.AccountID, TraceID: request.TraceID,
+				SourceLanguage: request.SourceLanguage, StartedAt: event.StartedAt,
+			})
+			if err != nil {
+				if isRecoverableTurnError(err) {
+					s.logRecoverableTurn(request, err)
+					return nil
+				}
+				return err
+			}
+			activeTurn = turn
+			for _, frame := range event.Frames {
+				if err := activeTurn.PushAudio(runCtx, frame.PCM); err != nil {
+					activeTurn.Close()
+					activeTurn = nil
+					return nil
+				}
+			}
+		case vad.EventAudio:
+			if activeTurn == nil || event.Frame == nil {
+				return nil
+			}
+			if err := activeTurn.PushAudio(runCtx, event.Frame.PCM); err != nil {
+				activeTurn = nil
+			}
+		case vad.EventFinal:
+			if activeTurn == nil {
+				return nil
+			}
+			turn := activeTurn
+			activeTurn = nil
+			return enqueueStreamingFinal(turn)
+		}
+		return nil
+	}
 	var loopErr error
 	for {
+		openPendingWake()
 		frame, err := s.source.ReadFrame(runCtx)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -123,7 +277,12 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 				} else {
 					for _, event := range events {
 						s.logVADCheckpoint(request, event)
-						if event.Type == vad.EventFinal {
+						if streaming != nil {
+							if err := processStreamingEvent(event); err != nil {
+								loopErr = err
+								break
+							}
+						} else if event.Type == vad.EventFinal {
 							if err := enqueueFinalized(event); err != nil {
 								loopErr = err
 								break
@@ -136,6 +295,15 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 			loopErr = fmt.Errorf("read audio frame: %w", err)
 			break
 		}
+		// A wake signal may arrive while ReadFrame is blocked. Drain it before
+		// routing this frame so command audio cannot reach ordinary VAD.
+		openPendingWake()
+		if s.command != nil {
+			result := s.command.Consume(runCtx, frame)
+			if result.Consumed {
+				continue
+			}
+		}
 		lastSeen = frame.CapturedAt
 		events, err := s.segmenter.Push(runCtx, frame)
 		if err != nil {
@@ -144,12 +312,16 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 		}
 		for _, event := range events {
 			s.logVADCheckpoint(request, event)
-			if event.Type != vad.EventFinal {
-				continue
-			}
-			if err := enqueueFinalized(event); err != nil {
-				loopErr = err
-				break
+			if streaming != nil {
+				if err := processStreamingEvent(event); err != nil {
+					loopErr = err
+					break
+				}
+			} else if event.Type == vad.EventFinal {
+				if err := enqueueFinalized(event); err != nil {
+					loopErr = err
+					break
+				}
 			}
 		}
 		if loopErr != nil {
@@ -159,7 +331,11 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	if loopErr != nil {
 		cancel()
 	}
+	if activeTurn != nil {
+		activeTurn.Close()
+	}
 	close(finalizedEvents)
+	close(streamingFinals)
 	<-workerDone
 	select {
 	case err := <-processingErrors:
@@ -170,6 +346,57 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 	default:
 	}
 	return loopErr
+}
+
+func (s *Service) receiveWakeWords(
+	ctx context.Context,
+	signals chan<- receivedWakeWord,
+	done chan<- struct{},
+) {
+	defer close(done)
+	for {
+		signal, err := s.wakeWords.Receive(ctx)
+		if err != nil {
+			// A detector ending is an optional capability failure. The media
+			// loop remains healthy and continues ordinary input processing.
+			return
+		}
+		select {
+		case signals <- receivedWakeWord{signal: signal, receivedAt: s.now()}:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+type receivedWakeWord struct {
+	signal     realtimev1.WakeWordDetectedSignal
+	receivedAt time.Time
+}
+
+func (s *Service) openCommandWindow(ctx context.Context, request Request, wake receivedWakeWord) bool {
+	if s == nil || s.command == nil || wake.signal.Validate() != nil || wake.receivedAt.IsZero() {
+		return false
+	}
+	if err := s.command.Open(command.OpenRequest{
+		SessionID: request.SessionID, CommandID: wake.signal.SignalID,
+		SourceLanguage: request.SourceLanguage, OpenedAt: wake.receivedAt,
+	}); err != nil {
+		// A device may retry the same signal_id after uncertain delivery. The Gate recognizes that
+		// retry and leaves both the current command attempt and ordinary VAD state untouched.
+		return false
+	}
+	// The ordinary Segmenter already owns the complete in-flight utterance, including its VAD
+	// prefix and internal pauses. Transfer that utterance only after Open succeeds, so a duplicate
+	// wake cannot discard ordinary audio. Command Replay receives the same sentence boundary rather
+	// than an arbitrary wall-clock slice; when no sentence is active, Reset still prevents stale
+	// prefix/timestamp history from crossing into the post-command ordinary stream.
+	frames := s.segmenter.ClaimActiveUtterance()
+	if len(frames) == 0 {
+		s.segmenter.Reset()
+	}
+	_ = s.command.Replay(ctx, frames)
+	return true
 }
 
 func (s *Service) flush(ctx context.Context, lastSeen time.Time) ([]vad.Event, error) {
@@ -203,6 +430,17 @@ func (s *Service) handleEvents(ctx context.Context, request Request, events []va
 	return nil
 }
 
+func isRecoverableTurnError(err error) bool {
+	return pipeline.IsRecoverableUnsupportedSourceLanguage(err) || errors.Is(err, pipeline.ErrTurnSuperseded)
+}
+
+func (s *Service) logRecoverableTurn(request Request, err error) {
+	if s == nil || s.latency == nil || err == nil {
+		return
+	}
+	s.latency.Warn("realtime turn skipped and listening restored", "session_id", request.SessionID, "trace_id", request.TraceID, "error", err)
+}
+
 func (s *Service) logVADCheckpoint(request Request, event vad.Event) {
 	if s == nil || s.latency == nil {
 		return
@@ -226,6 +464,29 @@ func (s *Service) logVADCheckpoint(request Request, event vad.Event) {
 			"frame_count", len(event.Frames),
 		)
 	}
+}
+
+func (s *Service) logPostCommitFailure(request Request, err error) {
+	if s == nil || s.latency == nil || err == nil {
+		return
+	}
+	s.latency.Error("realtime turn post-commit processing failed",
+		"session_id", request.SessionID,
+		"trace_id", request.TraceID,
+		"error", err,
+	)
+}
+
+func (s *Service) logUnsupportedSourceLanguage(request Request, err error) {
+	if s == nil || s.latency == nil || err == nil {
+		return
+	}
+	s.latency.Warn("realtime turn ignored unsupported source language",
+		"session_id", request.SessionID,
+		"trace_id", request.TraceID,
+		"error_class", "unsupported_source_language",
+		"error", err,
+	)
 }
 
 func audioChunks(frames []audio.Frame) [][]byte {

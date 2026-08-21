@@ -2,12 +2,20 @@ package localruntime
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
+	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
+)
+
+var (
+	ErrAssistantReplyMediaUnavailable   = errors.New("assistant reply media is unavailable")
+	ErrAssistantReplyChannelUnavailable = errors.New("assistant reply data channel is unavailable")
 )
 
 // DiscardAudioSink accepts TTS PCM without sending it to a browser track.
@@ -20,6 +28,74 @@ type MemoryUsageSink struct {
 	mu    sync.Mutex
 	facts []pipeline.UsageFact
 }
+
+// DataChannelAssistantReplySink publishes finalized assistant replies over the
+// same WebRTC DataChannel used by translation events.
+type DataChannelAssistantReplySink struct {
+	Media    MediaLookup
+	Failures DataChannelFailureObserver
+}
+
+type DataChannelFailureObserver interface{ RecordDataChannelFailure() }
+
+type FrontendAssistantReply struct {
+	Type              string    `json:"type"`
+	Event             string    `json:"event"`
+	EventVersion      int       `json:"event_version"`
+	ID                string    `json:"id"`
+	TraceID           string    `json:"trace_id"`
+	SessionID         string    `json:"session_id"`
+	TurnID            string    `json:"turn_id"`
+	RuntimeInstanceID string    `json:"runtime_instance_id"`
+	Generation        int64     `json:"generation"`
+	Text              string    `json:"text"`
+	Language          string    `json:"language"`
+	OccurredAt        time.Time `json:"occurred_at"`
+}
+
+func (s DataChannelAssistantReplySink) Publish(ctx context.Context, event realtimev1.AssistantReplyEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.Media == nil {
+		s.recordFailure()
+		return ErrAssistantReplyMediaUnavailable
+	}
+	media, err := s.Media.CurrentMedia(ctx, event.SessionID)
+	if err != nil {
+		s.recordFailure()
+		return fmt.Errorf("resolve assistant reply media: %w", err)
+	}
+	if media == nil || media.TranslationEvents() == nil {
+		s.recordFailure()
+		return ErrAssistantReplyChannelUnavailable
+	}
+	payload := FrontendAssistantReply{
+		Type: "assistant.reply", Event: "assistant.reply",
+		EventVersion: event.EventVersion, ID: event.EventID, TraceID: event.TraceID,
+		SessionID: event.SessionID, TurnID: event.TurnID,
+		RuntimeInstanceID: event.RuntimeInstanceID, Generation: event.Generation,
+		Text: event.Text, Language: event.Language, OccurredAt: event.OccurredAt,
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := media.TranslationEvents().PublishJSON(publishCtx, payload); err != nil {
+		s.recordFailure()
+		if errors.Is(err, webrtc.ErrMediaUnavailable) {
+			return errors.Join(ErrAssistantReplyChannelUnavailable, fmt.Errorf("publish assistant reply: %w", err))
+		}
+		return fmt.Errorf("publish assistant reply: %w", err)
+	}
+	return nil
+}
+
+func (s DataChannelAssistantReplySink) recordFailure() {
+	if s.Failures != nil {
+		s.Failures.RecordDataChannelFailure()
+	}
+}
+
+var _ pipeline.AssistantReplySink = DataChannelAssistantReplySink{}
 
 func (s *MemoryUsageSink) Publish(_ context.Context, fact pipeline.UsageFact) error {
 	s.mu.Lock()
@@ -39,9 +115,73 @@ type MediaLookup interface {
 	CurrentMedia(ctx context.Context, sessionID string) (webrtc.MediaTransport, error)
 }
 
+// DataChannelASRPartialObserver publishes best-effort, replaceable ASR snapshots on the
+// authenticated translation-events channel. Its errors are deliberately swallowed so an
+// unavailable browser cannot affect ASR finalization, translation, TTS, or FinalTurn delivery.
+type DataChannelASRPartialObserver struct {
+	Media    MediaLookup
+	Failures DataChannelFailureObserver
+}
+
+func (s DataChannelASRPartialObserver) ObserveASRPartial(ctx context.Context, event realtimev1.ASRPartialEvent) {
+	if err := event.Validate(); err != nil || ctx.Err() != nil || s.Media == nil {
+		return
+	}
+	media, err := s.Media.CurrentMedia(ctx, event.SessionID)
+	if err != nil || media == nil || media.TranslationEvents() == nil {
+		s.recordFailure()
+		return
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	if err := media.TranslationEvents().PublishJSON(publishCtx, event); err != nil {
+		s.recordFailure()
+	}
+}
+
+func (s DataChannelASRPartialObserver) recordFailure() {
+	if s.Failures != nil {
+		s.Failures.RecordDataChannelFailure()
+	}
+}
+
+var _ pipeline.ASRPartialObserver = DataChannelASRPartialObserver{}
+
+// DataChannelPhraseSubtitleObserver publishes best-effort stable phrase subtitles on the
+// authenticated translation-events channel. Its failures must not affect the ASR final path.
+type DataChannelPhraseSubtitleObserver struct {
+	Media    MediaLookup
+	Failures DataChannelFailureObserver
+}
+
+func (s DataChannelPhraseSubtitleObserver) ObservePhraseSubtitle(ctx context.Context, event realtimev1.PhraseSubtitleEvent) {
+	if err := event.Validate(); err != nil || ctx.Err() != nil || s.Media == nil {
+		return
+	}
+	media, err := s.Media.CurrentMedia(ctx, event.SessionID)
+	if err != nil || media == nil || media.TranslationEvents() == nil {
+		s.recordFailure()
+		return
+	}
+	publishCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	if err := media.TranslationEvents().PublishJSON(publishCtx, event); err != nil {
+		s.recordFailure()
+	}
+}
+
+func (s DataChannelPhraseSubtitleObserver) recordFailure() {
+	if s.Failures != nil {
+		s.Failures.RecordDataChannelFailure()
+	}
+}
+
+var _ pipeline.PhraseSubtitleObserver = DataChannelPhraseSubtitleObserver{}
+
 // DataChannelFinalTurnSink publishes browser-facing translation.final events.
 type DataChannelFinalTurnSink struct {
-	Media MediaLookup
+	Media    MediaLookup
+	Failures DataChannelFailureObserver
 }
 
 // FrontendTranslationFinal matches the lingow-voice-demo DataChannel listener.
@@ -66,14 +206,17 @@ func (s DataChannelFinalTurnSink) Publish(ctx context.Context, event recordsv1.F
 	// Subtitle delivery is best-effort for the local demo. A closed or slow
 	// DataChannel must not tear down the mock ASR→LLM pipeline.
 	if s.Media == nil {
+		s.recordFailure()
 		return nil
 	}
 	media, err := s.Media.CurrentMedia(ctx, event.SessionID)
 	if err != nil {
+		s.recordFailure()
 		return nil
 	}
 	sink := media.TranslationEvents()
 	if sink == nil {
+		s.recordFailure()
 		return nil
 	}
 	payload := FrontendTranslationFinal{
@@ -91,6 +234,14 @@ func (s DataChannelFinalTurnSink) Publish(ctx context.Context, event recordsv1.F
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	_ = sink.PublishJSON(publishCtx, payload)
+	if err := sink.PublishJSON(publishCtx, payload); err != nil {
+		s.recordFailure()
+	}
 	return nil
+}
+
+func (s DataChannelFinalTurnSink) recordFailure() {
+	if s.Failures != nil {
+		s.Failures.RecordDataChannelFailure()
+	}
 }

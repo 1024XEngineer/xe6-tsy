@@ -910,6 +910,66 @@ func TestPipelineReusesPendingPhraseAtFinalization(t *testing.T) {
 	}
 }
 
+func TestPipelineDoesNotDoubleTranslatePendingPhraseAfterResidualHandoff(t *testing.T) {
+	phraseStarted := make(chan struct{})
+	releasePhrase := make(chan struct{})
+	phraseReturned := make(chan struct{})
+	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		close(phraseStarted)
+		<-releasePhrase
+		close(phraseReturned)
+		return translate.Result{Text: "phrase-en", Provider: "phrase", Model: "v1", InputTokens: 7}, nil
+	}), "phrase", &recordingPhraseSubtitleObserver{}, nil)
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "final-en", Provider: "final", Model: "v1", InputTokens: 2}}
+	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: finalSink, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phraseCoordinator,
+	})
+	defer service.Close()
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: false}}
+	phraseCoordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	<-phraseStarted
+
+	completed := make(chan error, 1)
+	go func() {
+		completed <- service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"})
+	}()
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatalf("HandleASRFinal() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("HandleASRFinal() waited for pending phrase provider")
+	}
+	requests := translator.Requests()
+	if len(requests) != 1 || requests[0].Text != "你好" {
+		t.Fatalf("final translation requests = %#v, want one residual request", requests)
+	}
+	if len(finalSink.events) != 1 || finalSink.events[0].TranslatedText != "final-en" {
+		t.Fatalf("FinalTurns = %#v", finalSink.events)
+	}
+	if len(usageSink.facts) != 1 || usageSink.facts[0].IdempotencyKey != "usage:turn-1:translation" || usageSink.facts[0].InputTokens != 2 {
+		t.Fatalf("usage facts = %#v, want only residual settlement usage", usageSink.facts)
+	}
+
+	close(releasePhrase)
+	select {
+	case <-phraseReturned:
+	case <-time.After(time.Second):
+		t.Fatal("pending phrase provider did not return")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if len(usageSink.facts) != 1 {
+		t.Fatalf("usage facts after late phrase result = %#v, want no second fact", usageSink.facts)
+	}
+}
+
 func TestPipelineTranslatesFinalFlushTailOnceAndAggregatesUsage(t *testing.T) {
 	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
 		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1, CostAmount: "0.10", Currency: "USD"}, nil

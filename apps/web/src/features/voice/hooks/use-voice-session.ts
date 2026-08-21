@@ -942,6 +942,8 @@ export function useVoiceSession() {
                   utteranceId: phraseSubtitle.utteranceId,
                   phraseSequence: phraseSubtitle.phraseSequence,
                   sourceText: phraseSubtitle.sourceText,
+                  translatedText: phraseSubtitle.translatedText,
+                  status: phraseSubtitle.status,
                 },
               });
               return;

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,25 @@ func TestSpeechOutputRejectsEmptyPlaybackID(t *testing.T) {
 	})
 	if !errors.Is(err, ErrSpeechOutputRequestInvalid) {
 		t.Fatalf("Play() error = %v, want ErrSpeechOutputRequestInvalid", err)
+	}
+}
+
+func TestSpeechOutputSkipsRuntimeForAsyncSettlement(t *testing.T) {
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{
+		Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1}}},
+		Result: tts.Result{Provider: "mock", Model: "v1"},
+	})
+	audio := &recordingAudioSink{}
+	speech := NewSpeechOutput(SpeechOutputDependencies{
+		TTS: ttsProvider, Audio: audio, Runtime: failingRuntimeReporter{err: session.ErrRuntimeIdentityConflict},
+	})
+	if _, err := speech.Play(t.Context(), SpeechOutputRequest{
+		Turn: testTurn(), Language: "en-US", Text: "hello", PlaybackID: "playback-1", SkipRuntime: true,
+	}); err != nil {
+		t.Fatalf("Play() error = %v", err)
+	}
+	if requests := ttsProvider.Requests(); len(requests) != 1 || len(audio.chunks) != 1 {
+		t.Fatalf("TTS requests = %#v, audio chunks = %#v", requests, audio.chunks)
 	}
 }
 
@@ -75,6 +95,40 @@ func TestPipelineFinalFlowCarriesTurnID(t *testing.T) {
 	}
 	if len(audioSink.chunks) != 2 || audioSink.chunks[0].TurnID != turn.ID {
 		t.Fatalf("audio chunks = %#v", audioSink.chunks)
+	}
+}
+
+func TestPipelinePropagatesCompletedPhraseUsageFailureBeforeFinalTurn(t *testing.T) {
+	wantErr := errors.New("usage outbox unavailable")
+	translator := phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		if request.Text == "失败" {
+			return translate.Result{Provider: "mock", Model: "v1", InputTokens: 2}, context.DeadlineExceeded
+		}
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1}, nil
+	})
+	observer := &recordingPhraseSubtitleObserver{}
+	phrases := NewPhraseTranslationCoordinator(translator, "mock", observer, nil)
+	finals := &recordingFinalSink{}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: finals, Usage: rejectingUsageSink{err: wantErr}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phrases,
+	})
+	turn := testTurn()
+	phrases.StartPhraseSubtitleTurn(turn, "zh-CN")
+	phrases.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	phrases.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 2, "失败"))
+	deadline := time.Now().Add(time.Second)
+	for len(observer.Events()) < 4 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好失败", SourceLanguage: "zh-CN"})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("HandleASRFinal() error = %v, want %v", err, wantErr)
+	}
+	if len(finals.events) != 0 {
+		t.Fatalf("FinalTurn events = %#v, want no commit after usage failure", finals.events)
 	}
 }
 
@@ -826,6 +880,205 @@ func TestPipelineIgnoresPartialASREvents(t *testing.T) {
 	}
 }
 
+func TestPipelineReusesPendingPhraseAtFinalization(t *testing.T) {
+	tailStarted := make(chan struct{})
+	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(ctx context.Context, request translate.Request) (translate.Result, error) {
+		if request.Text == "你好" {
+			return translate.Result{Text: "hello", Provider: "phrase", Model: "v1", InputTokens: 1}, nil
+		}
+		close(tailStarted)
+		return translate.Result{Text: "world", Provider: "phrase", Model: "v1", InputTokens: 1}, nil
+	}), "phrase", &recordingPhraseSubtitleObserver{}, nil)
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "unexpected", Provider: "final", Model: "v1", InputTokens: 2}}
+	finalSink := &recordingFinalSink{}
+	usageSink := &recordingUsageSink{}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: finalSink, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phraseCoordinator,
+	})
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: false}}
+	phraseCoordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		phraseCoordinator.mu.Lock()
+		phrase := phraseCoordinator.utterances[turn.ID].phrases[1]
+		done := phrase.done
+		phraseCoordinator.mu.Unlock()
+		if done || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 2, "，世界"))
+	<-tailStarted
+
+	if err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好，世界", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	if requests := translator.Requests(); len(requests) != 0 {
+		t.Fatalf("final translation requests = %#v, want no duplicate request", requests)
+	}
+	if len(finalSink.events) != 1 || finalSink.events[0].TranslatedText != "helloworld" {
+		t.Fatalf("FinalTurns = %#v", finalSink.events)
+	}
+	if len(usageSink.facts) != 1 || usageSink.facts[0].IdempotencyKey != "usage:turn-1:translation" || usageSink.facts[0].InputTokens != 2 {
+		t.Fatalf("usage facts = %#v, want one aggregated translation fact", usageSink.facts)
+	}
+}
+
+func TestPipelineReusesPendingPhraseInAsyncSettlement(t *testing.T) {
+	phraseStarted := make(chan struct{})
+	releasePhrase := make(chan struct{})
+	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		close(phraseStarted)
+		<-releasePhrase
+		return translate.Result{Text: "phrase-en", Provider: "phrase", Model: "v1", InputTokens: 7}, nil
+	}), "phrase", &recordingPhraseSubtitleObserver{}, nil)
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "final-en", Provider: "final", Model: "v1", InputTokens: 2}}
+	finalSink := newAsyncFinalSink()
+	usageSink := newAsyncUsageSink()
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: finalSink, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phraseCoordinator,
+	})
+	defer service.Close()
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: false}}
+	phraseCoordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	<-phraseStarted
+
+	if err := service.HandleASRFinalAsync(context.Background(), turn, asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}); err != nil {
+		t.Fatalf("HandleASRFinalAsync() error = %v", err)
+	}
+	select {
+	case <-finalSink.done:
+		t.Fatal("async settlement completed before pending phrase provider returned")
+	case <-time.After(100 * time.Millisecond):
+	}
+	requests := translator.Requests()
+	if len(requests) != 0 {
+		t.Fatalf("final translation requests = %#v, want no residual duplicate", requests)
+	}
+	close(releasePhrase)
+	select {
+	case <-finalSink.done:
+	case <-time.After(time.Second):
+		t.Fatal("async phrase settlement did not commit FinalTurn")
+	}
+	select {
+	case <-usageSink.done:
+	case <-time.After(time.Second):
+		t.Fatal("async phrase settlement did not publish translation usage")
+	}
+	event := finalSink.Event()
+	if event.TranslatedText != "phrase-en" {
+		t.Fatalf("FinalTurn = %#v, want reused pending phrase translation", event)
+	}
+	facts := usageSink.Facts()
+	if len(facts) != 1 || facts[0].IdempotencyKey != "usage:turn-1:translation" || facts[0].InputTokens != 7 {
+		t.Fatalf("usage facts = %#v, want one reused phrase fact", facts)
+	}
+}
+
+func TestPipelineTranslatesFinalFlushTailOnceAndAggregatesUsage(t *testing.T) {
+	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1, CostAmount: "0.10", Currency: "USD"}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "tail-en", Provider: "mock", Model: "v1", InputTokens: 2, OutputTokens: 1, CostAmount: "0.20", Currency: "USD"}}
+	finals := &recordingFinalSink{}
+	usage := &recordingUsageSink{}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: finals, Usage: usage, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phraseCoordinator,
+	})
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: false}}
+	phraseCoordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		phraseCoordinator.mu.Lock()
+		phrase := phraseCoordinator.utterances[turn.ID].phrases[1]
+		done := phrase.done
+		phraseCoordinator.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	phraseCoordinator.BeginPhraseSubtitleFinalFlush(turn.ID)
+	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 2, "尾段"))
+	phraseCoordinator.EndPhraseSubtitleFinalFlush(turn.ID)
+
+	if err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好尾段", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	requests := translator.Requests()
+	if len(requests) != 1 || requests[0].Text != "尾段" {
+		t.Fatalf("final translation requests = %#v, want one residual request", requests)
+	}
+	if len(finals.events) != 1 || finals.events[0].TranslatedText != "hellotail-en" {
+		t.Fatalf("FinalTurns = %#v, want complete target translation", finals.events)
+	}
+	if len(usage.facts) != 1 || usage.facts[0].IdempotencyKey != "usage:turn-1:translation" || usage.facts[0].InputTokens != 3 {
+		t.Fatalf("translation usage = %#v, want one aggregate fact", usage.facts)
+	}
+}
+
+func TestPipelineSettlesFailedPhraseIntoCompleteFinalTranslationOnce(t *testing.T) {
+	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		if request.Text == "失败" {
+			return translate.Result{Provider: "mock", Model: "v1", InputTokens: 2, CostAmount: "0.20", Currency: "USD"}, translate.ErrUnexpectedBehavior
+		}
+		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1, CostAmount: "0.10", Currency: "USD"}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "retry-en", Provider: "mock", Model: "v1", InputTokens: 3, OutputTokens: 1, CostAmount: "0.30", Currency: "USD"}}
+	finals := &recordingFinalSink{}
+	usage := &recordingUsageSink{}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: finals, Usage: usage, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phraseCoordinator,
+	})
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: false}}
+	phraseCoordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 2, "失败"))
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		phraseCoordinator.mu.Lock()
+		utterance := phraseCoordinator.utterances[turn.ID]
+		done := utterance != nil && allPhraseTranslationsDone(utterance)
+		phraseCoordinator.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好失败", SourceLanguage: "zh-CN"}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	requests := translator.Requests()
+	if len(requests) != 1 || requests[0].Text != "失败" {
+		t.Fatalf("final translation requests = %#v, want one failed residual request", requests)
+	}
+	if len(finals.events) != 1 || finals.events[0].TranslatedText != "helloretry-en" {
+		t.Fatalf("FinalTurns = %#v, want complete target translation", finals.events)
+	}
+	if len(usage.facts) != 1 || usage.facts[0].IdempotencyKey != "usage:turn-1:translation" || usage.facts[0].InputTokens != 6 || usage.facts[0].CostAmount != "0.6" {
+		t.Fatalf("translation usage = %#v, want one aggregate fact", usage.facts)
+	}
+}
+
 func testTurn() TurnContext {
 	return TurnContext{ID: "turn-1", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", SequenceNo: 1, LanguageConfig: session.LanguageConfigSnapshot{SessionID: "session-1", Version: 3, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}, StartedAt: time.Unix(1700000000, 0).UTC()}
 }
@@ -833,6 +1086,52 @@ func testTurn() TurnContext {
 type recordingFinalSink struct {
 	events []FinalTurnEvent
 	err    error
+}
+
+type asyncFinalSink struct {
+	mu    sync.Mutex
+	event FinalTurnEvent
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newAsyncFinalSink() *asyncFinalSink { return &asyncFinalSink{done: make(chan struct{})} }
+
+func (s *asyncFinalSink) Publish(_ context.Context, event FinalTurnEvent) error {
+	s.mu.Lock()
+	s.event = event
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.done) })
+	return nil
+}
+
+func (s *asyncFinalSink) Event() FinalTurnEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.event
+}
+
+type asyncUsageSink struct {
+	mu    sync.Mutex
+	facts []UsageFact
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newAsyncUsageSink() *asyncUsageSink { return &asyncUsageSink{done: make(chan struct{})} }
+
+func (s *asyncUsageSink) Publish(_ context.Context, fact UsageFact) error {
+	s.mu.Lock()
+	s.facts = append(s.facts, fact)
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.done) })
+	return nil
+}
+
+func (s *asyncUsageSink) Facts() []UsageFact {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]UsageFact(nil), s.facts...)
 }
 
 type acceptingFinalTurnGate struct{}
@@ -928,6 +1227,12 @@ type stateFailingRuntimeReporter struct {
 	err       error
 }
 
+type failingRuntimeReporter struct{ err error }
+
+func (r failingRuntimeReporter) SetProcessingState(context.Context, session.ProcessingStateUpdate) error {
+	return r.err
+}
+
 func (r stateFailingRuntimeReporter) SetProcessingState(_ context.Context, update session.ProcessingStateUpdate) error {
 	if update.RuntimeState == r.failState {
 		return r.err
@@ -986,5 +1291,6 @@ var _ UsageFactSink = (*recordingUsageSink)(nil)
 var _ AudioChunkSink = (*recordingAudioSink)(nil)
 var _ session.RuntimeStateReporter = (*recordingRuntimeReporter)(nil)
 var _ session.RuntimeStateReporter = stateFailingRuntimeReporter{}
+var _ session.RuntimeStateReporter = failingRuntimeReporter{}
 var _ tts.Provider = (*blockingTTSProvider)(nil)
 var _ tts.Stream = (*blockingTTSStream)(nil)

@@ -14,6 +14,18 @@ type PhraseSubtitleObserver interface {
 	ObservePhraseSubtitle(context.Context, realtimev1.PhraseSubtitleEvent)
 }
 
+type PhraseSubtitleTurnObserver interface {
+	StartPhraseSubtitleTurn(TurnContext, string)
+	DiscardPhraseSubtitleTurn(string)
+}
+
+// PhraseSubtitleFinalFlushObserver distinguishes final-tail source delivery from
+// live-stabilized phrases so the tail is finalized by the whole-turn translator.
+type PhraseSubtitleFinalFlushObserver interface {
+	BeginPhraseSubtitleFinalFlush(string)
+	EndPhraseSubtitleFinalFlush(string)
+}
+
 // PhraseSubtitleProcessor owns the in-memory stabilizer state for active interpretation turns.
 type PhraseSubtitleProcessor struct {
 	observer PhraseSubtitleObserver
@@ -45,13 +57,16 @@ func NewPhraseSubtitleProcessor(observer PhraseSubtitleObserver, options PhraseS
 }
 
 // Start begins subtitle stabilization for one newly opened interpretation turn.
-func (p *PhraseSubtitleProcessor) Start(turn TurnContext) {
+func (p *PhraseSubtitleProcessor) Start(turn TurnContext, sourceLanguage string) {
 	if p == nil || turn.ID == "" {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.utterances[turn.ID] = &phraseUtterance{turn: turn, stabilizer: NewPhraseStabilizer(p.options)}
+	if lifecycle, ok := p.observer.(PhraseSubtitleTurnObserver); ok {
+		lifecycle.StartPhraseSubtitleTurn(turn, sourceLanguage)
+	}
 }
 
 // Observe accepts one replaceable ASR snapshot and schedules the stability-window check.
@@ -90,6 +105,10 @@ func (p *PhraseSubtitleProcessor) Flush(ctx context.Context, turn TurnContext, t
 	}
 	phrases := utterance.stabilizer.Flush(text)
 	p.mu.Unlock()
+	if lifecycle, ok := p.observer.(PhraseSubtitleFinalFlushObserver); ok {
+		lifecycle.BeginPhraseSubtitleFinalFlush(turn.ID)
+		defer lifecycle.EndPhraseSubtitleFinalFlush(turn.ID)
+	}
 	p.publish(ctx, utterance.turn, phrases)
 }
 
@@ -99,14 +118,16 @@ func (p *PhraseSubtitleProcessor) Discard(turnID string) {
 		return
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	utterance := p.utterances[turnID]
-	if utterance == nil {
-		return
+	if utterance != nil {
+		delete(p.utterances, turnID)
+		if utterance.timer != nil {
+			utterance.timer.Stop()
+		}
 	}
-	delete(p.utterances, turnID)
-	if utterance.timer != nil {
-		utterance.timer.Stop()
+	p.mu.Unlock()
+	if lifecycle, ok := p.observer.(PhraseSubtitleTurnObserver); ok {
+		lifecycle.DiscardPhraseSubtitleTurn(turnID)
 	}
 }
 

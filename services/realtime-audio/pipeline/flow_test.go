@@ -499,6 +499,82 @@ func TestStartAudioPublishesPartialBeforeFinish(t *testing.T) {
 	}
 }
 
+func TestFinishStreamingHandsPendingPhraseToSettlementWorker(t *testing.T) {
+	phraseStarted := make(chan struct{})
+	releasePhrase := make(chan struct{})
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		close(phraseStarted)
+		<-releasePhrase
+		return translate.Result{Text: "phrase-en", Provider: "phrase", Model: "v1", InputTokens: 3}, nil
+	}), "phrase", &recordingPhraseSubtitleObserver{}, nil)
+	phrases := NewPhraseSubtitleProcessor(coordinator, PhraseStabilizerOptions{})
+	finals := newAsyncFinalSink()
+	usage := newAsyncUsageSink()
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{Result: translate.Result{Text: "unexpected", Provider: "final", Model: "v1"}},
+		TTS:        tts.NewFakeProvider(tts.FakeProviderConfig{}), FinalTurns: finals, Usage: usage,
+		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{}, PhraseTranslations: coordinator,
+	})
+	defer service.Close()
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: &pushEventProvider{stream: &pushEventStream{
+			events: make(chan asr.Event), partialSent: make(chan struct{}), partialText: "你好，",
+			result: asr.FinalResult{Text: "你好，", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"},
+		}},
+		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}),
+		Pipeline: service, Finals: service, Phrases: phrases,
+	})
+	audioTurn, err := processor.StartAudio(t.Context(), TurnProcessRequest{
+		SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", SourceLanguage: "zh-CN",
+	})
+	if err != nil {
+		t.Fatalf("StartAudio() error = %v", err)
+	}
+	if err := audioTurn.PushAudio(t.Context(), []byte{1}); err != nil {
+		t.Fatalf("PushAudio() error = %v", err)
+	}
+	select {
+	case <-phraseStarted:
+	case <-time.After(time.Second):
+		t.Fatal("phrase translation did not start before VAD final")
+	}
+
+	finished := make(chan error, 1)
+	go func() {
+		_, err := audioTurn.FinishStreaming(t.Context())
+		finished <- err
+	}()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("FinishStreaming() error = %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("FinishStreaming() waited for pending phrase translation")
+	}
+	audioTurn.Close()
+	if !coordinator.HasPendingPhrase(audioTurn.turn.ID) {
+		t.Fatal("AudioTurn.Close() discarded the handed-off phrase settlement")
+	}
+
+	close(releasePhrase)
+	select {
+	case <-finals.done:
+	case <-time.After(time.Second):
+		t.Fatal("settlement worker did not commit FinalTurn")
+	}
+	select {
+	case <-usage.done:
+	case <-time.After(time.Second):
+		t.Fatal("settlement worker did not record translation usage")
+	}
+	if event := finals.Event(); event.TranslatedText != "phrase-en" {
+		t.Fatalf("FinalTurn = %#v, want reused phrase result", event)
+	}
+}
+
 func TestStartAudioDiscardsPhraseStateWhenASRStartupFails(t *testing.T) {
 	wantErr := errors.New("ASR unavailable")
 	phrases := NewPhraseSubtitleProcessor(&recordingPhraseSubtitleObserver{}, PhraseStabilizerOptions{})
@@ -533,6 +609,7 @@ func (p *pushEventProvider) StartStream(context.Context, asr.StreamRequest) (asr
 type pushEventStream struct {
 	events       chan asr.Event
 	partialSent  chan struct{}
+	partialText  string
 	beforeFinish <-chan struct{}
 	partialOnce  sync.Once
 	closeOnce    sync.Once
@@ -542,8 +619,12 @@ type pushEventStream struct {
 func (s *pushEventStream) PushAudio(ctx context.Context, _ []byte) error {
 	var err error
 	s.partialOnce.Do(func() {
+		partialText := s.partialText
+		if partialText == "" {
+			partialText = "你"
+		}
 		select {
-		case s.events <- asr.Event{Type: asr.EventPartial, Text: "你"}:
+		case s.events <- asr.Event{Type: asr.EventPartial, Text: partialText}:
 			close(s.partialSent)
 		case <-ctx.Done():
 			err = ctx.Err()

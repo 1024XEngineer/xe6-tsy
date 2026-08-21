@@ -50,13 +50,14 @@ func TestStaticWebRTCConfigScopesSessionID(t *testing.T) {
 	}
 }
 
-func TestStaticWebRTCConfigDefaultsICEServers(t *testing.T) {
-	config, err := (StaticWebRTCConfig{}).GetConfig(context.Background(), "vs_2")
-	if err != nil {
-		t.Fatalf("GetConfig() error = %v", err)
+func TestStaticWebRTCConfigRequiresICEServers(t *testing.T) {
+	_, err := (StaticWebRTCConfig{}).GetConfig(context.Background(), "vs_2")
+	if !errors.Is(err, errICEServersRequired) {
+		t.Fatalf("GetConfig() error = %v, want errICEServersRequired", err)
 	}
-	if len(config.ICEServers) == 0 {
-		t.Fatal("expected default ICE servers")
+	config, err := (StaticWebRTCConfig{ICEServers: []controlplane.ICEServer{{URLs: []string{"turns:turn.example.test:5349"}}}}).GetConfig(context.Background(), "vs_2")
+	if err != nil {
+		t.Fatalf("configured GetConfig() error = %v", err)
 	}
 	if config.Audio.DownlinkCodec != "none" || config.Audio.SampleRateHz != 48000 || config.Audio.Channels != 1 {
 		t.Fatalf("audio config = %#v, want none/48000/1", config.Audio)
@@ -65,6 +66,7 @@ func TestStaticWebRTCConfigDefaultsICEServers(t *testing.T) {
 
 func TestStaticWebRTCConfigRespectsDownlinkCodec(t *testing.T) {
 	config, err := (StaticWebRTCConfig{
+		ICEServers:    []controlplane.ICEServer{{URLs: []string{"turns:turn.example.test:5349"}}},
 		DownlinkCodec: "pcm",
 		SampleRateHz:  24000,
 	}).GetConfig(context.Background(), "vs_pcm")

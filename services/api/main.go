@@ -383,11 +383,15 @@ func newRecordsHTTPDependenciesFromPool(
 	if err != nil {
 		return nil, err
 	}
+	verificationSender, err := accounts.VerificationSenderFromEnvChecked()
+	if err != nil {
+		return nil, fmt.Errorf("configure verification sender: %w", err)
+	}
 	accountUseCases := accounts.NewPersistentUseCases(
 		accountRepository,
 		tokens,
 		tokens,
-		accounts.VerificationSenderFromEnv(),
+		verificationSender,
 		digester,
 	).WithVerificationPolicy(policy)
 	return &recordsHTTPDependencies{

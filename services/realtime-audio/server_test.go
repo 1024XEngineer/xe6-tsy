@@ -60,6 +60,9 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	if cfg.PhraseSubtitles {
 		t.Fatal("PhraseSubtitles = true, want false by default")
 	}
+	if cfg.ICETransportPolicy != "all" || len(cfg.ICEServers) != 1 || cfg.ICEServers[0].URLs[0] != "stun:stun.l.google.com:19302" {
+		t.Fatalf("default ICE config = %#v policy=%q", cfg.ICEServers, cfg.ICETransportPolicy)
+	}
 	if cfg.CommandConfigTimeout != defaultCommandConfigTimeout {
 		t.Fatalf("command config timeout = %s, want %s", cfg.CommandConfigTimeout, defaultCommandConfigTimeout)
 	}
@@ -70,6 +73,47 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	t.Setenv("REALTIME_TICKET_SECRET", "")
 	if _, err := loadProcessConfig(nil); err == nil {
 		t.Fatal("loadProcessConfig(nil) error = nil, want secret validation error")
+	}
+}
+
+func TestLoadProcessConfigProductionRequiresTURNAndUsesRelay(t *testing.T) {
+	base := func(values map[string]string) func(string) string {
+		return func(key string) string {
+			if key == "REALTIME_TICKET_SECRET" {
+				return strings.Repeat("s", 32)
+			}
+			return values[key]
+		}
+	}
+	if _, err := loadProcessConfig(base(map[string]string{"APP_ENV": "production"})); err == nil {
+		t.Fatal("production config without TURN accepted")
+	}
+	cfg, err := loadProcessConfig(base(map[string]string{
+		"APP_ENV":                   "production",
+		"REALTIME_ICE_SERVERS_JSON": `[{"urls":["turns:turn.example.test:5349?transport=tcp"],"username":"u","credential":"c"}]`,
+	}))
+	if err != nil {
+		t.Fatalf("production TURN config error = %v", err)
+	}
+	if cfg.ICETransportPolicy != "relay" || len(cfg.ICEServers) != 1 || cfg.ICEServers[0].Username != "u" {
+		t.Fatalf("production ICE config = %#v policy=%q", cfg.ICEServers, cfg.ICETransportPolicy)
+	}
+}
+
+func TestLoadProcessConfigRejectsInvalidICEConfig(t *testing.T) {
+	for _, raw := range []string{"not-json", `[{"urls":["https://example.test"]}]`, `[{"urls":[]}]`} {
+		_, err := loadProcessConfig(func(key string) string {
+			if key == "REALTIME_TICKET_SECRET" {
+				return strings.Repeat("s", 32)
+			}
+			if key == "REALTIME_ICE_SERVERS_JSON" {
+				return raw
+			}
+			return ""
+		})
+		if err == nil {
+			t.Fatalf("ICE config %q accepted", raw)
+		}
 	}
 }
 

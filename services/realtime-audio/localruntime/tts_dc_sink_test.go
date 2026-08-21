@@ -7,11 +7,18 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/pipeline"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/playback"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/segment"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
+)
+
+const (
+	wantTTSPCMChunkBytes          = 8 * 1024
+	wantSettledPlaybackTombstones = 128
+	wantTTSPublishTimeout         = 5 * time.Second
 )
 
 func TestSplitBytes(t *testing.T) {
@@ -25,8 +32,11 @@ func TestSplitBytes(t *testing.T) {
 		wantLast  int
 	}{
 		{name: "empty", dataLen: 0, max: 8, wantCount: 0},
-		{name: "exact chunks", dataLen: maxTTSPCMChunkBytes * 2, max: maxTTSPCMChunkBytes, wantCount: 2, wantLast: maxTTSPCMChunkBytes},
-		{name: "remainder", dataLen: maxTTSPCMChunkBytes*2 + 3, max: maxTTSPCMChunkBytes, wantCount: 3, wantLast: 3},
+		{name: "one byte below max", dataLen: wantTTSPCMChunkBytes - 1, max: wantTTSPCMChunkBytes, wantCount: 1, wantLast: wantTTSPCMChunkBytes - 1},
+		{name: "exactly one max chunk", dataLen: wantTTSPCMChunkBytes, max: wantTTSPCMChunkBytes, wantCount: 1, wantLast: wantTTSPCMChunkBytes},
+		{name: "one byte above max", dataLen: wantTTSPCMChunkBytes + 1, max: wantTTSPCMChunkBytes, wantCount: 2, wantLast: 1},
+		{name: "exact chunks", dataLen: wantTTSPCMChunkBytes * 2, max: wantTTSPCMChunkBytes, wantCount: 2, wantLast: wantTTSPCMChunkBytes},
+		{name: "remainder", dataLen: wantTTSPCMChunkBytes*2 + 3, max: wantTTSPCMChunkBytes, wantCount: 3, wantLast: 3},
 		{name: "nonpositive max uses default", dataLen: 5, max: 0, wantCount: 1, wantLast: 5},
 		{name: "negative max uses default", dataLen: 5, max: -1, wantCount: 1, wantLast: 5},
 		{name: "smaller max", dataLen: 10, max: 4, wantCount: 3, wantLast: 2},
@@ -46,6 +56,55 @@ func TestSplitBytes(t *testing.T) {
 				t.Fatalf("last=%d, want %d", len(pieces[len(pieces)-1]), tt.wantLast)
 			}
 		})
+	}
+}
+
+func TestTTSDataChannelPublishConstants(t *testing.T) {
+	tests := []struct {
+		sampleRate int
+		want       int
+	}{
+		{sampleRate: -1, want: 24000},
+		{sampleRate: 0, want: 24000},
+		{sampleRate: 1, want: 1},
+	}
+	for _, tt := range tests {
+		if got := defaultTTSSampleRate(tt.sampleRate); got != tt.want {
+			t.Fatalf("defaultTTSSampleRate(%d) = %d, want %d", tt.sampleRate, got, tt.want)
+		}
+	}
+
+	before := time.Now()
+	publishCtx, cancel := newTTSPublishContext(context.Background())
+	defer cancel()
+	deadline, ok := publishCtx.Deadline()
+	if !ok {
+		t.Fatal("publish context has no deadline")
+	}
+	remaining := deadline.Sub(before)
+	if remaining < wantTTSPublishTimeout-100*time.Millisecond || remaining > wantTTSPublishTimeout+100*time.Millisecond {
+		t.Fatalf("publish deadline = %v from now, want %v", remaining, wantTTSPublishTimeout)
+	}
+}
+
+func TestDataChannelTTSAudioSinkCompleteSplitsAtConfiguredLimit(t *testing.T) {
+	var chunkSizes []int
+	sink := &DataChannelTTSAudioSink{
+		publishAudio: func(_ context.Context, _, _, _ string, _ int64, _ bool, _ string, data []byte) error {
+			chunkSizes = append(chunkSizes, len(data))
+			return nil
+		},
+	}
+	if err := sink.Publish(t.Context(), pipeline.AudioChunk{
+		SessionID: "session-1", PlaybackID: "playback-1", Encoding: "pcm_s16le", Data: make([]byte, wantTTSPCMChunkBytes+1),
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if err := sink.Complete(t.Context(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if len(chunkSizes) != 2 || chunkSizes[0] != wantTTSPCMChunkBytes || chunkSizes[1] != 1 {
+		t.Fatalf("published chunk sizes = %v, want [%d 1]", chunkSizes, wantTTSPCMChunkBytes)
 	}
 }
 
@@ -462,6 +521,29 @@ func TestDataChannelTTSAudioSinkPublishingInterruptSurvivesTombstoneEviction(t *
 	}
 	if !sink.playbackSettled(key) {
 		t.Fatal("publishing interruption was lost after tombstone eviction")
+	}
+}
+
+func TestDataChannelTTSAudioSinkSettledTombstoneCapacity(t *testing.T) {
+	sink := &DataChannelTTSAudioSink{}
+	for index := range wantSettledPlaybackTombstones {
+		sink.markSettledLocked(ttsPlaybackKey{sessionID: "session-1", playbackID: fmt.Sprintf("playback-%d", index)})
+	}
+	if len(sink.settled) != wantSettledPlaybackTombstones || len(sink.settledOrder) != wantSettledPlaybackTombstones {
+		t.Fatalf("settled entries = %d/%d, want %d", len(sink.settled), len(sink.settledOrder), wantSettledPlaybackTombstones)
+	}
+
+	oldest := ttsPlaybackKey{sessionID: "session-1", playbackID: "playback-0"}
+	newest := ttsPlaybackKey{sessionID: "session-1", playbackID: "playback-overflow"}
+	sink.markSettledLocked(newest)
+	if len(sink.settled) != wantSettledPlaybackTombstones || len(sink.settledOrder) != wantSettledPlaybackTombstones {
+		t.Fatalf("settled entries after overflow = %d/%d, want %d", len(sink.settled), len(sink.settledOrder), wantSettledPlaybackTombstones)
+	}
+	if _, exists := sink.settled[oldest]; exists {
+		t.Fatal("oldest settled playback was retained after capacity overflow")
+	}
+	if _, exists := sink.settled[newest]; !exists {
+		t.Fatal("newest settled playback was not retained after capacity overflow")
 	}
 }
 

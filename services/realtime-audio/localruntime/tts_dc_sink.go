@@ -15,6 +15,7 @@ import (
 const (
 	maxTTSPCMChunkBytes          = 8 * 1024
 	maxSettledPlaybackTombstones = 128
+	ttsDataChannelPublishTimeout = 5 * time.Second
 )
 
 // DataChannelTTSAudioSink buffers one playback's audio, then ships DC-safe
@@ -355,10 +356,7 @@ func (s *DataChannelTTSAudioSink) publish(
 		s.recordFailure()
 		return nil
 	}
-	rate := s.SampleRate
-	if rate <= 0 {
-		rate = 24000
-	}
+	rate := defaultTTSSampleRate(s.SampleRate)
 	if encoding == "" {
 		encoding = "pcm_s16le"
 	}
@@ -375,13 +373,24 @@ func (s *DataChannelTTSAudioSink) publish(
 		SequenceNo: sequence,
 		Final:      final,
 	}
-	publishCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	publishCtx, cancel := newTTSPublishContext(ctx)
 	defer cancel()
 	if err := sink.PublishJSON(publishCtx, payload); err != nil {
 		s.recordFailure()
 		return fmt.Errorf("publish TTS audio chunk seq=%d: %w", sequence, err)
 	}
 	return nil
+}
+
+func defaultTTSSampleRate(sampleRate int) int {
+	if sampleRate <= 0 {
+		return 24000
+	}
+	return sampleRate
+}
+
+func newTTSPublishContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, ttsDataChannelPublishTimeout)
 }
 
 func (s *DataChannelTTSAudioSink) recordFailure() {

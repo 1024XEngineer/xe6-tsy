@@ -11,7 +11,7 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/controlplane"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/webrtc"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const fallbackPlaybackClaimLease = 5 * time.Minute
@@ -19,7 +19,13 @@ const fallbackPlaybackClaimLease = 5 * time.Minute
 // PostgresFallbackPlaybackReplayStore keeps accepted fallback operations
 // durable without storing translated text or other message content.
 type PostgresFallbackPlaybackReplayStore struct {
-	Pool *pgxpool.Pool
+	Pool fallbackPlaybackQueryer
+}
+
+type fallbackPlaybackQueryer interface {
+	Begin(context.Context) (pgx.Tx, error)
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func newFallbackPlaybackClaimToken() (string, error) {

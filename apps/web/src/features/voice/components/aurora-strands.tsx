@@ -2,11 +2,9 @@
 
 import { useEffect, useRef } from "react";
 
-import { activeAmplitude } from "../model/voice-geometry";
 import styles from "../voice.module.css";
 
 const STRAND_COUNT = 23;
-const FRAME_INTERVAL = 1000 / 30;
 
 export function AuroraStrands() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -18,9 +16,6 @@ export function AuroraStrands() {
     const context = canvas.getContext("2d");
     if (!context) return;
 
-    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    let animationFrame = 0;
-    let lastFrame = 0;
     let displayWidth = 0;
     let displayHeight = 0;
 
@@ -34,7 +29,7 @@ export function AuroraStrands() {
       context.setTransform(scale, 0, 0, scale, 0, 0);
     };
 
-    const draw = (elapsed: number) => {
+    const draw = () => {
       const width = displayWidth;
       const height = displayHeight;
       if (!width || !height) return;
@@ -42,7 +37,7 @@ export function AuroraStrands() {
       context.clearRect(0, 0, width, height);
       context.lineCap = "round";
       context.lineJoin = "round";
-      const amplitude = activeAmplitude(motionQuery.matches ? 0 : elapsed);
+      const amplitude = 1;
 
       for (let strand = 0; strand < STRAND_COUNT; strand += 1) {
         const offset = strand - (STRAND_COUNT - 1) / 2;
@@ -60,12 +55,11 @@ export function AuroraStrands() {
         for (let x = 0; x <= width; x += 2) {
           const progress = x / width;
           const envelope = Math.pow(Math.sin(progress * Math.PI), 1.7);
-          const currentTime = motionQuery.matches ? 0 : elapsed;
           const primaryWave = Math.sin(
-            progress * Math.PI * 4.2 - currentTime * 0.0019 + strand * 0.31,
+            progress * Math.PI * 4.2 + strand * 0.31,
           );
           const detailWave = Math.sin(
-            progress * Math.PI * 8.5 + currentTime * 0.0011 - strand * 0.17,
+            progress * Math.PI * 8.5 - strand * 0.17,
           );
           const y =
             height / 2 +
@@ -86,30 +80,16 @@ export function AuroraStrands() {
       }
     };
 
-    const render = (elapsed: number) => {
-      if (elapsed - lastFrame >= FRAME_INTERVAL || motionQuery.matches) {
-        draw(elapsed);
-        lastFrame = elapsed;
-      }
-      if (!motionQuery.matches) animationFrame = requestAnimationFrame(render);
-    };
-
-    const handleMotionChange = () => {
-      cancelAnimationFrame(animationFrame);
-      lastFrame = 0;
-      animationFrame = requestAnimationFrame(render);
-    };
-
     resize();
-    const resizeObserver = new ResizeObserver(resize);
+    draw();
+    const resizeObserver = new ResizeObserver(() => {
+      resize();
+      draw();
+    });
     resizeObserver.observe(canvas);
-    motionQuery.addEventListener("change", handleMotionChange);
-    animationFrame = requestAnimationFrame(render);
 
     return () => {
-      cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
-      motionQuery.removeEventListener("change", handleMotionChange);
     };
   }, []);
 

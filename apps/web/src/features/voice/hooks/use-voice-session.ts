@@ -44,6 +44,7 @@ import {
   effectiveVoiceInteractionPolicy,
   loadVoiceInteractionPolicy,
   saveVoiceInteractionPolicy,
+  shouldSuppressMicrophoneDuringTTS,
   type VoiceInteractionPolicy,
 } from "../lib/interaction-policy";
 import {
@@ -876,6 +877,12 @@ export function useVoiceSession() {
       const setSessionUplinkEnabled = (enabled: boolean) => {
         sessionUplinkEnabled = enabled;
         if (sessionUsesWakeUplink) {
+          const mode = modeStateRef.current?.active_mode ?? initialMode;
+          if (!shouldSuppressMicrophoneDuringTTS(mode)) {
+            // Interpretation is full duplex: TTS playback must not mute the
+            // capture bridge used by both WebRTC uplink and local KWS.
+            wakeRef.current?.setOutputSuppressed(false);
+          }
           wakeRef.current?.setUplinkEnabled(enabled);
           return;
         }
@@ -891,6 +898,12 @@ export function useVoiceSession() {
       };
       const setTTSOutputSuppressed = (suppressed: boolean) => {
         if (sessionIdRef.current !== session.id) return;
+        const mode = modeStateRef.current?.active_mode ?? initialMode;
+        if (!shouldSuppressMicrophoneDuringTTS(mode)) {
+          // Ordinary interpretation speech is never a barge-in signal. Keep
+          // AEC, noise suppression, AGC, and the microphone uplink active.
+          return;
+        }
         const stream = sessionStream;
         if (!stream) return;
         if (ttsResumeTimer) {

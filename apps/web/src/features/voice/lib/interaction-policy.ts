@@ -11,6 +11,13 @@ export function effectiveVoiceInteractionPolicy(
   return mode === "interpretation" ? "continuous" : preferred;
 }
 
+/** Only the assistant's wake-word turn may gate capture while TTS is active. */
+export function shouldSuppressMicrophoneDuringTTS(
+  mode: VoiceBusinessMode,
+): boolean {
+  return mode !== "interpretation";
+}
+
 export function loadVoiceInteractionPolicy(
   storage: Pick<Storage, "getItem"> | undefined = typeof window === "undefined"
     ? undefined

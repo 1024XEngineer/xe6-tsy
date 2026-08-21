@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/localruntime"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/vad/silero"
 )
 
@@ -27,6 +29,16 @@ func TestNewLocalVADSegmenterFactoryEnergy(t *testing.T) {
 	classifier, err := classifiers()
 	if err != nil || classifier == nil {
 		t.Fatalf("command classifier = %#v, %v", classifier, err)
+	}
+	energy, ok := classifier.(localruntime.EnergySpeechClassifier)
+	if !ok {
+		t.Fatalf("classifier type = %T, want EnergySpeechClassifier", classifier)
+	}
+	if energy.Threshold != 0.01 {
+		t.Fatalf("energy threshold = %v, want 0.01", energy.Threshold)
+	}
+	if !energy.Speech(audio.Frame{PCM: []byte{0xff, 0x7f}}) {
+		t.Fatal("maximum-amplitude frame was not classified as speech")
 	}
 }
 

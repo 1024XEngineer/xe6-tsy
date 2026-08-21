@@ -196,6 +196,9 @@ func (s *PhrasePlaybackSchedulerService) Stop(ctx context.Context, sessionID str
 		state.active.cancel()
 	}
 	state.cancel()
+	// A session ID may be reused after a reconnect. Drop the closed worker so
+	// the next utterance gets a fresh generation and session lifecycle.
+	delete(s.sessions, sessionID)
 	s.mu.Unlock()
 	return nil
 }

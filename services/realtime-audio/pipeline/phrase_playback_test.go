@@ -108,6 +108,36 @@ func TestPhrasePlaybackSchedulerInterruptDropsLateQueue(t *testing.T) {
 	}
 }
 
+func TestPhrasePlaybackSchedulerReopensSessionAfterStop(t *testing.T) {
+	provider := &recordingTTSProvider{}
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-reconnect", SessionID: "session-reconnect"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
+		t.Fatal("first phrase rejected")
+	}
+	if !audio.waitFor(1, time.Second) {
+		t.Fatal("first phrase did not play")
+	}
+	if err := scheduler.Stop(context.Background(), turn.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	if !scheduler.Enqueue(phraseRequest(turn, 2)) {
+		t.Fatal("phrase after session restart rejected")
+	}
+	if !audio.waitFor(2, time.Second) {
+		t.Fatal("phrase after session restart did not play")
+	}
+}
+
 func TestPhrasePlaybackSchedulerPublishesFirstChunkBeforeTTSFinish(t *testing.T) {
 	provider := &firstChunkTTSProvider{releaseFinish: make(chan struct{})}
 	audio := &recordingPhraseAudio{}

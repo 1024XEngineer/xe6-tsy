@@ -7,8 +7,10 @@
 本计划将短语字幕、短语翻译、连续播放、PCM 下行和可观测性拆成可灰度的阶段，保留
 现有整句 `FinalTurn` 作为唯一持久化业务记录。
 
-- 状态：Phase 1 已实现，Phase 2 正在实现；Phase 3-5 待实施。
-- 默认开关：短语字幕、短语翻译、Opus 短语播放和 PCM 流式播放均默认关闭，按阶段独立灰度。
+- 状态：Phase 1、Phase 2 和 Phase 3 已实现；Phase 4-5 待实施。
+- 默认开关：短语字幕、Opus 短语播放和 PCM 流式播放均默认关闭，按阶段独立灰度。
+- Phase 3 灰度使用 `REALTIME_PHRASE_SUBTITLES=enabled`、`REALTIME_PHRASE_PLAYBACK=enabled` 和
+  `REALTIME_TTS_DOWNLINK=opus`；短语翻译事件在短语字幕开关打开后实时产生，短语 TTS 仍由独立播放开关控制。
 - 兼容边界：关闭开关时，partial 预览、整句 FinalTurn、用量和现有媒体链路的行为必须不变。
 - 术语：`utterance_id` 标识一次 VAD 开启到 final 的语音轮次；`phrase_sequence` 在轮次内从 1
   开始递增；源文、译文和状态事件均为瞬态事件，不替代最终记录。

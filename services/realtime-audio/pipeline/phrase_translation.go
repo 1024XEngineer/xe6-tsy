@@ -113,10 +113,10 @@ func (c *PhraseTranslationCoordinator) StartPhraseSubtitleTurn(turn TurnContext,
 		playbackNext: 1, playbackReady: make(map[int64]*translatedPhrase),
 	}
 	playback := c.playback
-	c.mu.Unlock()
 	if playback != nil {
 		playback.ResetUtterance(turn.SessionID, turn.ID)
 	}
+	c.mu.Unlock()
 }
 
 func (c *PhraseTranslationCoordinator) BeginPhraseSubtitleFinalFlush(turnID string) {

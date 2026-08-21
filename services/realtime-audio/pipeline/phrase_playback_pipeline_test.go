@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,6 +91,44 @@ func TestPipelineQueuesFinalResidualAfterStablePhrase(t *testing.T) {
 	}
 }
 
+func TestPhraseTranslationInitializesPlaybackBeforeFirstPhraseCanEnqueue(t *testing.T) {
+	scheduler := newStartupPhrasePlaybackScheduler()
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(context.Context, translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "hello", Provider: "phrase", Model: "v1"}, nil
+	}), "phrase", &recordingPhraseSubtitleObserver{}, nil)
+	coordinator.SetPhrasePlaybackScheduler(scheduler)
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: true}}
+	started := make(chan struct{})
+	go func() {
+		coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+		close(started)
+	}()
+	<-scheduler.resetStarted
+
+	observed := make(chan struct{})
+	go func() {
+		coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+		close(observed)
+	}()
+	select {
+	case <-observed:
+		t.Fatal("first phrase was observed before playback state initialization completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(scheduler.releaseReset)
+	<-started
+	<-observed
+
+	deadline := time.Now().Add(time.Second)
+	for len(scheduler.enqueued()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if accepted := scheduler.enqueued(); len(accepted) != 1 {
+		t.Fatalf("enqueued phrases = %d, want 1", len(accepted))
+	}
+}
+
 func newTestPhrasePlaybackScheduler(provider tts.Provider, audio *recordingPhraseAudio) *PhrasePlaybackSchedulerService {
 	return NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
 		Speech: NewSpeechOutput(SpeechOutputDependencies{
@@ -97,6 +136,51 @@ func newTestPhrasePlaybackScheduler(provider tts.Provider, audio *recordingPhras
 		}),
 		Audio: audio,
 	})
+}
+
+type startupPhrasePlaybackScheduler struct {
+	resetStarted chan struct{}
+	releaseReset chan struct{}
+	once         sync.Once
+	mu           sync.Mutex
+	ready        bool
+	requests     []PhrasePlaybackRequest
+}
+
+func newStartupPhrasePlaybackScheduler() *startupPhrasePlaybackScheduler {
+	return &startupPhrasePlaybackScheduler{
+		resetStarted: make(chan struct{}), releaseReset: make(chan struct{}),
+	}
+}
+
+func (s *startupPhrasePlaybackScheduler) ResetUtterance(string, string) {
+	s.once.Do(func() { close(s.resetStarted) })
+	<-s.releaseReset
+	s.mu.Lock()
+	s.ready = true
+	s.mu.Unlock()
+}
+
+func (s *startupPhrasePlaybackScheduler) Enqueue(request PhrasePlaybackRequest) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ready {
+		return false
+	}
+	s.requests = append(s.requests, request)
+	return true
+}
+
+func (*startupPhrasePlaybackScheduler) InterruptCurrent(context.Context, string, string) error {
+	return nil
+}
+
+func (*startupPhrasePlaybackScheduler) Stop(context.Context, string) error { return nil }
+
+func (s *startupPhrasePlaybackScheduler) enqueued() []PhrasePlaybackRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]PhrasePlaybackRequest(nil), s.requests...)
 }
 
 func waitForPhraseTranslation(t *testing.T, coordinator *PhraseTranslationCoordinator, turnID string) {

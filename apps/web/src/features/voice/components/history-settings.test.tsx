@@ -16,7 +16,7 @@ describe("HistorySettings", () => {
     saveAuthSession({
       account: {
         id: "acc-history",
-        kind: "anonymous",
+        kind: "registered",
         created_at: "2026-08-01T00:00:00Z",
       },
       tokens: {

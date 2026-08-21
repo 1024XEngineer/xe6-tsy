@@ -1175,6 +1175,133 @@ func TestManagerDoesNotBlockOtherSessionsWhileOpeningInput(t *testing.T) {
 	}
 }
 
+func TestKeyedLockerWaitersShareAndReleaseSessionLock(t *testing.T) {
+	locker := newKeyedLocker()
+	firstUnlock := locker.lock("session-1")
+	secondAcquired := make(chan struct{})
+	allowSecondRelease := make(chan struct{})
+	secondReleased := make(chan struct{})
+
+	go func() {
+		secondUnlock := locker.lock("session-1")
+		close(secondAcquired)
+		<-allowSecondRelease
+		secondUnlock()
+		close(secondReleased)
+	}()
+
+	firstUnlock()
+	<-secondAcquired
+
+	locker.mu.Lock()
+	entry := locker.locks["session-1"]
+	if entry == nil || entry.references != 1 {
+		locker.mu.Unlock()
+		t.Fatalf("waiting lock entry = %#v, want one active reference", entry)
+	}
+	locker.mu.Unlock()
+
+	close(allowSecondRelease)
+	<-secondReleased
+
+	locker.mu.Lock()
+	defer locker.mu.Unlock()
+	if _, ok := locker.locks["session-1"]; ok {
+		t.Fatal("session lock remained after its final waiter released it")
+	}
+}
+
+func TestManagerActivateRejectsUnavailableEntryStates(t *testing.T) {
+	managerForActivationTest := func(item *entry) *Manager {
+		return &Manager{
+			locks: newKeyedLocker(), entries: map[string]*entry{"session-1": item},
+		}
+	}
+	tests := []struct {
+		name      string
+		manager   *Manager
+		sessionID string
+		operation string
+		wantErr   error
+	}{
+		{name: "nil manager", wantErr: ErrDependencyRequired},
+		{
+			name:      "missing session",
+			manager:   &Manager{locks: newKeyedLocker(), entries: map[string]*entry{}},
+			operation: "start-1",
+			wantErr:   ErrSessionIDRequired,
+		},
+		{
+			name:      "missing entry",
+			manager:   &Manager{locks: newKeyedLocker(), entries: map[string]*entry{}},
+			sessionID: "session-1",
+			operation: "start-1",
+			wantErr:   ErrPipelineNotFound,
+		},
+		{
+			name:      "operation conflict",
+			manager:   managerForActivationTest(&entry{operationID: "other"}),
+			sessionID: "session-1",
+			operation: "start-1",
+			wantErr:   session.ErrRuntimeOperationConflict,
+		},
+		{
+			name:      "stopping entry",
+			manager:   managerForActivationTest(&entry{operationID: "start-1", stopping: true}),
+			sessionID: "session-1",
+			operation: "start-1",
+			wantErr:   ErrPipelineStopping,
+		},
+		{
+			name:      "already active",
+			manager:   managerForActivationTest(&entry{operationID: "start-1", active: true}),
+			sessionID: "session-1",
+			operation: "start-1",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.manager.Activate(t.Context(), test.sessionID, test.operation)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("Activate() error = %v, want %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestManagerStopDeactivatesPreparedEntry(t *testing.T) {
+	source := &fakeFrameSource{}
+	lifecycle := &atomicLifecycleObserver{}
+	runCtx, cancel := context.WithCancel(context.Background())
+	item := &entry{
+		cancel: cancel, source: newCloseOnceSource(source), ctx: runCtx,
+		done: make(chan struct{}), operationID: "start-1",
+	}
+	manager := &Manager{
+		locks: newKeyedLocker(), entries: map[string]*entry{"session-1": item},
+		deps: Dependencies{Lifecycle: lifecycle},
+	}
+
+	if err := manager.Stop(t.Context(), "session-1"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	select {
+	case <-runCtx.Done():
+	default:
+		t.Fatal("Stop() did not cancel the prepared entry context")
+	}
+	if source.CloseCalls() != 1 {
+		t.Fatalf("source close calls = %d, want 1", source.CloseCalls())
+	}
+	if manager.PipelineActive("session-1") {
+		t.Fatal("Stop() retained the prepared entry")
+	}
+	if started, stopped := lifecycle.values(); started != 0 || stopped != 1 {
+		t.Fatalf("lifecycle counters = %d/%d, want 0/1", started, stopped)
+	}
+}
+
 func TestManagerStopTimeoutCanBeRetriedAfterSourceUnblocks(t *testing.T) {
 	source := &stubbornFrameSource{entered: make(chan struct{}), release: make(chan struct{})}
 	manager, err := NewManager(config.ProviderConfig{}, config.Providers{

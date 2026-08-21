@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -640,12 +641,19 @@ func TestRunReturnsShutdownTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	listenerReady := make(chan net.Listener, 1)
+	connectionAccepted := make(chan struct{})
+	var acceptedOnce sync.Once
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, secretEnv(strings.Repeat("y", 32)), func(server *http.Server) error {
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				return err
+			}
+			server.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					acceptedOnce.Do(func() { close(connectionAccepted) })
+				}
 			}
 			listenerReady <- listener
 			return server.Serve(listener)
@@ -666,6 +674,11 @@ func TestRunReturnsShutdownTimeout(t *testing.T) {
 	defer conn.Close()
 	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\n")); err != nil {
 		t.Fatalf("write partial request: %v", err)
+	}
+	select {
+	case <-connectionAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept connection")
 	}
 	cancel()
 

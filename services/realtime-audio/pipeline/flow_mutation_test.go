@@ -215,7 +215,7 @@ func TestStartAudioReturnsCanceledContextBeforeOpeningTurn(t *testing.T) {
 func TestDispatchASRPartialsUpdatesInterpretationPhraseState(t *testing.T) {
 	turn := TurnContext{ID: "turn-1", SessionID: "session-1", Mode: TurnModeSnapshot{Mode: realtimev1.ModeInterpretation}}
 	phrases := NewPhraseSubtitleProcessor(&recordingPhraseSubtitleObserver{}, PhraseStabilizerOptions{StableAfter: time.Hour})
-	phrases.Start(turn)
+	phrases.Start(turn, "en-US")
 	events := make(chan asr.Event, 1)
 	events <- asr.Event{Type: asr.EventPartial, Text: "partial text"}
 	close(events)

@@ -42,6 +42,12 @@ type ASRFinalHandler interface {
 	HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) error
 }
 
+// AsyncASRFinalHandler may accept a streaming final without waiting for
+// phrase settlement. The handler owns the eventual FinalTurn commit.
+type AsyncASRFinalHandler interface {
+	HandleASRFinalAsync(ctx context.Context, turn TurnContext, result asr.FinalResult) error
+}
+
 // ASRPartialObserver receives replaceable ASR snapshots for ordinary Turns.
 // Implementations must treat delivery as best-effort and must not invoke translation,
 // TTS, FinalTurn persistence, command handling, or usage recording.
@@ -83,16 +89,17 @@ type StreamingTurnProcessor interface {
 // AudioTurn owns one live ASR stream. It is not safe for concurrent PushAudio
 // and Finish calls; segment.Service serializes VAD events for a session.
 type AudioTurn struct {
-	processor      *TurnProcessor
-	turn           TurnContext
-	request        TurnProcessRequest
-	stream         asr.Stream
-	asrStartedAt   time.Time
-	eventCancel    context.CancelFunc
-	finalEvents    chan *asr.FinalResult
-	eventErrors    chan error
-	settlePartials func()
-	closeOnce      sync.Once
+	processor             *TurnProcessor
+	turn                  TurnContext
+	request               TurnProcessRequest
+	stream                asr.Stream
+	asrStartedAt          time.Time
+	eventCancel           context.CancelFunc
+	finalEvents           chan *asr.FinalResult
+	eventErrors           chan error
+	settlePartials        func()
+	finalizationHandedOff bool
+	closeOnce             sync.Once
 }
 
 // NewTurnProcessor 创建一个处理完整音频 Turn 的公共 Runner。
@@ -195,8 +202,18 @@ func (t *AudioTurn) PushAudio(ctx context.Context, chunk []byte) error {
 	return nil
 }
 
-// Finish closes ASR and dispatches only its final result to the mode handler.
+// Finish closes ASR and synchronously dispatches its final result to the mode handler.
 func (t *AudioTurn) Finish(ctx context.Context) (TurnContext, error) {
+	return t.finish(ctx, false)
+}
+
+// FinishStreaming closes ASR and lets a handler move pending phrase settlement
+// to its own worker while the media loop continues to consume audio.
+func (t *AudioTurn) FinishStreaming(ctx context.Context) (TurnContext, error) {
+	return t.finish(ctx, true)
+}
+
+func (t *AudioTurn) finish(ctx context.Context, allowAsync bool) (TurnContext, error) {
 	if t.stream == nil || t.processor == nil {
 		return TurnContext{}, ErrASRStreamRequired
 	}
@@ -253,6 +270,15 @@ func (t *AudioTurn) Finish(ctx context.Context) (TurnContext, error) {
 	if err := p.pipeline.publishUsage(ctx, turn, "asr", result.Provider, result.Model, result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency); err != nil {
 		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("publish ASR usage: %w", err))
 	}
+	if allowAsync {
+		if handler, ok := p.finals.(AsyncASRFinalHandler); ok {
+			if err := handler.HandleASRFinalAsync(ctx, turn, result); err != nil {
+				return turn, err
+			}
+			t.finalizationHandedOff = true
+			return turn, nil
+		}
+	}
 	if err := p.finals.HandleASRFinal(ctx, turn, result); err != nil {
 		return turn, err
 	}
@@ -271,7 +297,7 @@ func (t *AudioTurn) Close() {
 		if t.stream != nil {
 			_ = t.stream.Close()
 		}
-		if t.processor != nil && t.processor.phrases != nil {
+		if !t.finalizationHandedOff && t.processor != nil && t.processor.phrases != nil {
 			t.processor.phrases.Discard(t.turn.ID)
 		}
 	})

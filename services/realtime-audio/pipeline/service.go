@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
@@ -23,7 +24,12 @@ var (
 	// ErrFinalTurnAccepted marks a failure after the immutable FinalTurn entered durable delivery.
 	// Callers must not retry HandleASRFinal because doing so can rerun providers under the same ID.
 	ErrFinalTurnAccepted = errors.New("final turn accepted")
+	// ErrFinalSettlementQueueFull rejects a new streaming final before its
+	// durable settlement is accepted, avoiding unbounded memory growth.
+	ErrFinalSettlementQueueFull = errors.New("final settlement queue full")
 )
+
+const finalSettlementQueueCapacity = 32
 
 // IsRecoverableUnsupportedSourceLanguage reports whether unsupported language is the only
 // failure in an error chain. A joined error means cleanup or runtime-state recovery also failed
@@ -80,37 +86,51 @@ type FinalTurnCommitGate interface {
 
 // PipelineDependencies wires provider and event boundaries for one service.
 type PipelineDependencies struct {
-	Translator          translate.Provider
-	TranslationProvider string
-	TTS                 tts.Provider
-	TTSProvider         string
-	FinalTurns          recordsv1.FinalTurnSink
-	FinalGate           FinalTurnCommitGate
-	Usage               UsageFactSink
-	Audio               AudioChunkSink
-	Runtime             session.RuntimeStateReporter
-	VoiceID             string
-	Now                 func() time.Time
-	Latency             LatencyLogger
-	Speech              *SpeechOutput
-	LongDeliveryEnabled bool
-	PhraseTranslations  *PhraseTranslationCoordinator
+	Translator           translate.Provider
+	TranslationProvider  string
+	TTS                  tts.Provider
+	TTSProvider          string
+	FinalTurns           recordsv1.FinalTurnSink
+	FinalGate            FinalTurnCommitGate
+	Usage                UsageFactSink
+	Audio                AudioChunkSink
+	Runtime              session.RuntimeStateReporter
+	VoiceID              string
+	Now                  func() time.Time
+	Latency              LatencyLogger
+	Speech               *SpeechOutput
+	LongDeliveryEnabled  bool
+	PhraseTranslations   *PhraseTranslationCoordinator
+	FinalSettlementError func(TurnContext, error)
 }
 
 // PipelineService orchestrates one final ASR result through translation and TTS.
 type PipelineService struct {
-	translator          translate.Provider
-	translationProvider string
-	finalTurns          recordsv1.FinalTurnSink
-	finalGate           FinalTurnCommitGate
-	usage               UsageFactSink
-	runtime             session.RuntimeStateReporter
-	speech              *SpeechOutput
-	now                 func() time.Time
-	latency             LatencyLogger
-	longDeliveryEnabled bool
-	phraseTranslations  *PhraseTranslationCoordinator
-	latePhraseUsage     *latePhraseUsageQueue
+	translator           translate.Provider
+	translationProvider  string
+	finalTurns           recordsv1.FinalTurnSink
+	finalGate            FinalTurnCommitGate
+	usage                UsageFactSink
+	runtime              session.RuntimeStateReporter
+	speech               *SpeechOutput
+	now                  func() time.Time
+	latency              LatencyLogger
+	longDeliveryEnabled  bool
+	phraseTranslations   *PhraseTranslationCoordinator
+	latePhraseUsage      *latePhraseUsageQueue
+	settlementCtx        context.Context
+	settlementCancel     context.CancelFunc
+	settlementMu         sync.Mutex
+	settlementQueue      chan finalSettlementTask
+	settlementWorkerDone chan struct{}
+	settlementError      func(TurnContext, error)
+	settlementClosed     bool
+	closeOnce            sync.Once
+}
+
+type finalSettlementTask struct {
+	turn   TurnContext
+	result asr.FinalResult
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
@@ -128,6 +148,7 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 			VoiceID: deps.VoiceID, Provider: deps.TTSProvider, Latency: deps.Latency,
 		})
 	}
+	settlementCtx, settlementCancel := context.WithCancel(context.Background())
 	service := &PipelineService{
 		translator: deps.Translator, translationProvider: deps.TranslationProvider,
 		finalTurns: deps.FinalTurns, finalGate: deps.FinalGate,
@@ -136,6 +157,8 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 		now:    now, latency: deps.Latency,
 		longDeliveryEnabled: deps.LongDeliveryEnabled,
 		phraseTranslations:  deps.PhraseTranslations,
+		settlementCtx:       settlementCtx, settlementCancel: settlementCancel,
+		settlementError: deps.FinalSettlementError,
 	}
 	service.latePhraseUsage = newLatePhraseUsageQueue(service.usage, service.latency)
 	if service.phraseTranslations != nil {
@@ -147,7 +170,22 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 // Close stops the service-owned late usage worker during process shutdown.
 func (s *PipelineService) Close() {
 	if s != nil {
-		s.latePhraseUsage.Close()
+		s.closeOnce.Do(func() {
+			s.settlementMu.Lock()
+			s.settlementClosed = true
+			if s.settlementCancel != nil {
+				s.settlementCancel()
+			}
+			workerDone := s.settlementWorkerDone
+			if s.settlementQueue != nil {
+				close(s.settlementQueue)
+			}
+			s.settlementMu.Unlock()
+			if workerDone != nil {
+				<-workerDone
+			}
+			s.latePhraseUsage.Close()
+		})
 	}
 }
 
@@ -166,27 +204,92 @@ func (s *PipelineService) HandleASREvent(ctx context.Context, turn TurnContext, 
 // stage failed; callers must not rerun this method, while Usage and TTS recover
 // at their own processing boundaries.
 func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) (returnErr error) {
+	return s.handleASRFinal(ctx, turn, result, true)
+}
+
+// HandleASRFinalAsync hands a streaming final to the service-owned settlement
+// worker. The media path returns immediately; tasks remain ordered by VAD final
+// while each task can wait for its original pending phrase future.
+func (s *PipelineService) HandleASRFinalAsync(ctx context.Context, turn TurnContext, result asr.FinalResult) error {
+	if err := s.validate(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
+	if _, _, ok := targetRoute(turn.LanguageConfig, result.SourceLanguage); !ok {
+		return fmt.Errorf("%w: %s", ErrUnsupportedSourceLanguage, result.SourceLanguage)
+	}
+	if s.phraseTranslations == nil {
+		return s.HandleASRFinal(ctx, turn, result)
+	}
+	s.settlementMu.Lock()
+	if s.settlementClosed {
+		s.settlementMu.Unlock()
+		return context.Canceled
+	}
+	if s.settlementQueue == nil {
+		s.settlementQueue = make(chan finalSettlementTask, finalSettlementQueueCapacity)
+		s.settlementWorkerDone = make(chan struct{})
+		go s.runFinalSettlementWorker(s.settlementQueue, s.settlementWorkerDone)
+	}
+	select {
+	case s.settlementQueue <- finalSettlementTask{turn: turn, result: result}:
+		s.settlementMu.Unlock()
+		return nil
+	default:
+		s.settlementMu.Unlock()
+		return ErrFinalSettlementQueueFull
+	}
+}
+
+func (s *PipelineService) runFinalSettlementWorker(tasks <-chan finalSettlementTask, done chan<- struct{}) {
+	defer close(done)
+	for task := range tasks {
+		if err := s.handleASRFinal(s.settlementCtx, task.turn, task.result, false); err != nil && !errors.Is(err, context.Canceled) {
+			s.reportFinalSettlementError(task.turn, err)
+		}
+	}
+}
+
+func (s *PipelineService) reportFinalSettlementError(turn TurnContext, err error) {
+	if err == nil {
+		return
+	}
+	if s.settlementError != nil {
+		s.settlementError(turn, err)
+		return
+	}
+	s.latency.ProviderFailure("final_settlement", turn, "", "", err)
+}
+
+func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult, reportRuntime bool) (returnErr error) {
 	if err := s.validate(); err != nil {
 		return err
 	}
 	// Runtime state is a media-plane observable fact. Report each long-running
 	// stage and restore listening on every exit unless the report itself fails.
-	if err := s.reportRuntime(ctx, turn, session.RuntimeTranslating, ""); err != nil {
-		if runtimeUpdateSuperseded(err) {
-			return fmt.Errorf("%w: report translating runtime: %w", ErrTurnSuperseded, err)
+	if reportRuntime {
+		if err := s.reportRuntime(ctx, turn, session.RuntimeTranslating, ""); err != nil {
+			if runtimeUpdateSuperseded(err) {
+				return fmt.Errorf("%w: report translating runtime: %w", ErrTurnSuperseded, err)
+			}
+			return fmt.Errorf("report translating runtime: %w", err)
 		}
-		return fmt.Errorf("report translating runtime: %w", err)
 	}
 	acceptedFinalTurn := false
-	defer func() {
-		if err := s.reportListening(ctx, turn); err != nil {
-			restoreErr := fmt.Errorf("restore listening runtime: %w", err)
-			if acceptedFinalTurn {
-				restoreErr = finalTurnAcceptedError("restore listening runtime", err)
+	if reportRuntime {
+		defer func() {
+			if err := s.reportListening(ctx, turn); err != nil {
+				restoreErr := fmt.Errorf("restore listening runtime: %w", err)
+				if acceptedFinalTurn {
+					restoreErr = finalTurnAcceptedError("restore listening runtime", err)
+				}
+				returnErr = errors.Join(returnErr, restoreErr)
 			}
-			returnErr = errors.Join(returnErr, restoreErr)
-		}
-	}()
+		}()
+	}
 	// Turn owns the versioned language snapshot captured at start. Do not reread
 	// the current session config or a mid-turn change would alter this direction.
 	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
@@ -297,6 +400,7 @@ func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, 
 	playbackID := "playback_" + turn.ID
 	ttsResult, err := s.speech.Play(ctx, SpeechOutputRequest{
 		Turn: turn, Language: target, Text: translationResult.Text, PlaybackID: playbackID,
+		SkipRuntime: !reportRuntime,
 	})
 	if err != nil {
 		return finalTurnAcceptedError("play translated text", err)

@@ -43,19 +43,17 @@ type phraseTranslationUtterance struct {
 	observerMu     sync.Mutex
 	sourceTail     chan struct{}
 	sourceOnly     bool
-	// Final residual settlement owns unresolved phrases. A provider result that
-	// arrives after that handoff must not create a second usage fact.
-	suppressLateUsage bool
 }
 
 type translatedPhrase struct {
-	event           realtimev1.PhraseSubtitleEvent
-	result          translate.Result
-	err             error
-	done            bool
-	doneCh          chan struct{}
-	sourceDelivered chan struct{}
-	usageHanded     bool
+	event              realtimev1.PhraseSubtitleEvent
+	result             translate.Result
+	err                error
+	done               bool
+	translationStarted bool
+	doneCh             chan struct{}
+	sourceDelivered    chan struct{}
+	usageHanded        bool
 }
 
 func NewPhraseTranslationCoordinator(translator translate.Provider, provider string, observer PhraseSubtitleObserver, now func() time.Time) *PhraseTranslationCoordinator {
@@ -138,6 +136,7 @@ func (c *PhraseTranslationCoordinator) ObservePhraseSubtitle(ctx context.Context
 	utterance.sourceTail = phrase.sourceDelivered
 	utterance.phrases[event.PhraseSequence] = phrase
 	sourceOnly := utterance.sourceOnly
+	phrase.translationStarted = !sourceOnly
 	c.mu.Unlock()
 	go c.publishSourcePhrase(utterance, phrase, ctx, previousSource)
 	if !sourceOnly {
@@ -244,24 +243,66 @@ func (c *PhraseTranslationCoordinator) FinalizePhraseSubtitleTurn(ctx context.Co
 	if utterance == nil {
 		return PhraseTranslationSummary{}, finalText, nil, false, nil
 	}
+	if !c.waitForPendingPhrases(ctx, utterance) {
+		c.discardPhraseSubtitleTurn(turn.ID, true)
+		return PhraseTranslationSummary{}, finalText, nil, false, nil
+	}
 	c.mu.Lock()
+	if c.utterances[turn.ID] != utterance {
+		c.mu.Unlock()
+		return PhraseTranslationSummary{}, finalText, nil, false, nil
+	}
 	summary, consumed, fullyReused := phraseSummary(finalText, utterance)
 	if fullyReused {
 		if consumed == len(finalText) {
-			// A marker means residual settlement owns the phrase. Keep that
-			// ownership on the detached state so a canceled provider result cannot
-			// be reported as an additional usage fact.
-			c.detachPhraseSubtitleTurnLocked(turn.ID, false, len(summary.ResidualSegments) > 0)
+			c.detachPhraseSubtitleTurnLocked(turn.ID, false)
 			c.mu.Unlock()
 			return summary, "", nil, true, nil
 		}
 	}
-	// Residual settlement will issue the single replacement request for any
-	// unresolved phrase. Suppress usage from the canceled request if it returns
-	// after this ownership handoff.
-	usage, err := c.detachPhraseSubtitleTurnLocked(turn.ID, false, true)
+	usage, err := c.detachPhraseSubtitleTurnLocked(turn.ID, false)
 	c.mu.Unlock()
 	return summary, finalText[consumed:], usage, false, err
+}
+
+// HasPendingPhrase reports whether a provider request is already in flight for
+// this utterance. Final streaming settlement uses this to hand the turn to a
+// background worker instead of issuing a second request from the media path.
+func (c *PhraseTranslationCoordinator) HasPendingPhrase(turnID string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	utterance := c.utterances[turnID]
+	if utterance == nil {
+		return false
+	}
+	for _, phrase := range utterance.phrases {
+		if phrase.translationStarted && !phrase.done {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *PhraseTranslationCoordinator) waitForPendingPhrases(ctx context.Context, utterance *phraseTranslationUtterance) bool {
+	c.mu.Lock()
+	pending := make([]<-chan struct{}, 0, len(utterance.phrases))
+	for _, phrase := range utterance.phrases {
+		if phrase.translationStarted && !phrase.done {
+			pending = append(pending, phrase.doneCh)
+		}
+	}
+	c.mu.Unlock()
+	for _, done := range pending {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
 }
 
 func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) {
@@ -274,19 +315,19 @@ func (c *PhraseTranslationCoordinator) DiscardPhraseSubtitleTurn(turnID string) 
 		c.mu.Unlock()
 		return
 	}
-	usage, _ := c.detachPhraseSubtitleTurnLocked(turnID, true, false)
+	usage, _ := c.detachPhraseSubtitleTurnLocked(turnID, true)
 	c.mu.Unlock()
 	c.reportLatePhraseUsageList(usage)
 }
 
 func (c *PhraseTranslationCoordinator) discardPhraseSubtitleTurn(turnID string, collectUsage bool) {
 	c.mu.Lock()
-	usage, _ := c.detachPhraseSubtitleTurnLocked(turnID, collectUsage, false)
+	usage, _ := c.detachPhraseSubtitleTurnLocked(turnID, collectUsage)
 	c.mu.Unlock()
 	c.reportLatePhraseUsageList(usage)
 }
 
-func (c *PhraseTranslationCoordinator) detachPhraseSubtitleTurnLocked(turnID string, collectUsage, suppressLateUsage bool) ([]UsageFact, error) {
+func (c *PhraseTranslationCoordinator) detachPhraseSubtitleTurnLocked(turnID string, collectUsage bool) ([]UsageFact, error) {
 	utterance := c.utterances[turnID]
 	if utterance == nil {
 		return nil, nil
@@ -306,14 +347,13 @@ func (c *PhraseTranslationCoordinator) detachPhraseSubtitleTurnLocked(turnID str
 			}
 		}
 	}
-	utterance.suppressLateUsage = suppressLateUsage
 	utterance.cancel()
 	delete(c.utterances, turnID)
 	return usage, usageErr
 }
 
 func (c *PhraseTranslationCoordinator) latePhraseUsageLocked(utterance *phraseTranslationUtterance, phrase *translatedPhrase) (UsageFact, error) {
-	if c.utterances[utterance.turn.ID] == utterance || utterance.suppressLateUsage || phrase.usageHanded || !hasPhraseUsage(phrase.result) {
+	if c.utterances[utterance.turn.ID] == utterance || phrase.usageHanded || !hasPhraseUsage(phrase.result) {
 		return UsageFact{}, nil
 	}
 	fact, err := c.phraseUsageFact(utterance.turn, phrase)
@@ -341,7 +381,7 @@ func (c *PhraseTranslationCoordinator) reportLatePhraseUsage(fact UsageFact) {
 
 func allPhraseTranslationsDone(utterance *phraseTranslationUtterance) bool {
 	for _, phrase := range utterance.phrases {
-		if !phrase.done {
+		if phrase.translationStarted && !phrase.done {
 			return false
 		}
 	}

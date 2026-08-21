@@ -137,7 +137,7 @@ func (s *Service) Run(ctx context.Context, request Request) (returnErr error) {
 					pendingStreaming = nil
 					continue
 				}
-				_, err = audioTurn.Finish(runCtx)
+				_, err = audioTurn.FinishStreaming(runCtx)
 				audioTurn.Close()
 			}
 			if err != nil {

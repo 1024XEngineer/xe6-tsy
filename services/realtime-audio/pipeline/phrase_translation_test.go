@@ -54,7 +54,7 @@ func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing
 	}
 }
 
-func TestPhraseTranslationCoordinatorDoesNotWaitForPendingPhrase(t *testing.T) {
+func TestPhraseTranslationCoordinatorWaitsAndReusesPendingPhrase(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
@@ -67,27 +67,34 @@ func TestPhraseTranslationCoordinatorDoesNotWaitForPendingPhrase(t *testing.T) {
 	coordinator.ObservePhraseSubtitle(context.Background(), realtimev1.PhraseSubtitleEvent{Type: realtimev1.PhraseSubtitleTopic, EventVersion: 1, SessionID: turn.SessionID, UtteranceID: turn.ID, PhraseSequence: 1, SourceText: "你好", Status: realtimev1.PhraseSubtitleSourceStable, OccurredAt: time.Now().UTC()})
 	<-started
 	finalized := make(chan struct {
+		summary  PhraseTranslationSummary
 		residual string
 		ok       bool
 		err      error
 	}, 1)
 	go func() {
-		_, residual, _, ok, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好")
+		summary, residual, _, ok, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好")
 		finalized <- struct {
+			summary  PhraseTranslationSummary
 			residual string
 			ok       bool
 			err      error
-		}{residual: residual, ok: ok, err: err}
+		}{summary: summary, residual: residual, ok: ok, err: err}
 	}()
 	select {
 	case result := <-finalized:
-		if result.err != nil || result.residual != "" || !result.ok {
-			t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, want immediate residual settlement", result)
-		}
+		t.Fatalf("FinalizePhraseSubtitleTurn() returned before pending phrase: %#v", result)
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("FinalizePhraseSubtitleTurn() blocked on pending phrase")
 	}
 	close(release)
+	select {
+	case result := <-finalized:
+		if result.err != nil || result.residual != "" || !result.ok || result.summary.Text != "hello" {
+			t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, want reused pending result", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("FinalizePhraseSubtitleTurn() did not settle after pending phrase completed")
+	}
 }
 
 func TestPhraseTranslationCoordinatorReusesCompletedPrefixWithPendingTail(t *testing.T) {
@@ -150,33 +157,6 @@ func TestPhraseTranslationCoordinatorReportsLateUsageAfterCanceledFinalize(t *te
 		}
 	case <-time.After(time.Second):
 		t.Fatal("late phrase usage was not reported")
-	}
-}
-
-func TestPhraseTranslationCoordinatorSuppressesLateUsageAfterResidualHandoff(t *testing.T) {
-	started := make(chan struct{})
-	release := make(chan struct{})
-	reported := make(chan UsageFact, 1)
-	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
-		close(started)
-		<-release
-		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 7}, nil
-	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
-	coordinator.SetLatePhraseUsageReporter(func(fact UsageFact) { reported <- fact })
-	turn := TurnContext{ID: "turn-residual-ownership", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
-	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
-	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
-	<-started
-
-	summary, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好")
-	if err != nil || !reused || residual != "" || summary.Text != phraseResidualMarker || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "你好" {
-		t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, %q, %v, %v", summary, residual, reused, err)
-	}
-	close(release)
-	select {
-	case fact := <-reported:
-		t.Fatalf("late usage = %#v, want residual settlement ownership to suppress it", fact)
-	case <-time.After(100 * time.Millisecond):
 	}
 }
 

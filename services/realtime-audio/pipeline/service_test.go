@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,25 @@ func TestSpeechOutputRejectsEmptyPlaybackID(t *testing.T) {
 	})
 	if !errors.Is(err, ErrSpeechOutputRequestInvalid) {
 		t.Fatalf("Play() error = %v, want ErrSpeechOutputRequestInvalid", err)
+	}
+}
+
+func TestSpeechOutputSkipsRuntimeForAsyncSettlement(t *testing.T) {
+	ttsProvider := tts.NewFakeProvider(tts.FakeProviderConfig{
+		Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1}}},
+		Result: tts.Result{Provider: "mock", Model: "v1"},
+	})
+	audio := &recordingAudioSink{}
+	speech := NewSpeechOutput(SpeechOutputDependencies{
+		TTS: ttsProvider, Audio: audio, Runtime: failingRuntimeReporter{err: session.ErrRuntimeIdentityConflict},
+	})
+	if _, err := speech.Play(t.Context(), SpeechOutputRequest{
+		Turn: testTurn(), Language: "en-US", Text: "hello", PlaybackID: "playback-1", SkipRuntime: true,
+	}); err != nil {
+		t.Fatalf("Play() error = %v", err)
+	}
+	if requests := ttsProvider.Requests(); len(requests) != 1 || len(audio.chunks) != 1 {
+		t.Fatalf("TTS requests = %#v, audio chunks = %#v", requests, audio.chunks)
 	}
 }
 
@@ -910,19 +930,17 @@ func TestPipelineReusesPendingPhraseAtFinalization(t *testing.T) {
 	}
 }
 
-func TestPipelineDoesNotDoubleTranslatePendingPhraseAfterResidualHandoff(t *testing.T) {
+func TestPipelineReusesPendingPhraseInAsyncSettlement(t *testing.T) {
 	phraseStarted := make(chan struct{})
 	releasePhrase := make(chan struct{})
-	phraseReturned := make(chan struct{})
 	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
 		close(phraseStarted)
 		<-releasePhrase
-		close(phraseReturned)
 		return translate.Result{Text: "phrase-en", Provider: "phrase", Model: "v1", InputTokens: 7}, nil
 	}), "phrase", &recordingPhraseSubtitleObserver{}, nil)
 	translator := &translate.FakeProvider{Result: translate.Result{Text: "final-en", Provider: "final", Model: "v1", InputTokens: 2}}
-	finalSink := &recordingFinalSink{}
-	usageSink := &recordingUsageSink{}
+	finalSink := newAsyncFinalSink()
+	usageSink := newAsyncUsageSink()
 	service := newTestPipelineService(PipelineDependencies{
 		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
 		FinalTurns: finalSink, Usage: usageSink, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
@@ -935,38 +953,36 @@ func TestPipelineDoesNotDoubleTranslatePendingPhraseAfterResidualHandoff(t *test
 	phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
 	<-phraseStarted
 
-	completed := make(chan error, 1)
-	go func() {
-		completed <- service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"})
-	}()
+	if err := service.HandleASRFinalAsync(context.Background(), turn, asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1"}); err != nil {
+		t.Fatalf("HandleASRFinalAsync() error = %v", err)
+	}
 	select {
-	case err := <-completed:
-		if err != nil {
-			t.Fatalf("HandleASRFinal() error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("HandleASRFinal() waited for pending phrase provider")
+	case <-finalSink.done:
+		t.Fatal("async settlement completed before pending phrase provider returned")
+	case <-time.After(100 * time.Millisecond):
 	}
 	requests := translator.Requests()
-	if len(requests) != 1 || requests[0].Text != "你好" {
-		t.Fatalf("final translation requests = %#v, want one residual request", requests)
+	if len(requests) != 0 {
+		t.Fatalf("final translation requests = %#v, want no residual duplicate", requests)
 	}
-	if len(finalSink.events) != 1 || finalSink.events[0].TranslatedText != "final-en" {
-		t.Fatalf("FinalTurns = %#v", finalSink.events)
-	}
-	if len(usageSink.facts) != 1 || usageSink.facts[0].IdempotencyKey != "usage:turn-1:translation" || usageSink.facts[0].InputTokens != 2 {
-		t.Fatalf("usage facts = %#v, want only residual settlement usage", usageSink.facts)
-	}
-
 	close(releasePhrase)
 	select {
-	case <-phraseReturned:
+	case <-finalSink.done:
 	case <-time.After(time.Second):
-		t.Fatal("pending phrase provider did not return")
+		t.Fatal("async phrase settlement did not commit FinalTurn")
 	}
-	time.Sleep(20 * time.Millisecond)
-	if len(usageSink.facts) != 1 {
-		t.Fatalf("usage facts after late phrase result = %#v, want no second fact", usageSink.facts)
+	select {
+	case <-usageSink.done:
+	case <-time.After(time.Second):
+		t.Fatal("async phrase settlement did not publish translation usage")
+	}
+	event := finalSink.Event()
+	if event.TranslatedText != "phrase-en" {
+		t.Fatalf("FinalTurn = %#v, want reused pending phrase translation", event)
+	}
+	facts := usageSink.Facts()
+	if len(facts) != 1 || facts[0].IdempotencyKey != "usage:turn-1:translation" || facts[0].InputTokens != 7 {
+		t.Fatalf("usage facts = %#v, want one reused phrase fact", facts)
 	}
 }
 
@@ -1072,6 +1088,52 @@ type recordingFinalSink struct {
 	err    error
 }
 
+type asyncFinalSink struct {
+	mu    sync.Mutex
+	event FinalTurnEvent
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newAsyncFinalSink() *asyncFinalSink { return &asyncFinalSink{done: make(chan struct{})} }
+
+func (s *asyncFinalSink) Publish(_ context.Context, event FinalTurnEvent) error {
+	s.mu.Lock()
+	s.event = event
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.done) })
+	return nil
+}
+
+func (s *asyncFinalSink) Event() FinalTurnEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.event
+}
+
+type asyncUsageSink struct {
+	mu    sync.Mutex
+	facts []UsageFact
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newAsyncUsageSink() *asyncUsageSink { return &asyncUsageSink{done: make(chan struct{})} }
+
+func (s *asyncUsageSink) Publish(_ context.Context, fact UsageFact) error {
+	s.mu.Lock()
+	s.facts = append(s.facts, fact)
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.done) })
+	return nil
+}
+
+func (s *asyncUsageSink) Facts() []UsageFact {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]UsageFact(nil), s.facts...)
+}
+
 type acceptingFinalTurnGate struct{}
 
 type supersededFinalTurnGate struct {
@@ -1165,6 +1227,12 @@ type stateFailingRuntimeReporter struct {
 	err       error
 }
 
+type failingRuntimeReporter struct{ err error }
+
+func (r failingRuntimeReporter) SetProcessingState(context.Context, session.ProcessingStateUpdate) error {
+	return r.err
+}
+
 func (r stateFailingRuntimeReporter) SetProcessingState(_ context.Context, update session.ProcessingStateUpdate) error {
 	if update.RuntimeState == r.failState {
 		return r.err
@@ -1223,5 +1291,6 @@ var _ UsageFactSink = (*recordingUsageSink)(nil)
 var _ AudioChunkSink = (*recordingAudioSink)(nil)
 var _ session.RuntimeStateReporter = (*recordingRuntimeReporter)(nil)
 var _ session.RuntimeStateReporter = stateFailingRuntimeReporter{}
+var _ session.RuntimeStateReporter = failingRuntimeReporter{}
 var _ tts.Provider = (*blockingTTSProvider)(nil)
 var _ tts.Stream = (*blockingTTSStream)(nil)

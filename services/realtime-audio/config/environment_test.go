@@ -109,6 +109,148 @@ func TestLoadProviderConfigAllowsNegativeQwenVADThreshold(t *testing.T) {
 	}
 }
 
+func TestLoadProviderConfigAcceptsASRValidationBoundaries(t *testing.T) {
+	tests := []struct {
+		name   string
+		values map[string]string
+		check  func(t *testing.T, config ProviderConfig)
+	}{
+		{
+			name:   "minimum VAD threshold",
+			values: map[string]string{"ASR_VAD_THRESHOLD": "-1"},
+			check: func(t *testing.T, config ProviderConfig) {
+				t.Helper()
+				if config.ASR.VADThreshold != -1 {
+					t.Fatalf("VAD threshold = %v, want -1", config.ASR.VADThreshold)
+				}
+			},
+		},
+		{
+			name:   "maximum VAD threshold",
+			values: map[string]string{"ASR_VAD_THRESHOLD": "1"},
+			check: func(t *testing.T, config ProviderConfig) {
+				t.Helper()
+				if config.ASR.VADThreshold != 1 {
+					t.Fatalf("VAD threshold = %v, want 1", config.ASR.VADThreshold)
+				}
+			},
+		},
+		{
+			name:   "minimum silence duration",
+			values: map[string]string{"ASR_SILENCE_DURATION_MS": "200"},
+			check: func(t *testing.T, config ProviderConfig) {
+				t.Helper()
+				if config.ASR.SilenceDuration != 200*time.Millisecond {
+					t.Fatalf("silence duration = %v, want 200ms", config.ASR.SilenceDuration)
+				}
+			},
+		},
+		{
+			name:   "maximum silence duration",
+			values: map[string]string{"ASR_SILENCE_DURATION_MS": "6000"},
+			check: func(t *testing.T, config ProviderConfig) {
+				t.Helper()
+				if config.ASR.SilenceDuration != 6*time.Second {
+					t.Fatalf("silence duration = %v, want 6s", config.ASR.SilenceDuration)
+				}
+			},
+		},
+		{
+			name:   "explicit zero sample rate",
+			values: map[string]string{"ASR_SAMPLE_RATE": "0"},
+			check: func(t *testing.T, config ProviderConfig) {
+				t.Helper()
+				if config.ASR.SampleRate != 0 {
+					t.Fatalf("sample rate = %d, want 0", config.ASR.SampleRate)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := LoadProviderConfig(mapLookup(test.values))
+			if err != nil {
+				t.Fatalf("LoadProviderConfig() error = %v", err)
+			}
+			test.check(t, config)
+		})
+	}
+}
+
+func TestLoadProviderConfigAcceptsSupportedASRSampleRates(t *testing.T) {
+	tests := []struct {
+		value string
+		want  int
+	}{
+		{value: "8000", want: 8000},
+		{value: "16000", want: 16000},
+	}
+
+	for _, test := range tests {
+		t.Run(test.value, func(t *testing.T) {
+			config, err := LoadProviderConfig(mapLookup(map[string]string{"ASR_SAMPLE_RATE": test.value}))
+			if err != nil {
+				t.Fatalf("LoadProviderConfig() error = %v", err)
+			}
+			if config.ASR.SampleRate != test.want {
+				t.Fatalf("sample rate = %d, want %d", config.ASR.SampleRate, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadProviderConfigRejectsAdjacentASRValidationValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		values map[string]string
+	}{
+		{name: "VAD below minimum", values: map[string]string{"ASR_VAD_THRESHOLD": "-1.000001"}},
+		{name: "VAD above maximum", values: map[string]string{"ASR_VAD_THRESHOLD": "1.000001"}},
+		{name: "silence below minimum", values: map[string]string{"ASR_SILENCE_DURATION_MS": "199"}},
+		{name: "silence above maximum", values: map[string]string{"ASR_SILENCE_DURATION_MS": "6001"}},
+		{name: "sample rate below 8000", values: map[string]string{"ASR_SAMPLE_RATE": "7999"}},
+		{name: "sample rate above 8000", values: map[string]string{"ASR_SAMPLE_RATE": "8001"}},
+		{name: "sample rate below 16000", values: map[string]string{"ASR_SAMPLE_RATE": "15999"}},
+		{name: "sample rate above 16000", values: map[string]string{"ASR_SAMPLE_RATE": "16001"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := LoadProviderConfig(mapLookup(test.values))
+			if !errors.Is(err, ErrInvalidEnvironmentValue) {
+				t.Fatalf("LoadProviderConfig() error = %v, want %v", err, ErrInvalidEnvironmentValue)
+			}
+		})
+	}
+}
+
+func TestLoadProviderConfigStopsOnInvalidEarlySettings(t *testing.T) {
+	tests := []struct {
+		name   string
+		values map[string]string
+		want   error
+	}{
+		{name: "ASR provider", values: map[string]string{"ASR_PROVIDER": "invalid"}, want: ErrUnsupportedProvider},
+		{name: "TTS provider", values: map[string]string{"TTS_PROVIDER": "invalid"}, want: ErrUnsupportedProvider},
+		{name: "ASR silence duration", values: map[string]string{"ASR_SILENCE_DURATION_MS": "invalid"}, want: ErrInvalidEnvironmentValue},
+		{name: "translation timeout", values: map[string]string{"LLM_TIMEOUT_MS": "-1"}, want: ErrInvalidEnvironmentValue},
+		{name: "TTS sample rate", values: map[string]string{"TTS_SAMPLE_RATE": "-1"}, want: ErrInvalidEnvironmentValue},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, err := LoadProviderConfig(mapLookup(test.values))
+			if !errors.Is(err, test.want) {
+				t.Fatalf("LoadProviderConfig() error = %v, want %v", err, test.want)
+			}
+			if config != (ProviderConfig{}) {
+				t.Fatalf("LoadProviderConfig() config = %+v, want zero value on error", config)
+			}
+		})
+	}
+}
+
 func TestLoadProviderConfigRequiresLookup(t *testing.T) {
 	_, err := LoadProviderConfig(nil)
 	if !errors.Is(err, ErrEnvironmentLookupRequired) {

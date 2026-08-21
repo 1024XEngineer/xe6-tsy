@@ -21,8 +21,9 @@ type EndRecoveryConfig struct {
 // EndRecoveryWorker resumes incomplete End requests using the owning Service
 // so request and recovery paths share the same per-session process lock.
 type EndRecoveryWorker struct {
-	service *Service
-	config  EndRecoveryConfig
+	service      *Service
+	config       EndRecoveryConfig
+	monotonicNow func() time.Time
 }
 
 // NewEndRecoveryWorker validates that every recovery attempt is canceled
@@ -39,7 +40,11 @@ func NewEndRecoveryWorker(
 		config.MaxBackoff < config.InitialBackoff {
 		return nil, ErrInvalidDependency
 	}
-	return &EndRecoveryWorker{service: service, config: config}, nil
+	return &EndRecoveryWorker{
+		service:      service,
+		config:       config,
+		monotonicNow: time.Now,
+	}, nil
 }
 
 // Run drains due intents, then waits for the next scan interval. Cancellation
@@ -83,7 +88,7 @@ func (w *EndRecoveryWorker) ProcessNext(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	leaseStartedAt := time.Now()
+	leaseStartedAt := w.monotonicNow()
 	intent, claimed, err := w.service.deps.Repository.ClaimPendingEndIntent(
 		ctx,
 		ClaimEndIntentParams{

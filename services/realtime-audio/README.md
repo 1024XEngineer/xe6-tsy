@@ -259,6 +259,12 @@ Official protocol references:
 `main.go` 通过 `/realtime/v1` 暴露信令与生命周期 HTTP，并校验 `services/api` 签发的短期
 实时连接票据。部署时可以由 API Gateway 转发该路径，但 PeerConnection 和连接状态始终由本服务管理。
 
+最小多实例部署可以在固定 realtime 节点集合前按路径中的 `session_id` 做一致性哈希。同一会话的
+config、offer、ICE、Start、Stop、runtime、mode 和 fallback playback 请求必须使用相同规则，且
+失败请求不得重试到其他节点。该模式只分担不同会话的负载，不提供活跃会话迁移或容量感知调度。
+本地双实例 Gateway、启动方式和验证脚本见 [`infra/README.md`](../../infra/README.md)。WebRTC 媒体
+不经过 HTTP Gateway；跨主机部署必须另行保证每个 Pion 节点发布的 ICE candidate 可被客户端访问。
+
 当前入口使用 Pion transport factory + 内存 connection manager：Offer 成功后产生初始
 `connecting` 快照，并在 Pion 回调下迁移到 `connected` / `failed` / `closed`。API Start 仍应以
 `connected` 作为启动条件。manager 的 `Close` 成功后删除记录，后续查询返回 `not_found`。

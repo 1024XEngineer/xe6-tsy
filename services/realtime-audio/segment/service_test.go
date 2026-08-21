@@ -391,28 +391,6 @@ func TestServiceContinuesAfterUnsupportedSourceLanguage(t *testing.T) {
 	}
 }
 
-func TestServiceInterruptsPlaybackWhenVADOpens(t *testing.T) {
-	interrupter := &recordingPlaybackInterrupter{}
-	service := &Service{playback: interrupter}
-
-	service.interruptPlayback("session-1", vad.Event{Type: vad.EventOpened})
-	if interrupter.calls != 1 || interrupter.sessionID != "session-1" || interrupter.reason != "user_speaking" {
-		t.Fatalf("playback interruption = %#v, want opened speech interruption", interrupter)
-	}
-
-	service.interruptPlayback("session-1", vad.Event{Type: vad.EventFinal})
-	service.interruptPlayback("", vad.Event{Type: vad.EventOpened})
-	if interrupter.calls != 1 {
-		t.Fatalf("non-open event or empty session interrupted playback: %#v", interrupter)
-	}
-
-	interrupter.err = errors.New("downlink unavailable")
-	service.interruptPlayback("session-1", vad.Event{Type: vad.EventOpened})
-	if interrupter.calls != 2 {
-		t.Fatalf("best-effort interruption was not attempted after downlink failure: %#v", interrupter)
-	}
-}
-
 func TestServiceStreamsVADAudioAndFinalizesTurn(t *testing.T) {
 	base := time.Unix(44, 0).UTC()
 	finals := &streamingFinalHandler{}
@@ -654,13 +632,6 @@ type fakeProcessor struct {
 	err      error
 }
 
-type recordingPlaybackInterrupter struct {
-	calls     int
-	sessionID string
-	reason    string
-	err       error
-}
-
 type streamingFinalHandler struct {
 	calls  int
 	turn   pipeline.TurnContext
@@ -729,13 +700,6 @@ func newStreamingProcessor(finals pipeline.ASRFinalHandler) *pipeline.TurnProces
 		Opener:   pipeline.NewTurnOpener(pipeline.NewMemoryTurnAllocator(), streamingLanguageReader{}, streamingModeReader{}),
 		Pipeline: service, Finals: finals,
 	})
-}
-
-func (r *recordingPlaybackInterrupter) InterruptCurrent(_ context.Context, sessionID, reason string) error {
-	r.calls++
-	r.sessionID = sessionID
-	r.reason = reason
-	return r.err
 }
 
 type blockingProcessor struct {

@@ -70,6 +70,9 @@ type SpeechOutputRequest struct {
 	Language   string
 	Text       string
 	PlaybackID string
+	// SkipRuntime preserves the current owner when delayed settlement for an
+	// earlier Turn reaches TTS after a newer ASR Turn has already started.
+	SkipRuntime bool
 }
 
 // ErrSpeechOutputRequestInvalid rejects an output request before runtime state or TTS side effects begin.
@@ -147,11 +150,13 @@ func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (t
 		strings.TrimSpace(request.PlaybackID) == "" {
 		return tts.Result{}, speechOutputNotStartedError{err: ErrSpeechOutputRequestInvalid}
 	}
-	if err := o.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID); err != nil {
-		if runtimeUpdateSuperseded(err) {
-			return tts.Result{}, ErrSpeechOutputSuperseded
+	if !request.SkipRuntime {
+		if err := o.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID); err != nil {
+			if runtimeUpdateSuperseded(err) {
+				return tts.Result{}, ErrSpeechOutputSuperseded
+			}
+			return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("report TTS runtime: %w", err)}
 		}
-		return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("report TTS runtime: %w", err)}
 	}
 	ttsStartedAt := time.Now()
 	stream, err := o.tts.StartStream(ctx, tts.Request{
@@ -210,12 +215,14 @@ func (o *SpeechOutput) publishChunks(ctx context.Context, request SpeechOutputRe
 				return playing, nil
 			}
 			if !playing {
-				// A created stream becomes externally visible only with its first audio chunk.
-				if err := o.reportRuntime(ctx, request.Turn, session.RuntimePlaying, request.PlaybackID); err != nil {
-					if runtimeUpdateSuperseded(err) {
-						return false, ErrSpeechOutputSuperseded
+				if !request.SkipRuntime {
+					// A created stream becomes externally visible only with its first audio chunk.
+					if err := o.reportRuntime(ctx, request.Turn, session.RuntimePlaying, request.PlaybackID); err != nil {
+						if runtimeUpdateSuperseded(err) {
+							return false, ErrSpeechOutputSuperseded
+						}
+						return false, fmt.Errorf("report playing runtime: %w", err)
 					}
-					return false, fmt.Errorf("report playing runtime: %w", err)
 				}
 				playing = true
 			}

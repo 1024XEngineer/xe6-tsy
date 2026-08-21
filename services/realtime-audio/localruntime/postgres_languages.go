@@ -11,13 +11,16 @@ import (
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // PostgresLanguageConfigReader loads the active bilingual config for a session.
 type PostgresLanguageConfigReader struct {
-	Pool *pgxpool.Pool
+	Pool languageConfigQueryer
 	Now  func() time.Time
+}
+
+type languageConfigQueryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 type languagePairJSON struct {

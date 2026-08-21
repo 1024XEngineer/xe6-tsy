@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const shutdownTimeout = 10 * time.Second
+var shutdownTimeout = 10 * time.Second
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

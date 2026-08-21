@@ -88,6 +88,86 @@ func TestRegistryRejectsInvalidDescriptorsAndReturnsDefensiveCopy(t *testing.T) 
 	}
 }
 
+func TestRegistryRejectsEachInvalidDescriptorField(t *testing.T) {
+	valid := CapabilityDescriptor{
+		Mode: realtimev1.ModeAssistant, Description: "assistant", SchemaVersion: 1,
+		Actions: []Action{ActionReturnToAssistant},
+	}
+	tests := []struct {
+		name string
+		edit func(*CapabilityDescriptor)
+	}{
+		{name: "mode", edit: func(descriptor *CapabilityDescriptor) { descriptor.Mode = "unknown" }},
+		{name: "description", edit: func(descriptor *CapabilityDescriptor) { descriptor.Description = "" }},
+		{name: "zero schema", edit: func(descriptor *CapabilityDescriptor) { descriptor.SchemaVersion = 0 }},
+		{name: "negative schema", edit: func(descriptor *CapabilityDescriptor) { descriptor.SchemaVersion = -1 }},
+		{name: "no actions", edit: func(descriptor *CapabilityDescriptor) { descriptor.Actions = nil }},
+		{name: "invalid action", edit: func(descriptor *CapabilityDescriptor) { descriptor.Actions = []Action{"unknown"} }},
+		{name: "duplicate action", edit: func(descriptor *CapabilityDescriptor) {
+			descriptor.Actions = []Action{ActionReturnToAssistant, ActionReturnToAssistant}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			descriptor := valid
+			test.edit(&descriptor)
+			if _, err := NewRegistry(descriptor); !errors.Is(err, ErrCapabilityInvalid) {
+				t.Fatalf("NewRegistry() error = %v, want %v", err, ErrCapabilityInvalid)
+			}
+		})
+	}
+}
+
+func TestRegistryValidationGuardsAndLookupBranches(t *testing.T) {
+	var nilRegistry *Registry
+	if descriptors := nilRegistry.Descriptors(); descriptors != nil {
+		t.Fatalf("nil Descriptors() = %#v, want nil", descriptors)
+	}
+	if _, err := nilRegistry.Validate(Candidate{Action: ActionActivateMode, TargetMode: realtimev1.ModeInterpretation}); !errors.Is(err, ErrCandidateInvalid) {
+		t.Fatalf("nil Validate() error = %v, want %v", err, ErrCandidateInvalid)
+	}
+	registry := testRegistry(t)
+	assistantOnly, err := NewRegistry(CapabilityDescriptor{
+		Mode: realtimev1.ModeAssistant, Description: "assistant", SchemaVersion: 1,
+		Actions: []Action{ActionReturnToAssistant},
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry(assistantOnly) error = %v", err)
+	}
+	tests := []struct {
+		name      string
+		candidate Candidate
+		want      error
+		wantText  string
+	}{
+		{name: "invalid action", candidate: Candidate{Action: "unknown", TargetMode: realtimev1.ModeAssistant}, want: ErrCandidateInvalid, wantText: ErrCandidateInvalid.Error()},
+		{name: "invalid target", candidate: Candidate{Action: ActionReturnToAssistant, TargetMode: "unknown"}, want: ErrCandidateInvalid, wantText: ErrCandidateInvalid.Error()},
+		{name: "unavailable capability", candidate: Candidate{Action: ActionActivateMode, TargetMode: realtimev1.ModeInterpretation}, want: ErrCapabilityUnavailable, wantText: "command capability is unavailable: interpretation"},
+		{name: "registered action second", candidate: Candidate{Action: ActionAssistantQuery, TargetMode: realtimev1.ModeAssistant}, want: nil},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidateRegistry := registry
+			if test.name == "unavailable capability" {
+				candidateRegistry = assistantOnly
+			}
+			_, err := candidateRegistry.Validate(test.candidate)
+			if test.want == nil {
+				if err != nil {
+					t.Fatalf("Validate() error = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Validate() error = %v, want %v", err, test.want)
+			}
+			if test.wantText != "" && err.Error() != test.wantText {
+				t.Fatalf("Validate() error text = %q, want %q", err.Error(), test.wantText)
+			}
+		})
+	}
+}
+
 func testRegistry(t *testing.T) *Registry {
 	t.Helper()
 	registry, err := NewRegistry(

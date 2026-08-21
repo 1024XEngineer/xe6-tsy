@@ -122,6 +122,7 @@ type Dependencies struct {
 	Now                   func() time.Time
 	NewRuntimeInstanceID  RuntimeInstanceIDFactory
 	LongDeliveryEnabled   bool
+	PhrasePlaybackEnabled bool
 }
 
 // LifecycleObserver receives process-local lifecycle counters without session
@@ -248,11 +249,14 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	})
 	commitGate := managerTurnCommitGate{manager: manager}
 	phraseTranslations := pipeline.NewPhraseTranslationCoordinator(providers.Translation, labels.translation, deps.PhraseSubtitles, deps.Now)
-	phrasePlayback := pipeline.NewPhrasePlaybackScheduler(pipeline.PhrasePlaybackSchedulerDependencies{
-		Speech: speech, Audio: deps.Audio, Usage: deps.Usage, Now: deps.Now,
-	})
-	if phraseTranslations != nil {
-		phraseTranslations.SetPhrasePlaybackScheduler(phrasePlayback)
+	var phrasePlayback pipeline.PhrasePlaybackScheduler
+	if deps.PhrasePlaybackEnabled {
+		phrasePlayback = pipeline.NewPhrasePlaybackScheduler(pipeline.PhrasePlaybackSchedulerDependencies{
+			Speech: speech, Audio: deps.Audio, Usage: deps.Usage, Now: deps.Now,
+		})
+		if phraseTranslations != nil {
+			phraseTranslations.SetPhrasePlaybackScheduler(phrasePlayback)
+		}
 	}
 	phraseObserver := deps.PhraseSubtitles
 	if phraseTranslations != nil {

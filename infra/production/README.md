@@ -38,7 +38,7 @@ Web 默认只绑定宿主机回环地址 `127.0.0.1:3000`。如需绑定其他�
 
 ## 发布与回滚
 
-`.github/workflows/deploy-production.yml` 只在 `main` 分支执行。工作流构建三个不可变的 commit-SHA 镜像、上传 Compose 与环境文件，并通过 SSH 执行 `scripts/deploy.sh`。脚本会先校验 Compose 插值，再拉取镜像并等待所有 health check 成功；失败时恢复上一次成功发布的 Compose、环境文件和应用容器。数据库迁移是向前兼容、不会自动回滚，回退前必须确认 schema 仍兼容旧版本。
+`.github/workflows/deploy-production.yml` 只在 `main` 分支执行。工作流构建三个不可变的 commit-SHA 镜像，并将 Compose、环境文件和发布脚本上传到 `${DEPLOY_PATH}/.staging/<commit SHA>`。`scripts/deploy.sh` 在同一个远程发布事务中校验 Compose 插值、拉取镜像、等待 health check 并执行认证 smoke；全部成功后才提升 staging 版本，失败时恢复上一次成功发布的 Compose、环境文件和应用容器。数据库迁移是向前兼容、不会自动回滚，回退前必须确认 schema 仍兼容旧版本。
 
 回滚时，把上一成功部署的三个 SHA 镜像值写入部署主机的 `.env.production`，再执行：
 
@@ -57,4 +57,4 @@ docker compose --env-file .env.production -f docker-compose.yml config --quiet
 docker compose --env-file .env.production -f docker-compose.yml up --detach --wait
 ```
 
-工作流随后执行 `scripts/deploy-smoke.sh`：验证 API/realtime 健康、用专用访问令牌获取 realtime ticket，并用该 ticket 获取 WebRTC 配置（包括 TURN 配置）。这不替代真实浏览器媒体通话和收费 provider 调用；两者仍应在发布窗口执行一次人工验收。
+发布事务中的 `scripts/deploy-smoke.sh` 会验证 API/realtime 健康、用专用访问令牌获取 realtime ticket，并用该 ticket 获取 WebRTC 配置（包括 TURN 配置）。这不替代真实浏览器媒体通话和收费 provider 调用；两者仍应在发布窗口执行一次人工验收。

@@ -41,6 +41,10 @@ jobs:
             directory: apps/mobile
             lockfile: apps/mobile/package-lock.json
             command: npm run typecheck && npm test && npm run build
+          - name: deployment-scripts
+            runtime: shell
+            directory: .
+            command: bash scripts/deploy_test.sh
     defaults:
       run:
         working-directory: ${{ matrix.directory }}
@@ -75,6 +79,9 @@ jobs:
         run: npm ci
       - name: Verify Node.js project
         if: matrix.runtime == 'node'
+        run: ${{ matrix.command }}
+      - name: Verify shell project
+        if: matrix.runtime == 'shell'
         run: ${{ matrix.command }}
 
   deploy:
@@ -156,8 +163,8 @@ jobs:
         run: |
           set -euo pipefail
           destination="${DEPLOY_USER}@${DEPLOY_HOST}"
-          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "install -d -m 700 '${DEPLOY_PATH}'"
-          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "install -d -m 700 '${DEPLOY_PATH}/.previous'; if [ -f '${DEPLOY_PATH}/.env.production' ]; then cp '${DEPLOY_PATH}/.env.production' '${DEPLOY_PATH}/.previous/.env.production'; fi; if [ -f '${DEPLOY_PATH}/docker-compose.yml' ]; then cp '${DEPLOY_PATH}/docker-compose.yml' '${DEPLOY_PATH}/.previous/docker-compose.yml'; fi; if [ -f '${DEPLOY_PATH}/deploy.sh' ]; then cp '${DEPLOY_PATH}/deploy.sh' '${DEPLOY_PATH}/.previous/deploy.sh'; fi"
+          release_dir="${DEPLOY_PATH}/.staging/${GITHUB_SHA}"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "install -d -m 700 '${release_dir}'"
           {
             printf '%s\n' "$DEPLOY_ENV_FILE"
             printf 'LINGOW_API_IMAGE=%s\n' '${{ steps.images.outputs.api_image }}'
@@ -165,23 +172,18 @@ jobs:
             printf 'LINGOW_WEB_IMAGE=%s\n' '${{ steps.images.outputs.web_image }}'
           } > "$RUNNER_TEMP/.env.production"
           chmod 600 "$RUNNER_TEMP/.env.production"
-          scp -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml scripts/deploy.sh scripts/deploy-smoke.sh "$RUNNER_TEMP/.env.production" "${destination}:${DEPLOY_PATH}/"
-          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "chmod 600 '${DEPLOY_PATH}/.env.production' && chmod 700 '${DEPLOY_PATH}/deploy.sh'"
+          scp -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml scripts/deploy.sh scripts/deploy-smoke.sh "$RUNNER_TEMP/.env.production" "${destination}:${release_dir}/"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "chmod 600 '${release_dir}/.env.production' && chmod 700 '${release_dir}/deploy.sh' '${release_dir}/deploy-smoke.sh'"
       - name: Authenticate deployment host to GHCR
         shell: bash
         run: |
           set -euo pipefail
           destination="${DEPLOY_USER}@${DEPLOY_HOST}"
           printf '%s' "$GHCR_PULL_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" "docker login ghcr.io --username '${GHCR_PULL_USERNAME}' --password-stdin"
-      - name: Deploy and wait for health checks
+      - name: Deploy, smoke test, and wait for health checks
         shell: bash
         run: |
           set -euo pipefail
           destination="${DEPLOY_USER}@${DEPLOY_HOST}"
-          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${DEPLOY_PATH}/deploy.sh' '${DEPLOY_PATH}' '${DEPLOY_PATH}/.env.production'"
-      - name: Run authenticated deployment smoke checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          destination="${DEPLOY_USER}@${DEPLOY_HOST}"
-          printf '%s\n' "$DEPLOY_SMOKE_ACCESS_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${DEPLOY_PATH}/deploy-smoke.sh' '${DEPLOY_PATH}' '${DEPLOY_PATH}/.env.production' '${DEPLOY_SMOKE_SESSION_ID}'"
+          release_dir="${DEPLOY_PATH}/.staging/${GITHUB_SHA}"
+          printf '%s\n' "$DEPLOY_SMOKE_ACCESS_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${DEPLOY_PATH}/deploy.sh' '${DEPLOY_PATH}' '${release_dir}' '${DEPLOY_SMOKE_SESSION_ID}'"

@@ -50,6 +50,27 @@ func (r *modeRouter) HandleASRFinal(
 	return r.Dispatch(ctx, turn.Mode.Mode, turn, result)
 }
 
+// HandleASRFinalAsync preserves streaming final settlement through the mode
+// boundary. Modes without an async handler keep their existing synchronous
+// behavior.
+func (r *modeRouter) HandleASRFinalAsync(
+	ctx context.Context,
+	turn pipeline.TurnContext,
+	result asr.FinalResult,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	handler, err := r.handlerFor(turn.Mode.Mode)
+	if err != nil {
+		return err
+	}
+	if asyncHandler, ok := handler.(pipeline.AsyncASRFinalHandler); ok {
+		return asyncHandler.HandleASRFinalAsync(ctx, turn, result)
+	}
+	return handler.HandleASRFinal(ctx, turn, result)
+}
+
 func (r *modeRouter) Dispatch(
 	ctx context.Context,
 	mode realtimev1.Mode,
@@ -61,16 +82,24 @@ func (r *modeRouter) Dispatch(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	handler, err := r.handlerFor(mode)
+	if err != nil {
+		return err
+	}
+	return handler.HandleASRFinal(ctx, turn, result)
+}
+
+func (r *modeRouter) handlerFor(mode realtimev1.Mode) (pipeline.ASRFinalHandler, error) {
 	if r == nil {
-		return ErrDependencyRequired
+		return nil, ErrDependencyRequired
 	}
 	handler, ok := r.handlers[mode]
 	if !mode.Valid() || !ok {
 		// 未注册模式必须明确失败，不能为了兼容而回退到同传，否则会把
 		// 未来模式的输入误当成翻译内容。
-		return ErrModeNotAvailable
+		return nil, ErrModeNotAvailable
 	}
-	return handler.HandleASRFinal(ctx, turn, result)
+	return handler, nil
 }
 
 func (r *modeRouter) availableModes() []realtimev1.Mode {

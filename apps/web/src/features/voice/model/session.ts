@@ -17,6 +17,7 @@ export type TranslationTurn = {
 export type AssistantReply = {
   replyId: string;
   turnId: string;
+  source?: string;
   text: string;
   language: string;
 };

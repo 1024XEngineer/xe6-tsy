@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -241,6 +242,105 @@ func TestPionTransportRecoversConnectionStateWithoutRebuildingPeer(t *testing.T)
 	}
 }
 
+func TestPionTransportFactoryCreateValidatesInputsAndFactoryFailures(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	buildErr := errors.New("build peer failed")
+	tests := []struct {
+		name    string
+		factory *PionTransportFactory
+		ctx     context.Context
+		session string
+		id      string
+		want    error
+	}{
+		{name: "canceled context", factory: newFakePionTransportFactory(&fakePionPeerConnection{}), ctx: canceled, session: "session-1", id: "rtc-1", want: context.Canceled},
+		{name: "missing session", factory: newFakePionTransportFactory(&fakePionPeerConnection{}), ctx: context.Background(), id: "rtc-1", want: ErrSessionIDRequired},
+		{name: "missing connection", factory: newFakePionTransportFactory(&fakePionPeerConnection{}), ctx: context.Background(), session: "session-1", want: ErrConnectionIDRequired},
+		{name: "nil factory", ctx: context.Background(), session: "session-1", id: "rtc-1", want: ErrInvalidDependency},
+		{name: "peer creation failure", factory: &PionTransportFactory{newPeerConnection: func(pion.Configuration) (pionPeerConnection, error) { return nil, buildErr }}, ctx: context.Background(), session: "session-1", id: "rtc-1", want: buildErr},
+		{name: "nil peer", factory: &PionTransportFactory{newPeerConnection: func(pion.Configuration) (pionPeerConnection, error) { return nil, nil }}, ctx: context.Background(), session: "session-1", id: "rtc-1", want: ErrTransportRequired},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := test.factory.Create(test.ctx, test.session, test.id, nil)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Create() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestPionTransportFactoryClosesPeerWhenMediaSetupFails(t *testing.T) {
+	peer := &failingMediaPeer{fakePionPeerConnection: &fakePionPeerConnection{}, createChannelErr: errors.New("channel failed")}
+	factory := newFakePionTransportFactory(peer.fakePionPeerConnection)
+	factory.newPeerConnection = func(pion.Configuration) (pionPeerConnection, error) { return peer, nil }
+	if _, err := factory.Create(context.Background(), "session-1", "rtc-1", nil); err == nil || !strings.Contains(err.Error(), "create translation DataChannel") {
+		t.Fatalf("Create() error = %v, want wrapped channel creation error", err)
+	}
+	if peer.closeCalls != 1 {
+		t.Fatalf("peer Close() calls = %d, want 1", peer.closeCalls)
+	}
+}
+
+func TestPionConfigurationRejectsEmptyAndUnsafeServers(t *testing.T) {
+	tests := []struct {
+		name string
+		urls []string
+	}{
+		{name: "empty URL list"},
+		{name: "leading whitespace", urls: []string{" stun:stun.example.test:3478"}},
+		{name: "embedded endpoint credentials", urls: []string{"stun:stun.example.test@invalid"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := pionConfiguration(PionTransportConfig{ICEServers: []ICEServerConfig{{URLs: test.urls}}})
+			if !errors.Is(err, ErrICEConfigurationInvalid) {
+				t.Fatalf("pionConfiguration() error = %v, want ErrICEConfigurationInvalid", err)
+			}
+		})
+	}
+}
+
+func TestValidateTTSAudioOfferSkipsDisabledAndNonAudioMedia(t *testing.T) {
+	config, err := (MediaConfig{}).normalized()
+	if err != nil {
+		t.Fatalf("MediaConfig.normalized() error = %v", err)
+	}
+	tests := []struct {
+		name string
+		sdp  string
+	}{
+		{name: "disabled audio", sdp: "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 0 UDP/TLS/RTP/SAVPF 118\r\na=rtpmap:118 L16/24000/1\r\n"},
+		{name: "video advertises L16", sdp: "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 118\r\na=rtpmap:118 L16/24000/1\r\n"},
+		{name: "wrong channels", sdp: "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 118\r\na=rtpmap:118 L16/24000/2\r\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateTTSAudioOffer(test.sdp, config); !errors.Is(err, ErrTTSCodecUnsupported) {
+				t.Fatalf("validateTTSAudioOffer() error = %v, want ErrTTSCodecUnsupported", err)
+			}
+		})
+	}
+}
+
+func TestValidateTTSAudioOfferContinuesPastInvalidFormats(t *testing.T) {
+	config, err := (MediaConfig{}).normalized()
+	if err != nil {
+		t.Fatalf("MediaConfig.normalized() error = %v", err)
+	}
+	sdp := "v=0\r\n" +
+		"o=- 0 0 IN IP4 127.0.0.1\r\n" +
+		"s=-\r\n" +
+		"t=0 0\r\n" +
+		"m=audio 9 UDP/TLS/RTP/SAVPF bad 117 118\r\n" +
+		"a=rtpmap:117 opus/48000/2\r\n" +
+		"a=rtpmap:118 L16/24000/1\r\n"
+	if err := validateTTSAudioOffer(sdp, config); err != nil {
+		t.Fatalf("validateTTSAudioOffer() error = %v", err)
+	}
+}
+
 func newFakePionTransportFactory(fake *fakePionPeerConnection) *PionTransportFactory {
 	return &PionTransportFactory{
 		newPeerConnection: func(pion.Configuration) (pionPeerConnection, error) { return fake, nil },
@@ -266,6 +366,21 @@ type fakePionPeerConnection struct {
 	closeCalls        int
 	stateHandler      func(pion.PeerConnectionState)
 }
+
+type failingMediaPeer struct {
+	*fakePionPeerConnection
+	createChannelErr error
+}
+
+func (*failingMediaPeer) AddTrack(pion.TrackLocal) (*pion.RTPSender, error) { return nil, nil }
+
+func (p *failingMediaPeer) CreateDataChannel(string, *pion.DataChannelInit) (pionDataChannel, error) {
+	return nil, p.createChannelErr
+}
+
+func (*failingMediaPeer) OnTrack(func(pionRemoteTrack)) {}
+
+var _ pionMediaPeerConnection = (*failingMediaPeer)(nil)
 
 func (f *fakePionPeerConnection) SetRemoteDescription(description pion.SessionDescription) error {
 	f.mu.Lock()

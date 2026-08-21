@@ -414,7 +414,7 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 		_ = s.phrasePlayback.Enqueue(PhrasePlaybackRequest{
 			Turn: turn, UtteranceID: turn.ID, PhraseSequence: finalPhrasePlaybackSequence,
 			Language: target, Text: residualPlaybackText,
-			PlaybackID: "phrase_" + turn.ID + "_final",
+			PlaybackID: "phrase_" + turn.ID + "_final", Final: true,
 		})
 		return nil
 	}

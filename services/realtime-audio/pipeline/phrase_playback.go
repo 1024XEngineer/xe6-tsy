@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -20,6 +22,7 @@ type PhrasePlaybackRequest struct {
 	Language       string
 	Text           string
 	PlaybackID     string
+	Final          bool
 }
 
 // PhrasePlaybackScheduler accepts translated phrases without blocking the
@@ -35,19 +38,21 @@ type PhrasePlaybackScheduler interface {
 // PhrasePlaybackSchedulerDependencies wires the scheduler to the existing
 // speech output and media lifecycle. No alternate media track is created.
 type PhrasePlaybackSchedulerDependencies struct {
-	Speech *SpeechOutput
-	Audio  AudioChunkSink
-	Usage  UsageFactSink
-	Now    func() time.Time
+	Speech     *SpeechOutput
+	Audio      AudioChunkSink
+	Usage      UsageFactSink
+	Now        func() time.Time
+	UsageError func(PhrasePlaybackRequest, UsageFact, error)
 }
 
 type PhrasePlaybackSchedulerService struct {
-	mu       sync.Mutex
-	speech   *SpeechOutput
-	audio    AudioChunkSink
-	usage    UsageFactSink
-	now      func() time.Time
-	sessions map[string]*phrasePlaybackSession
+	mu         sync.Mutex
+	speech     *SpeechOutput
+	audio      AudioChunkSink
+	usage      UsageFactSink
+	now        func() time.Time
+	usageError func(PhrasePlaybackRequest, UsageFact, error)
+	sessions   map[string]*phrasePlaybackSession
 }
 
 type phrasePlaybackSession struct {
@@ -82,7 +87,8 @@ func NewPhrasePlaybackScheduler(deps PhrasePlaybackSchedulerDependencies) *Phras
 	}
 	return &PhrasePlaybackSchedulerService{
 		speech: deps.Speech, audio: deps.Audio, usage: deps.Usage, now: deps.Now,
-		sessions: make(map[string]*phrasePlaybackSession),
+		usageError: deps.UsageError,
+		sessions:   make(map[string]*phrasePlaybackSession),
 	}
 }
 
@@ -112,6 +118,10 @@ func (s *PhrasePlaybackSchedulerService) Enqueue(request PhrasePlaybackRequest) 
 	}
 	utterance := state.utterances[request.UtteranceID]
 	if utterance == nil {
+		if !request.Final {
+			s.mu.Unlock()
+			return false
+		}
 		utterance = &phrasePlaybackUtterance{}
 		state.utterances[request.UtteranceID] = utterance
 	}
@@ -260,17 +270,50 @@ func (s *PhrasePlaybackSchedulerService) play(task *phrasePlaybackTask, ctx cont
 	if err != nil || s.usage == nil {
 		return
 	}
-	fact, err := BuildUsageFact(task.request.Turn, "tts", result.Provider, result.Model,
-		result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency, s.now())
-	if err == nil {
-		_ = s.usage.Publish(ctx, fact)
+	fact, err := buildUsageFactWithIdentity(task.request.Turn, "tts", result.Provider, result.Model,
+		result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency,
+		fmt.Sprintf("usage_%s_tts", task.request.PlaybackID),
+		fmt.Sprintf("usage:%s:tts", task.request.PlaybackID), s.now())
+	if err != nil {
+		s.reportUsageError(task.request, fact, err)
+		return
 	}
+	for attempt := 0; attempt < 3; attempt++ {
+		publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		err = s.usage.Publish(publishCtx, fact)
+		cancel()
+		if err == nil {
+			return
+		}
+		if attempt < 2 {
+			timer := time.NewTimer(time.Duration(attempt+1) * 25 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+			}
+		}
+	}
+	s.reportUsageError(task.request, fact, err)
 }
 
 func (s *PhrasePlaybackSchedulerService) decrementLocked(state *phrasePlaybackSession, utteranceID string) {
 	if utterance := state.utterances[utteranceID]; utterance != nil && utterance.unfinished > 0 {
 		utterance.unfinished--
+		if utterance.unfinished == 0 {
+			delete(state.utterances, utteranceID)
+		}
 	}
+}
+
+func (s *PhrasePlaybackSchedulerService) reportUsageError(request PhrasePlaybackRequest, fact UsageFact, err error) {
+	if s.usageError != nil {
+		s.usageError(request, fact, err)
+		return
+	}
+	slog.Default().Error("phrase playback usage publish failed",
+		"session_id", request.Turn.SessionID, "turn_id", request.Turn.ID,
+		"playback_id", request.PlaybackID, "usage_id", fact.ID, "error", err)
 }
 
 var _ PhrasePlaybackScheduler = (*PhrasePlaybackSchedulerService)(nil)

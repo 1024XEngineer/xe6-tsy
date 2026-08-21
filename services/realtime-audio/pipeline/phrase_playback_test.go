@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -13,13 +14,14 @@ import (
 func TestPhrasePlaybackSchedulerPreservesOrderAndUsesIndependentIDs(t *testing.T) {
 	provider := &recordingTTSProvider{}
 	audio := &recordingPhraseAudio{}
+	usage := &phraseUsageSink{}
 	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
 		Speech: NewSpeechOutput(SpeechOutputDependencies{
 			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
 		}),
-		Audio: audio,
+		Audio: audio, Usage: usage,
 	})
-	turn := TurnContext{ID: "turn-1", SessionID: "session-1"}
+	turn := TurnContext{ID: "turn-1", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
 	scheduler.ResetUtterance(turn.SessionID, turn.ID)
 	for sequence := int64(1); sequence <= 3; sequence++ {
 		if !scheduler.Enqueue(PhrasePlaybackRequest{
@@ -41,6 +43,112 @@ func TestPhrasePlaybackSchedulerPreservesOrderAndUsesIndependentIDs(t *testing.T
 		if request.PlaybackID != want {
 			t.Fatalf("request %d playback ID = %q, want %q", index, request.PlaybackID, want)
 		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(usage.facts()) < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	facts := usage.facts()
+	if len(facts) != 3 {
+		t.Fatalf("usage facts = %d, want 3", len(facts))
+	}
+	if facts[0].ID == facts[1].ID || facts[1].ID == facts[2].ID || facts[0].IdempotencyKey == facts[1].IdempotencyKey {
+		t.Fatalf("phrase usage identities are not unique: %#v", facts)
+	}
+}
+
+func TestPhrasePlaybackSchedulerRetriesUsageAndReportsPermanentFailure(t *testing.T) {
+	provider := &recordingTTSProvider{}
+	audio := &recordingPhraseAudio{}
+	usage := &phraseUsageSink{failures: 1}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio, Usage: usage,
+	})
+	turn := TurnContext{ID: "turn-retry", SessionID: "session-retry", AccountID: "account-1", TraceID: "trace-retry"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
+		t.Fatal("phrase rejected")
+	}
+	deadline := time.Now().Add(time.Second)
+	for usage.attemptsCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := usage.attemptsCount(); got != 2 {
+		t.Fatalf("usage attempts = %d, want 2", got)
+	}
+	if len(usage.facts()) != 1 {
+		t.Fatalf("published usage facts = %d, want 1", len(usage.facts()))
+	}
+
+	permanent := errors.New("outbox unavailable")
+	reported := make(chan error, 1)
+	usage = &phraseUsageSink{err: permanent}
+	scheduler = NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio, Usage: usage,
+		UsageError: func(_ PhrasePlaybackRequest, _ UsageFact, err error) { reported <- err },
+	})
+	turn = TurnContext{ID: "turn-error", SessionID: "session-error", AccountID: "account-1", TraceID: "trace-error"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
+		t.Fatal("phrase with failing usage sink rejected")
+	}
+	select {
+	case err := <-reported:
+		if !errors.Is(err, permanent) {
+			t.Fatalf("reported usage error = %v, want %v", err, permanent)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for usage error callback")
+	}
+}
+
+func TestPhrasePlaybackSchedulerCleansCompletedUtteranceAndAcceptsFinalResidual(t *testing.T) {
+	provider := &recordingTTSProvider{}
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-cleanup", SessionID: "session-cleanup", AccountID: "account-1", TraceID: "trace-cleanup"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
+		t.Fatal("phrase rejected")
+	}
+	if !audio.waitFor(1, time.Second) {
+		t.Fatal("phrase did not play")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		scheduler.mu.Lock()
+		_, exists := scheduler.sessions[turn.SessionID].utterances[turn.ID]
+		scheduler.mu.Unlock()
+		if !exists {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	scheduler.mu.Lock()
+	_, exists := scheduler.sessions[turn.SessionID].utterances[turn.ID]
+	scheduler.mu.Unlock()
+	if exists {
+		t.Fatal("completed utterance remains in session state")
+	}
+	final := phraseRequest(turn, 2)
+	final.Final = true
+	final.PlaybackID = "phrase_" + turn.ID + "_final"
+	if !scheduler.Enqueue(final) {
+		t.Fatal("final residual rejected after phrase state cleanup")
+	}
+	if !audio.waitFor(2, time.Second) {
+		t.Fatal("final residual did not play")
 	}
 }
 
@@ -200,6 +308,41 @@ func (a *recordingPhraseAudio) waitFor(count int, timeout time.Duration) bool {
 	return false
 }
 
+type phraseUsageSink struct {
+	mu       sync.Mutex
+	factsV   []UsageFact
+	failures int
+	err      error
+	attempts int
+}
+
+func (s *phraseUsageSink) Publish(_ context.Context, fact UsageFact) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts++
+	if s.failures > 0 {
+		s.failures--
+		return errors.New("temporary usage failure")
+	}
+	if s.err != nil {
+		return s.err
+	}
+	s.factsV = append(s.factsV, fact)
+	return nil
+}
+
+func (s *phraseUsageSink) facts() []UsageFact {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]UsageFact(nil), s.factsV...)
+}
+
+func (s *phraseUsageSink) attemptsCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts
+}
+
 type recordingTTSProvider struct {
 	mu   sync.Mutex
 	seen []tts.Request
@@ -228,8 +371,10 @@ func (*immediateTTSStream) Chunks() <-chan tts.AudioChunk {
 	close(ch)
 	return ch
 }
-func (*immediateTTSStream) Finish(context.Context) (tts.Result, error) { return tts.Result{}, nil }
-func (*immediateTTSStream) Close() error                               { return nil }
+func (*immediateTTSStream) Finish(context.Context) (tts.Result, error) {
+	return tts.Result{Provider: "fake-provider", Model: "fake-model"}, nil
+}
+func (*immediateTTSStream) Close() error { return nil }
 
 type phraseBlockingTTSProvider struct {
 	mu             sync.Mutex

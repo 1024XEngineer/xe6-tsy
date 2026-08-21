@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { saveAuthSession } from "../lib/auth-session";
 import { VoiceExperience } from "./voice-experience";
 
 const closeWebRTC = vi.fn();
@@ -121,6 +122,18 @@ describe("VoiceExperience", () => {
     languageConfigExpectedVersions = [];
     languageConfigRequests = [];
     localStorage.clear();
+    saveAuthSession({
+      account: {
+        id: "acc-1",
+        kind: "registered",
+        created_at: "2026-07-31T00:00:00Z",
+      },
+      tokens: {
+        access_token: "access-1",
+        refresh_token: "refresh-1",
+        expires_at: "2099-07-31T01:00:00Z",
+      },
+    });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -512,8 +525,9 @@ describe("VoiceExperience", () => {
     expect(screen.getByRole("button", { name: "停止翻译" })).toBeVisible();
   });
 
-  it("opens the curved settings wheel from the header", () => {
-    render(<VoiceExperience />);
+  it("shows account status immediately above about in settings", async () => {
+    const onLogout = vi.fn();
+    render(<VoiceExperience onLogout={onLogout} />);
 
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
 
@@ -525,9 +539,18 @@ describe("VoiceExperience", () => {
     expect(screen.getByRole("option", { name: "联调会话" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "历史会话" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "用量管理" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "关于" })).toBeInTheDocument();
+    const accountOption = screen.getByRole("option", { name: "登录状态" });
+    const aboutOption = screen.getByRole("option", { name: "关于" });
+    expect(accountOption.compareDocumentPosition(aboutOption)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     expect(screen.getByText("01")).toBeInTheDocument();
-    expect(screen.getByText("06")).toBeInTheDocument();
+    expect(screen.getByText("07")).toBeInTheDocument();
+
+    fireEvent.click(accountOption);
+    expect(await screen.findByText("手机号验证账户")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    expect(onLogout).toHaveBeenCalledTimes(1);
   });
 
   it("uses a localized custom drawer to choose the source language", () => {
@@ -1046,7 +1069,7 @@ describe("VoiceExperience", () => {
     expect(screen.getByText("轻触开启助手")).toBeInTheDocument();
   });
 
-  it("reuses the same anonymous account for later sessions", async () => {
+  it("reuses the same registered account for later sessions", async () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
@@ -1058,7 +1081,7 @@ describe("VoiceExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(createdSessions).toBe(2));
 
-    expect(anonymousRequests).toBe(1);
+    expect(anonymousRequests).toBe(0);
   });
 
   it("returns to a fresh start after a failed session startup", async () => {

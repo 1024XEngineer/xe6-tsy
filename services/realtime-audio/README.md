@@ -178,7 +178,7 @@ Required env:
 | --- | --- | --- |
 | `REALTIME_ADDR` | `:8090` | Listen address |
 | `REALTIME_TICKET_SECRET` | _(required)_ | Raw secret (≥32 bytes), must match API `REALTIME_TICKET_SECRET` |
-| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun`; mock ASR returns fixed offline text and cannot validate spoken semantic commands |
+| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun`; mock ASR returns fixed offline text, reports a fixed 1-second duration for local usage verification, and cannot validate spoken semantic commands |
 | `COMMAND_LLM_API_KEY` | 与地址同时回退到 `LLM_API_KEY` | 必需的 Qwen Command Interpreter 凭证；没有固定指令回退，不得写入日志 |
 | `COMMAND_LLM_BASE_URL` | 与凭证同时回退到 `LLM_BASE_URL` | 必需的 OpenAI-compatible 地址；必须与 Command 凭证成对配置 |
 | `COMMAND_LLM_MODEL` | 回退到 `LLM_MODEL` | 语义命令模型 |

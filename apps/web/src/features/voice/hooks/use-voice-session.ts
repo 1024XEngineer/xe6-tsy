@@ -27,7 +27,7 @@ import {
   type RealtimeConnectionState,
   type RealtimeMode,
 } from "../lib/realtime-api";
-import { getOrCreateAuthSession } from "../lib/auth-session";
+import { getAuthSession } from "../lib/auth-session";
 import {
   DEFAULT_VOICE_CONFIG,
   formatActivePair,
@@ -808,7 +808,7 @@ export function useVoiceSession() {
 
     try {
       const wakeStart = wakeRef.current?.start().catch(() => undefined);
-      const auth = await getOrCreateAuthSession();
+      const auth = await getAuthSession();
       ensureStartupActive();
       startupAccessToken = auth.tokens.access_token;
       accessTokenRef.current = auth.tokens.access_token;

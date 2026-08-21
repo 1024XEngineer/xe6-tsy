@@ -8,7 +8,7 @@ import type {
   ConfigSyncStatus,
   SessionDebugInfo,
 } from "../hooks/use-voice-session";
-import { getOrCreateAuthSession } from "../lib/auth-session";
+import { getAuthSession } from "../lib/auth-session";
 import {
   SUPPORTED_LANGUAGES,
   languageLabel,
@@ -22,6 +22,7 @@ import { HistoryPreview, HistorySettings } from "./history-settings";
 import { OptionWheel } from "./option-wheel";
 import { UsageSettings } from "./usage-settings";
 import { DeliverySettings } from "./delivery-settings";
+import { AccountSettings } from "./account-settings";
 
 const SETTINGS_ITEMS = [
   {
@@ -53,6 +54,12 @@ const SETTINGS_ITEMS = [
     label: "联调会话",
     value: "调试信息",
     description: "account / session / runtime",
+  },
+  {
+    id: "account",
+    label: "登录状态",
+    value: "已登录",
+    description: "账户信息与登录管理",
   },
   {
     id: "about",
@@ -203,6 +210,8 @@ function SettingsDetail({
   configSyncStatus,
   onOpenHistory,
   singleOutputReady,
+  onLogout,
+  logoutDisabled,
 }: {
   selectedId: SettingId;
   voiceConfig: VoiceSessionConfig;
@@ -214,10 +223,14 @@ function SettingsDetail({
   configSyncStatus: ConfigSyncStatus;
   onOpenHistory: (session: import("../lib/lingow-api").VoiceSession) => void;
   singleOutputReady: boolean | null;
+  onLogout?: () => void | Promise<void>;
+  logoutDisabled: boolean;
 }) {
   const [openLanguage, setOpenLanguage] = useState<"source" | "target" | null>(null);
 
   switch (selectedId) {
+    case "account":
+      return <AccountSettings logoutDisabled={logoutDisabled} onLogout={onLogout} />;
     case "language":
       return (
         <div className={styles.settingRows}>
@@ -367,7 +380,7 @@ function SettingsDetail({
             <span>xe6-tsy /api/v1 + /realtime/v1</span>
           </div>
           <p>
-            匿名登录 → 建会话 → 语言配置 → 本地签发 ticket → WebRTC → Start。
+            手机号验证码登录 → 建会话 → 语言配置 → 本地签发 ticket → WebRTC → Start。
             不含 Python 半双工后端。
           </p>
         </div>
@@ -381,12 +394,16 @@ export function SettingsPanel({
   onConfigChange,
   debug,
   configSyncStatus,
+  onLogout,
+  logoutDisabled = false,
 }: {
   onClose: () => void;
   voiceConfig: VoiceSessionConfig;
   onConfigChange: (next: VoiceSessionConfig) => void;
   debug: SessionDebugInfo;
   configSyncStatus: ConfigSyncStatus;
+  onLogout?: () => void | Promise<void>;
+  logoutDisabled?: boolean;
 }) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [historySessionId, setHistorySessionId] = useState<string | null>(null);
@@ -403,7 +420,7 @@ export function SettingsPanel({
     let cancelled = false;
     void (async () => {
       try {
-        const auth = await getOrCreateAuthSession();
+        const auth = await getAuthSession();
         const [languagesResult, readinessResult] = await Promise.allSettled([
           listSupportedLanguages(auth.tokens.access_token),
           hasReadyAutomaticTarget(auth.tokens.access_token),
@@ -445,11 +462,13 @@ export function SettingsPanel({
   const selectedValue =
     selected.id === "language"
       ? `${languageLabel(voiceConfig.sourceLanguage)} / ${languageLabel(voiceConfig.targetLanguage)} · ${outputModeLabel(voiceConfig.outputMode)}`
-      : selected.id === "session"
-        ? debug.sessionId
-          ? debug.sessionId.slice(0, 18)
-          : "未开始"
-        : selected.value;
+      : selected.id === "account"
+        ? "当前账户"
+        : selected.id === "session"
+          ? debug.sessionId
+            ? debug.sessionId.slice(0, 18)
+            : "未开始"
+          : selected.value;
 
   useEffect(() => {
     closeButtonRef.current?.focus();
@@ -577,6 +596,8 @@ export function SettingsPanel({
                     languageLabels={languageLabels}
                     onConfigChange={onConfigChange}
                     onOpenHistory={(session) => setHistorySessionId(session.id)}
+                    logoutDisabled={logoutDisabled}
+                    onLogout={onLogout}
                     singleOutputReady={singleOutputReady}
                     selectedId={selected.id}
                     voiceConfig={voiceConfig}

@@ -1106,6 +1106,31 @@
   color: #fff;
 }
 
+.historySetting > .usageSummary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: clamp(1.5rem, 8vw, 5rem);
+}
+
+.usageStat {
+  display: grid;
+  min-width: 0;
+  gap: 0.7rem;
+}
+
+.usageStat strong {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: clamp(2.8rem, 5vw, 5.6rem);
+  font-weight: 270;
+  line-height: 1;
+}
+
+.usageStat span {
+  color: rgb(255 255 255 / 42%);
+  font-size: 0.7rem;
+}
+
 .quotaValue {
   display: flex;
   align-items: baseline;
@@ -1683,6 +1708,69 @@
   grid-template-columns: auto 1fr;
   align-items: center;
   gap: 1rem;
+}
+
+.accountView {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.accountStatusRow {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid rgb(255 255 255 / 11%);
+}
+
+.accountStatusDot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: #9ee6b3;
+  box-shadow: 0 0 0 4px rgb(158 230 179 / 11%);
+}
+
+.accountStatusRow div {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.accountStatusRow strong {
+  font-size: 0.88rem;
+  font-weight: 520;
+}
+
+.accountStatusRow span:not(.accountStatusDot) {
+  color: rgb(255 255 255 / 42%);
+  font-size: 0.64rem;
+}
+
+.accountDetails {
+  display: grid;
+  gap: 0.85rem;
+  margin: 0;
+}
+
+.accountDetails div {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.accountDetails dt {
+  color: rgb(255 255 255 / 42%);
+  font-size: 0.66rem;
+}
+
+.accountDetails dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: rgb(255 255 255 / 78%);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.68rem;
 }
 
 .aboutMark {

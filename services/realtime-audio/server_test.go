@@ -682,7 +682,7 @@ func TestMockOfflineProvidersSwitchWithSourceLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("zh Finish: %v", err)
 	}
-	if zhFinal.Text != "你好" || zhFinal.SourceLanguage != "zh-CN" {
+	if zhFinal.Text != "你好" || zhFinal.SourceLanguage != "zh-CN" || zhFinal.AudioDuration != time.Second {
 		t.Fatalf("zh final = %#v", zhFinal)
 	}
 	enStream, err := enUS.ASR.StartStream(context.Background(), asr.StreamRequest{SourceLanguage: "en-US"})
@@ -693,7 +693,7 @@ func TestMockOfflineProvidersSwitchWithSourceLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("en Finish: %v", err)
 	}
-	if enFinal.Text != "Hello" || enFinal.SourceLanguage != "en-US" {
+	if enFinal.Text != "Hello" || enFinal.SourceLanguage != "en-US" || enFinal.AudioDuration != time.Second {
 		t.Fatalf("en final = %#v", enFinal)
 	}
 	translated, err := enUS.Translation.Translate(context.Background(), translate.Request{

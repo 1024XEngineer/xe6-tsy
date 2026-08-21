@@ -509,6 +509,9 @@ func mockOfflineProviders(sourceLanguage string) config.Providers {
 				SourceLanguage: sourceLanguage,
 				Provider:       "mock-asr",
 				Model:          "fake",
+				// The offline provider has no microphone duration, so expose a stable
+				// local value that keeps the usage pipeline observable.
+				AudioDuration: time.Second,
 			},
 		}),
 		Assistant: assistant.NewFakeProvider(assistant.FakeProviderConfig{Result: assistant.Result{

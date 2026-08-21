@@ -108,6 +108,26 @@ func TestPhrasePlaybackSchedulerInterruptDropsLateQueue(t *testing.T) {
 	}
 }
 
+func TestPhrasePlaybackSchedulerPublishesFirstChunkBeforeTTSFinish(t *testing.T) {
+	provider := &firstChunkTTSProvider{releaseFinish: make(chan struct{})}
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-first", SessionID: "session-first"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
+		t.Fatal("first phrase rejected")
+	}
+	if !audio.waitFor(1, time.Second) {
+		t.Fatal("first audio chunk was not published before TTS finish")
+	}
+	close(provider.releaseFinish)
+}
+
 func phraseRequest(turn TurnContext, sequence int64) PhrasePlaybackRequest {
 	return PhrasePlaybackRequest{
 		Turn: turn, UtteranceID: turn.ID, PhraseSequence: sequence,
@@ -243,3 +263,33 @@ func (s *phraseBlockingTTSStream) Finish(ctx context.Context) (tts.Result, error
 	return tts.Result{}, ctx.Err()
 }
 func (*phraseBlockingTTSStream) Close() error { return nil }
+
+type firstChunkTTSProvider struct {
+	releaseFinish chan struct{}
+}
+
+func (p *firstChunkTTSProvider) StartStream(context.Context, tts.Request) (tts.Stream, error) {
+	return &firstChunkTTSStream{releaseFinish: p.releaseFinish}, nil
+}
+
+type firstChunkTTSStream struct {
+	releaseFinish <-chan struct{}
+}
+
+func (*firstChunkTTSStream) Chunks() <-chan tts.AudioChunk {
+	ch := make(chan tts.AudioChunk, 1)
+	ch <- tts.AudioChunk{SequenceNo: 1, Data: []byte{1}}
+	close(ch)
+	return ch
+}
+
+func (s *firstChunkTTSStream) Finish(ctx context.Context) (tts.Result, error) {
+	select {
+	case <-s.releaseFinish:
+		return tts.Result{}, nil
+	case <-ctx.Done():
+		return tts.Result{}, ctx.Err()
+	}
+}
+
+func (*firstChunkTTSStream) Close() error { return nil }

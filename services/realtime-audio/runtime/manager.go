@@ -144,6 +144,7 @@ type Manager struct {
 	commandOpener      *pipeline.TurnOpener
 	speech             *pipeline.SpeechOutput
 	playback           *pipeline.PipelineService
+	phrasePlayback     pipeline.PhrasePlaybackScheduler
 	router             *modeRouter
 	failure            session.RuntimeFailureReporter
 	logger             *slog.Logger
@@ -247,6 +248,12 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	})
 	commitGate := managerTurnCommitGate{manager: manager}
 	phraseTranslations := pipeline.NewPhraseTranslationCoordinator(providers.Translation, labels.translation, deps.PhraseSubtitles, deps.Now)
+	phrasePlayback := pipeline.NewPhrasePlaybackScheduler(pipeline.PhrasePlaybackSchedulerDependencies{
+		Speech: speech, Audio: deps.Audio, Usage: deps.Usage, Now: deps.Now,
+	})
+	if phraseTranslations != nil {
+		phraseTranslations.SetPhrasePlaybackScheduler(phrasePlayback)
+	}
 	phraseObserver := deps.PhraseSubtitles
 	if phraseTranslations != nil {
 		phraseObserver = phraseTranslations
@@ -303,6 +310,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		return nil, fmt.Errorf("%w: command interpreter", ErrDependencyRequired)
 	}
 	manager.playback = service
+	manager.phrasePlayback = phrasePlayback
 	manager.speech = speech
 	manager.router = router
 	return manager, nil
@@ -684,6 +692,9 @@ func (m *Manager) playbackInterrupter() PlaybackInterrupter {
 	if m == nil {
 		return nil
 	}
+	if m.phrasePlayback != nil {
+		return m.phrasePlayback
+	}
 	if m.deps.PlaybackInterrupter != nil {
 		return m.deps.PlaybackInterrupter
 	}
@@ -741,6 +752,9 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	active := item.active
 	item.cancel()
 	m.mu.Unlock()
+	if m.phrasePlayback != nil {
+		_ = m.phrasePlayback.Stop(ctx, sessionID)
+	}
 
 	closeAttempt := item.source.beginClose()
 	if !active || finished {

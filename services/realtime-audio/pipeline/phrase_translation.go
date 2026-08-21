@@ -26,11 +26,23 @@ type PhraseTranslationCoordinator struct {
 	translator translate.Provider
 	provider   string
 	observer   PhraseSubtitleObserver
+	playback   PhrasePlaybackScheduler
 	now        func() time.Time
 	lateUsage  func(UsageFact)
 
 	mu         sync.Mutex
 	utterances map[string]*phraseTranslationUtterance
+}
+
+// SetPhrasePlaybackScheduler attaches optional audio output to the existing
+// ordered phrase translation stream. Subtitle delivery remains independent.
+func (c *PhraseTranslationCoordinator) SetPhrasePlaybackScheduler(scheduler PhrasePlaybackScheduler) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.playback = scheduler
+	c.mu.Unlock()
 }
 
 type phraseTranslationUtterance struct {
@@ -96,7 +108,11 @@ func (c *PhraseTranslationCoordinator) StartPhraseSubtitleTurn(turn TurnContext,
 		turn: turn, source: asr.NormalizeLanguage(sourceLanguage), target: target,
 		ctx: ctx, cancel: cancel, phrases: make(map[int64]*translatedPhrase), next: 1, sourceTail: firstSource,
 	}
+	playback := c.playback
 	c.mu.Unlock()
+	if playback != nil {
+		playback.ResetUtterance(turn.SessionID, turn.ID)
+	}
 }
 
 func (c *PhraseTranslationCoordinator) BeginPhraseSubtitleFinalFlush(turnID string) {
@@ -209,8 +225,20 @@ func (c *PhraseTranslationCoordinator) publishPhraseEvents(utterance *phraseTran
 	if !c.activePhraseSubtitleTurn(utterance) {
 		return
 	}
+	c.mu.Lock()
+	playback := c.playback
+	c.mu.Unlock()
 	for _, event := range events {
 		c.observer.ObservePhraseSubtitle(utterance.ctx, event)
+		if playback == nil || event.Status != realtimev1.PhraseSubtitleTranslated {
+			continue
+		}
+		playback.Enqueue(PhrasePlaybackRequest{
+			Turn: utterance.turn, UtteranceID: event.UtteranceID,
+			PhraseSequence: event.PhraseSequence, Language: utterance.target,
+			Text:       event.TranslatedText,
+			PlaybackID: fmt.Sprintf("phrase_%s_%d", event.UtteranceID, event.PhraseSequence),
+		})
 	}
 }
 

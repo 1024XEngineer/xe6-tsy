@@ -245,11 +245,11 @@ func shouldFlushStreamTTS(text string) bool {
 	if text == "" {
 		return false
 	}
-	if strings.HasSuffix(text, ".") || strings.HasSuffix(text, "!") || strings.HasSuffix(text, "?") ||
-		strings.HasSuffix(text, ",") || strings.HasSuffix(text, ";") || strings.HasSuffix(text, ":") {
+	runes := []rune(text)
+	if strings.ContainsRune(".!?,;:\u3002\uff01\uff1f\uff0c\uff1b\uff1a\u3001\n", runes[len(runes)-1]) {
 		return true
 	}
-	return len([]rune(text)) >= 12
+	return len([]rune(text)) >= 32
 }
 
 func splitStreamTTS(text string) []string {
@@ -288,9 +288,10 @@ func (c *PhraseTranslationCoordinator) enqueueStreamPhrasePlayback(utterance *ph
 		PlaybackID: fmt.Sprintf("phrase_%s_%d_%d", phrase.event.UtteranceID, phrase.event.PhraseSequence, sequence),
 	}
 	c.mu.Unlock()
-	if !playback.Enqueue(request) {
+	result := enqueuePhrasePlayback(playback, request)
+	if !result.Accepted {
 		slog.Warn("phrase_tts_enqueue_failed", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
-			"phrase_sequence", phrase.event.PhraseSequence, "stream_sequence", sequence)
+			"phrase_sequence", phrase.event.PhraseSequence, "stream_sequence", sequence, "reason", result.Reason)
 		return
 	}
 	slog.Info("phrase_tts_enqueued", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
@@ -355,18 +356,37 @@ func (c *PhraseTranslationCoordinator) enqueueTranslatedPhrasePlayback(utterance
 		}
 		if c.playback != nil && ready.err == nil && strings.TrimSpace(ready.result.Text) != "" {
 			if !ready.streamPlaybackStarted {
-				c.playback.Enqueue(PhrasePlaybackRequest{
+				result := enqueuePhrasePlayback(c.playback, PhrasePlaybackRequest{
 					Turn: utterance.turn, UtteranceID: ready.event.UtteranceID,
 					PhraseSequence: ready.event.PhraseSequence, Language: utterance.target,
 					Text:       ready.result.Text,
 					PlaybackID: fmt.Sprintf("phrase_%s_%d", ready.event.UtteranceID, ready.event.PhraseSequence),
 				})
+				if !result.Accepted {
+					slog.Warn("phrase_tts_enqueue_failed", "session_id", utterance.turn.SessionID,
+						"turn_id", utterance.turn.ID, "phrase_sequence", ready.event.PhraseSequence,
+						"reason", result.Reason)
+				}
 			}
 		}
 		close(ready.playbackDoneCh)
 		delete(utterance.playbackReady, utterance.playbackNext)
 		utterance.playbackNext++
 	}
+}
+
+type phrasePlaybackReasonEnqueuer interface {
+	EnqueueWithReason(PhrasePlaybackRequest) PhrasePlaybackEnqueueResult
+}
+
+func enqueuePhrasePlayback(playback PhrasePlaybackScheduler, request PhrasePlaybackRequest) PhrasePlaybackEnqueueResult {
+	if detailed, ok := playback.(phrasePlaybackReasonEnqueuer); ok {
+		return detailed.EnqueueWithReason(request)
+	}
+	if playback.Enqueue(request) {
+		return PhrasePlaybackEnqueueResult{Accepted: true}
+	}
+	return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectBacklogLimit}
 }
 
 func (c *PhraseTranslationCoordinator) activePhraseSubtitleTurn(utterance *phraseTranslationUtterance) bool {

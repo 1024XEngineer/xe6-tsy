@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -411,11 +412,15 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 		if strings.TrimSpace(residualPlaybackText) == "" {
 			return nil
 		}
-		_ = s.phrasePlayback.Enqueue(PhrasePlaybackRequest{
+		result := enqueuePhrasePlayback(s.phrasePlayback, PhrasePlaybackRequest{
 			Turn: turn, UtteranceID: turn.ID, PhraseSequence: finalPhrasePlaybackSequence,
 			Language: target, Text: residualPlaybackText,
 			PlaybackID: "phrase_" + turn.ID + "_final", Final: true,
 		})
+		if !result.Accepted {
+			slog.Warn("phrase_tts_enqueue_failed", "session_id", turn.SessionID, "turn_id", turn.ID,
+				"phrase_sequence", finalPhrasePlaybackSequence, "reason", result.Reason)
+		}
 		return nil
 	}
 	playbackID := "playback_" + turn.ID

@@ -5,13 +5,29 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 const maxPhrasePlaybackBacklog = 5
 
 var ErrPhrasePlaybackClosed = errors.New("phrase playback scheduler is closed")
+
+const (
+	PhrasePlaybackRejectBacklogLimit         = "backlog_limit"
+	PhrasePlaybackRejectPlaybackClosed       = "playback_closed"
+	PhrasePlaybackRejectGenerationSuperseded = "generation_superseded"
+	PhrasePlaybackRejectInvalid              = "invalid_request"
+)
+
+// PhrasePlaybackEnqueueResult makes rejected playback observable without
+// forcing existing callers to migrate from the bool Enqueue method.
+type PhrasePlaybackEnqueueResult struct {
+	Accepted bool
+	Reason   string
+}
 
 // PhrasePlaybackRequest is the immutable translation accepted by the playback
 // scheduler. Playback IDs are scoped to a session and phrase sequence.
@@ -27,7 +43,8 @@ type PhrasePlaybackRequest struct {
 
 // PhrasePlaybackScheduler accepts translated phrases without blocking the
 // ASR/translation workers. Implementations must preserve enqueue order per
-// session and may reject a phrase when the current utterance is degraded.
+// session and may coalesce queued text when an utterance reaches its backlog
+// budget.
 type PhrasePlaybackScheduler interface {
 	ResetUtterance(sessionID, utteranceID string)
 	Enqueue(PhrasePlaybackRequest) bool
@@ -53,6 +70,7 @@ type PhrasePlaybackSchedulerService struct {
 	now        func() time.Time
 	usageError func(PhrasePlaybackRequest, UsageFact, error)
 	sessions   map[string]*phrasePlaybackSession
+	closed     map[string]bool
 }
 
 type phrasePlaybackSession struct {
@@ -69,7 +87,6 @@ type phrasePlaybackSession struct {
 
 type phrasePlaybackUtterance struct {
 	unfinished int
-	degraded   bool
 }
 
 type phrasePlaybackTask struct {
@@ -88,7 +105,7 @@ func NewPhrasePlaybackScheduler(deps PhrasePlaybackSchedulerDependencies) *Phras
 	return &PhrasePlaybackSchedulerService{
 		speech: deps.Speech, audio: deps.Audio, usage: deps.Usage, now: deps.Now,
 		usageError: deps.UsageError,
-		sessions:   make(map[string]*phrasePlaybackSession),
+		sessions:   make(map[string]*phrasePlaybackSession), closed: make(map[string]bool),
 	}
 }
 
@@ -97,64 +114,96 @@ func (s *PhrasePlaybackSchedulerService) ResetUtterance(sessionID, utteranceID s
 		return
 	}
 	s.mu.Lock()
+	delete(s.closed, sessionID)
 	defer s.mu.Unlock()
 	state := s.sessionLocked(sessionID)
 	state.utterances[utteranceID] = &phrasePlaybackUtterance{}
 }
 
-// Enqueue returns false when the phrase is invalid, the scheduler is not
-// configured, or the utterance crossed the five unfinished-segment limit.
+// Enqueue preserves the original bool API for callers that only need to know
+// whether audio was accepted. Use EnqueueWithReason for diagnostics.
 func (s *PhrasePlaybackSchedulerService) Enqueue(request PhrasePlaybackRequest) bool {
+	return s.EnqueueWithReason(request).Accepted
+}
+
+// EnqueueWithReason accepts a phrase, coalescing adjacent queued text for the
+// same utterance when the scheduler is under pressure. Already active audio
+// is never removed by this operation.
+func (s *PhrasePlaybackSchedulerService) EnqueueWithReason(request PhrasePlaybackRequest) PhrasePlaybackEnqueueResult {
 	if s == nil || s.speech == nil || s.audio == nil || request.Turn.SessionID == "" ||
 		request.Turn.ID == "" || request.UtteranceID == "" || request.PhraseSequence < 1 ||
-		request.PlaybackID == "" || request.Language == "" || request.Text == "" {
-		return false
+		request.PlaybackID == "" || request.Language == "" || strings.TrimSpace(request.Text) == "" {
+		return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectInvalid}
 	}
 	s.mu.Lock()
+	if s.closed[request.Turn.SessionID] {
+		s.mu.Unlock()
+		return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectPlaybackClosed}
+	}
 	state := s.sessionLocked(request.Turn.SessionID)
 	if state.closed {
 		s.mu.Unlock()
-		return false
+		return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectPlaybackClosed}
 	}
 	utterance := state.utterances[request.UtteranceID]
 	if utterance == nil {
 		if !request.Final {
 			s.mu.Unlock()
-			return false
+			return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectGenerationSuperseded}
 		}
 		utterance = &phrasePlaybackUtterance{}
 		state.utterances[request.UtteranceID] = utterance
 	}
-	if utterance.degraded {
-		s.mu.Unlock()
-		return false
-	}
 	task := &phrasePlaybackTask{request: request, generation: state.generation}
+	// Streaming translation frequently yields adjacent micro-chunks. Fold them
+	// into the last queued task for this utterance before considering the cap.
+	if len(state.queue) > 0 {
+		last := state.queue[len(state.queue)-1]
+		if last.request.UtteranceID == request.UtteranceID && last.generation == state.generation &&
+			(last.request.PhraseSequence >= 1000 && request.PhraseSequence >= 1000 ||
+				utterance.unfinished >= maxPhrasePlaybackBacklog) {
+			last.request.Text = joinPhrasePlaybackText(last.request.Text, request.Text)
+			last.request.Final = last.request.Final || request.Final
+			wake := state.wake
+			s.mu.Unlock()
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+			return PhrasePlaybackEnqueueResult{Accepted: true}
+		}
+	}
+	if utterance.unfinished >= maxPhrasePlaybackBacklog {
+		s.mu.Unlock()
+		return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectBacklogLimit}
+	}
 	state.queue = append(state.queue, task)
 	utterance.unfinished++
-	if utterance.unfinished >= maxPhrasePlaybackBacklog {
-		// Preserve the active TTS, but discard queued items for this utterance.
-		// Subtitle delivery continues and this qualification lasts until the next
-		// VAD open calls ResetUtterance.
-		utterance.degraded = true
-		kept := state.queue[:0]
-		for _, queued := range state.queue {
-			if queued.request.UtteranceID == request.UtteranceID {
-				utterance.unfinished--
-				continue
-			}
-			kept = append(kept, queued)
-		}
-		state.queue = kept
-	}
-	accepted := !utterance.degraded
 	wake := state.wake
 	s.mu.Unlock()
 	select {
 	case wake <- struct{}{}:
 	default:
 	}
-	return accepted
+	return PhrasePlaybackEnqueueResult{Accepted: true}
+}
+
+func joinPhrasePlaybackText(left, right string) string {
+	left, right = strings.TrimSpace(left), strings.TrimSpace(right)
+	if left == "" {
+		return right
+	}
+	if right == "" {
+		return left
+	}
+	leftRunes, rightRunes := []rune(left), []rune(right)
+	// The chunks are contiguous slices of one validated translation. Preserve
+	// CJK text without inventing a word boundary; Latin chunks need a separator
+	// because splitStreamTTS trims the boundary whitespace.
+	if unicode.Is(unicode.Han, leftRunes[len(leftRunes)-1]) || unicode.Is(unicode.Han, rightRunes[0]) {
+		return left + right
+	}
+	return left + " " + right
 }
 
 func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, sessionID, reason string) error {
@@ -200,6 +249,7 @@ func (s *PhrasePlaybackSchedulerService) Stop(ctx context.Context, sessionID str
 		return nil
 	}
 	state.closed = true
+	s.closed[sessionID] = true
 	state.generation++
 	state.queue = nil
 	if state.active != nil && state.active.cancel != nil {

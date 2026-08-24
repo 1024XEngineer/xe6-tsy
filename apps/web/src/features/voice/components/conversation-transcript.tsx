@@ -49,7 +49,9 @@ function LiveInterpretationTurn({
       animate={{ opacity: 1, y: 0 }}
       className={styles.transcriptTurn}
       initial={{ opacity: 0, y: 8 }}
-      key={activeUtteranceId ?? "live"}
+      // Keep one visual live container while phraseSequence updates arrive.
+      // translation.final replaces it with a history row in the reducer.
+      key="live-utterance"
     >
       {source || stash ? (
         <p className={styles.transcriptSource}>

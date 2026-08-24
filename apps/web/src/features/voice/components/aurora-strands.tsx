@@ -5,6 +5,10 @@ import { useEffect, useRef } from "react";
 import styles from "../voice.module.css";
 
 const STRAND_COUNT = 23;
+const PHASE_SPEED = 0.018;
+const STRAND_SPACING = 2.1;
+const PRIMARY_AMPLITUDE = 0.21;
+const DETAIL_AMPLITUDE = 0.032;
 
 export function AuroraStrands() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -29,7 +33,11 @@ export function AuroraStrands() {
       context.setTransform(scale, 0, 0, scale, 0, 0);
     };
 
-    const draw = () => {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let animationFrame = 0;
+    let phase = 0;
+
+    const draw = (animate = true) => {
       const width = displayWidth;
       const height = displayHeight;
       if (!width || !height) return;
@@ -56,17 +64,18 @@ export function AuroraStrands() {
           const progress = x / width;
           const envelope = Math.pow(Math.sin(progress * Math.PI), 1.7);
           const primaryWave = Math.sin(
-            progress * Math.PI * 4.2 + strand * 0.31,
+            progress * Math.PI * 4.2 + strand * 0.31 + phase,
           );
           const detailWave = Math.sin(
-            progress * Math.PI * 8.5 - strand * 0.17,
+            progress * Math.PI * 8.5 - strand * 0.17 - phase * 1.35,
           );
           const y =
             height / 2 +
-            offset * 2.1 +
+            offset * STRAND_SPACING +
             envelope *
               amplitude *
-              (primaryWave * height * 0.21 + detailWave * height * 0.032);
+              (primaryWave * height * PRIMARY_AMPLITUDE +
+                detailWave * height * DETAIL_AMPLITUDE);
 
           if (x === 0) context.moveTo(x, y);
           else context.lineTo(x, y);
@@ -78,18 +87,34 @@ export function AuroraStrands() {
         context.shadowColor = "rgb(255 255 255 / 0.2)";
         context.stroke();
       }
+
+      if (!animate) return;
+      phase += PHASE_SPEED;
+      animationFrame = window.requestAnimationFrame(() => draw(true));
+    };
+
+    const restartAnimation = () => {
+      window.cancelAnimationFrame(animationFrame);
+      if (reducedMotion.matches) {
+        draw(false);
+        return;
+      }
+      draw(true);
     };
 
     resize();
-    draw();
+    restartAnimation();
     const resizeObserver = new ResizeObserver(() => {
       resize();
-      draw();
+      if (reducedMotion.matches) draw(false);
     });
     resizeObserver.observe(canvas);
+    reducedMotion.addEventListener("change", restartAnimation);
 
     return () => {
+      window.cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
+      reducedMotion.removeEventListener("change", restartAnimation);
     };
   }, []);
 

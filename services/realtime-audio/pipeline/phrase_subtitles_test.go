@@ -79,6 +79,31 @@ func TestPhraseSubtitleProcessorFinalFlushKeepsTailSourceOnly(t *testing.T) {
 	}
 }
 
+func TestPhraseSubtitleProcessorLocksLanguageOnFirstConfirmedText(t *testing.T) {
+	observer := &recordingPhraseLifecycleObserver{}
+	processor := NewPhraseSubtitleProcessor(observer, PhraseStabilizerOptions{StableAfter: time.Hour})
+	turn := TurnContext{ID: "turn-language", SessionID: "session-language"}
+	processor.Start(turn, "")
+
+	processor.Observe(context.Background(), realtimev1.ASRPartialEvent{
+		TurnID: turn.ID, Text: "", Stash: "Thank", SourceLanguage: "en-US",
+	})
+	if got := observer.Started(); len(got) != 0 {
+		t.Fatalf("stash-only language started route: %#v", got)
+	}
+
+	processor.Observe(context.Background(), realtimev1.ASRPartialEvent{
+		TurnID: turn.ID, Text: "由于", Stash: "宏观因素", SourceLanguage: "zh-CN",
+	})
+	processor.Observe(context.Background(), realtimev1.ASRPartialEvent{
+		TurnID: turn.ID, Text: "由于宏观", Stash: "因素", SourceLanguage: "en-US",
+	})
+	got := observer.Started()
+	if len(got) != 1 || got[0].language != "zh-CN" {
+		t.Fatalf("started routes = %#v, want one zh-CN route", got)
+	}
+}
+
 type recordingPhraseSubtitleObserver struct {
 	mu     sync.Mutex
 	events []realtimev1.PhraseSubtitleEvent
@@ -97,3 +122,37 @@ func (o *recordingPhraseSubtitleObserver) Events() []realtimev1.PhraseSubtitleEv
 }
 
 var _ PhraseSubtitleObserver = (*recordingPhraseSubtitleObserver)(nil)
+
+type recordingPhraseLifecycleObserver struct {
+	mu      sync.Mutex
+	started []struct {
+		turnID   string
+		language string
+	}
+}
+
+func (o *recordingPhraseLifecycleObserver) ObservePhraseSubtitle(context.Context, realtimev1.PhraseSubtitleEvent) {
+}
+
+func (o *recordingPhraseLifecycleObserver) StartPhraseSubtitleTurn(turn TurnContext, language string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.started = append(o.started, struct {
+		turnID   string
+		language string
+	}{turn.ID, language})
+}
+
+func (o *recordingPhraseLifecycleObserver) DiscardPhraseSubtitleTurn(string) {}
+
+func (o *recordingPhraseLifecycleObserver) Started() []struct {
+	turnID   string
+	language string
+} {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]struct {
+		turnID   string
+		language string
+	}(nil), o.started...)
+}

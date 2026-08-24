@@ -2,10 +2,13 @@ package pipeline
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 )
 
 // PhraseSubtitleObserver publishes best-effort phrase subtitle updates. Delivery must never
@@ -37,9 +40,11 @@ type PhraseSubtitleProcessor struct {
 }
 
 type phraseUtterance struct {
-	turn       TurnContext
-	stabilizer *PhraseStabilizer
-	timer      *time.Timer
+	turn           TurnContext
+	stabilizer     *PhraseStabilizer
+	timer          *time.Timer
+	sourceLanguage string
+	routeStarted   bool
 }
 
 // NewPhraseSubtitleProcessor returns nil when no subtitle observer is configured, letting
@@ -62,10 +67,18 @@ func (p *PhraseSubtitleProcessor) Start(turn TurnContext, sourceLanguage string)
 		return
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.utterances[turn.ID] = &phraseUtterance{turn: turn, stabilizer: NewPhraseStabilizer(p.options)}
-	if lifecycle, ok := p.observer.(PhraseSubtitleTurnObserver); ok {
-		lifecycle.StartPhraseSubtitleTurn(turn, sourceLanguage)
+	initialLanguage := asr.NormalizeLanguage(sourceLanguage)
+	utterance := &phraseUtterance{turn: turn, stabilizer: NewPhraseStabilizer(p.options), sourceLanguage: initialLanguage}
+	utterance.routeStarted = initialLanguage != ""
+	p.utterances[turn.ID] = utterance
+	slog.Info("phrase_turn_started", "session_id", turn.SessionID, "turn_id", turn.ID,
+		"mode", turn.Mode.Mode, "source_language", sourceLanguage, "observer_configured", p.observer != nil)
+	shouldStart := utterance.routeStarted
+	p.mu.Unlock()
+	if shouldStart {
+		if lifecycle, ok := p.observer.(PhraseSubtitleTurnObserver); ok {
+			lifecycle.StartPhraseSubtitleTurn(turn, initialLanguage)
+		}
 	}
 }
 
@@ -78,12 +91,37 @@ func (p *PhraseSubtitleProcessor) Observe(ctx context.Context, event realtimev1.
 	utterance := p.utterances[event.TurnID]
 	if utterance == nil {
 		p.mu.Unlock()
+		slog.Warn("phrase_partial_ignored", "session_id", event.SessionID, "turn_id", event.TurnID,
+			"reason", "turn_not_started", "text_runes", len([]rune(event.Text)), "stash_runes", len([]rune(event.Stash)))
 		return
 	}
 	now := p.clock()
+	startLanguage := ""
+	if !utterance.routeStarted && strings.TrimSpace(event.Text) != "" {
+		if language := asr.NormalizeLanguage(event.SourceLanguage); language != "" {
+			utterance.sourceLanguage = language
+			utterance.routeStarted = true
+			startLanguage = language
+		}
+	}
+	slog.Info("phrase_partial_observed", "session_id", event.SessionID, "turn_id", event.TurnID,
+		"text", event.Text, "stash", event.Stash, "source_language", event.SourceLanguage)
 	phrases := utterance.stabilizer.Observe(event.Text, now)
 	p.resetTimerLocked(event.TurnID, utterance, now)
 	p.mu.Unlock()
+	if startLanguage != "" {
+		slog.Info("phrase_source_language_locked", "session_id", utterance.turn.SessionID, "turn_id", event.TurnID,
+			"source_language", startLanguage)
+		if lifecycle, ok := p.observer.(PhraseSubtitleTurnObserver); ok {
+			lifecycle.StartPhraseSubtitleTurn(utterance.turn, startLanguage)
+		}
+	}
+	if len(phrases) > 0 {
+		for _, phrase := range phrases {
+			slog.Info("phrase_source_stable", "session_id", turnSessionID(utterance.turn), "turn_id", event.TurnID,
+				"phrase_sequence", phrase.SequenceNo, "text", phrase.Text, "trigger", "punctuation_or_stability")
+		}
+	}
 	p.publish(ctx, utterance.turn, phrases)
 }
 
@@ -154,6 +192,10 @@ func (p *PhraseSubtitleProcessor) advance(turnID string) {
 	}
 	phrases := utterance.stabilizer.Advance(p.clock())
 	p.mu.Unlock()
+	for _, phrase := range phrases {
+		slog.Info("phrase_source_stable", "session_id", utterance.turn.SessionID, "turn_id", turnID,
+			"phrase_sequence", phrase.SequenceNo, "text", phrase.Text, "trigger", "stability_window")
+	}
 	p.publish(context.Background(), utterance.turn, phrases)
 }
 
@@ -170,6 +212,8 @@ func (p *PhraseSubtitleProcessor) publish(ctx context.Context, turn TurnContext,
 		})
 	}
 }
+
+func turnSessionID(turn TurnContext) string { return turn.SessionID }
 
 func (p *PhraseSubtitleProcessor) clock() time.Time {
 	if p.now == nil {

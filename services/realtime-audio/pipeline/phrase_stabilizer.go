@@ -8,15 +8,19 @@ import (
 )
 
 const (
-	defaultPhraseStableAfter = 500 * time.Millisecond
-	defaultPhraseMinRunes    = 2
+	defaultPhraseStableAfter  = 500 * time.Millisecond
+	defaultPhraseMinRunes     = 2
+	defaultPhraseLiveMinRunes = 8
+	defaultPhraseLiveMaxRunes = 18
 )
 
 // PhraseStabilizerOptions control when a replaceable ASR snapshot becomes an
 // immutable subtitle phrase. They are intentionally local to one utterance.
 type PhraseStabilizerOptions struct {
-	StableAfter time.Duration
-	MinRunes    int
+	StableAfter  time.Duration
+	MinRunes     int
+	LiveMinRunes int
+	LiveMaxRunes int
 }
 
 // StablePhrase is a source-language phrase accepted for ephemeral subtitle display.
@@ -29,12 +33,14 @@ type StablePhrase struct {
 // immutable source phrases. Once text is consumed it is never emitted again, even if a
 // later ASR revision rolls back before that boundary.
 type PhraseStabilizer struct {
-	stableAfter time.Duration
-	minRunes    int
-	consumed    string
-	candidate   string
-	candidateAt time.Time
-	nextSeq     int64
+	stableAfter  time.Duration
+	minRunes     int
+	liveMinRunes int
+	liveMaxRunes int
+	consumed     string
+	candidate    string
+	candidateAt  time.Time
+	nextSeq      int64
 }
 
 // NewPhraseStabilizer constructs a per-utterance stabilizer with bounded defaults.
@@ -45,11 +51,22 @@ func NewPhraseStabilizer(options PhraseStabilizerOptions) *PhraseStabilizer {
 	if options.MinRunes <= 0 {
 		options.MinRunes = defaultPhraseMinRunes
 	}
-	return &PhraseStabilizer{stableAfter: options.StableAfter, minRunes: options.MinRunes}
+	if options.LiveMinRunes <= 0 {
+		options.LiveMinRunes = defaultPhraseLiveMinRunes
+	}
+	if options.LiveMaxRunes <= 0 {
+		options.LiveMaxRunes = defaultPhraseLiveMaxRunes
+	}
+	if options.LiveMaxRunes < options.LiveMinRunes {
+		options.LiveMaxRunes = options.LiveMinRunes
+	}
+	return &PhraseStabilizer{stableAfter: options.StableAfter, minRunes: options.MinRunes,
+		liveMinRunes: options.LiveMinRunes, liveMaxRunes: options.LiveMaxRunes}
 }
 
-// Observe accepts a replaceable ASR snapshot. Punctuation commits immediately;
-// unpunctuated text commits only after Advance confirms it remained unchanged.
+// Observe accepts a replaceable ASR snapshot. Strong punctuation commits
+// immediately; an unpunctuated tail enters a short stability window and may
+// be committed by Advance once it reaches a semantic live-chunk size.
 func (s *PhraseStabilizer) Observe(text string, now time.Time) []StablePhrase {
 	remaining, ok := s.remaining(text)
 	if !ok {
@@ -61,14 +78,40 @@ func (s *PhraseStabilizer) Observe(text string, now time.Time) []StablePhrase {
 	return phrases
 }
 
-// Advance commits an unpunctuated prefix that has remained stable for the configured window.
 func (s *PhraseStabilizer) Advance(now time.Time) []StablePhrase {
-	if s == nil || s.candidate == "" || s.candidateAt.IsZero() || now.Sub(s.candidateAt) < s.stableAfter {
+	if s == nil || s.candidate == "" {
 		return nil
 	}
-	text := s.candidate
-	s.clearCandidate()
-	return s.consume(text)
+	if delay, ok := s.stabilityDelay(now); !ok || delay > 0 {
+		return nil
+	}
+	if utf8.RuneCountInString(s.candidate) < s.liveMinRunes {
+		return nil
+	}
+	cut := takeRunes(s.candidate, s.liveMaxRunes)
+	phrases := s.consume(cut)
+	remaining := strings.TrimSpace(strings.TrimPrefix(s.candidate, cut))
+	if remaining == "" {
+		s.clearCandidate()
+	} else {
+		s.candidate = remaining
+		s.candidateAt = now
+	}
+	return phrases
+}
+
+func takeRunes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	count := 0
+	for index := range value {
+		if count == limit {
+			return value[:index]
+		}
+		count++
+	}
+	return value
 }
 
 // Flush consumes every remaining final ASR text segment. A final revision that no longer
@@ -120,14 +163,17 @@ func (s *PhraseStabilizer) consume(text string) []StablePhrase {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
+	displayText := strings.TrimSpace(text)
+	if utf8.RuneCountInString(strings.Trim(displayText, "。.!！?？，,;；:：、 ")) < s.minRunes || isTrivialASRText(displayText) {
+		// Do not advance consumed for a too-short candidate. Chinese ASR often
+		// emits one character before extending it; consuming that character here
+		// would make the later, longer snapshot impossible to translate.
+		return nil
+	}
 	if s.consumed == "" {
 		s.consumed = text
 	} else {
 		s.consumed += text
-	}
-	displayText := strings.TrimSpace(text)
-	if utf8.RuneCountInString(strings.Trim(displayText, "。.!！?？，,;；:：、 ")) < s.minRunes || isTrivialASRText(displayText) {
-		return nil
 	}
 	s.nextSeq++
 	return []StablePhrase{{SequenceNo: s.nextSeq, Text: displayText}}
@@ -140,11 +186,18 @@ func (s *PhraseStabilizer) setCandidate(text string, now time.Time) {
 		return
 	}
 	if s.candidate != "" {
-		// Keep the oldest stable prefix while the recognizer appends to its
-		// replaceable tail. If it revises text, only the shared prefix remains
-		// eligible for the current stability window.
+		// Preserve the original stability timestamp while the recognizer only
+		// appends to the confirmed tail. Keep the complete tail so a live chunk
+		// cannot discard characters that arrived after the first snapshot.
+		if strings.HasPrefix(text, s.candidate) {
+			s.candidate = text
+			return
+		}
+		// A revision invalidates the previous tail. Retain only the shared
+		// prefix and restart its stability window.
 		if prefix := commonPhrasePrefix(s.candidate, text); prefix != "" {
 			s.candidate = prefix
+			s.candidateAt = now
 			return
 		}
 	}

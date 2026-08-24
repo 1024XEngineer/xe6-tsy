@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +52,14 @@ func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing
 	}
 	if len(sourceIndex) != 2 || len(translated) != 2 || translated[0] != 1 || translated[1] != 2 {
 		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestSplitStreamTTSKeepsValidatedChunksOrdered(t *testing.T) {
+	got := splitStreamTTS("hello,world这是一段较长的尾部")
+	want := []string{"hello,", "world这是一段较长的", "尾部"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("splitStreamTTS() = %#v, want %#v", got, want)
 	}
 }
 

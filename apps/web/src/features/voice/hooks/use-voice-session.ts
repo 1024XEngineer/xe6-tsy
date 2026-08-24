@@ -592,7 +592,9 @@ export function useVoiceSession() {
         const current = await getCurrentLanguageConfig(token, sessionId);
         if (
           sessionIdRef.current !== sessionId ||
-          configRevisionRef.current !== configRevision
+          configRevisionRef.current !== configRevision ||
+          (activeLanguageConfigVersionRef.current !== null &&
+            current.version < activeLanguageConfigVersionRef.current)
         ) {
           return;
         }

@@ -710,6 +710,64 @@ describe("VoiceExperience", () => {
     });
   });
 
+  it("ignores an older automatic recovery read after a voice command update", async () => {
+    const delayedRecovery = deferred<Response>();
+    languageConfigReadGate = delayedRecovery.promise;
+    automaticOutputStatuses = [
+      {
+        turn_id: "turn-1",
+        status: "restored",
+        updated_at: "2026-07-31T00:00:05Z",
+      },
+    ];
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(languageConfigReadGate).toBeNull();
+      expect(wakeHandler).toBeDefined();
+    });
+
+    wakeHandler?.("小灵小灵");
+    await waitFor(() => expect(wakeWordSend).toHaveBeenCalledTimes(1));
+    const signal = JSON.parse(String(wakeWordSend.mock.calls[0]?.[0])) as {
+      signal_id: string;
+    };
+    languageConfigVersion = 4;
+    currentLanguageConfigOutputMode = "single";
+    activeMode = "interpretation";
+    modeGeneration = 2;
+    dataMessageHandler?.({
+      type: "command.result",
+      event_version: 1,
+      command_id: signal.signal_id,
+      session_id: "vs-1",
+      runtime_instance_id: "rt-1",
+      generation: 2,
+      status: "applied",
+      action: "activate_mode",
+      target_mode: "interpretation",
+      message: "已进入单向传译模式",
+      occurred_at: "2026-08-13T10:00:01Z",
+    });
+    await waitFor(() => {
+      expect(localStorage.getItem("lingow-voice-config-v2")).toContain(
+        '"outputMode":"single"',
+      );
+    });
+
+    await act(async () => {
+      delayedRecovery.resolve(languageConfigResponse(3, "bidirectional"));
+      await delayedRecovery.promise;
+    });
+    await waitFor(() => {
+      expect(localStorage.getItem("lingow-voice-config-v2")).toContain(
+        '"outputMode":"single"',
+      );
+    });
+  });
+
   it("keeps the settings wheel open while showing the history preview", async () => {
     render(<VoiceExperience />);
 

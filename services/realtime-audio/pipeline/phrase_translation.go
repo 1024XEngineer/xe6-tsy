@@ -198,18 +198,18 @@ func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtt
 	var err error
 	if streaming, ok := c.translator.(translate.StreamProvider); ok {
 		// The phrase stabilizer starts this request while ASR is still active.
-		// Deltas are consumed by the provider immediately; the coordinator keeps
-		// the final phrase boundary for ordered subtitle/TTS delivery.
-		var ttsBuffer strings.Builder
-		result, err = streaming.TranslateStream(utterance.ctx, request, func(delta string) {
-			ttsBuffer.WriteString(delta)
-			if shouldFlushStreamTTS(ttsBuffer.String()) {
-				c.enqueueStreamPhrasePlayback(utterance, phrase, ttsBuffer.String())
-				ttsBuffer.Reset()
+		// Keep streamed deltas provisional until the provider validates the
+		// complete response. Qwen may fall back to a reinforced retry after
+		// detecting a refusal or prompt-injection response; enqueueing deltas
+		// before that decision would speak the rejected response first.
+		result, err = streaming.TranslateStream(utterance.ctx, request, nil)
+		if err == nil {
+			// The returned result is the provider's validated, usage-bearing
+			// text. Use it instead of the provisional callback buffer and split
+			// only after validation so each accepted chunk remains ordered.
+			for _, chunk := range splitStreamTTS(result.Text) {
+				c.enqueueStreamPhrasePlayback(utterance, phrase, chunk)
 			}
-		})
-		if err == nil && strings.TrimSpace(ttsBuffer.String()) != "" {
-			c.enqueueStreamPhrasePlayback(utterance, phrase, ttsBuffer.String())
 		}
 	} else {
 		result, err = c.translator.Translate(utterance.ctx, request)
@@ -250,6 +250,22 @@ func shouldFlushStreamTTS(text string) bool {
 		return true
 	}
 	return len([]rune(text)) >= 12
+}
+
+func splitStreamTTS(text string) []string {
+	var chunks []string
+	var buffer strings.Builder
+	for _, r := range text {
+		buffer.WriteRune(r)
+		if shouldFlushStreamTTS(buffer.String()) {
+			chunks = append(chunks, strings.TrimSpace(buffer.String()))
+			buffer.Reset()
+		}
+	}
+	if tail := strings.TrimSpace(buffer.String()); tail != "" {
+		chunks = append(chunks, tail)
+	}
+	return chunks
 }
 
 func (c *PhraseTranslationCoordinator) enqueueStreamPhrasePlayback(utterance *phraseTranslationUtterance, phrase *translatedPhrase, text string) {

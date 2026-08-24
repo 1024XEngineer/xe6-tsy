@@ -673,17 +673,17 @@ func TestHandleEventFallsBackToEventLanguage(t *testing.T) {
 	}
 }
 
-func TestHandleEventPartialUsesStashFallback(t *testing.T) {
+func TestHandleEventPartialPreservesConfirmedAndStash(t *testing.T) {
 	stream := &stream{events: make(chan asr.Event, 2)}
 	data := mustJSON(t, map[string]any{
-		"type": "conversation.item.input_audio_transcription.text", "stash": "你",
+		"type": "conversation.item.input_audio_transcription.text", "text": "你好", "stash": "，听得见吗？", "language": "zh",
 	})
 	if err := stream.handleEvent(data); err != nil {
 		t.Fatalf("handleEvent() error = %v", err)
 	}
 	select {
 	case event := <-stream.events:
-		if event.Type != asr.EventPartial || event.Text != "你" {
+		if event.Type != asr.EventPartial || event.Text != "你好" || event.Stash != "，听得见吗？" || event.Language != "zh-CN" {
 			t.Fatalf("emitted partial = %#v", event)
 		}
 	default:

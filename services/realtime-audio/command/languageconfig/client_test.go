@@ -42,6 +42,80 @@ func TestClientConfigure(t *testing.T) {
 	}
 }
 
+func TestClientGetCurrentConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/base/internal/v1/voice-sessions/session-1/language-config" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get(systemTokenHeader) != testSystemToken {
+			t.Errorf("system token = %q", r.Header.Get(systemTokenHeader))
+		}
+		_, _ = io.WriteString(w, `{"session_id":"session-1","source_language":"zh-CN","target_language":"en-US","output_mode":"single","version":4}`)
+	}))
+	defer server.Close()
+	client, err := NewClient(Config{BaseURL: server.URL + "/base", SystemToken: testSystemToken})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	snapshot, err := client.GetCurrentConfig(t.Context(), " session-1 ")
+	if err != nil {
+		t.Fatalf("GetCurrentConfig() error = %v", err)
+	}
+	if snapshot.SessionID != "session-1" || snapshot.Version != 4 || snapshot.Status != "active" ||
+		len(snapshot.LanguagePairs) != 2 || len(snapshot.OutputRoutes) != 2 ||
+		!snapshot.OutputRoutes[0].TTSEnabled || snapshot.OutputRoutes[0].DeliveryEnabled ||
+		snapshot.OutputRoutes[1].TTSEnabled || !snapshot.OutputRoutes[1].DeliveryEnabled {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+func TestClientGetCurrentConfigRejectsInvalidResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want error
+	}{
+		{name: "identity mismatch", body: `{"session_id":"other","source_language":"zh-CN","target_language":"en-US","output_mode":"single","version":1}`, want: ErrResponseInvalid},
+		{name: "invalid mode", body: `{"session_id":"session-1","source_language":"zh-CN","target_language":"en-US","output_mode":"speaker","version":1}`, want: ErrResponseInvalid},
+		{name: "zero version", body: `{"session_id":"session-1","source_language":"zh-CN","target_language":"en-US","output_mode":"single","version":0}`, want: ErrResponseInvalid},
+		{name: "unknown field", body: `{"session_id":"session-1","source_language":"zh-CN","target_language":"en-US","output_mode":"single","version":1,"extra":true}`, want: ErrResponseInvalid},
+		{name: "oversized", body: strings.Repeat("x", int(maxResponseBytes)+1), want: ErrResponseTooLarge},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+			client, err := NewClient(Config{BaseURL: server.URL, SystemToken: testSystemToken})
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+			_, err = client.GetCurrentConfig(t.Context(), "session-1")
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("GetCurrentConfig() error = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestClientGetCurrentConfigReturnsTypedHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":{"code":"no_active_config"}}`)
+	}))
+	defer server.Close()
+	client, err := NewClient(Config{BaseURL: server.URL, SystemToken: testSystemToken})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.GetCurrentConfig(t.Context(), "session-1")
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusNotFound || httpErr.Code != "no_active_config" {
+		t.Fatalf("GetCurrentConfig() error = %#v", err)
+	}
+}
+
 func TestClientConfigureRejectsInvalidResponses(t *testing.T) {
 	tests := []struct {
 		name string

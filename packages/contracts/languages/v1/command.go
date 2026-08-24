@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-var ErrInvalidCommandConfigRequest = errors.New("invalid command language configuration request")
+var (
+	ErrInvalidCommandConfigRequest  = errors.New("invalid command language configuration request")
+	ErrInvalidCommandConfigSnapshot = errors.New("invalid command language configuration snapshot")
+)
 
 // MaxCommandIDLength matches the 128-character realtime command ID bound. The
 // API scopes its idempotency key with a fixed-length hash, so no prefix budget
@@ -43,4 +46,25 @@ type CommandConfigResult struct {
 	TargetLanguage string                   `json:"target_language"`
 	OutputMode     InterpretationOutputMode `json:"output_mode"`
 	Version        int                      `json:"version"`
+}
+
+// CommandConfigSnapshot is the API-owned active language direction read by
+// realtime before it applies a voice command.
+type CommandConfigSnapshot struct {
+	SessionID      string                   `json:"session_id"`
+	SourceLanguage string                   `json:"source_language"`
+	TargetLanguage string                   `json:"target_language"`
+	OutputMode     InterpretationOutputMode `json:"output_mode"`
+	Version        int                      `json:"version"`
+}
+
+// Validate rejects incomplete command snapshots at the service boundary.
+func (s CommandConfigSnapshot) Validate() error {
+	if strings.TrimSpace(s.SessionID) == "" || strings.TrimSpace(s.SourceLanguage) == "" ||
+		strings.TrimSpace(s.TargetLanguage) == "" ||
+		strings.EqualFold(strings.TrimSpace(s.SourceLanguage), strings.TrimSpace(s.TargetLanguage)) ||
+		!s.OutputMode.Valid() || s.Version <= 0 {
+		return ErrInvalidCommandConfigSnapshot
+	}
+	return nil
 }

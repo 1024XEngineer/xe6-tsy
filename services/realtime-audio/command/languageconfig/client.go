@@ -15,6 +15,7 @@ import (
 
 	languagesv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/languages/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
 const (
@@ -94,6 +95,61 @@ func NewClient(config Config) (*Client, error) {
 		config.Timeout = defaultTimeout
 	}
 	return &Client{baseURL: baseURL, systemToken: token, http: config.HTTP, timeout: config.Timeout}, nil
+}
+
+// GetCurrentConfig reads the API-owned active snapshot used for command
+// completion and optimistic concurrency.
+func (c *Client) GetCurrentConfig(ctx context.Context, sessionID string) (session.LanguageConfigSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return session.LanguageConfigSnapshot{}, err
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if c == nil || c.baseURL == nil || c.http == nil {
+		return session.LanguageConfigSnapshot{}, ErrConfigurationInvalid
+	}
+	if sessionID == "" {
+		return session.LanguageConfigSnapshot{}, session.ErrSessionIDRequired
+	}
+	endpoint, err := url.JoinPath(c.baseURL.String(), "internal", "v1", "voice-sessions", sessionID, "language-config")
+	if err != nil {
+		return session.LanguageConfigSnapshot{}, fmt.Errorf("build current command language-config URL: %w", err)
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return session.LanguageConfigSnapshot{}, fmt.Errorf("create current command language-config request: %w", err)
+	}
+	httpRequest.Header.Set(systemTokenHeader, c.systemToken)
+	response, err := c.http.Do(httpRequest)
+	if err != nil {
+		return session.LanguageConfigSnapshot{}, fmt.Errorf("call current command language-config API: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := readBounded(response.Body)
+	if err != nil {
+		return session.LanguageConfigSnapshot{}, err
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return session.LanguageConfigSnapshot{}, decodeHTTPError(response.StatusCode, body)
+	}
+	var current languagesv1.CommandConfigSnapshot
+	if err := decodeStrict(body, &current); err != nil || current.Validate() != nil || current.SessionID != sessionID {
+		return session.LanguageConfigSnapshot{}, ErrResponseInvalid
+	}
+	routes := []session.OutputRoute{
+		{TargetLanguage: current.TargetLanguage, TTSEnabled: true},
+		{TargetLanguage: current.SourceLanguage, TTSEnabled: current.OutputMode == languagesv1.InterpretationOutputModeBidirectional,
+			DeliveryEnabled: current.OutputMode == languagesv1.InterpretationOutputModeSingle},
+	}
+	return session.LanguageConfigSnapshot{
+		SessionID: current.SessionID, Version: int64(current.Version), Status: "active", UpdatedAt: time.Now().UTC(),
+		LanguagePairs: []session.LanguagePair{
+			{Source: current.SourceLanguage, Target: current.TargetLanguage},
+			{Source: current.TargetLanguage, Target: current.SourceLanguage},
+		},
+		OutputRoutes: routes,
+	}, nil
 }
 
 // Configure creates or replays one language snapshot. A successful response must echo the
@@ -236,3 +292,4 @@ func decodeHTTPError(status int, body []byte) error {
 }
 
 var _ command.LanguageConfigurator = (*Client)(nil)
+var _ session.LanguageConfigReader = (*Client)(nil)

@@ -37,3 +37,33 @@ func TestCommandConfigRequestValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestCommandConfigSnapshotValidate(t *testing.T) {
+	t.Parallel()
+	valid := CommandConfigSnapshot{
+		SessionID: "session-1", SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+		OutputMode: InterpretationOutputModeSingle, Version: 2,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*CommandConfigSnapshot)
+	}{
+		{name: "missing session", mutate: func(s *CommandConfigSnapshot) { s.SessionID = "" }},
+		{name: "missing source language", mutate: func(s *CommandConfigSnapshot) { s.SourceLanguage = "" }},
+		{name: "missing target language", mutate: func(s *CommandConfigSnapshot) { s.TargetLanguage = "" }},
+		{name: "same language", mutate: func(s *CommandConfigSnapshot) { s.TargetLanguage = "ZH-cn" }},
+		{name: "invalid output mode", mutate: func(s *CommandConfigSnapshot) { s.OutputMode = "speaker" }},
+		{name: "invalid version", mutate: func(s *CommandConfigSnapshot) { s.Version = 0 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := valid
+			test.mutate(&snapshot)
+			if snapshot.Validate() == nil {
+				t.Fatalf("Validate(%#v) error = nil", snapshot)
+			}
+		})
+	}
+}

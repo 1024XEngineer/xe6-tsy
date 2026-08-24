@@ -324,6 +324,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		NewCommandClassifier:  newCommandClassifier,
 		NewCommandInterpreter: commandInterpreterFactory(providerConfig.Command),
 		LanguageConfigurator:  languageConfigurator,
+		CommandLanguages:      languageConfigurator,
 		CommandResults:        localruntime.NewDataChannelCommandResultSink(connections, metricRegistry),
 		CommandObserver:       metricRegistry,
 		Languages:             languages,

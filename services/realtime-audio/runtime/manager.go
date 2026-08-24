@@ -100,6 +100,7 @@ type Dependencies struct {
 	NewCommandInterpreter CommandInterpreterFactory
 	CommandOptions        command.Options
 	Languages             session.LanguageConfigReader
+	CommandLanguages      session.LanguageConfigReader
 	LanguageConfigurator  command.LanguageConfigurator
 	CommandResults        command.ResultSink
 	CommandObserver       command.Observer
@@ -224,6 +225,9 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	}
 	if deps.Allocator == nil {
 		deps.Allocator = pipeline.NewMemoryTurnAllocator()
+	}
+	if deps.CommandLanguages == nil {
+		deps.CommandLanguages = deps.Languages
 	}
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
@@ -481,7 +485,7 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 			Interpreter: m.commandInterpreter,
 			Validator:   m.commandValidator,
 			Executor: commandExecutor{
-				manager: m, languages: m.deps.Languages, configurator: m.deps.LanguageConfigurator,
+				manager: m, languages: m.deps.CommandLanguages, configurator: m.deps.LanguageConfigurator,
 			},
 			Results:  m.deps.CommandResults,
 			Feedback: feedback,

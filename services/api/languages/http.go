@@ -55,7 +55,42 @@ func (h *Handler) Register(mux *http.ServeMux, authenticate func(http.Handler) h
 	mux.Handle("GET /api/v1/voice-sessions/{id}/language-config", authenticate(http.HandlerFunc(h.getCurrentConfig)))
 	mux.Handle("POST /api/v1/voice-sessions/{id}/language-configs", authenticate(http.HandlerFunc(h.createConfig)))
 	mux.Handle("GET /api/v1/voice-sessions/{id}/language-configs", authenticate(http.HandlerFunc(h.listConfigHistory)))
+	mux.Handle("GET /internal/v1/voice-sessions/{id}/language-config", http.HandlerFunc(h.getCurrentConfigForCommand))
 	mux.Handle("POST /internal/v1/voice-sessions/{id}/language-config", http.HandlerFunc(h.configureFromCommand))
+}
+
+func (h *Handler) getCurrentConfigForCommand(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.svc == nil || h.systemToken == "" ||
+		subtle.ConstantTimeCompare([]byte(r.Header.Get(systemTokenHeader)), []byte(h.systemToken)) != 1 {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	snapshot, err := h.svc.GetCurrentConfig(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	if len(snapshot.LanguagePairs) != 2 ||
+		snapshot.LanguagePairs[0].Source != snapshot.LanguagePairs[1].Target ||
+		snapshot.LanguagePairs[0].Target != snapshot.LanguagePairs[1].Source {
+		writeServiceError(w, r, languagesv1.ErrInvalidCommandConfigSnapshot)
+		return
+	}
+	routes, err := normalizeOutputRoutes(snapshot.LanguagePairs, snapshot.OutputRoutes)
+	if err != nil {
+		writeServiceError(w, r, languagesv1.ErrInvalidCommandConfigSnapshot)
+		return
+	}
+	primary := snapshot.LanguagePairs[0]
+	result := languagesv1.CommandConfigSnapshot{
+		SessionID: snapshot.SessionID, SourceLanguage: primary.Source, TargetLanguage: primary.Target,
+		OutputMode: outputModeForRoutes(routes), Version: snapshot.Version,
+	}
+	if err := result.Validate(); err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) configureFromCommand(w http.ResponseWriter, r *http.Request) {

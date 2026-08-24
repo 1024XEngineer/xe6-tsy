@@ -83,6 +83,8 @@ describe("VoiceExperience", () => {
   let languageConfigVersion = 0;
   let conflictNextLanguageConfig = false;
   let automaticDeliveryReady = true;
+  let currentLanguageConfigOutputMode: "single" | "bidirectional" =
+    "bidirectional";
   let automaticOutputStatuses: Array<{
     turn_id: string;
     status: "fallback_pending" | "fallback_played" | "restored";
@@ -118,6 +120,7 @@ describe("VoiceExperience", () => {
     languageConfigVersion = 0;
     conflictNextLanguageConfig = false;
     automaticDeliveryReady = true;
+    currentLanguageConfigOutputMode = "bidirectional";
     automaticOutputStatuses = [];
     languageConfigExpectedVersions = [];
     languageConfigRequests = [];
@@ -222,9 +225,13 @@ describe("VoiceExperience", () => {
             ],
             output_routes: [
               { target_language: "en-US", tts_enabled: true, delivery_enabled: false },
-              { target_language: "zh-CN", tts_enabled: true, delivery_enabled: false },
+              {
+                target_language: "zh-CN",
+                tts_enabled: currentLanguageConfigOutputMode === "bidirectional",
+                delivery_enabled: currentLanguageConfigOutputMode === "single",
+              },
             ],
-            output_mode: "bidirectional",
+            output_mode: currentLanguageConfigOutputMode,
             status: "active",
             effective_from: "2026-07-31T00:00:00Z",
             effective_until: null,
@@ -787,6 +794,8 @@ describe("VoiceExperience", () => {
 
     activeMode = "interpretation";
     modeGeneration = 2;
+    languageConfigVersion = 2;
+    currentLanguageConfigOutputMode = "single";
     dataMessageHandler?.({
       type: "command.result",
       event_version: 1,
@@ -804,6 +813,9 @@ describe("VoiceExperience", () => {
     await waitFor(() => {
       expect(screen.getByText("已进入同声传译模式")).toBeInTheDocument();
       expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+      expect(localStorage.getItem("lingow-voice-config-v2")).toContain(
+        '"outputMode":"single"',
+      );
     });
   });
 

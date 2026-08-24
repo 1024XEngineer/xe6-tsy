@@ -977,6 +977,41 @@ export function useVoiceSession() {
                 commandResult.status === "unchanged"
               ) {
                 void refreshModeSnapshot();
+                if (
+                  commandResult.action === "activate_mode" &&
+                  commandResult.target_mode === "interpretation"
+                ) {
+                  const configRevision = configRevisionRef.current;
+                  void getCurrentLanguageConfig(
+                    auth.tokens.access_token,
+                    session.id,
+                  )
+                    .then((current) => {
+                      if (
+                        sessionIdRef.current !== session.id ||
+                        configRevisionRef.current !== configRevision
+                      ) {
+                        return;
+                      }
+                      const next = voiceConfigFromLanguageConfig(
+                        current,
+                        configRef.current,
+                      );
+                      configRef.current = next;
+                      lastAppliedVoiceConfigRef.current = next;
+                      activeLanguageConfigVersionRef.current = current.version;
+                      setVoiceConfig(next);
+                      saveVoiceConfig(next);
+                      setConfigSyncStatus("applied");
+                    })
+                    .catch((error) => {
+                      if (sessionIdRef.current === session.id) {
+                        setHintMessage(
+                          errorMessage(error, "同步语音指令后的语言配置失败"),
+                        );
+                      }
+                    });
+                }
               }
               return;
             }

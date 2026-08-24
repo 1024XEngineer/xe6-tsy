@@ -27,6 +27,16 @@ WebRTC 上行音轨，只保留浏览器本地 KWS。唤醒事件发送成功后
 「帮我查一下上海天气」归一为 `assistant_query` 并交给现有 Assistant Handler。普通助手问题只在
 当前助手模式执行；同传期间应先说出切回助手的明确意图，避免助手回答和翻译输出混在同一轮。
 
+单向传译继续使用 `interpretation` 模式和 `activate_mode` 动作。推荐指令为「小灵小灵，开启中译英
+单向传译」；恢复时可说「小灵小灵，恢复双向传译」。语义参数只表达语言方向和
+`output_mode=single|bidirectional`，具体 TTS 与自动投递路由由 API 派生，模型不得直接指定。
+仅说「切成单向」且当前配置无法确定主方向时，系统要求补充中译英或英译中，不猜测方向；账户没有
+可用自动投递目标时命令失败并保持原模式。成功配置后从下一 Turn 生效，已打开 Turn 固定使用原快照。
+
+唤醒指令依赖活动会话、已连接的 WebRTC 和可用的 Command Gate，因此不能在会话启动前执行。启动前
+的初始语言对和输出模式仍由页面设置或默认配置写入；会话启动后，成功的同传语音指令会触发 Web 回读
+`GET /api/v1/voice-sessions/{id}/language-config`，以 API 权威配置同步页面和本地设置。
+
 Web 当前用 sherpa-onnx 在浏览器本地运行 KWS；这不是后端或所有设备的统一模型实现。ESP32-S3
 可以使用板载 KWS 模型，但命中后同样只发送 `wake_word.detected`，不得在设备侧解析模式或语言。
 命令终止结果通过 `command.result` 返回，Web 只展示结果并刷新权威 ModeState，不据此重放命令。

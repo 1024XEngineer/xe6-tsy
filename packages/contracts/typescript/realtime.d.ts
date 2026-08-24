@@ -62,7 +62,8 @@ export interface ASRPartialEvent {
   event_version: 1;
   session_id: string;
   turn_id: string;
-  text: string;
+	text: string;
+	stash?: string;
   source_language?: string;
   occurred_at: string;
 }

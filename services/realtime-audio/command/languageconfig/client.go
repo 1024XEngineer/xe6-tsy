@@ -52,6 +52,13 @@ type Client struct {
 	timeout     time.Duration
 }
 
+// LegacyFallbackReader keeps bidirectional commands available while an older
+// API deployment has not registered the internal read route yet.
+type LegacyFallbackReader struct {
+	Primary  session.LanguageConfigReader
+	Fallback session.LanguageConfigReader
+}
+
 // HTTPError preserves the stable API error code without coupling realtime to API implementation types.
 type HTTPError struct {
 	StatusCode int
@@ -76,6 +83,26 @@ func (e *HTTPError) Error() string {
 		return fmt.Sprintf("command language-config API returned HTTP %d", e.StatusCode)
 	}
 	return fmt.Sprintf("command language-config API returned HTTP %d (%s)", e.StatusCode, e.Code)
+}
+
+func (r LegacyFallbackReader) GetCurrentConfig(ctx context.Context, sessionID string) (session.LanguageConfigSnapshot, error) {
+	if r.Primary == nil {
+		return session.LanguageConfigSnapshot{}, ErrConfigurationInvalid
+	}
+	snapshot, err := r.Primary.GetCurrentConfig(ctx, sessionID)
+	if err == nil {
+		return snapshot, nil
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) ||
+		(httpErr.StatusCode != http.StatusMethodNotAllowed &&
+			(httpErr.StatusCode != http.StatusNotFound || httpErr.Code != "")) {
+		return session.LanguageConfigSnapshot{}, err
+	}
+	if r.Fallback == nil {
+		return session.LanguageConfigSnapshot{}, err
+	}
+	return r.Fallback.GetCurrentConfig(ctx, sessionID)
 }
 
 // NewClient validates the internal endpoint before any command can execute.
@@ -293,3 +320,4 @@ func decodeHTTPError(status int, body []byte) error {
 
 var _ command.LanguageConfigurator = (*Client)(nil)
 var _ session.LanguageConfigReader = (*Client)(nil)
+var _ session.LanguageConfigReader = LegacyFallbackReader{}

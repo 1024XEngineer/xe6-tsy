@@ -13,6 +13,7 @@ import (
 
 	languagesv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/languages/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
 const testSystemToken = "command-system-token-secret-123456"
@@ -113,6 +114,39 @@ func TestClientGetCurrentConfigReturnsTypedHTTPError(t *testing.T) {
 	var httpErr *HTTPError
 	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusNotFound || httpErr.Code != "no_active_config" {
 		t.Fatalf("GetCurrentConfig() error = %#v", err)
+	}
+}
+
+func TestLegacyFallbackReaderOnlyFallsBackForMissingRoute(t *testing.T) {
+	tests := []struct {
+		name         string
+		primaryError error
+		wantFallback bool
+	}{
+		{name: "method not allowed", primaryError: &HTTPError{StatusCode: http.StatusMethodNotAllowed}, wantFallback: true},
+		{name: "empty not found", primaryError: &HTTPError{StatusCode: http.StatusNotFound}, wantFallback: true},
+		{name: "no active config", primaryError: &HTTPError{StatusCode: http.StatusNotFound, Code: "no_active_config"}},
+		{name: "server failure", primaryError: &HTTPError{StatusCode: http.StatusInternalServerError}},
+		{name: "transport failure", primaryError: errors.New("connection refused")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fallback := &languageReaderStub{snapshot: session.LanguageConfigSnapshot{SessionID: "session-1", Version: 1}}
+			reader := LegacyFallbackReader{
+				Primary:  &languageReaderStub{err: tt.primaryError},
+				Fallback: fallback,
+			}
+			snapshot, err := reader.GetCurrentConfig(t.Context(), "session-1")
+			if tt.wantFallback {
+				if err != nil || fallback.calls != 1 || snapshot.SessionID != "session-1" {
+					t.Fatalf("snapshot=%#v error=%v fallback calls=%d", snapshot, err, fallback.calls)
+				}
+				return
+			}
+			if !errors.Is(err, tt.primaryError) || fallback.calls != 0 {
+				t.Fatalf("error=%v fallback calls=%d, want primary error without fallback", err, fallback.calls)
+			}
+		})
 	}
 }
 
@@ -307,3 +341,14 @@ func testRequest() languagesv1.CommandConfigRequest {
 type HTTPDoerFunc func(*http.Request) (*http.Response, error)
 
 func (f HTTPDoerFunc) Do(request *http.Request) (*http.Response, error) { return f(request) }
+
+type languageReaderStub struct {
+	snapshot session.LanguageConfigSnapshot
+	err      error
+	calls    int
+}
+
+func (r *languageReaderStub) GetCurrentConfig(context.Context, string) (session.LanguageConfigSnapshot, error) {
+	r.calls++
+	return r.snapshot, r.err
+}

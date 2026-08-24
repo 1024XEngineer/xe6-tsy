@@ -27,7 +27,8 @@ realtime 在写入前通过内部 GET 回读同一份 API 权威快照和版本�
 滚动升级时可先发布 API，再发布 realtime。新 API 对未携带 `output_mode` 和 `expected_version` 的
 旧 realtime 请求继续返回原有三字段响应；若先发布 realtime，新客户端只会为双向模式在收到旧 API
 的 `invalid_request` 后回退一次旧请求。单向模式不会降级，因为旧 API 无法表达其输出路由；该能力
-需要 API 与 realtime 都升级后才可用。新版 realtime 还依赖内部 GET，因此必须保持先发布 API。
+需要 API 与 realtime 都升级后才可用。新版 realtime 对内部 GET 的 404（无错误码）或 405 可回退到
+原语言读取器；其他 GET 失败不会降级。仍应优先发布 API，再发布 realtime。
 
 ## 规则
 

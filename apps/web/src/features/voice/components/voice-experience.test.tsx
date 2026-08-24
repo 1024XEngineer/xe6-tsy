@@ -69,6 +69,35 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+function languageConfigResponse(
+  version: number,
+  outputMode: "single" | "bidirectional",
+) {
+  return jsonResponse({
+    id: "lc-1",
+    session_id: "vs-1",
+    version,
+    language_pairs: [
+      { source: "zh-CN", target: "en-US" },
+      { source: "en-US", target: "zh-CN" },
+    ],
+    output_routes: [
+      { target_language: "en-US", tts_enabled: true, delivery_enabled: false },
+      {
+        target_language: "zh-CN",
+        tts_enabled: outputMode === "bidirectional",
+        delivery_enabled: outputMode === "single",
+      },
+    ],
+    output_mode: outputMode,
+    status: "active",
+    effective_from: "2026-07-31T00:00:00Z",
+    effective_until: null,
+    created_by: "acc-1",
+    created_at: "2026-07-31T00:00:00Z",
+  });
+}
+
 describe("VoiceExperience", () => {
   let failFirstStart = false;
   let startRequests = 0;
@@ -81,10 +110,11 @@ describe("VoiceExperience", () => {
   let activeMode: "assistant" | "interpretation" = "interpretation";
   let modeGeneration = 1;
   let languageConfigVersion = 0;
-  let conflictNextLanguageConfig = false;
+  let languageConfigConflictsRemaining = 0;
   let automaticDeliveryReady = true;
   let currentLanguageConfigOutputMode: "single" | "bidirectional" =
     "bidirectional";
+  let languageConfigReadGate: Promise<Response> | null = null;
   let automaticOutputStatuses: Array<{
     turn_id: string;
     status: "fallback_pending" | "fallback_played" | "restored";
@@ -118,9 +148,10 @@ describe("VoiceExperience", () => {
     activeMode = "interpretation";
     modeGeneration = 1;
     languageConfigVersion = 0;
-    conflictNextLanguageConfig = false;
+    languageConfigConflictsRemaining = 0;
     automaticDeliveryReady = true;
     currentLanguageConfigOutputMode = "bidirectional";
+    languageConfigReadGate = null;
     automaticOutputStatuses = [];
     languageConfigExpectedVersions = [];
     languageConfigRequests = [];
@@ -187,9 +218,9 @@ describe("VoiceExperience", () => {
           };
           languageConfigExpectedVersions.push(body.expected_version);
           languageConfigRequests.push(body);
-          if (conflictNextLanguageConfig) {
-            conflictNextLanguageConfig = false;
-            languageConfigVersion = 2;
+          if (languageConfigConflictsRemaining > 0) {
+            languageConfigConflictsRemaining -= 1;
+            languageConfigVersion += 1;
             return jsonResponse(
               { error: { code: "version_conflict", message: "stale version" } },
               409,
@@ -215,29 +246,15 @@ describe("VoiceExperience", () => {
         }
 
         if (url.endsWith("/language-config") && method === "GET") {
-          return jsonResponse({
-            id: "lc-1",
-            session_id: "vs-1",
-            version: languageConfigVersion,
-            language_pairs: [
-              { source: "zh-CN", target: "en-US" },
-              { source: "en-US", target: "zh-CN" },
-            ],
-            output_routes: [
-              { target_language: "en-US", tts_enabled: true, delivery_enabled: false },
-              {
-                target_language: "zh-CN",
-                tts_enabled: currentLanguageConfigOutputMode === "bidirectional",
-                delivery_enabled: currentLanguageConfigOutputMode === "single",
-              },
-            ],
-            output_mode: currentLanguageConfigOutputMode,
-            status: "active",
-            effective_from: "2026-07-31T00:00:00Z",
-            effective_until: null,
-            created_by: "acc-1",
-            created_at: "2026-07-31T00:00:00Z",
-          });
+          if (languageConfigReadGate) {
+            const response = languageConfigReadGate;
+            languageConfigReadGate = null;
+            return response;
+          }
+          return languageConfigResponse(
+            languageConfigVersion,
+            currentLanguageConfigOutputMode,
+          );
         }
 
         if (url.includes("/realtime-ticket") && method === "POST") {
@@ -819,6 +836,58 @@ describe("VoiceExperience", () => {
     });
   });
 
+  it("ignores a stale command readback after a newer settings update", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(wakeHandler).toBeDefined();
+    });
+
+    wakeHandler?.("小灵小灵");
+    await waitFor(() => expect(wakeWordSend).toHaveBeenCalledTimes(1));
+    const signal = JSON.parse(String(wakeWordSend.mock.calls[0]?.[0])) as {
+      signal_id: string;
+    };
+    const delayedRead = deferred<Response>();
+    languageConfigReadGate = delayedRead.promise;
+    activeMode = "interpretation";
+    modeGeneration = 2;
+    dataMessageHandler?.({
+      type: "command.result",
+      event_version: 1,
+      command_id: signal.signal_id,
+      session_id: "vs-1",
+      runtime_instance_id: "rt-1",
+      generation: 2,
+      status: "applied",
+      action: "activate_mode",
+      target_mode: "interpretation",
+      message: "已进入同声传译模式",
+      occurred_at: "2026-08-13T10:00:01Z",
+    });
+    await waitFor(() => expect(languageConfigReadGate).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const singleMode = screen.getByRole("button", { name: "单向播报" });
+    await waitFor(() => expect(singleMode).not.toBeDisabled());
+    languageConfigConflictsRemaining = 1;
+    fireEvent.click(singleMode);
+    await waitFor(() => {
+      expect(singleMode).toHaveAttribute("aria-pressed", "true");
+      expect(languageConfigExpectedVersions).toEqual([undefined, 1, 2]);
+    });
+
+    await act(async () => {
+      delayedRead.resolve(languageConfigResponse(2, "bidirectional"));
+      await delayedRead.promise;
+    });
+    await waitFor(() => expect(singleMode).toHaveAttribute("aria-pressed", "true"));
+    expect(localStorage.getItem("lingow-voice-config-v2")).toContain(
+      '"outputMode":"single"',
+    );
+  });
+
   it("gates WebRTC uplink to one bounded turn in wake-word mode", async () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
@@ -988,7 +1057,7 @@ describe("VoiceExperience", () => {
     });
   });
 
-  it("refreshes the language config version after a concurrent update", async () => {
+  it("retries the latest language config after a concurrent update", async () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
@@ -997,22 +1066,37 @@ describe("VoiceExperience", () => {
     const singleMode = screen.getByRole("button", { name: "单向播报" });
     await waitFor(() => expect(singleMode).not.toBeDisabled());
 
-    conflictNextLanguageConfig = true;
+    languageConfigConflictsRemaining = 1;
+    fireEvent.click(singleMode);
+    await waitFor(() => {
+      expect(screen.getByText(/已应用到当前会话/)).toBeInTheDocument();
+      expect(singleMode).toHaveAttribute("aria-pressed", "true");
+      expect(JSON.parse(localStorage.getItem("lingow-voice-config-v2") ?? "{}")).toMatchObject({
+        outputMode: "single",
+      });
+    });
+
+    expect(languageConfigExpectedVersions).toEqual([undefined, 1, 2]);
+  });
+
+  it("stops retrying and restores the applied config after repeated conflicts", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const singleMode = screen.getByRole("button", { name: "单向播报" });
+    await waitFor(() => expect(singleMode).not.toBeDisabled());
+
+    languageConfigConflictsRemaining = 2;
     fireEvent.click(singleMode);
     await waitFor(() => {
       expect(screen.getByText(/当前会话应用失败，已恢复上一次配置/)).toBeInTheDocument();
       expect(singleMode).toHaveAttribute("aria-pressed", "false");
-      expect(screen.getByRole("button", { name: "双向播报" })).toHaveAttribute(
-        "aria-pressed",
-        "true",
-      );
       expect(JSON.parse(localStorage.getItem("lingow-voice-config-v2") ?? "{}")).toMatchObject({
         outputMode: "bidirectional",
       });
     });
-
-    fireEvent.click(screen.getByRole("button", { name: "双向播报" }));
-    await waitFor(() => expect(screen.getByText(/已应用到当前会话/)).toBeInTheDocument());
 
     expect(languageConfigExpectedVersions).toEqual([undefined, 1, 2]);
   });

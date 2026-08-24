@@ -410,12 +410,39 @@ export function useVoiceSession() {
           const current = await getCurrentLanguageConfig(token, sessionId);
           expectedVersion = current.version;
         }
-        const updated = await createLanguageConfig(
-          token,
-          sessionId,
-          normalized,
-          expectedVersion,
-        );
+        let updated: Awaited<ReturnType<typeof createLanguageConfig>>;
+        try {
+          updated = await createLanguageConfig(
+            token,
+            sessionId,
+            normalized,
+            expectedVersion,
+          );
+        } catch (error) {
+          if (
+            !(error instanceof ApiError) ||
+            error.code !== "version_conflict" ||
+            sessionIdRef.current !== sessionId ||
+            configRevisionRef.current !== configRevision
+          ) {
+            throw error;
+          }
+          activeLanguageConfigVersionRef.current = null;
+          const current = await getCurrentLanguageConfig(token, sessionId);
+          if (
+            sessionIdRef.current !== sessionId ||
+            configRevisionRef.current !== configRevision
+          ) {
+            throw error;
+          }
+          activeLanguageConfigVersionRef.current = current.version;
+          updated = await createLanguageConfig(
+            token,
+            sessionId,
+            normalized,
+            current.version,
+          );
+        }
         activeLanguageConfigVersionRef.current = updated.version;
         lastAppliedVoiceConfigRef.current = normalized;
         if (
@@ -989,7 +1016,9 @@ export function useVoiceSession() {
                     .then((current) => {
                       if (
                         sessionIdRef.current !== session.id ||
-                        configRevisionRef.current !== configRevision
+                        configRevisionRef.current !== configRevision ||
+                        (activeLanguageConfigVersionRef.current !== null &&
+                          current.version < activeLanguageConfigVersionRef.current)
                       ) {
                         return;
                       }

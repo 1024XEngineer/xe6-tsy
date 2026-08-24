@@ -25,6 +25,7 @@ export type AssistantReply = {
 export type TransientASRSubtitle = {
   turnId: string;
   text: string;
+  stash?: string;
   sourceLanguage: string;
 };
 

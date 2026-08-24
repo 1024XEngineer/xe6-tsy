@@ -47,14 +47,29 @@ describe("parseASRPartial", () => {
       session_id: "session-1",
       turn_id: "turn-1",
       text: "你好",
+      stash: "，听得见吗？",
       occurred_at: "2026-08-18T01:02:03Z",
     });
     expect(event).toMatchObject({
       sessionId: "session-1",
       turnId: "turn-1",
       text: "你好",
+      stash: "，听得见吗？",
       sourceLanguage: "",
     });
+  });
+
+  it("accepts a stash-only snapshot", () => {
+    const event = parseASRPartial({
+      type: "asr.partial",
+      event_version: 1,
+      session_id: "session-1",
+      turn_id: "turn-1",
+      text: "",
+      stash: "听得见吗？",
+      occurred_at: "2026-08-18T01:02:03Z",
+    });
+    expect(event).toMatchObject({ text: "", stash: "听得见吗？" });
   });
 
   it("rejects invalid versions and incomplete snapshots", () => {

@@ -43,6 +43,15 @@ func TestASRPartialEventAllowsUnknownSourceLanguage(t *testing.T) {
 	}
 }
 
+func TestASRPartialEventAllowsStashOnlySnapshot(t *testing.T) {
+	event := validASRPartialEvent()
+	event.Text = ""
+	event.Stash = "听得见吗？"
+	if err := event.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func validASRPartialEvent() ASRPartialEvent {
 	return ASRPartialEvent{
 		Type: ASRPartialTopic, EventVersion: ASRPartialEventVersion,

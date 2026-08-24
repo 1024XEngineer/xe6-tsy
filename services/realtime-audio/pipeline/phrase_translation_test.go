@@ -57,7 +57,7 @@ func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing
 
 func TestSplitStreamTTSKeepsValidatedChunksOrdered(t *testing.T) {
 	got := splitStreamTTS("hello,world这是一段较长的尾部")
-	want := []string{"hello,", "world这是一段较长的", "尾部"}
+	want := []string{"hello,", "world这是一段较长的尾部"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("splitStreamTTS() = %#v, want %#v", got, want)
 	}

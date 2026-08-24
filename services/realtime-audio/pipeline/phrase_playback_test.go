@@ -152,7 +152,7 @@ func TestPhrasePlaybackSchedulerCleansCompletedUtteranceAndAcceptsFinalResidual(
 	}
 }
 
-func TestPhrasePlaybackSchedulerDegradesAtFiveUnfinishedSegmentsAndResets(t *testing.T) {
+func TestPhrasePlaybackSchedulerMergesStreamingBacklogWithoutDroppingActiveUtterance(t *testing.T) {
 	provider := newPhraseBlockingTTSProvider()
 	audio := &recordingPhraseAudio{}
 	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
@@ -169,16 +169,16 @@ func TestPhrasePlaybackSchedulerDegradesAtFiveUnfinishedSegmentsAndResets(t *tes
 	<-provider.started
 	for sequence := int64(2); sequence <= 5; sequence++ {
 		accepted := scheduler.Enqueue(phraseRequest(turn, sequence))
-		if sequence == 5 && accepted {
-			t.Fatal("fifth phrase was accepted after backlog limit")
+		if !accepted {
+			t.Fatalf("phrase %d was rejected", sequence)
 		}
+	}
+	if !scheduler.Enqueue(phraseRequest(turn, 6)) {
+		t.Fatal("sixth phrase should be merged into the pending backlog")
 	}
 	provider.release()
 	if !audio.waitFor(1, time.Second) {
 		t.Fatal("active phrase did not finish")
-	}
-	if scheduler.Enqueue(phraseRequest(turn, 6)) {
-		t.Fatal("degraded utterance accepted a later phrase")
 	}
 
 	newTurn := TurnContext{ID: "turn-2", SessionID: turn.SessionID}
@@ -213,6 +213,77 @@ func TestPhrasePlaybackSchedulerInterruptDropsLateQueue(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if got := len(provider.requests()); got != 1 {
 		t.Fatalf("late queued TTS requests = %d, want 1", got)
+	}
+}
+
+func TestPhrasePlaybackSchedulerMergesQueuedStreamSegmentsAndKeepsActiveTask(t *testing.T) {
+	provider := newPhraseBlockingTTSProvider()
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-stream-merge", SessionID: "session-stream-merge"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	first := phraseRequest(turn, 1001)
+	first.Text = "first"
+	if result := scheduler.EnqueueWithReason(first); !result.Accepted {
+		t.Fatalf("first stream segment rejected: %#v", result)
+	}
+	<-provider.started
+	for _, segment := range []struct {
+		sequence int64
+		text     string
+	}{{1002, "second"}, {1003, "third"}, {1004, "fourth"}, {1005, "fifth"}, {1006, "sixth"}} {
+		request := phraseRequest(turn, segment.sequence)
+		request.Text = segment.text
+		if result := scheduler.EnqueueWithReason(request); !result.Accepted {
+			t.Fatalf("stream segment %d rejected: %#v", segment.sequence, result)
+		}
+	}
+	provider.release()
+	if !audio.waitFor(2, time.Second) {
+		t.Fatal("merged stream task did not play")
+	}
+	requests := provider.requests()
+	if len(requests) != 2 || requests[0].Text != "first" || requests[1].Text != "second third fourth fifth sixth" {
+		t.Fatalf("TTS requests = %#v, want active plus one merged queued task", requests)
+	}
+}
+
+func TestPhrasePlaybackSchedulerReportsEnqueueReasons(t *testing.T) {
+	provider := newPhraseBlockingTTSProvider()
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-reasons", SessionID: "session-reasons"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	if result := scheduler.EnqueueWithReason(PhrasePlaybackRequest{}); result.Reason != PhrasePlaybackRejectInvalid {
+		t.Fatalf("invalid request reason = %#v", result)
+	}
+	if result := scheduler.EnqueueWithReason(phraseRequest(turn, 1)); !result.Accepted {
+		t.Fatalf("first phrase rejected: %#v", result)
+	}
+	<-provider.started
+	for sequence := int64(2); sequence <= 5; sequence++ {
+		if result := scheduler.EnqueueWithReason(phraseRequest(turn, sequence)); !result.Accepted {
+			t.Fatalf("phrase %d rejected: %#v", sequence, result)
+		}
+	}
+	if result := scheduler.EnqueueWithReason(phraseRequest(turn, 6)); !result.Accepted {
+		t.Fatalf("backlog phrase should be merged: %#v", result)
+	}
+	if err := scheduler.Stop(context.Background(), turn.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if result := scheduler.EnqueueWithReason(phraseRequest(turn, 7)); result.Reason != PhrasePlaybackRejectPlaybackClosed {
+		t.Fatalf("closed reason = %#v", result)
 	}
 }
 

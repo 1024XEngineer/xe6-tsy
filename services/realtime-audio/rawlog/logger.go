@@ -14,9 +14,8 @@ import (
 // Logger writes append-only JSONL files grouped by session and provider kind.
 // The payload is kept as raw JSON so provider-specific fields are not lost.
 type Logger struct {
-	dir   string
-	mu    sync.Mutex
-	files map[string]*os.File
+	dir string
+	mu  sync.Mutex
 }
 
 type entry struct {
@@ -31,7 +30,7 @@ func New(dir string) *Logger {
 	if strings.TrimSpace(dir) == "" {
 		dir = DefaultDir()
 	}
-	return &Logger{dir: dir, files: make(map[string]*os.File)}
+	return &Logger{dir: dir}
 }
 
 // Default returns a logger rooted at REALTIME_RAW_LOG_DIR, or the repository
@@ -72,23 +71,13 @@ func (l *Logger) WriteJSON(sessionID, kind, direction, event string, payload []b
 	}
 	sessionID = safeComponent(sessionID)
 	kind = safeComponent(kind)
-	key := sessionID + "\\" + kind
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := os.MkdirAll(filepath.Join(l.dir, sessionID), 0o755); err != nil {
 		return err
 	}
-	file := l.files[key]
-	if file == nil {
-		path := filepath.Join(l.dir, sessionID, kind+".jsonl")
-		opened, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			return err
-		}
-		file = opened
-		l.files[key] = file
-	}
+	path := filepath.Join(l.dir, sessionID, kind+".jsonl")
 	line, err := json.Marshal(entry{
 		LoggedAt: time.Now().UTC().Format(time.RFC3339Nano), Direction: direction,
 		Event: event, Payload: json.RawMessage(append([]byte(nil), payload...)),
@@ -97,8 +86,16 @@ func (l *Logger) WriteJSON(sessionID, kind, direction, event string, payload []b
 		return err
 	}
 	line = append(line, '\n')
-	_, err = file.Write(line)
-	return err
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.Write(line)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }
 
 // EnsureSession creates the three stable per-session files up front, even if
@@ -114,35 +111,21 @@ func (l *Logger) EnsureSession(sessionID string) error {
 		return err
 	}
 	for _, kind := range []string{"asr", "llm", "tts"} {
-		key := sessionID + "\\" + kind
-		if l.files[key] != nil {
-			continue
-		}
 		file, err := os.OpenFile(filepath.Join(l.dir, sessionID, kind+".jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 		if err != nil {
 			return err
 		}
-		l.files[key] = file
+		if err := file.Close(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-// Close releases file handles held by the logger. The realtime process keeps
-// its process-wide logger open; tests and controlled shutdowns may call this.
+// Close is retained for callers that own a logger. Writes close their file
+// handle immediately, so process-wide loggers do not accumulate descriptors.
 func (l *Logger) Close() error {
-	if l == nil {
-		return nil
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	var firstErr error
-	for key, file := range l.files {
-		if err := file.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		delete(l.files, key)
-	}
-	return firstErr
+	return nil
 }
 
 func safeComponent(value string) string {

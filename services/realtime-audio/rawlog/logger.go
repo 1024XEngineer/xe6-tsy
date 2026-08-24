@@ -91,11 +91,8 @@ func (l *Logger) WriteJSON(sessionID, kind, direction, event string, payload []b
 		return err
 	}
 	_, writeErr := file.Write(line)
-	closeErr := file.Close()
-	if writeErr != nil {
-		return writeErr
-	}
-	return closeErr
+	_ = file.Close()
+	return writeErr
 }
 
 // EnsureSession creates the three stable per-session files up front, even if
@@ -115,9 +112,7 @@ func (l *Logger) EnsureSession(sessionID string) error {
 		if err != nil {
 			return err
 		}
-		if err := file.Close(); err != nil {
-			return err
-		}
+		_ = file.Close()
 	}
 	return nil
 }

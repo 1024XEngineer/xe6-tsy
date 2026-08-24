@@ -54,20 +54,99 @@ export function AboutPage() {
 }
 
 export function DocumentationPage() {
-  const sections = [
-    { id: "quickstart", number: "01", title: "快速开始", copy: "环境准备、Web 入口与本地联调路径。" },
-    { id: "architecture", number: "02", title: "系统架构", copy: "API 控制面、Realtime Audio 媒体面与客户端关系。" },
-    { id: "contracts", number: "03", title: "协议与事件", copy: "OpenAPI、AsyncAPI、状态事件和错误码。" },
-    { id: "device-sdk", number: "04", title: "Device SDK", copy: "设备鉴权、会话、模式命令与重连控制。" },
-  ];
-
   return (
     <SubpageFrame>
-      <section className={styles.docsHero}><p className={styles.kicker}><span className={styles.liveDot}/>LINGOW DOCUMENTATION</p><h1>从第一条命令，<br /><span>开始理解 Lingow。</span></h1><p>文档入口已预留。正文、代码示例和接口细节将在资料确认后逐步补齐。</p></section>
+      <section className={styles.docsHero}>
+        <p className={styles.kicker}><span className={styles.liveDot}/>LINGOW DOCUMENTATION</p>
+        <h1>从第一条命令，<br /><span>开始理解 Lingow。</span></h1>
+        <p>从本地联调到实时会话边界，按运行路径阅读 Lingow 的 Web、控制面和媒体面。</p>
+      </section>
       <div className={styles.docsLayout}>
-        <aside className={styles.docsSidebar} aria-label="文档目录"><p>目录</p><nav>{sections.map(section => <a href={`#${section.id}`} key={section.id}><span>{section.number}</span>{section.title}</a>)}</nav></aside>
+        <aside className={styles.docsSidebar} aria-label="文档目录">
+          <p>文档目录</p>
+          <nav>
+            <div className={styles.docsNavGroup}>
+              <strong>入门</strong>
+              <a href="#quickstart"><span>01</span>快速开始</a>
+            </div>
+            <div className={styles.docsNavGroup}>
+              <strong>系统</strong>
+              <a href="#architecture"><span>02</span>系统架构</a>
+              <a href="#contracts"><span>03</span>协议与事件</a>
+            </div>
+            <div className={styles.docsNavGroup}>
+              <strong>扩展</strong>
+              <a href="#device-sdk"><span>04</span>Device SDK</a>
+            </div>
+          </nav>
+          <a className={styles.docsRepositoryLink} href="https://github.com/jinyu918/xe6-tsy" target="_blank" rel="noreferrer">查看仓库 <ArrowUpRight size={15}/></a>
+        </aside>
         <div className={styles.docsContent}>
-          {sections.map(section => <Reveal key={section.id}><section className={styles.docsSection} id={section.id}><p className={styles.sectionEyebrow}>{section.number} / {section.title}</p><h2>{section.title}</h2><p>{section.copy}</p><div className={styles.docsPlaceholder}><span>文档内容占位</span><small>正文 / 示例 / 接口说明</small></div></section></Reveal>)}
+          <Reveal>
+            <section className={styles.docsSection} id="quickstart">
+              <p className={styles.sectionEyebrow}>01 / GETTING STARTED</p>
+              <h2>快速开始</h2>
+              <p>本地联调由 API、Realtime Audio 与 Web 三部分组成。先启动后端依赖，再启动浏览器入口。</p>
+              <div className={styles.docsCallout}><strong>开始之前</strong><p>需要本地可用的 Node.js 环境；完整语音会话还需要 API 与 Realtime Audio 服务。</p></div>
+              <h3>启动本地服务</h3>
+              <p>在仓库根目录运行启动脚本，默认会启动 API 与 Realtime Audio。</p>
+              <pre className={styles.docsCodeBlock}><code>{".\\start-local.ps1"}</code></pre>
+              <h3>启动 Web 入口</h3>
+              <p>复制 Web 环境变量示例后安装依赖，并启动本地开发服务器。</p>
+              <pre className={styles.docsCodeBlock}><code>{"cd apps/web\ncp .env.example .env.local\nnpm install\nnpm run dev"}</code></pre>
+              <p className={styles.docsFootnote}>Web 默认以 AI 助手模式创建会话；可通过 <code>NEXT_PUBLIC_LINGOW_INITIAL_MODE</code> 选择同传入口。</p>
+            </section>
+          </Reveal>
+
+          <Reveal>
+            <section className={styles.docsSection} id="architecture">
+              <p className={styles.sectionEyebrow}>02 / ARCHITECTURE</p>
+              <h2>系统架构</h2>
+              <p>Lingow 把产品交互、业务会话和实时媒体处理分在三个清晰的职责层中。</p>
+              <div className={styles.docsFlow}>
+                <div><span>01</span><strong>Web / Mobile / Device</strong><p>会话配置、字幕、播报与控制入口。</p></div>
+                <div><span>02</span><strong>API Control Plane</strong><p>账户、会话、语言配置与实时连接票据。</p></div>
+                <div><span>03</span><strong>Realtime Audio</strong><p>WebRTC、VAD、ASR、翻译、TTS 与运行状态。</p></div>
+              </div>
+              <h3>一条会话的职责边界</h3>
+              <ul className={styles.docsList}>
+                <li><Check size={16} weight="bold" />Web 负责用户交互、会话 API 调用与字幕、TTS 呈现。</li>
+                <li><Check size={16} weight="bold" />API 负责业务会话、配置与实时连接票据。</li>
+                <li><Check size={16} weight="bold" />Realtime Audio 负责 WebRTC 连接和运行时状态机。</li>
+              </ul>
+            </section>
+          </Reveal>
+
+          <Reveal>
+            <section className={styles.docsSection} id="contracts">
+              <p className={styles.sectionEyebrow}>03 / CONTRACTS</p>
+              <h2>协议与事件</h2>
+              <p>控制面与实时面使用不同契约表达各自的边界。它们由同一个会话状态连接，但不重复维护媒体运行态。</p>
+              <div className={styles.docsContractGrid}>
+                <article><span>REST</span><h3>OpenAPI</h3><p>账户、会话、语言配置、历史记录与连接票据。</p></article>
+                <article><span>EVENTS</span><h3>AsyncAPI</h3><p>运行状态、字幕、助手回复、模式切换与错误事件。</p></article>
+              </div>
+              <h3>实时连接票据</h3>
+              <p>正式联调由 API 为已创建的语音会话签发实时连接票据。Web 在建立 WebRTC 连接前获取该票据。</p>
+              <pre className={styles.docsCodeBlock}><code>{"POST /api/v1/voice-sessions/{id}/realtime-ticket"}</code></pre>
+              <p className={styles.docsFootnote}>本地开发旁路仅用于显式启用的 <code>next dev</code> 环境，不应用于生产部署。</p>
+            </section>
+          </Reveal>
+
+          <Reveal>
+            <section className={styles.docsSection} id="device-sdk">
+              <p className={styles.sectionEyebrow}>04 / DEVICE SDK</p>
+              <h2>设备接入边界</h2>
+              <p>Device SDK 提供会话、模式命令、唤醒事件与重连控制的边界；具体芯片音频 HAL、WebRTC 与 KWS 模型由设备平台适配。</p>
+              <div className={styles.docsCallout}><strong>保持同一条会话</strong><p>唤醒与模式切换应复用现有 Runtime 和 WebRTC 连接，不应为每次语音命令重建连接。</p></div>
+              <h3>当前接入原则</h3>
+              <ul className={styles.docsList}>
+                <li><Check size={16} weight="bold" />设备发送统一的 <code>wake_word.detected</code> 契约。</li>
+                <li><Check size={16} weight="bold" />自然语言命令沿用当前 WebRTC 音轨进入实时服务。</li>
+                <li><Check size={16} weight="bold" />模型文件、阈值和本地推理运行时由客户端负责。</li>
+              </ul>
+            </section>
+          </Reveal>
         </div>
       </div>
     </SubpageFrame>

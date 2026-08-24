@@ -7,6 +7,10 @@
 log/
 realtime-runtime*.log
 
+# Per-session provider raw JSON diagnostics and local runtime captures
+log/
+realtime-runtime*.log
+
 # Temporary inbound PCM WAV dumps from realtime-audio debug_inbound_wav.go
 debug-inbound-wav/
 

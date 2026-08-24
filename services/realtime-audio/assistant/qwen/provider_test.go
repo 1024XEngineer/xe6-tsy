@@ -55,3 +55,18 @@ func TestProviderRejectsInvalidConfigurationAndResponse(t *testing.T) {
 		t.Fatal("Reply() error = nil")
 	}
 }
+
+func TestSystemPromptUsesChineseAssistantName(t *testing.T) {
+	prompt := systemPrompt("zh-CN")
+	for _, want := range []string{
+		"You are 小灵",
+		"Lingow is the product brand",
+		"always refer to yourself as 小灵",
+		"never as Lingow",
+		"zh-CN",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("system prompt missing %q: %s", want, prompt)
+		}
+	}
+}

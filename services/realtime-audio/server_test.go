@@ -64,6 +64,9 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	if cfg.ICETransportPolicy != "all" || len(cfg.ICEServers) != 1 || cfg.ICEServers[0].URLs[0] != "stun:stun.l.google.com:19302" {
 		t.Fatalf("default ICE config = %#v policy=%q", cfg.ICEServers, cfg.ICETransportPolicy)
 	}
+	if cfg.PhrasePlayback {
+		t.Fatal("PhrasePlayback = true, want false by default")
+	}
 	if cfg.CommandConfigTimeout != defaultCommandConfigTimeout {
 		t.Fatalf("command config timeout = %s, want %s", cfg.CommandConfigTimeout, defaultCommandConfigTimeout)
 	}
@@ -183,6 +186,39 @@ func TestLoadProcessConfigPhraseSubtitleCapability(t *testing.T) {
 				return
 			}
 			if err != nil || cfg.PhraseSubtitles != test.want {
+				t.Fatalf("config = %#v, error = %v", cfg, err)
+			}
+		})
+	}
+}
+
+func TestLoadProcessConfigPhrasePlaybackCapability(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  bool
+		err   bool
+	}{
+		{value: "enabled", want: true},
+		{value: "disabled", want: false},
+		{value: "invalid", err: true},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			cfg, err := loadProcessConfig(func(key string) string {
+				if key == "REALTIME_TICKET_SECRET" {
+					return strings.Repeat("s", 32)
+				}
+				if key == "REALTIME_PHRASE_PLAYBACK" {
+					return test.value
+				}
+				return ""
+			})
+			if test.err {
+				if err == nil {
+					t.Fatal("loadProcessConfig() error = nil")
+				}
+				return
+			}
+			if err != nil || cfg.PhrasePlayback != test.want {
 				t.Fatalf("config = %#v, error = %v", cfg, err)
 			}
 		})
@@ -753,7 +789,7 @@ func TestMockOfflineProvidersSwitchWithSourceLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("zh Finish: %v", err)
 	}
-	if zhFinal.Text != "你好" || zhFinal.SourceLanguage != "zh-CN" {
+	if zhFinal.Text != "你好" || zhFinal.SourceLanguage != "zh-CN" || zhFinal.AudioDuration != time.Second {
 		t.Fatalf("zh final = %#v", zhFinal)
 	}
 	enStream, err := enUS.ASR.StartStream(context.Background(), asr.StreamRequest{SourceLanguage: "en-US"})
@@ -764,7 +800,7 @@ func TestMockOfflineProvidersSwitchWithSourceLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("en Finish: %v", err)
 	}
-	if enFinal.Text != "Hello" || enFinal.SourceLanguage != "en-US" {
+	if enFinal.Text != "Hello" || enFinal.SourceLanguage != "en-US" || enFinal.AudioDuration != time.Second {
 		t.Fatalf("en final = %#v", enFinal)
 	}
 	translated, err := enUS.Translation.Translate(context.Background(), translate.Request{

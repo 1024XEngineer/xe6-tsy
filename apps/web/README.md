@@ -2,7 +2,7 @@
 
 Lingow Web 对话入口（联调/验收前端）。
 
-当前实现来自 realtime mock 联调页：匿名鉴权、voice-sessions、语言配置、API 签发 realtime ticket、WebRTC、字幕、助手回复与 TTS 播放。
+当前实现来自 realtime mock 联调页：手机号验证码登录、voice-sessions、语言配置、API 签发 realtime ticket、WebRTC、字幕、助手回复与 TTS 播放。
 
 ## 技术栈
 
@@ -31,6 +31,8 @@ npm run dev
 ```
 
 打开 [http://localhost:3000](http://localhost:3000)。Windows 也可：`.\start-windows.ps1`。
+
+Web 端进入语音界面前必须使用中国大陆手机号登录。开发环境使用日志验证码发送器时，验证码为 `8888`（由根目录 `.env` 的 `VERIFICATION_UNIVERSAL_CODE` 配置）；生产环境应接入实际短信供应商。
 
 ## 环境变量
 

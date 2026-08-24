@@ -178,7 +178,7 @@ Required env:
 | --- | --- | --- |
 | `REALTIME_ADDR` | `:8090` | Listen address |
 | `REALTIME_TICKET_SECRET` | _(required)_ | Raw secret (≥32 bytes), must match API `REALTIME_TICKET_SECRET` |
-| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun`; mock ASR returns fixed offline text and cannot validate spoken semantic commands |
+| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun`; mock ASR returns fixed offline text, reports a fixed 1-second duration for local usage verification, and cannot validate spoken semantic commands |
 | `COMMAND_LLM_API_KEY` | 与地址同时回退到 `LLM_API_KEY` | 必需的 Qwen Command Interpreter 凭证；没有固定指令回退，不得写入日志 |
 | `COMMAND_LLM_BASE_URL` | 与凭证同时回退到 `LLM_BASE_URL` | 必需的 OpenAI-compatible 地址；必须与 Command 凭证成对配置 |
 | `COMMAND_LLM_MODEL` | 回退到 `LLM_MODEL` | 语义命令模型 |
@@ -190,7 +190,8 @@ Required env:
 | `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Fallback pair when API DB link is off |
 | `REALTIME_API_DATABASE` | _(off)_ | `enabled` + `DATABASE_URL` → Postgres session/language readers + FinalTurn outbox |
 | `REALTIME_LONG_SENTENCE_DELIVERY` | `disabled` | 新 API delivery/fallback 已就绪后设为 `enabled`；未启用时长句保持原 TTS 路由 |
-| `REALTIME_PHRASE_SUBTITLES` | `disabled` | Enable ordered, ephemeral stable source phrases before VAD final; translation and TTS remain disabled for these events. |
+| `REALTIME_PHRASE_SUBTITLES` | `disabled` | Enable ordered, ephemeral stable source phrases before VAD final and their live translations; phrase TTS remains disabled unless `REALTIME_PHRASE_PLAYBACK=enabled`. |
+| `REALTIME_PHRASE_PLAYBACK` | `disabled` | Enable ordered phrase translation TTS playback on the existing Opus track; requires `REALTIME_PHRASE_SUBTITLES=enabled` and `REALTIME_TTS_DOWNLINK=opus`. |
 | `REALTIME_OUTBOX` | `memory` | `memory` 仅允许 `APP_ENV=local/test/development`；其他环境使用 `valkey`，需要 `REDIS_URL` |
 | `REALTIME_REDIS_MODE` | `standalone` | `standalone` 或 `cluster`；Cluster endpoint 必须显式选择 `cluster`，且 `REDIS_URL` 不带数据库路径 |
 | `LINGOW_MODE_CHANGED_STREAM` | `lingow:realtime:mode:changed` | `realtime.mode.changed` 的 Valkey Stream |

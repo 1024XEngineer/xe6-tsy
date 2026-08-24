@@ -26,11 +26,23 @@ type PhraseTranslationCoordinator struct {
 	translator translate.Provider
 	provider   string
 	observer   PhraseSubtitleObserver
+	playback   PhrasePlaybackScheduler
 	now        func() time.Time
 	lateUsage  func(UsageFact)
 
 	mu         sync.Mutex
 	utterances map[string]*phraseTranslationUtterance
+}
+
+// SetPhrasePlaybackScheduler attaches optional audio output to the existing
+// ordered phrase translation stream. Subtitle delivery remains independent.
+func (c *PhraseTranslationCoordinator) SetPhrasePlaybackScheduler(scheduler PhrasePlaybackScheduler) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.playback = scheduler
+	c.mu.Unlock()
 }
 
 type phraseTranslationUtterance struct {
@@ -43,6 +55,8 @@ type phraseTranslationUtterance struct {
 	observerMu     sync.Mutex
 	sourceTail     chan struct{}
 	sourceOnly     bool
+	playbackNext   int64
+	playbackReady  map[int64]*translatedPhrase
 }
 
 type translatedPhrase struct {
@@ -52,6 +66,7 @@ type translatedPhrase struct {
 	done               bool
 	translationStarted bool
 	doneCh             chan struct{}
+	playbackDoneCh     chan struct{}
 	sourceDelivered    chan struct{}
 	usageHanded        bool
 }
@@ -95,6 +110,11 @@ func (c *PhraseTranslationCoordinator) StartPhraseSubtitleTurn(turn TurnContext,
 	c.utterances[turn.ID] = &phraseTranslationUtterance{
 		turn: turn, source: asr.NormalizeLanguage(sourceLanguage), target: target,
 		ctx: ctx, cancel: cancel, phrases: make(map[int64]*translatedPhrase), next: 1, sourceTail: firstSource,
+		playbackNext: 1, playbackReady: make(map[int64]*translatedPhrase),
+	}
+	playback := c.playback
+	if playback != nil {
+		playback.ResetUtterance(turn.SessionID, turn.ID)
 	}
 	c.mu.Unlock()
 }
@@ -131,7 +151,10 @@ func (c *PhraseTranslationCoordinator) ObservePhraseSubtitle(ctx context.Context
 		c.mu.Unlock()
 		return
 	}
-	phrase := &translatedPhrase{event: event, doneCh: make(chan struct{}), sourceDelivered: make(chan struct{})}
+	phrase := &translatedPhrase{
+		event: event, doneCh: make(chan struct{}), playbackDoneCh: make(chan struct{}),
+		sourceDelivered: make(chan struct{}),
+	}
 	previousSource := utterance.sourceTail
 	utterance.sourceTail = phrase.sourceDelivered
 	utterance.phrases[event.PhraseSequence] = phrase
@@ -165,6 +188,7 @@ func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtt
 	if usageErr == nil && lateUsage.ID != "" {
 		c.reportLatePhraseUsage(lateUsage)
 	}
+	c.enqueueTranslatedPhrasePlayback(utterance, phrase)
 	if !c.activePhraseSubtitleTurn(utterance) {
 		return
 	}
@@ -211,6 +235,36 @@ func (c *PhraseTranslationCoordinator) publishPhraseEvents(utterance *phraseTran
 	}
 	for _, event := range events {
 		c.observer.ObservePhraseSubtitle(utterance.ctx, event)
+	}
+}
+
+// enqueueTranslatedPhrasePlayback is independent of source subtitle delivery:
+// a blocked client observer must not delay low-latency audio or final settlement.
+// Translation completion may arrive out of order, so ready phrases are drained
+// under the coordinator lock in sequence order before the final tail is added.
+func (c *PhraseTranslationCoordinator) enqueueTranslatedPhrasePlayback(utterance *phraseTranslationUtterance, phrase *translatedPhrase) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.utterances[utterance.turn.ID] != utterance {
+		return
+	}
+	utterance.playbackReady[phrase.event.PhraseSequence] = phrase
+	for {
+		ready := utterance.playbackReady[utterance.playbackNext]
+		if ready == nil {
+			return
+		}
+		if c.playback != nil && ready.err == nil && strings.TrimSpace(ready.result.Text) != "" {
+			c.playback.Enqueue(PhrasePlaybackRequest{
+				Turn: utterance.turn, UtteranceID: ready.event.UtteranceID,
+				PhraseSequence: ready.event.PhraseSequence, Language: utterance.target,
+				Text:       ready.result.Text,
+				PlaybackID: fmt.Sprintf("phrase_%s_%d", ready.event.UtteranceID, ready.event.PhraseSequence),
+			})
+		}
+		close(ready.playbackDoneCh)
+		delete(utterance.playbackReady, utterance.playbackNext)
+		utterance.playbackNext++
 	}
 }
 
@@ -288,14 +342,27 @@ func (c *PhraseTranslationCoordinator) HasPendingPhrase(turnID string) bool {
 
 func (c *PhraseTranslationCoordinator) waitForPendingPhrases(ctx context.Context, utterance *phraseTranslationUtterance) bool {
 	c.mu.Lock()
-	pending := make([]<-chan struct{}, 0, len(utterance.phrases))
+	translationDone := make([]<-chan struct{}, 0, len(utterance.phrases))
+	playbackDone := make([]<-chan struct{}, 0, len(utterance.phrases))
 	for _, phrase := range utterance.phrases {
-		if phrase.translationStarted && !phrase.done {
-			pending = append(pending, phrase.doneCh)
+		if phrase.translationStarted {
+			if !phrase.done {
+				translationDone = append(translationDone, phrase.doneCh)
+			}
+			playbackDone = append(playbackDone, phrase.playbackDoneCh)
 		}
 	}
 	c.mu.Unlock()
-	for _, done := range pending {
+	for _, done := range translationDone {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	// Translation completion can race its ordered scheduler enqueue. Wait for
+	// that boundary before appending final-tail audio.
+	for _, done := range playbackDone {
 		select {
 		case <-done:
 		case <-ctx.Done():

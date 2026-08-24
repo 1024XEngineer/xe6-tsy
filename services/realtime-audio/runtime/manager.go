@@ -122,6 +122,7 @@ type Dependencies struct {
 	Now                   func() time.Time
 	NewRuntimeInstanceID  RuntimeInstanceIDFactory
 	LongDeliveryEnabled   bool
+	PhrasePlaybackEnabled bool
 }
 
 // LifecycleObserver receives process-local lifecycle counters without session
@@ -144,6 +145,7 @@ type Manager struct {
 	commandOpener      *pipeline.TurnOpener
 	speech             *pipeline.SpeechOutput
 	playback           *pipeline.PipelineService
+	phrasePlayback     pipeline.PhrasePlaybackScheduler
 	router             *modeRouter
 	failure            session.RuntimeFailureReporter
 	logger             *slog.Logger
@@ -247,6 +249,15 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 	})
 	commitGate := managerTurnCommitGate{manager: manager}
 	phraseTranslations := pipeline.NewPhraseTranslationCoordinator(providers.Translation, labels.translation, deps.PhraseSubtitles, deps.Now)
+	var phrasePlayback pipeline.PhrasePlaybackScheduler
+	if deps.PhrasePlaybackEnabled {
+		phrasePlayback = pipeline.NewPhrasePlaybackScheduler(pipeline.PhrasePlaybackSchedulerDependencies{
+			Speech: speech, Audio: deps.Audio, Usage: deps.Usage, Now: deps.Now,
+		})
+		if phraseTranslations != nil {
+			phraseTranslations.SetPhrasePlaybackScheduler(phrasePlayback)
+		}
+	}
 	phraseObserver := deps.PhraseSubtitles
 	if phraseTranslations != nil {
 		phraseObserver = phraseTranslations
@@ -262,6 +273,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		Latency:             latency,
 		LongDeliveryEnabled: deps.LongDeliveryEnabled,
 		PhraseTranslations:  phraseTranslations,
+		PhrasePlayback:      phrasePlayback,
 	})
 	// The router registry is the capability source of truth. The coordinator and command
 	// interpreter therefore expose only modes backed by an actual handler.
@@ -303,6 +315,7 @@ func newManagerWithLabels(providers config.Providers, labels providerLabels, dep
 		return nil, fmt.Errorf("%w: command interpreter", ErrDependencyRequired)
 	}
 	manager.playback = service
+	manager.phrasePlayback = phrasePlayback
 	manager.speech = speech
 	manager.router = router
 	return manager, nil
@@ -684,11 +697,33 @@ func (m *Manager) playbackInterrupter() PlaybackInterrupter {
 	if m == nil {
 		return nil
 	}
+	if m.phrasePlayback != nil {
+		if m.deps.PlaybackInterrupter != nil {
+			return playbackInterrupterChain{phrase: m.phrasePlayback, fallback: m.deps.PlaybackInterrupter}
+		}
+		return m.phrasePlayback
+	}
 	if m.deps.PlaybackInterrupter != nil {
 		return m.deps.PlaybackInterrupter
 	}
 	interrupter, _ := m.deps.Audio.(PlaybackInterrupter)
 	return interrupter
+}
+
+type playbackInterrupterChain struct {
+	phrase   PlaybackInterrupter
+	fallback PlaybackInterrupter
+}
+
+func (c playbackInterrupterChain) InterruptCurrent(ctx context.Context, sessionID, reason string) error {
+	var err error
+	if c.phrase != nil {
+		err = c.phrase.InterruptCurrent(ctx, sessionID, reason)
+	}
+	if c.fallback != nil {
+		err = errors.Join(err, c.fallback.InterruptCurrent(ctx, sessionID, reason))
+	}
+	return err
 }
 
 func (g runtimeCommandGate) Open(request command.OpenRequest) error {
@@ -741,6 +776,9 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	active := item.active
 	item.cancel()
 	m.mu.Unlock()
+	if m.phrasePlayback != nil {
+		_ = m.phrasePlayback.Stop(ctx, sessionID)
+	}
 
 	closeAttempt := item.source.beginClose()
 	if !active || finished {

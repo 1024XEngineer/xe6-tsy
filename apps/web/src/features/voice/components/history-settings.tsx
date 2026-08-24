@@ -8,7 +8,7 @@ import {
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState } from "react";
 
-import { getOrCreateAuthSession } from "../lib/auth-session";
+import { getAuthSession } from "../lib/auth-session";
 import {
   listSessionTurns,
   listVoiceSessions,
@@ -62,7 +62,7 @@ export function HistoryPreview({
     let cancelled = false;
     void (async () => {
       try {
-        const auth = await getOrCreateAuthSession();
+        const auth = await getAuthSession();
         const page = await listVoiceSessions(auth.tokens.access_token, { limit: 5 });
         if (!cancelled) setSessions(page.sessions);
       } catch (loadError) {
@@ -125,7 +125,7 @@ export function HistorySettings({
     setLoading(true);
     setError(null);
     try {
-      const auth = await getOrCreateAuthSession();
+      const auth = await getAuthSession();
       const loaded: VoiceSession[] = [];
       let cursor: string | undefined;
       do {
@@ -155,7 +155,7 @@ export function HistorySettings({
     setDetailLoading(true);
     setError(null);
     try {
-      const auth = await getOrCreateAuthSession();
+      const auth = await getAuthSession();
       const loaded: VoiceTurn[] = [];
       let cursor: string | undefined;
       do {

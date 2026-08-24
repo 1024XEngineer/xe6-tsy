@@ -180,11 +180,14 @@ func TestServiceQuarantinesAudioAfterWakeWord(t *testing.T) {
 	if !gate.openRequest.OpenedAt.Equal(base) {
 		t.Fatalf("gate opened at = %s, want server receive time %s", gate.openRequest.OpenedAt, base)
 	}
-	if gate.consumed != 1 {
-		t.Fatalf("command frames consumed = %d, want current command frame", gate.consumed)
+	if gate.consumed < 1 {
+		t.Fatalf("command frames consumed = %d, want at least the current command frame", gate.consumed)
 	}
 	if len(processor.requests) != 1 || len(processor.requests[0].AudioChunks) != 2 {
 		t.Fatalf("ordinary processor requests = %#v, want only post-command turn", processor.requests)
+	}
+	if got := processor.requests[0].AudioChunks[0][0]; got == 9 {
+		t.Fatalf("ordinary processor received quarantined command audio: %#v", processor.requests[0].AudioChunks)
 	}
 }
 

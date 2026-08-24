@@ -10,7 +10,7 @@ import {
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { getOrCreateAuthSession } from "../lib/auth-session";
+import { getAuthSession } from "../lib/auth-session";
 import { ApiError } from "../lib/http";
 import {
   bindEmailTarget,
@@ -91,7 +91,7 @@ export function DeliverySettings() {
     setLoading(true);
     setError(null);
     try {
-      const auth = await getOrCreateAuthSession();
+      const auth = await getAuthSession();
       const [targetResult, preferenceResult, messageResult] = await Promise.all([
         listMessageTargets(auth.tokens.access_token),
         listMessagePreferences(auth.tokens.access_token),
@@ -160,7 +160,7 @@ export function DeliverySettings() {
     startOperation(busyKey);
     setError(null);
     try {
-      const auth = await getOrCreateAuthSession();
+      const auth = await getAuthSession();
       const updated = await putMessagePreference(
         auth.tokens.access_token,
         channel,
@@ -188,7 +188,7 @@ export function DeliverySettings() {
     startOperation(busyKey);
     setError(null);
     try {
-      const auth = await getOrCreateAuthSession();
+      const auth = await getAuthSession();
       await requestEmailBindVerification(auth.tokens.access_token, email.trim());
       setEmailVerificationSent(true);
     } catch (bindError) {
@@ -204,7 +204,7 @@ export function DeliverySettings() {
     startOperation(busyKey);
     setError(null);
     try {
-      const auth = await getOrCreateAuthSession();
+      const auth = await getAuthSession();
       await bindEmailTarget(auth.tokens.access_token, emailToken.trim());
       setEmail("");
       setEmailToken("");
@@ -223,7 +223,7 @@ export function DeliverySettings() {
     startOperation(busyKey);
     setError(null);
     try {
-      const auth = await getOrCreateAuthSession();
+      const auth = await getAuthSession();
       await bindWeChatTarget(auth.tokens.access_token, wechatCode.trim());
       setWechatCode("");
       await load();
@@ -239,7 +239,7 @@ export function DeliverySettings() {
     startOperation(busyKey);
     setError(null);
     try {
-      const auth = await getOrCreateAuthSession();
+      const auth = await getAuthSession();
       await revokeMessageTarget(
         auth.tokens.access_token,
         target.channel,

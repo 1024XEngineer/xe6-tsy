@@ -429,6 +429,13 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	if err := controlHandler.SetModeControl(manager); err != nil {
 		return nil, fmt.Errorf("configure WebRTC control channel: %w", err)
 	}
+	slog.Info("realtime-audio streaming configuration",
+		"phrase_subtitles_enabled", cfg.PhraseSubtitles,
+		"phrase_playback_enabled", cfg.PhrasePlayback && cfg.DownlinkMode == "opus",
+		"tts_downlink", cfg.DownlinkMode,
+		"asr_server_vad", providerConfig.ASR.ServerVAD,
+		"translation_provider", providerConfig.Translation.Provider,
+		"translation_model", providerConfig.Translation.Model)
 
 	lifecycle, err := session.NewLifecycleService(session.Dependencies{
 		Sessions:    sessions,
@@ -517,14 +524,14 @@ func usageOutboxEnabled(getenv func(string) string) bool {
 }
 
 const (
-	localVADSilenceAfter  = 800 * time.Millisecond
-	localVADMaxDuration   = 12 * time.Second
+	localVADSilenceAfter  = 550 * time.Millisecond
+	localVADMaxDuration   = 0 // natural silence owns Turn boundaries
 	localVADPrefixPadding = 500 * time.Millisecond
 )
 
 // newLocalVADFactories wires ordinary and command utterance cutters from one provider
-// configuration. Each call returns isolated classifier state, while provider type, thresholds,
-// end silence, maximum duration, and prefix padding remain identical across both audio paths.
+// configuration. Each call returns isolated classifier state and shares the provider thresholds,
+// natural end-silence, and prefix padding across both audio paths.
 func newLocalVADFactories(getenv func(string) string) (
 	runtime.SegmenterFactory,
 	runtime.CommandClassifierFactory,

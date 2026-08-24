@@ -85,8 +85,9 @@ func NewSegmenter(classifier Classifier, options Options) (*Segmenter, error) {
 	if classifier == nil {
 		return nil, ErrClassifierRequired
 	}
-	if options.SilenceAfter <= 0 || options.MaxDuration <= 0 || options.SilenceAfter >= options.MaxDuration ||
-		options.PrefixPadding < 0 || options.PrefixPadding >= options.MaxDuration {
+	if options.SilenceAfter <= 0 || options.PrefixPadding < 0 ||
+		(options.MaxDuration > 0 && options.SilenceAfter >= options.MaxDuration) ||
+		(options.MaxDuration > 0 && options.PrefixPadding >= options.MaxDuration) {
 		return nil, ErrInvalidOptions
 	}
 	return &Segmenter{
@@ -114,7 +115,9 @@ func (s *Segmenter) Push(ctx context.Context, frame audio.Frame) ([]Event, error
 	s.lastSeen = frame.CapturedAt
 
 	isSpeech := s.classifier.Speech(frame)
-	if s.active && frame.CapturedAt.Sub(s.startedAt) >= s.maxDuration {
+	// A non-positive max duration disables normal product-level Turn cuts.
+	// An outer stream watchdog can still protect the process from unbounded input.
+	if s.active && s.maxDuration > 0 && frame.CapturedAt.Sub(s.startedAt) >= s.maxDuration {
 		events := s.finalize(s.startedAt.Add(s.maxDuration))
 		if isSpeech {
 			s.start(frame)

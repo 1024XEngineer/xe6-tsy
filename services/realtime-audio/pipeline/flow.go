@@ -354,7 +354,7 @@ func isTrivialASRText(text string) bool {
 // collectFinalASREvent independently consumes ASR events and keeps at most one final result.
 // Partial snapshots use a bounded latest-value queue so an observer can never block provider
 // reads or the final-result path. Duplicate finals still reach ProcessAudio as an error.
-func collectFinalASREvent(ctx context.Context, latency LatencyLogger, turn TurnContext, asrStartedAt time.Time, events <-chan asr.Event, finalEvents chan<- *asr.FinalResult, eventErrors chan<- error, partialEvents chan asr.Event) {
+func collectFinalASREvent(ctx context.Context, latency LatencyLogger, turn TurnContext, asrStartedAt time.Time, events <-chan asr.Event, finalEvents chan<- *asr.FinalResult, eventErrors chan<- error, partialEvents chan asr.Event, settlePartials ...func()) {
 	if partialEvents != nil {
 		defer close(partialEvents)
 	}
@@ -394,6 +394,13 @@ func collectFinalASREvent(ctx context.Context, latency LatencyLogger, turn TurnC
 			}
 			result := *event.Final
 			final = &result
+			// Older callers used this optional callback to settle the partial
+			// observer as soon as the final event arrived. The current Turn path
+			// waits for the dispatch queue to drain before settling; retaining the
+			// callback keeps package-level callers source-compatible.
+			if len(settlePartials) > 0 && settlePartials[0] != nil {
+				settlePartials[0]()
+			}
 		}
 	}
 }
@@ -432,11 +439,15 @@ func enqueueLatestPartial(queue chan asr.Event, event asr.Event) {
 	}
 }
 
-func dispatchASRPartials(ctx context.Context, observer ASRPartialObserver, phrases *PhraseSubtitleProcessor, turn TurnContext, sourceLanguage string, events <-chan asr.Event, settled <-chan struct{}, done chan<- struct{}) {
+func dispatchASRPartials(ctx context.Context, observer ASRPartialObserver, phrases *PhraseSubtitleProcessor, turn TurnContext, sourceLanguage string, events <-chan asr.Event, settled <-chan struct{}, done ...chan<- struct{}) {
+	var doneSignal chan<- struct{}
+	if len(done) > 0 {
+		doneSignal = done[0]
+	}
 	var doneOnce sync.Once
 	signalDone := func() {
-		if done != nil {
-			doneOnce.Do(func() { close(done) })
+		if doneSignal != nil {
+			doneOnce.Do(func() { close(doneSignal) })
 		}
 	}
 	defer signalDone()

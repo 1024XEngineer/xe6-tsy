@@ -57,6 +57,52 @@ func TestHTTPConfigureFromCommandCreatesAndReplaysConfig(t *testing.T) {
 	}
 }
 
+func TestHTTPConfigureFromCommandCreatesSingleOutputWithVersionCheck(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	handler := NewHandler(NewService(
+		store,
+		MapSessionOwner{"vs_command": "acct_command"},
+		&deliveryReadinessStub{ready: true},
+	), nil)
+	handler.ConfigureSystemCommands(testCommandSystemToken)
+	mux := http.NewServeMux()
+	handler.Register(mux, withoutAuthentication)
+
+	seed := languagesv1.CommandConfigRequest{
+		SessionID: "vs_command", CommandID: "cmd_1", SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+		OutputMode: languagesv1.InterpretationOutputModeBidirectional,
+	}
+	if got := serveCommandConfig(t, mux, seed, testCommandSystemToken); got.Code != http.StatusOK {
+		t.Fatalf("seed status=%d body=%s", got.Code, got.Body.String())
+	}
+	expectedVersion := 1
+	request := languagesv1.CommandConfigRequest{
+		SessionID: "vs_command", CommandID: "cmd_2", SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+		OutputMode: languagesv1.InterpretationOutputModeSingle, ExpectedVersion: &expectedVersion,
+	}
+	response := serveCommandConfig(t, mux, request, testCommandSystemToken)
+	if response.Code != http.StatusOK {
+		t.Fatalf("single status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result languagesv1.CommandConfigResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.SourceLanguage != "zh-CN" || result.TargetLanguage != "en-US" ||
+		result.OutputMode != languagesv1.InterpretationOutputModeSingle || result.Version != 2 {
+		t.Fatalf("result = %#v", result)
+	}
+	active, err := store.GetActiveConfig(t.Context(), request.SessionID)
+	if err != nil {
+		t.Fatalf("get active config: %v", err)
+	}
+	if len(active.OutputRoutes) != 2 || !active.OutputRoutes[0].TTSEnabled ||
+		active.OutputRoutes[0].TargetLanguage != "en-US" || !active.OutputRoutes[1].DeliveryEnabled ||
+		active.OutputRoutes[1].TargetLanguage != "zh-CN" {
+		t.Fatalf("output routes = %#v", active.OutputRoutes)
+	}
+}
+
 func TestHTTPConfigureFromCommandRejectsIdempotencyConflict(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	handler := NewHandler(NewService(store, MapSessionOwner{"vs_command": "acct_command"}), nil)

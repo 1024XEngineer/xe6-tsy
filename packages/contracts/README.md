@@ -19,6 +19,10 @@
 OpenAPI 已声明 `/languages` 与 `language-config(s)` 路径及其请求、响应和错误 schema，
 并作为跨模块契约真源。
 
+realtime 的内部语音指令配置契约使用 `output_mode=single|bidirectional` 表达输出意图，并用
+`expected_version` 对 API 当前语言配置执行乐观锁。API 返回实际接受的语言方向、输出模式和版本；
+外部 `command.result` v1 不承载这些新增字段，客户端在成功后回读权威语言配置。
+
 ## 规则
 
 - 所有跨端字段先改 contracts，再改实现。

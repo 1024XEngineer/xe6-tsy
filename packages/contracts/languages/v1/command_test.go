@@ -7,7 +7,11 @@ import (
 
 func TestCommandConfigRequestValidate(t *testing.T) {
 	t.Parallel()
-	valid := CommandConfigRequest{SessionID: "session-1", CommandID: "command-1", SourceLanguage: "zh-CN", TargetLanguage: "en-US"}
+	expectedVersion := 1
+	valid := CommandConfigRequest{
+		SessionID: "session-1", CommandID: "command-1", SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+		OutputMode: InterpretationOutputModeSingle, ExpectedVersion: &expectedVersion,
+	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
@@ -20,6 +24,8 @@ func TestCommandConfigRequestValidate(t *testing.T) {
 		{name: "missing source language", mutate: func(r *CommandConfigRequest) { r.SourceLanguage = "" }},
 		{name: "missing target language", mutate: func(r *CommandConfigRequest) { r.TargetLanguage = "" }},
 		{name: "same language", mutate: func(r *CommandConfigRequest) { r.TargetLanguage = "ZH-cn" }},
+		{name: "invalid output mode", mutate: func(r *CommandConfigRequest) { r.OutputMode = "speaker" }},
+		{name: "invalid expected version", mutate: func(r *CommandConfigRequest) { version := 0; r.ExpectedVersion = &version }},
 		{name: "command too long", mutate: func(r *CommandConfigRequest) { r.CommandID = strings.Repeat("c", MaxCommandIDLength+1) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {

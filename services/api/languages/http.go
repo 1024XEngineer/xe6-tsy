@@ -79,6 +79,8 @@ func (h *Handler) configureFromCommand(w http.ResponseWriter, r *http.Request) {
 			{Source: request.SourceLanguage, Target: request.TargetLanguage},
 			{Source: request.TargetLanguage, Target: request.SourceLanguage},
 		},
+		OutputRoutes:    commandOutputRoutes(request),
+		ExpectedVersion: request.ExpectedVersion,
 	})
 	if err != nil {
 		writeServiceError(w, r, err)
@@ -89,8 +91,20 @@ func (h *Handler) configureFromCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, languagesv1.CommandConfigResult{
-		SessionID: request.SessionID, CommandID: request.CommandID, Version: config.Version,
+		SessionID: request.SessionID, CommandID: request.CommandID,
+		SourceLanguage: request.SourceLanguage, TargetLanguage: request.TargetLanguage,
+		OutputMode: config.OutputMode, Version: config.Version,
 	})
+}
+
+func commandOutputRoutes(request languagesv1.CommandConfigRequest) []OutputRoute {
+	if request.OutputMode != languagesv1.InterpretationOutputModeSingle {
+		return nil
+	}
+	return []OutputRoute{
+		{TargetLanguage: request.TargetLanguage, TTSEnabled: true},
+		{TargetLanguage: request.SourceLanguage, DeliveryEnabled: true},
+	}
 }
 
 // commandIdempotencyKey scopes command retries to one session while keeping the

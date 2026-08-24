@@ -36,3 +36,11 @@ type Result struct {
 type Provider interface {
 	Translate(ctx context.Context, request Request) (Result, error)
 }
+
+// StreamProvider is an optional low-latency translation boundary. Providers
+// that implement it emit model deltas as soon as they arrive while still
+// returning the complete result for usage accounting and ordered playback.
+type StreamProvider interface {
+	Provider
+	TranslateStream(ctx context.Context, request Request, onDelta func(string)) (Result, error)
+}

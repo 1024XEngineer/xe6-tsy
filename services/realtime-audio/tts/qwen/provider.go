@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/rawlog"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 	"github.com/gorilla/websocket"
 )
@@ -44,6 +45,7 @@ type Config struct {
 	// AudioURLAllowlist contains exact hostnames accepted for URL-only audio responses.
 	AudioURLAllowlist []string
 	Dialer            *websocket.Dialer
+	RawLogger         *rawlog.Logger
 }
 
 // Provider starts Qwen TTS streaming requests.
@@ -117,7 +119,7 @@ func (p *Provider) startRealtimeStream(ctx context.Context, request tts.Request)
 		return nil, fmt.Errorf("connect Qwen TTS realtime: %w", err)
 	}
 	streamCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
-	s := &realtimeStream{ctx: streamCtx, cancel: cancel, conn: conn, config: p.config, request: request, chunks: make(chan tts.AudioChunk, 16), done: make(chan struct{})}
+	s := &realtimeStream{ctx: streamCtx, cancel: cancel, conn: conn, config: p.config, request: request, rawLogger: p.config.RawLogger, chunks: make(chan tts.AudioChunk, 16), done: make(chan struct{})}
 	if err := s.sendSession(); err != nil {
 		cancel()
 		_ = conn.Close()
@@ -133,6 +135,7 @@ type realtimeStream struct {
 	conn       *websocket.Conn
 	config     Config
 	request    tts.Request
+	rawLogger  *rawlog.Logger
 	chunks     chan tts.AudioChunk
 	done       chan struct{}
 	writeMu    sync.Mutex
@@ -172,6 +175,7 @@ func (s *realtimeStream) write(value map[string]any) error {
 	if err := s.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		return err
 	}
+	_ = s.rawLogger.WriteJSON(s.request.SessionID, "tts", "request", rawEventType(data), data)
 	return nil
 }
 
@@ -202,6 +206,7 @@ func (s *realtimeStream) run() {
 			}
 			return
 		}
+		_ = s.rawLogger.WriteJSON(s.request.SessionID, "tts", "response", rawEventType(data), data)
 		var event realtimeEvent
 		if err := json.Unmarshal(data, &event); err != nil {
 			s.setError(fmt.Errorf("decode Qwen TTS realtime event: %w", err))
@@ -277,6 +282,16 @@ type realtimeEvent struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+func rawEventType(data []byte) string {
+	var event struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil || event.Type == "" {
+		return "unknown"
+	}
+	return event.Type
 }
 
 type stream struct {
@@ -356,6 +371,7 @@ func (s *stream) run() {
 		s.setError(fmt.Errorf("encode TTS request: %w", err))
 		return
 	}
+	_ = s.config.RawLogger.WriteJSON(s.request.SessionID, "tts", "request", "generation", encoded)
 	endpoint := ttsEndpoint(s.config.BaseURL, s.config.Model)
 	req, err := http.NewRequestWithContext(s.ctx, http.MethodPost, endpoint, strings.NewReader(string(encoded)))
 	if err != nil {
@@ -375,6 +391,7 @@ func (s *stream) run() {
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = s.config.RawLogger.WriteJSON(s.request.SessionID, "tts", "response", "http.error", body)
 		s.setError(fmt.Errorf("Qwen TTS returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body))))
 		return
 	}
@@ -394,6 +411,7 @@ func (s *stream) run() {
 		if line == "" || line == "[DONE]" {
 			continue
 		}
+		_ = s.config.RawLogger.WriteJSON(s.request.SessionID, "tts", "response", "sse.data", []byte(line))
 		var chunk generationResponse
 		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
 			s.setError(fmt.Errorf("decode Qwen TTS event: %w", err))

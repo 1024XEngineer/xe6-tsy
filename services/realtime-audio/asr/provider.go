@@ -22,9 +22,17 @@ const (
 
 // Event is an ephemeral recognition update emitted by an ASR stream.
 type Event struct {
-	Type  EventType
-	Text  string
-	Final *FinalResult
+	Type EventType
+	// Text is the provider-confirmed prefix. It is the only partial text that
+	// may enter phrase translation before the VAD final.
+	Text string
+	// Stash is the replaceable provider tail. It is display-only until Qwen
+	// promotes it into Text or the final transcript arrives.
+	Stash string
+	// Language is the provider-detected language for this snapshot. It is
+	// intentionally only authoritative once Text contains confirmed content.
+	Language string
+	Final    *FinalResult
 }
 
 // FinalResult carries the provider result and usage data for one Turn.

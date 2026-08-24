@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +99,7 @@ type AudioTurn struct {
 	finalEvents           chan *asr.FinalResult
 	eventErrors           chan error
 	settlePartials        func()
+	partialDispatchDone   <-chan struct{}
 	finalizationHandedOff bool
 	closeOnce             sync.Once
 }
@@ -156,7 +158,14 @@ func (p *TurnProcessor) StartAudio(ctx context.Context, request TurnProcessReque
 		return nil, fmt.Errorf("report ASR runtime: %w", err)
 	}
 	if turn.Mode.Mode == realtimev1.ModeInterpretation {
-		p.phrases.Start(turn, request.SourceLanguage)
+		if p.phrases == nil {
+			slog.Error("phrase_turn_not_configured", "session_id", turn.SessionID, "turn_id", turn.ID,
+				"mode", turn.Mode.Mode, "reason", "phrase_processor_nil")
+		} else {
+			slog.Info("phrase_processor_starting", "session_id", turn.SessionID, "turn_id", turn.ID,
+				"mode", turn.Mode.Mode)
+			p.phrases.Start(turn, request.SourceLanguage)
+		}
 	}
 	stream, err := p.recognizer.StartStream(ctx, asr.StreamRequest{
 		SessionID: turn.SessionID, TurnID: turn.ID, SourceLanguage: request.SourceLanguage,
@@ -178,15 +187,19 @@ func (p *TurnProcessor) StartAudio(ctx context.Context, request TurnProcessReque
 	eventErrors := make(chan error, 1)
 	var partialEvents chan asr.Event
 	partialSettled := make(chan struct{})
+	partialDispatchDone := make(chan struct{})
 	var settlePartials sync.Once
 	settlePartialObserver := func() { settlePartials.Do(func() { close(partialSettled) }) }
 	if p.partials != nil || p.phrases != nil {
 		partialEvents = make(chan asr.Event, 8)
-		go dispatchASRPartials(streamCtx, p.partials, p.phrases, turn, request.SourceLanguage, partialEvents, partialSettled)
+		go dispatchASRPartials(streamCtx, p.partials, p.phrases, turn, request.SourceLanguage, partialEvents, partialSettled, partialDispatchDone)
+	} else {
+		close(partialDispatchDone)
 	}
-	go collectFinalASREvent(streamCtx, p.pipeline.latency, turn, asrStartedAt, stream.Events(), finalEvents, eventErrors, partialEvents, settlePartialObserver)
+	go collectFinalASREvent(streamCtx, p.pipeline.latency, turn, asrStartedAt, stream.Events(), finalEvents, eventErrors, partialEvents)
 	return &AudioTurn{processor: p, turn: turn, request: request, stream: stream, eventCancel: stopEvents,
-		asrStartedAt: asrStartedAt, finalEvents: finalEvents, eventErrors: eventErrors, settlePartials: settlePartialObserver}, nil
+		asrStartedAt: asrStartedAt, finalEvents: finalEvents, eventErrors: eventErrors,
+		settlePartials: settlePartialObserver, partialDispatchDone: partialDispatchDone}, nil
 }
 
 // PushAudio forwards a single PCM frame without waiting for VAD final.
@@ -222,15 +235,28 @@ func (t *AudioTurn) finish(ctx context.Context, allowAsync bool) (TurnContext, e
 	request := t.request
 
 	result, err := t.stream.Finish(ctx)
-	t.settlePartials()
 	if err != nil {
+		t.settlePartials()
 		p.pipeline.latency.ProviderFailure("asr_finish", turn, observedProvider(p.asrProvider, result.Provider), result.Model, err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, fmt.Errorf("finish ASR stream: %w", err))
 	}
 	if err := <-t.eventErrors; err != nil {
+		t.settlePartials()
 		p.pipeline.latency.ProviderFailure("asr_events", turn, observedProvider(p.asrProvider, result.Provider), result.Model, err)
 		return turn, p.pipeline.finishASRWithError(ctx, turn, err)
 	}
+	// The collector closes the partial queue before reporting its terminal
+	// event. Drain that queue before flushing phrase state so the latest
+	// replaceable ASR snapshots are not lost at VAD final.
+	if t.partialDispatchDone != nil {
+		select {
+		case <-t.partialDispatchDone:
+		case <-ctx.Done():
+			t.settlePartials()
+			return turn, ctx.Err()
+		}
+	}
+	t.settlePartials()
 	select {
 	case eventResult := <-t.finalEvents:
 		result = mergeFinalResult(*eventResult, result)
@@ -241,7 +267,9 @@ func (t *AudioTurn) finish(ctx context.Context, allowAsync bool) (TurnContext, e
 	}
 	result.SourceLanguage = asr.NormalizeLanguage(result.SourceLanguage)
 	if turn.Mode.Mode == realtimev1.ModeInterpretation {
-		p.phrases.Flush(ctx, turn, result.Text)
+		if p.phrases != nil {
+			p.phrases.Flush(ctx, turn, result.Text)
+		}
 	}
 	p.pipeline.latency.ProviderCheckpoint("asr_final", turn, t.asrStartedAt, observedProvider(p.asrProvider, result.Provider), result.Model,
 		"source_language", result.SourceLanguage,
@@ -326,13 +354,14 @@ func isTrivialASRText(text string) bool {
 // collectFinalASREvent independently consumes ASR events and keeps at most one final result.
 // Partial snapshots use a bounded latest-value queue so an observer can never block provider
 // reads or the final-result path. Duplicate finals still reach ProcessAudio as an error.
-func collectFinalASREvent(ctx context.Context, latency LatencyLogger, turn TurnContext, asrStartedAt time.Time, events <-chan asr.Event, finalEvents chan<- *asr.FinalResult, eventErrors chan<- error, partialEvents chan asr.Event, settlePartials func()) {
+func collectFinalASREvent(ctx context.Context, latency LatencyLogger, turn TurnContext, asrStartedAt time.Time, events <-chan asr.Event, finalEvents chan<- *asr.FinalResult, eventErrors chan<- error, partialEvents chan asr.Event) {
 	if partialEvents != nil {
 		defer close(partialEvents)
 	}
 	var final *asr.FinalResult
 	var eventErr error
 	partialObserved := false
+	lastConfirmedText := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -348,9 +377,10 @@ func collectFinalASREvent(ctx context.Context, latency LatencyLogger, turn TurnC
 			}
 			if event.Type != asr.EventFinal || event.Final == nil {
 				if event.Type == asr.EventPartial {
+					event = retainConfirmedPartialText(event, &lastConfirmedText)
 					if !partialObserved {
 						partialObserved = true
-						latency.Checkpoint("asr_first_partial", turn, asrStartedAt, "text_bytes", len(event.Text))
+						latency.Checkpoint("asr_first_partial", turn, asrStartedAt, "text_bytes", len(event.Text)+len(event.Stash))
 					}
 					enqueueLatestPartial(partialEvents, event)
 				}
@@ -364,13 +394,27 @@ func collectFinalASREvent(ctx context.Context, latency LatencyLogger, turn TurnC
 			}
 			result := *event.Final
 			final = &result
-			settlePartials()
 		}
 	}
 }
 
+// retainConfirmedPartialText keeps the last confirmed prefix visible when a
+// provider emits a stash-only snapshot. Qwen can briefly omit text while the
+// replaceable tail is updated; dropping the prefix would make both the UI and
+// punctuation stabilizer regress to the tail-only view.
+func retainConfirmedPartialText(event asr.Event, lastConfirmed *string) asr.Event {
+	if strings.TrimSpace(event.Text) != "" {
+		*lastConfirmed = event.Text
+		return event
+	}
+	if strings.TrimSpace(event.Stash) != "" && strings.TrimSpace(*lastConfirmed) != "" {
+		event.Text = *lastConfirmed
+	}
+	return event
+}
+
 func enqueueLatestPartial(queue chan asr.Event, event asr.Event) {
-	if strings.TrimSpace(event.Text) == "" {
+	if strings.TrimSpace(event.Text) == "" && strings.TrimSpace(event.Stash) == "" {
 		return
 	}
 	select {
@@ -388,15 +432,56 @@ func enqueueLatestPartial(queue chan asr.Event, event asr.Event) {
 	}
 }
 
-func dispatchASRPartials(ctx context.Context, observer ASRPartialObserver, phrases *PhraseSubtitleProcessor, turn TurnContext, sourceLanguage string, events <-chan asr.Event, settled <-chan struct{}) {
+func dispatchASRPartials(ctx context.Context, observer ASRPartialObserver, phrases *PhraseSubtitleProcessor, turn TurnContext, sourceLanguage string, events <-chan asr.Event, settled <-chan struct{}, done chan<- struct{}) {
+	var doneOnce sync.Once
+	signalDone := func() {
+		if done != nil {
+			doneOnce.Do(func() { close(done) })
+		}
+	}
+	defer signalDone()
+	// Keep one ordered observer worker per Turn. A goroutine per partial lets an
+	// older snapshot arrive after a newer one; the one-slot mailbox preserves
+	// order while dropping stale intermediate snapshots under backpressure.
+	observerCtx, cancelObserver := context.WithCancel(ctx)
+	var observerDone chan struct{}
+	var observerQueue chan realtimev1.ASRPartialEvent
+	if observer != nil {
+		observerQueue = make(chan realtimev1.ASRPartialEvent, 1)
+		observerDone = make(chan struct{})
+		go func() {
+			defer close(observerDone)
+			for {
+				select {
+				case <-observerCtx.Done():
+					return
+				case partial, ok := <-observerQueue:
+					if !ok {
+						return
+					}
+					observer.ObserveASRPartial(observerCtx, partial)
+				}
+			}
+		}()
+	}
+	defer func() {
+		cancelObserver()
+		if observerQueue != nil {
+			close(observerQueue)
+			<-observerDone
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
+			signalDone()
 			return
 		case <-settled:
+			signalDone()
 			return
 		case event, ok := <-events:
 			if !ok {
+				signalDone()
 				return
 			}
 			select {
@@ -404,20 +489,47 @@ func dispatchASRPartials(ctx context.Context, observer ASRPartialObserver, phras
 				return
 			default:
 			}
+			partialLanguage := asr.NormalizeLanguage(event.Language)
+			if partialLanguage == "" {
+				partialLanguage = asr.NormalizeLanguage(sourceLanguage)
+			}
 			partial := realtimev1.ASRPartialEvent{
 				Type:           realtimev1.ASRPartialTopic,
 				EventVersion:   realtimev1.ASRPartialEventVersion,
 				SessionID:      turn.SessionID,
 				TurnID:         turn.ID,
 				Text:           strings.TrimSpace(event.Text),
-				SourceLanguage: asr.NormalizeLanguage(sourceLanguage),
+				Stash:          strings.TrimSpace(event.Stash),
+				SourceLanguage: partialLanguage,
 				OccurredAt:     time.Now().UTC(),
 			}
-			if observer != nil {
-				observer.ObserveASRPartial(ctx, partial)
-			}
 			if turn.Mode.Mode == realtimev1.ModeInterpretation {
-				phrases.Observe(ctx, partial)
+				if phrases == nil {
+					slog.Error("phrase_partial_dropped", "session_id", turn.SessionID, "turn_id", turn.ID,
+						"reason", "phrase_processor_nil")
+				} else {
+					phrases.Observe(ctx, partial)
+				}
+			} else {
+				slog.Info("phrase_partial_skipped", "session_id", turn.SessionID, "turn_id", turn.ID,
+					"mode", turn.Mode.Mode)
+			}
+			// DataChannel delivery is explicitly best effort. Keep it out of the
+			// partial drain so a slow browser observer cannot delay phrase
+			// stabilization or VAD final settlement.
+			if observerQueue != nil {
+				select {
+				case observerQueue <- partial:
+				default:
+					select {
+					case <-observerQueue:
+					default:
+					}
+					select {
+					case observerQueue <- partial:
+					default:
+					}
+				}
 			}
 		}
 	}

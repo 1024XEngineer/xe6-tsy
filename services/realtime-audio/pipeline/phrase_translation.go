@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"strings"
 	"sync"
@@ -60,15 +61,17 @@ type phraseTranslationUtterance struct {
 }
 
 type translatedPhrase struct {
-	event              realtimev1.PhraseSubtitleEvent
-	result             translate.Result
-	err                error
-	done               bool
-	translationStarted bool
-	doneCh             chan struct{}
-	playbackDoneCh     chan struct{}
-	sourceDelivered    chan struct{}
-	usageHanded        bool
+	event                  realtimev1.PhraseSubtitleEvent
+	result                 translate.Result
+	err                    error
+	done                   bool
+	translationStarted     bool
+	streamPlaybackStarted  bool
+	streamPlaybackSequence int64
+	doneCh                 chan struct{}
+	playbackDoneCh         chan struct{}
+	sourceDelivered        chan struct{}
+	usageHanded            bool
 }
 
 func NewPhraseTranslationCoordinator(translator translate.Provider, provider string, observer PhraseSubtitleObserver, now func() time.Time) *PhraseTranslationCoordinator {
@@ -101,6 +104,9 @@ func (c *PhraseTranslationCoordinator) StartPhraseSubtitleTurn(turn TurnContext,
 	}
 	target, _, ok := targetRoute(turn.LanguageConfig, asr.NormalizeLanguage(sourceLanguage))
 	if !ok {
+		slog.Warn("phrase_turn_route_unavailable", "session_id", turn.SessionID, "turn_id", turn.ID,
+			"source_language", sourceLanguage, "normalized_source", asr.NormalizeLanguage(sourceLanguage),
+			"language_pairs", turn.LanguageConfig.LanguagePairs)
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -117,6 +123,10 @@ func (c *PhraseTranslationCoordinator) StartPhraseSubtitleTurn(turn TurnContext,
 		playback.ResetUtterance(turn.SessionID, turn.ID)
 	}
 	c.mu.Unlock()
+	_, streamProvider := c.translator.(translate.StreamProvider)
+	slog.Info("phrase_turn_ready", "session_id", turn.SessionID, "turn_id", turn.ID,
+		"source_language", asr.NormalizeLanguage(sourceLanguage), "target_language", target,
+		"stream_provider", streamProvider, "translator_type", fmt.Sprintf("%T", c.translator))
 }
 
 func (c *PhraseTranslationCoordinator) BeginPhraseSubtitleFinalFlush(turnID string) {
@@ -161,6 +171,8 @@ func (c *PhraseTranslationCoordinator) ObservePhraseSubtitle(ctx context.Context
 	sourceOnly := utterance.sourceOnly
 	phrase.translationStarted = !sourceOnly
 	c.mu.Unlock()
+	slog.Info("phrase_translation_queued", "session_id", event.SessionID, "turn_id", event.UtteranceID,
+		"phrase_sequence", event.PhraseSequence, "source_text", event.SourceText, "source_only", sourceOnly)
 	go c.publishSourcePhrase(utterance, phrase, ctx, previousSource)
 	if !sourceOnly {
 		go c.translate(utterance, phrase)
@@ -179,12 +191,37 @@ func (c *PhraseTranslationCoordinator) publishSourcePhrase(utterance *phraseTran
 }
 
 func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtterance, phrase *translatedPhrase) {
-	result, err := c.translator.Translate(utterance.ctx, translate.Request{SessionID: utterance.turn.SessionID, TurnID: utterance.turn.ID, Text: phrase.event.SourceText, SourceLanguage: utterance.source, TargetLanguage: utterance.target})
+	slog.Info("phrase_translation_started", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
+		"phrase_sequence", phrase.event.PhraseSequence, "source_text", phrase.event.SourceText)
+	request := translate.Request{SessionID: utterance.turn.SessionID, TurnID: utterance.turn.ID, Text: phrase.event.SourceText, SourceLanguage: utterance.source, TargetLanguage: utterance.target}
+	var result translate.Result
+	var err error
+	if streaming, ok := c.translator.(translate.StreamProvider); ok {
+		// The phrase stabilizer starts this request while ASR is still active.
+		// Deltas are consumed by the provider immediately; the coordinator keeps
+		// the final phrase boundary for ordered subtitle/TTS delivery.
+		var ttsBuffer strings.Builder
+		result, err = streaming.TranslateStream(utterance.ctx, request, func(delta string) {
+			ttsBuffer.WriteString(delta)
+			if shouldFlushStreamTTS(ttsBuffer.String()) {
+				c.enqueueStreamPhrasePlayback(utterance, phrase, ttsBuffer.String())
+				ttsBuffer.Reset()
+			}
+		})
+		if err == nil && strings.TrimSpace(ttsBuffer.String()) != "" {
+			c.enqueueStreamPhrasePlayback(utterance, phrase, ttsBuffer.String())
+		}
+	} else {
+		result, err = c.translator.Translate(utterance.ctx, request)
+	}
 	c.mu.Lock()
 	phrase.result, phrase.err, phrase.done = result, err, true
 	close(phrase.doneCh)
 	lateUsage, usageErr := c.latePhraseUsageLocked(utterance, phrase)
 	c.mu.Unlock()
+	slog.Info("phrase_translation_done", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
+		"phrase_sequence", phrase.event.PhraseSequence, "error", err, "translated_runes", len([]rune(result.Text)),
+		"provider", result.Provider, "model", result.Model)
 	if usageErr == nil && lateUsage.ID != "" {
 		c.reportLatePhraseUsage(lateUsage)
 	}
@@ -201,6 +238,52 @@ func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtt
 	events := c.publishReadyLocked(utterance)
 	c.mu.Unlock()
 	c.publishPhraseEvents(utterance, events)
+}
+
+func shouldFlushStreamTTS(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	if strings.HasSuffix(text, ".") || strings.HasSuffix(text, "!") || strings.HasSuffix(text, "?") ||
+		strings.HasSuffix(text, ",") || strings.HasSuffix(text, ";") || strings.HasSuffix(text, ":") {
+		return true
+	}
+	return len([]rune(text)) >= 12
+}
+
+func (c *PhraseTranslationCoordinator) enqueueStreamPhrasePlayback(utterance *phraseTranslationUtterance, phrase *translatedPhrase, text string) {
+	text = strings.TrimSpace(text)
+	if c == nil || utterance == nil || phrase == nil || text == "" {
+		return
+	}
+	c.mu.Lock()
+	if c.utterances[utterance.turn.ID] != utterance || c.playback == nil {
+		c.mu.Unlock()
+		return
+	}
+	phrase.streamPlaybackSequence++
+	sequence := phrase.streamPlaybackSequence
+	playback := c.playback
+	request := PhrasePlaybackRequest{
+		Turn: utterance.turn, UtteranceID: phrase.event.UtteranceID,
+		PhraseSequence: phrase.event.PhraseSequence*1000 + sequence,
+		Language:       utterance.target, Text: text,
+		PlaybackID: fmt.Sprintf("phrase_%s_%d_%d", phrase.event.UtteranceID, phrase.event.PhraseSequence, sequence),
+	}
+	c.mu.Unlock()
+	if !playback.Enqueue(request) {
+		slog.Warn("phrase_tts_enqueue_failed", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
+			"phrase_sequence", phrase.event.PhraseSequence, "stream_sequence", sequence)
+		return
+	}
+	slog.Info("phrase_tts_enqueued", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
+		"phrase_sequence", phrase.event.PhraseSequence, "stream_sequence", sequence, "text", text)
+	c.mu.Lock()
+	if c.utterances[utterance.turn.ID] == utterance {
+		phrase.streamPlaybackStarted = true
+	}
+	c.mu.Unlock()
 }
 
 func (c *PhraseTranslationCoordinator) publishReadyLocked(utterance *phraseTranslationUtterance) []realtimev1.PhraseSubtitleEvent {
@@ -255,12 +338,14 @@ func (c *PhraseTranslationCoordinator) enqueueTranslatedPhrasePlayback(utterance
 			return
 		}
 		if c.playback != nil && ready.err == nil && strings.TrimSpace(ready.result.Text) != "" {
-			c.playback.Enqueue(PhrasePlaybackRequest{
-				Turn: utterance.turn, UtteranceID: ready.event.UtteranceID,
-				PhraseSequence: ready.event.PhraseSequence, Language: utterance.target,
-				Text:       ready.result.Text,
-				PlaybackID: fmt.Sprintf("phrase_%s_%d", ready.event.UtteranceID, ready.event.PhraseSequence),
-			})
+			if !ready.streamPlaybackStarted {
+				c.playback.Enqueue(PhrasePlaybackRequest{
+					Turn: utterance.turn, UtteranceID: ready.event.UtteranceID,
+					PhraseSequence: ready.event.PhraseSequence, Language: utterance.target,
+					Text:       ready.result.Text,
+					PlaybackID: fmt.Sprintf("phrase_%s_%d", ready.event.UtteranceID, ready.event.PhraseSequence),
+				})
+			}
 		}
 		close(ready.playbackDoneCh)
 		delete(utterance.playbackReady, utterance.playbackNext)
@@ -343,13 +428,11 @@ func (c *PhraseTranslationCoordinator) HasPendingPhrase(turnID string) bool {
 func (c *PhraseTranslationCoordinator) waitForPendingPhrases(ctx context.Context, utterance *phraseTranslationUtterance) bool {
 	c.mu.Lock()
 	translationDone := make([]<-chan struct{}, 0, len(utterance.phrases))
-	playbackDone := make([]<-chan struct{}, 0, len(utterance.phrases))
 	for _, phrase := range utterance.phrases {
 		if phrase.translationStarted {
 			if !phrase.done {
 				translationDone = append(translationDone, phrase.doneCh)
 			}
-			playbackDone = append(playbackDone, phrase.playbackDoneCh)
 		}
 	}
 	c.mu.Unlock()
@@ -360,15 +443,9 @@ func (c *PhraseTranslationCoordinator) waitForPendingPhrases(ctx context.Context
 			return false
 		}
 	}
-	// Translation completion can race its ordered scheduler enqueue. Wait for
-	// that boundary before appending final-tail audio.
-	for _, done := range playbackDone {
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return false
-		}
-	}
+	// Do not wait for audio playback here. The phrase scheduler already keeps
+	// per-session audio ordered; waiting would make final settlement queue behind
+	// the duration of every previous TTS clip.
 	return true
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	languagesv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/languages/v1"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
 )
 
 const testSystemToken = "command-system-token-secret-123456"
@@ -24,7 +25,7 @@ func TestClientConfigure(t *testing.T) {
 		if r.Header.Get(systemTokenHeader) != testSystemToken || r.Header.Get("Content-Type") != "application/json" {
 			t.Errorf("headers = %#v", r.Header)
 		}
-		_, _ = io.WriteString(w, `{"session_id":"session-1","command_id":"command-1","version":2}`)
+		_, _ = io.WriteString(w, `{"session_id":"session-1","command_id":"command-1","source_language":"zh-CN","target_language":"en-US","output_mode":"single","version":2}`)
 	}))
 	defer server.Close()
 	client, err := NewClient(Config{BaseURL: server.URL + "/base", SystemToken: testSystemToken})
@@ -82,6 +83,22 @@ func TestClientConfigureReturnsTypedHTTPError(t *testing.T) {
 	var httpErr *HTTPError
 	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusConflict || httpErr.Code != "idempotency_conflict" {
 		t.Fatalf("Configure() error = %#v", err)
+	}
+}
+
+func TestClientConfigureMapsMissingDeliveryTarget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = io.WriteString(w, `{"error":{"code":"delivery_target_required"}}`)
+	}))
+	defer server.Close()
+	client, err := NewClient(Config{BaseURL: server.URL, SystemToken: testSystemToken})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.Configure(t.Context(), testRequest())
+	if !errors.Is(err, command.ErrDeliveryTargetRequired) {
+		t.Fatalf("Configure() error = %v, want delivery target error", err)
 	}
 }
 
@@ -147,6 +164,7 @@ func TestNewClientRejectsInvalidConfiguration(t *testing.T) {
 func testRequest() languagesv1.CommandConfigRequest {
 	return languagesv1.CommandConfigRequest{
 		SessionID: "session-1", CommandID: "command-1", SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+		OutputMode: languagesv1.InterpretationOutputModeSingle,
 	}
 }
 

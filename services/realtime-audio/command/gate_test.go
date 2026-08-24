@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	languagesv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/languages/v1"
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
@@ -459,6 +460,23 @@ func TestExecutionFailureFeedbackDistinguishesAssistantQueries(t *testing.T) {
 	status, message = executionFailureFeedback(Command{Action: ActionActivateMode}, errors.New("mode unavailable"))
 	if status != realtimev1.CommandResultFailed || message != "命令未执行，原模式保持不变" {
 		t.Fatalf("mode failure feedback = %q/%q", status, message)
+	}
+	status, message = executionFailureFeedback(Command{Action: ActionActivateMode}, ErrDeliveryTargetRequired)
+	if status != realtimev1.CommandResultFailed || message != "请先设置可用的自动投递目标，再开启单向传译" {
+		t.Fatalf("delivery failure feedback = %q/%q", status, message)
+	}
+}
+
+func TestCommandSuccessFallbackDescribesSingleOutput(t *testing.T) {
+	t.Parallel()
+	message := commandSuccessFallback(Command{TargetMode: realtimev1.ModeInterpretation}, ExecutionResult{
+		LanguageConfig: &AppliedLanguageConfig{
+			SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+			OutputMode: languagesv1.InterpretationOutputModeSingle, Version: 2,
+		},
+	})
+	if message != "已开启中文译英语单向传译，英语播报，中文译文自动投递" {
+		t.Fatalf("single-output feedback = %q", message)
 	}
 }
 

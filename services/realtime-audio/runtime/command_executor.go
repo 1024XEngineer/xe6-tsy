@@ -135,8 +135,11 @@ func (e commandExecutor) executeAssistantQuery(ctx context.Context, request comm
 
 func (e commandExecutor) prepareInterpretation(ctx context.Context, request command.ExecuteRequest) (*command.AppliedLanguageConfig, error) {
 	arguments := request.Command.Arguments
+	if arguments.OutputMode != "" && !arguments.OutputMode.Valid() {
+		return nil, errors.Join(command.ErrUnsupported, ErrCommandLanguageInvalid)
+	}
 	var snapshot session.LanguageConfigSnapshot
-	if strings.TrimSpace(arguments.SourceLanguage) == "" || strings.TrimSpace(arguments.TargetLanguage) == "" {
+	if strings.TrimSpace(arguments.SourceLanguage) == "" || strings.TrimSpace(arguments.TargetLanguage) == "" || arguments.OutputMode != "" {
 		var err error
 		snapshot, err = e.languages.GetCurrentConfig(ctx, request.SessionID)
 		if err != nil {
@@ -164,20 +167,33 @@ func (e commandExecutor) prepareInterpretation(ctx context.Context, request comm
 	if e.configurator == nil {
 		return nil, ErrCommandConfiguratorRequired
 	}
-	result, err := e.configurator.Configure(ctx, languagesv1.CommandConfigRequest{
+	configRequest := languagesv1.CommandConfigRequest{
 		SessionID: request.SessionID, CommandID: request.CommandID,
 		SourceLanguage: arguments.SourceLanguage, TargetLanguage: arguments.TargetLanguage,
-	})
+		OutputMode: arguments.OutputMode,
+	}
+	if validActiveLanguageSnapshot(snapshot) {
+		version := int(snapshot.Version)
+		if int64(version) != snapshot.Version {
+			return nil, ErrCommandConfigResultInvalid
+		}
+		configRequest.ExpectedVersion = &version
+	}
+	result, err := e.configurator.Configure(ctx, configRequest)
 	if err != nil {
 		return nil, fmt.Errorf("configure command language direction: %w", err)
 	}
-	if result.SessionID != request.SessionID || result.CommandID != request.CommandID || result.Version <= 0 {
-		return nil, fmt.Errorf("%w: got session %q command %q version %d",
-			ErrCommandConfigResultInvalid, result.SessionID, result.CommandID, result.Version)
+	if result.SessionID != request.SessionID || result.CommandID != request.CommandID || result.Version <= 0 ||
+		result.SourceLanguage != arguments.SourceLanguage || result.TargetLanguage != arguments.TargetLanguage ||
+		result.OutputMode != arguments.OutputMode {
+		return nil, fmt.Errorf("%w: got session %q command %q version %d language %q to %q output %q",
+			ErrCommandConfigResultInvalid, result.SessionID, result.CommandID, result.Version,
+			result.SourceLanguage, result.TargetLanguage, result.OutputMode)
 	}
 	return &command.AppliedLanguageConfig{
 		SourceLanguage: arguments.SourceLanguage,
 		TargetLanguage: arguments.TargetLanguage,
+		OutputMode:     arguments.OutputMode,
 		Version:        result.Version,
 	}, nil
 }
@@ -188,7 +204,11 @@ func (e commandExecutor) prepareInterpretation(ctx context.Context, request comm
 func resolveLanguageArguments(arguments command.Arguments, snapshot session.LanguageConfigSnapshot) (command.Arguments, bool, error) {
 	sourceRaw := strings.TrimSpace(arguments.SourceLanguage)
 	targetRaw := strings.TrimSpace(arguments.TargetLanguage)
-	explicit := sourceRaw != "" || targetRaw != ""
+	explicitLanguage := sourceRaw != "" || targetRaw != ""
+	explicitOutput := arguments.OutputMode != ""
+	if explicitOutput && !arguments.OutputMode.Valid() {
+		return command.Arguments{}, true, ErrCommandLanguageInvalid
+	}
 	source, err := normalizeLanguageTag(sourceRaw)
 	if err != nil {
 		return command.Arguments{}, true, err
@@ -201,19 +221,59 @@ func resolveLanguageArguments(arguments command.Arguments, snapshot session.Lang
 		if source == target {
 			return command.Arguments{}, true, ErrCommandLanguageInvalid
 		}
-		return command.Arguments{SourceLanguage: source, TargetLanguage: target}, true, nil
+		outputMode := arguments.OutputMode
+		if outputMode == "" {
+			outputMode = languagesv1.InterpretationOutputModeBidirectional
+		}
+		return command.Arguments{SourceLanguage: source, TargetLanguage: target, OutputMode: outputMode}, true, nil
 	}
 	if !validActiveLanguageSnapshot(snapshot) {
-		return command.Arguments{}, explicit, ErrCommandLanguageClarification
+		return command.Arguments{}, explicitLanguage || explicitOutput, ErrCommandLanguageClarification
 	}
-	if !explicit {
+	if !explicitLanguage && !explicitOutput {
 		return command.Arguments{}, false, nil
+	}
+	if !explicitLanguage {
+		if arguments.OutputMode == languagesv1.InterpretationOutputModeSingle {
+			source, target, err = currentSingleDirection(snapshot)
+			if err != nil {
+				return command.Arguments{}, true, err
+			}
+		} else {
+			source, target = snapshot.LanguagePairs[0].Source, snapshot.LanguagePairs[0].Target
+		}
+		return command.Arguments{SourceLanguage: source, TargetLanguage: target, OutputMode: arguments.OutputMode}, true, nil
 	}
 	source, target, err = completeLanguageDirection(source, target, snapshot.LanguagePairs)
 	if err != nil {
 		return command.Arguments{}, true, err
 	}
-	return command.Arguments{SourceLanguage: source, TargetLanguage: target}, true, nil
+	outputMode := arguments.OutputMode
+	if outputMode == "" {
+		outputMode = languagesv1.InterpretationOutputModeBidirectional
+	}
+	return command.Arguments{SourceLanguage: source, TargetLanguage: target, OutputMode: outputMode}, true, nil
+}
+
+func currentSingleDirection(snapshot session.LanguageConfigSnapshot) (string, string, error) {
+	ttsTarget := ""
+	for _, route := range snapshot.OutputRoutes {
+		if route.TTSEnabled && !route.DeliveryEnabled {
+			if ttsTarget != "" {
+				return "", "", ErrCommandLanguageClarification
+			}
+			ttsTarget = route.TargetLanguage
+		}
+	}
+	if ttsTarget == "" {
+		return "", "", ErrCommandLanguageClarification
+	}
+	for _, pair := range snapshot.LanguagePairs {
+		if pair.Target == ttsTarget {
+			return pair.Source, pair.Target, nil
+		}
+	}
+	return "", "", ErrCommandLanguageClarification
 }
 
 func normalizeLanguageTag(raw string) (string, error) {

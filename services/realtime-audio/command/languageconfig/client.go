@@ -118,11 +118,21 @@ func (c *Client) Configure(ctx context.Context, request languagesv1.CommandConfi
 		return languagesv1.CommandConfigResult{}, err
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return languagesv1.CommandConfigResult{}, decodeHTTPError(response.StatusCode, body)
+		decodedErr := decodeHTTPError(response.StatusCode, body)
+		var httpErr *HTTPError
+		if errors.As(decodedErr, &httpErr) && httpErr.Code == "delivery_target_required" {
+			return languagesv1.CommandConfigResult{}, errors.Join(command.ErrDeliveryTargetRequired, decodedErr)
+		}
+		return languagesv1.CommandConfigResult{}, decodedErr
 	}
 	var result languagesv1.CommandConfigResult
+	expectedOutputMode := request.OutputMode
+	if expectedOutputMode == "" {
+		expectedOutputMode = languagesv1.InterpretationOutputModeBidirectional
+	}
 	if err := decodeStrict(body, &result); err != nil || result.SessionID != request.SessionID ||
-		result.CommandID != request.CommandID || result.Version <= 0 {
+		result.CommandID != request.CommandID || result.SourceLanguage != request.SourceLanguage ||
+		result.TargetLanguage != request.TargetLanguage || result.OutputMode != expectedOutputMode || result.Version <= 0 {
 		return languagesv1.CommandConfigResult{}, ErrResponseInvalid
 	}
 	return result, nil

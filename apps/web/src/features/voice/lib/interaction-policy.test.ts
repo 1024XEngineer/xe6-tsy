@@ -4,6 +4,7 @@ import {
   effectiveVoiceInteractionPolicy,
   loadVoiceInteractionPolicy,
   saveVoiceInteractionPolicy,
+  shouldSuppressMicrophoneDuringTTS,
 } from "./interaction-policy";
 
 describe("voice interaction policy", () => {
@@ -14,6 +15,11 @@ describe("voice interaction policy", () => {
     expect(effectiveVoiceInteractionPolicy("assistant", "wake_word")).toBe(
       "wake_word",
     );
+  });
+
+  it("keeps capture active while interpretation audio is playing", () => {
+    expect(shouldSuppressMicrophoneDuringTTS("interpretation")).toBe(false);
+    expect(shouldSuppressMicrophoneDuringTTS("assistant")).toBe(true);
   });
 
   it("defaults missing, unknown, and blocked storage to continuous listening", () => {

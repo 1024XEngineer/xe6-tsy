@@ -238,8 +238,9 @@ export function useVoiceSession() {
     loadVoiceConfig(DEFAULT_VOICE_CONFIG),
   );
   const [wakeStatus, setWakeStatus] = useState<WakeListenerStatus>("idle");
+  // Read localStorage after hydration so the first server/client HTML matches.
   const [interactionPolicy, setInteractionPolicyState] =
-    useState<VoiceInteractionPolicy>(loadVoiceInteractionPolicy);
+    useState<VoiceInteractionPolicy>("continuous");
   const [commandFeedback, setCommandFeedback] = useState<CommandFeedback | null>(null);
   const [debug, setDebug] = useState<SessionDebugInfo>({
     accountId: null,
@@ -300,9 +301,22 @@ export function useVoiceSession() {
   const latestAutomaticOutputStatusRef = useRef<string | null>(null);
   const wakeRef = useRef<WakeWordListener | null>(null);
   const activeCommandIdRef = useRef<string | null>(null);
-  const interactionPolicyRef = useRef<VoiceInteractionPolicy>(interactionPolicy);
+  // The rendered state stays deterministic for hydration, while startup reads
+  // the persisted policy immediately if the user clicks before the effect runs.
+  const interactionPolicyRef = useRef<VoiceInteractionPolicy>(
+    loadVoiceInteractionPolicy(),
+  );
   const setUplinkEnabledRef = useRef<(enabled: boolean) => void>(() => undefined);
   const openCommandUplinkRef = useRef<() => void>(() => undefined);
+
+  useEffect(() => {
+    const savedPolicy = loadVoiceInteractionPolicy();
+    const syncTimer = window.setTimeout(() => {
+      interactionPolicyRef.current = savedPolicy;
+      setInteractionPolicyState(savedPolicy);
+    }, 0);
+    return () => window.clearTimeout(syncTimer);
+  }, []);
   const commandUplinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settledPartialTurnsRef = useRef(new Set<string>());
   const activePartialTurnRef = useRef<string | null>(null);
@@ -515,13 +529,6 @@ export function useVoiceSession() {
   }, [clearCommandUplinkTimer]);
 
   const setInteractionPolicy = useCallback((policy: VoiceInteractionPolicy) => {
-    if (
-      modeStateRef.current?.active_mode === "interpretation" &&
-      policy !== "continuous"
-    ) {
-      setHintMessage("同声传译仅支持常驻模式；仍可说「小灵小灵」发送退出指令。");
-      return;
-    }
     clearCommandUplinkTimer();
     interactionPolicyRef.current = policy;
     setInteractionPolicyState(policy);
@@ -651,7 +658,10 @@ export function useVoiceSession() {
     startAbortRef.current?.abort();
     startAbortRef.current = null;
     stopPolling();
-    cleanupMedia();
+    // Keep the PeerConnection alive until realtime has observed the explicit
+    // stop. Closing it first turns the expected track EOF into a false runtime
+    // pipeline failure.
+    setUplinkEnabledRef.current(false);
     wakeRef.current?.stop();
 
     const token = accessTokenRef.current;
@@ -663,6 +673,7 @@ export function useVoiceSession() {
         setHintMessage(errorMessage(error, "结束会话失败"));
       }
     }
+    cleanupMedia();
 
     sessionIdRef.current = null;
     realtimeTicketCacheRef.current?.clear();
@@ -968,12 +979,13 @@ export function useVoiceSession() {
             if (partial && partial.sessionId === session.id) {
               if (settledPartialTurnsRef.current.has(partial.turnId)) return;
               activePartialTurnRef.current = partial.turnId;
-              partialTextByTurnRef.current.set(partial.turnId, partial.text);
+              partialTextByTurnRef.current.set(partial.turnId, `${partial.text}${partial.stash ?? ""}`);
               dispatch({
                 type: "SET_ASR_PARTIAL",
                 partial: {
                   turnId: partial.turnId,
                   text: partial.text,
+                  stash: partial.stash ?? "",
                   sourceLanguage: partial.sourceLanguage,
                 },
               });
@@ -1330,7 +1342,7 @@ export function useVoiceSession() {
       wakeStatus,
       commandFeedback,
       interactionPolicy: effectiveInteractionPolicy,
-      interactionPolicyLocked: activeMode === "interpretation",
+      interactionPolicyLocked: false,
       setInteractionPolicy,
       switchMode,
       toggle,

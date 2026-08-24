@@ -70,14 +70,26 @@
 .statusCluster {
   position: absolute;
   z-index: 7;
-  top: max(1.15rem, env(safe-area-inset-top));
+  top: max(3rem, env(safe-area-inset-top));
   left: 50%;
   display: flex;
-  width: min(38rem, calc(100vw - 15rem));
+  width: min(21rem, calc(100vw - 13rem));
   align-items: center;
   justify-content: center;
-  gap: 0.65rem;
+  gap: 0.5rem;
   transform: translateX(-50%);
+}
+
+.idleStatus {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .statusCapsule {
@@ -86,11 +98,11 @@
   min-width: 0;
   flex: 1 1 auto;
   align-items: center;
-  gap: 0.8rem;
-  padding: 0.42rem 0.6rem 0.42rem 0.48rem;
+  gap: 0.58rem;
+  padding: 0.3rem 0.42rem 0.3rem 0.34rem;
   border: 1px solid rgb(255 255 255 / 22%);
   border-radius: 999px;
-  background: rgb(18 20 22 / 92%);
+  background: rgb(12 14 16 / 86%);
   box-shadow: 0 10px 28px rgb(0 0 0 / 22%);
   backdrop-filter: blur(18px);
 }
@@ -98,42 +110,24 @@
 .liquidStatusOrb {
   position: relative;
   display: block;
-  width: 3.15rem;
+  width: 0.48rem;
   flex: 0 0 auto;
-  aspect-ratio: 1;
-  overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 28%);
-  border-radius: 50%;
-  background: #030409;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 8%);
-}
-
-.liquidStatusOrbFallback {
-  position: absolute;
-  inset: 0.34rem;
-  border-radius: 50%;
-  background:
-    radial-gradient(circle at 34% 28%, rgb(255 255 255 / 92%) 0 3%, transparent 4%),
-    conic-gradient(from 210deg, #4c74ff, #b6e7ff 19%, #2b2d73 42%, #e4f6ff 62%, #3d55c4 82%, #4c74ff);
-  box-shadow: 0 0 0.8rem rgb(129 175 255 / 24%), inset -0.28rem -0.3rem 0.48rem rgb(3 4 9 / 62%);
-  opacity: 0;
-  transition: opacity 180ms ease;
-}
-
-.liquidStatusOrb[data-fallback="true"] .liquidStatusOrbFallback {
-  opacity: 1;
-}
-
-.liquidStatusOrbFrame {
-  display: block;
-  width: 100%;
-  height: 100%;
+  height: 0.48rem;
   border: 0;
-  pointer-events: none;
+  border-radius: 50%;
+  background: #4ade80;
+  box-shadow: 0 0 0.55rem rgb(74 222 128 / 65%);
+  transition: background 160ms ease, box-shadow 160ms ease;
 }
 
-.liquidStatusOrbFrameHidden {
-  visibility: hidden;
+.liquidStatusOrb[data-status="switching"] {
+  background: #facc15;
+  box-shadow: 0 0 0.55rem rgb(250 204 21 / 65%);
+}
+
+.liquidStatusOrb[data-status="error"] {
+  background: #f87171;
+  box-shadow: 0 0 0.55rem rgb(248 113 113 / 65%);
 }
 
 .statusCapsuleBody {
@@ -174,8 +168,8 @@
 
 .modeMenuTrigger {
   display: inline-flex;
-  width: 2.55rem;
-  min-height: 2.55rem;
+  width: 2.1rem;
+  min-height: 2.1rem;
   align-items: center;
   justify-content: center;
   gap: 0.04rem;
@@ -299,12 +293,15 @@
 }
 
 .voiceStage {
+  --voice-stage-offset-y: 0rem;
+
   position: absolute;
   z-index: 1;
   inset: 0;
   display: grid;
   place-content: center;
   place-items: center;
+  transform: translateY(var(--voice-stage-offset-y));
 }
 
 .voiceStage::before {
@@ -415,6 +412,8 @@
   height: 100%;
 }
 
+/* Middle waveform controls: move it with --voice-stage-offset-y on
+   .voiceStage, then tune its footprint here. */
 .strands {
   position: relative;
   display: block;
@@ -615,14 +614,17 @@
   position: absolute;
   z-index: 3;
   right: 50%;
-  bottom: max(1.5rem, 5dvh, env(safe-area-inset-bottom));
-  display: grid;
+  top: 58%;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
   width: min(42rem, calc(100vw - 3rem));
-  max-height: min(34dvh, 22rem);
-  gap: clamp(1.15rem, 2.6dvh, 1.8rem);
+  max-height: 38dvh;
+  gap: clamp(0.72rem, 1.5dvh, 1rem);
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 0.4rem 0.2rem 0.4rem;
+  padding: 0.8rem 0.2rem 0.4rem;
   color: var(--text);
   overscroll-behavior: contain;
   scrollbar-color: rgb(255 255 255 / 18%) transparent;
@@ -632,20 +634,34 @@
 
 .transcriptTurn {
   display: grid;
-  gap: 0.52rem;
+  gap: 0.18rem;
+  flex: 0 0 auto;
+}
+
+.transcriptPair {
+  display: grid;
+  gap: 0.18rem;
 }
 
 .transcriptTurn p {
   margin: 0;
   overflow-wrap: anywhere;
-  font-size: clamp(1rem, 1.45vw, 1.26rem);
+  font-size: clamp(0.82rem, 1.1vw, 0.98rem);
   font-weight: 430;
   letter-spacing: 0;
   line-height: 1.42;
 }
 
 .transcriptSource {
-  color: rgb(255 255 255 / 54%);
+  color: rgb(255 255 255 / 94%);
+}
+
+.transcriptConfirmed {
+  color: rgb(255 255 255 / 94%);
+}
+
+.transcriptStash {
+  color: rgb(255 255 255 / 48%);
 }
 
 .transcriptTranslation,
@@ -2023,18 +2039,19 @@
   }
 
   .statusCluster {
-    top: max(4.35rem, env(safe-area-inset-top));
+    top: max(4.15rem, env(safe-area-inset-top));
     width: calc(100vw - 2rem);
     gap: 0.4rem;
   }
 
   .statusCapsule {
     gap: 0.55rem;
-    padding-left: 0.38rem;
+    padding-left: 0.3rem;
   }
 
   .liquidStatusOrb {
-    width: 2.55rem;
+    width: 0.48rem;
+    height: 0.48rem;
   }
 
   .capsuleStatus {
@@ -2076,14 +2093,15 @@
   }
 
   .transcript {
-    bottom: max(1rem, 3dvh, env(safe-area-inset-bottom));
+    top: 57%;
+    bottom: max(0.8rem, env(safe-area-inset-bottom));
     width: calc(100vw - 2rem);
-    max-height: min(28dvh, 13rem);
+    max-height: 39dvh;
     gap: 1rem;
   }
 
   .transcriptTurn p {
-    font-size: 0.92rem;
+    font-size: 0.8rem;
   }
 
   .brandHeader {
@@ -2331,7 +2349,7 @@
 
 @media (max-height: 40rem) {
   .voiceStage {
-    transform: scale(0.88);
+    transform: translateY(var(--voice-stage-offset-y)) scale(0.88);
   }
 
   .latestSlot {

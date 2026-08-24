@@ -38,6 +38,11 @@ export function VoiceExperience() {
   const modeLabel = activeMode === "assistant" ? "AI 助手" : "同声传译";
   const policyLabel = interactionPolicy === "continuous" ? "常驻模式" : "唤醒词模式";
   const capsuleStatus = modeSwitching ? "切换中…" : `${modeLabel} · ${policyLabel}`;
+  const statusTone = state.notice || debug.lastError || debug.connectionState === "failed"
+    ? "error"
+    : modeSwitching
+      ? "switching"
+      : "ready";
 
   const handleToggle = () => {
     setSettingsOpen(false);
@@ -82,9 +87,9 @@ export function VoiceExperience() {
           </button>
         </motion.header>
 
-        <section className={styles.statusCluster} aria-label="会话状态与模式">
+        {state.phase !== "idle" ? <section className={styles.statusCluster} aria-label="会话状态与模式">
           <div className={styles.statusCapsule}>
-            <LiquidStatusOrb />
+            <LiquidStatusOrb status={statusTone} />
             <div className={styles.statusCapsuleBody}>
               <p aria-live="polite" className={styles.capsuleStatus}>
                 {capsuleStatus}
@@ -97,7 +102,7 @@ export function VoiceExperience() {
                 aria-expanded={modeMenuOpen}
                 aria-label="切换工作模式"
                 className={styles.modeMenuTrigger}
-                disabled={state.phase === "idle" || modeSwitching}
+                disabled={modeSwitching}
                 onClick={() => setModeMenuOpen((open) => !open)}
                 type="button"
               >
@@ -125,13 +130,11 @@ export function VoiceExperience() {
             aria-checked={interactionPolicy === "wake_word"}
             aria-label={`监听方式：${policyLabel}`}
             className={styles.interactionToggle}
-            disabled={interactionPolicyLocked || state.phase === "idle"}
+            disabled={interactionPolicyLocked}
             onClick={toggleInteractionPolicy}
             role="switch"
             title={
-              interactionPolicyLocked
-                ? "同声传译固定使用常驻模式"
-                : "切换常驻模式或唤醒词模式"
+              "切换常驻模式或唤醒词模式"
             }
             type="button"
           >
@@ -143,7 +146,12 @@ export function VoiceExperience() {
             {automaticOutputMessage ? <p>{automaticOutputMessage}</p> : null}
             {commandFeedback ? <p>{commandFeedback.message}</p> : null}
           </div>
-        </section>
+        </section> : null}
+        {state.phase === "idle" ? (
+          <p aria-live="polite" className={styles.idleStatus}>
+            {statusMessage}
+          </p>
+        ) : null}
 
         <section className={styles.voiceStage}>
           <VoiceControl mode={activeMode} phase={state.phase} onActivate={handleToggle} />

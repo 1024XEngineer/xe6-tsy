@@ -1,4 +1,4 @@
-:global(html), :global(body) { height: auto; min-height: 100%; overflow-x: hidden; overflow-y: auto; background: #f7f9f7; }
+:global(html:has([class*="__site"])), :global(body:has([class*="__site"])) { height: auto; min-height: 100%; overflow: hidden auto !important; background: #f7f9f7; }
 .site {
   --nav-height: 81px;
   --ink: #101513;
@@ -350,7 +350,7 @@
 /* Documentation reading surface. */
 :global(html:has([class*="docsLayout"])),
 :global(body:has([class*="docsLayout"])) {
-  overflow: visible;
+  overflow: visible !important;
 }
 
 .docsLayout {

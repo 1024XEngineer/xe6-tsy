@@ -1002,7 +1002,7 @@ describe("VoiceExperience", () => {
     await waitFor(() => expect(uplinkTrack.enabled).toBe(false));
   });
 
-  it("forces continuous uplink in interpretation and restores wake-word policy after voice exit", async () => {
+  it("keeps the selected wake-word policy when switching between business modes", async () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
@@ -1012,10 +1012,10 @@ describe("VoiceExperience", () => {
 
     chooseMode("同声传译");
     await waitFor(() => {
-      expect(screen.getByText("同声传译 · 常驻模式")).toBeInTheDocument();
-      expect(policyToggle).toHaveTextContent("常驻模式");
-      expect(policyToggle).toBeDisabled();
-      expect(uplinkTrack.enabled).toBe(true);
+      expect(screen.getByText("同声传译 · 唤醒词模式")).toBeInTheDocument();
+      expect(policyToggle).toHaveTextContent("唤醒词模式");
+      expect(policyToggle).toBeEnabled();
+      expect(uplinkTrack.enabled).toBe(false);
     });
 
     wakeHandler?.("小灵小灵");
@@ -1059,7 +1059,7 @@ describe("VoiceExperience", () => {
     });
     expect(uplinkTrack.enabled).toBe(true);
     await act(async () => {
-      vi.advanceTimersByTime(15_000);
+      await vi.advanceTimersByTimeAsync(15_000);
     });
 
     expect(uplinkTrack.enabled).toBe(false);

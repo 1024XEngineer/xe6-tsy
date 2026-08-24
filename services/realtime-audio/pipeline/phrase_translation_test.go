@@ -63,6 +63,28 @@ func TestSplitStreamTTSKeepsValidatedChunksOrdered(t *testing.T) {
 	}
 }
 
+func TestPhraseTranslationCoordinatorEnqueuesValidatedStreamResult(t *testing.T) {
+	ttsProvider := &recordingTTSProvider{}
+	audio := &recordingPhraseAudio{}
+	scheduler := newTestPhrasePlaybackScheduler(ttsProvider, audio)
+	coordinator := NewPhraseTranslationCoordinator(streamPhraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "validated", Provider: "stream", Model: "v1"}, nil
+	}), "stream", &recordingPhraseSubtitleObserver{}, nil)
+	coordinator.SetPhrasePlaybackScheduler(scheduler)
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: true}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	waitForPhraseTranslation(t, coordinator, turn.ID)
+	if !audio.waitFor(1, time.Second) {
+		t.Fatal("validated stream playback did not start")
+	}
+	requests := ttsProvider.requests()
+	if len(requests) != 1 || requests[0].Text != "validated" {
+		t.Fatalf("TTS requests = %#v, want validated stream result only", requests)
+	}
+}
+
 func TestPhraseTranslationCoordinatorWaitsAndReusesPendingPhrase(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -410,6 +432,21 @@ func (f phraseTranslateFunc) Translate(ctx context.Context, request translate.Re
 }
 
 var _ translate.Provider = phraseTranslateFunc(nil)
+
+type streamPhraseTranslateFunc func(context.Context, translate.Request) (translate.Result, error)
+
+func (f streamPhraseTranslateFunc) Translate(ctx context.Context, request translate.Request) (translate.Result, error) {
+	return f(ctx, request)
+}
+
+func (f streamPhraseTranslateFunc) TranslateStream(ctx context.Context, request translate.Request, onDelta func(string)) (translate.Result, error) {
+	if onDelta != nil {
+		onDelta("provisional")
+	}
+	return f(ctx, request)
+}
+
+var _ translate.StreamProvider = streamPhraseTranslateFunc(nil)
 
 type phraseObserverFunc func(context.Context, realtimev1.PhraseSubtitleEvent)
 

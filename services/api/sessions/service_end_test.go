@@ -606,7 +606,7 @@ func TestServiceEndActiveStopErrorPreservesSession(t *testing.T) {
 
 func TestServiceEndActiveStopTimeoutPreservesSession(t *testing.T) {
 	fixture := newEndFixture(t, StatusActive)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	fixture.realtime.stopHook = func(ctx context.Context) {
 		<-ctx.Done()

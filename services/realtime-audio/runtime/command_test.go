@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -204,11 +205,11 @@ func TestCommandExecutorKeepsCurrentSingleDirection(t *testing.T) {
 	}
 }
 
-func TestCommandExecutorBootstrapsExplicitLanguagesWithoutSnapshot(t *testing.T) {
+func TestCommandExecutorUsesCurrentVersionForExplicitLanguages(t *testing.T) {
 	t.Parallel()
 	sink := &recordingModeChangedSink{}
 	manager := commandTestManager(t, realtimev1.ModeAssistant, sink)
-	reader := &countingLanguageReader{err: errors.New("snapshot must not be read")}
+	reader := &countingLanguageReader{snapshot: activeConfig("session-1")}
 	configurator := &recordingLanguageConfigurator{}
 
 	_, err := (commandExecutor{
@@ -219,11 +220,12 @@ func TestCommandExecutorBootstrapsExplicitLanguagesWithoutSnapshot(t *testing.T)
 	if err != nil {
 		t.Fatalf("ExecuteCommand() error = %v", err)
 	}
-	if reader.calls != 0 {
-		t.Fatalf("language snapshot reads = %d, want 0", reader.calls)
+	if reader.calls != 1 {
+		t.Fatalf("language snapshot reads = %d, want 1", reader.calls)
 	}
 	if len(configurator.requests) != 1 || configurator.requests[0].SourceLanguage != "zh-CN" ||
-		configurator.requests[0].TargetLanguage != "ja-JP" {
+		configurator.requests[0].TargetLanguage != "ja-JP" || configurator.requests[0].ExpectedVersion == nil ||
+		*configurator.requests[0].ExpectedVersion != 1 {
 		t.Fatalf("configure requests = %#v", configurator.requests)
 	}
 	if manager.entries["session-1"].mode.Snapshot().ActiveMode != realtimev1.ModeInterpretation {
@@ -362,7 +364,7 @@ func TestCommandExecutorReplaysConfigurationAfterModeCASFailure(t *testing.T) {
 	if _, err := executor.ExecuteCommand(t.Context(), request); err != nil {
 		t.Fatalf("retry ExecuteCommand() error = %v", err)
 	}
-	if len(configurator.requests) != 2 || configurator.requests[0] != configurator.requests[1] {
+	if len(configurator.requests) != 2 || !reflect.DeepEqual(configurator.requests[0], configurator.requests[1]) {
 		t.Fatalf("configuration retries = %#v", configurator.requests)
 	}
 	if len(sink.Events()) != 1 || manager.entries["session-1"].mode.Snapshot().ActiveMode != realtimev1.ModeInterpretation {

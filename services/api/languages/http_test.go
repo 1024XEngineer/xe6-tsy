@@ -32,12 +32,16 @@ func TestHTTPConfigureFromCommandCreatesAndReplaysConfig(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
 	}
+	firstBody := append([]byte(nil), first.Body.Bytes()...)
 	var firstResult languagesv1.CommandConfigResult
-	if err := json.NewDecoder(first.Body).Decode(&firstResult); err != nil {
+	if err := json.Unmarshal(firstBody, &firstResult); err != nil {
 		t.Fatalf("decode first response: %v", err)
 	}
 	if firstResult.SessionID != request.SessionID || firstResult.CommandID != request.CommandID || firstResult.Version != 1 {
 		t.Fatalf("first result=%#v", firstResult)
+	}
+	if strings.Contains(string(firstBody), `"source_language"`) || strings.Contains(string(firstBody), `"output_mode"`) {
+		t.Fatalf("legacy response contains new fields: %s", firstBody)
 	}
 
 	replay := serveCommandConfig(t, mux, request, testCommandSystemToken)
@@ -91,6 +95,16 @@ func TestHTTPConfigureFromCommandCreatesSingleOutputWithVersionCheck(t *testing.
 	if result.SourceLanguage != "zh-CN" || result.TargetLanguage != "en-US" ||
 		result.OutputMode != languagesv1.InterpretationOutputModeSingle || result.Version != 2 {
 		t.Fatalf("result = %#v", result)
+	}
+	replayExpected := result.Version
+	request.ExpectedVersion = &replayExpected
+	replay := serveCommandConfig(t, mux, request, testCommandSystemToken)
+	if replay.Code != http.StatusOK {
+		t.Fatalf("replay status=%d body=%s", replay.Code, replay.Body.String())
+	}
+	var replayResult languagesv1.CommandConfigResult
+	if err := json.NewDecoder(replay.Body).Decode(&replayResult); err != nil || replayResult.Version != result.Version {
+		t.Fatalf("replay result=%#v error=%v", replayResult, err)
 	}
 	active, err := store.GetActiveConfig(t.Context(), request.SessionID)
 	if err != nil {

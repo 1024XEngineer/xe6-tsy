@@ -23,6 +23,11 @@ realtime 的内部语音指令配置契约使用 `output_mode=single|bidirection
 `expected_version` 对 API 当前语言配置执行乐观锁。API 返回实际接受的语言方向、输出模式和版本；
 外部 `command.result` v1 不承载这些新增字段，客户端在成功后回读权威语言配置。
 
+滚动升级时可先发布 API，再发布 realtime。新 API 对未携带 `output_mode` 和 `expected_version` 的
+旧 realtime 请求继续返回原有三字段响应；若先发布 realtime，新客户端只会为双向模式在收到旧 API
+的 `invalid_request` 后回退一次旧请求。单向模式不会降级，因为旧 API 无法表达其输出路由；该能力
+需要 API 与 realtime 都升级后才可用。
+
 ## 规则
 
 - 所有跨端字段先改 contracts，再改实现。

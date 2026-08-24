@@ -2,6 +2,7 @@ package languageconfig
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -99,6 +100,67 @@ func TestClientConfigureMapsMissingDeliveryTarget(t *testing.T) {
 	_, err = client.Configure(t.Context(), testRequest())
 	if !errors.Is(err, command.ErrDeliveryTargetRequired) {
 		t.Fatalf("Configure() error = %v, want delivery target error", err)
+	}
+}
+
+func TestClientConfigureFallsBackToLegacyAPIForBidirectionalMode(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request %d: %v", requests, err)
+		}
+		if requests == 1 {
+			if body["output_mode"] != "bidirectional" || body["expected_version"] != float64(3) {
+				t.Errorf("current request = %#v", body)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"code":"invalid_request","message":"unknown field","details":{}}}`)
+			return
+		}
+		if _, ok := body["output_mode"]; ok {
+			t.Errorf("legacy request contains output_mode: %#v", body)
+		}
+		if _, ok := body["expected_version"]; ok {
+			t.Errorf("legacy request contains expected_version: %#v", body)
+		}
+		_, _ = io.WriteString(w, `{"session_id":"session-1","command_id":"command-1","version":4}`)
+	}))
+	defer server.Close()
+	client, err := NewClient(Config{BaseURL: server.URL, SystemToken: testSystemToken})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	expectedVersion := 3
+	request := testRequest()
+	request.OutputMode = languagesv1.InterpretationOutputModeBidirectional
+	request.ExpectedVersion = &expectedVersion
+	result, err := client.Configure(t.Context(), request)
+	if err != nil {
+		t.Fatalf("Configure() error = %v", err)
+	}
+	if requests != 2 || result.OutputMode != languagesv1.InterpretationOutputModeBidirectional || result.Version != 4 {
+		t.Fatalf("requests=%d result=%#v", requests, result)
+	}
+}
+
+func TestClientConfigureDoesNotFallbackSingleOutputToLegacyAPI(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"code":"invalid_request"}}`)
+	}))
+	defer server.Close()
+	client, err := NewClient(Config{BaseURL: server.URL, SystemToken: testSystemToken})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	_, err = client.Configure(t.Context(), testRequest())
+	var httpErr *HTTPError
+	if requests != 1 || !errors.As(err, &httpErr) || httpErr.Code != "invalid_request" {
+		t.Fatalf("requests=%d error=%v", requests, err)
 	}
 }
 

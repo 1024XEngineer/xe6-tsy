@@ -138,16 +138,12 @@ func (e commandExecutor) prepareInterpretation(ctx context.Context, request comm
 	if arguments.OutputMode != "" && !arguments.OutputMode.Valid() {
 		return nil, errors.Join(command.ErrUnsupported, ErrCommandLanguageInvalid)
 	}
-	var snapshot session.LanguageConfigSnapshot
-	if strings.TrimSpace(arguments.SourceLanguage) == "" || strings.TrimSpace(arguments.TargetLanguage) == "" || arguments.OutputMode != "" {
-		var err error
-		snapshot, err = e.languages.GetCurrentConfig(ctx, request.SessionID)
-		if err != nil {
-			return nil, fmt.Errorf("read current command language configuration: %w", err)
-		}
-		if snapshot.SessionID != "" && snapshot.SessionID != request.SessionID {
-			return nil, fmt.Errorf("%w: got %q for %q", ErrCommandLanguageSession, snapshot.SessionID, request.SessionID)
-		}
+	snapshot, err := e.languages.GetCurrentConfig(ctx, request.SessionID)
+	if err != nil {
+		return nil, fmt.Errorf("read current command language configuration: %w", err)
+	}
+	if snapshot.SessionID != "" && snapshot.SessionID != request.SessionID {
+		return nil, fmt.Errorf("%w: got %q for %q", ErrCommandLanguageSession, snapshot.SessionID, request.SessionID)
 	}
 	arguments, explicit, err := resolveLanguageArguments(arguments, snapshot)
 	if err != nil {
@@ -198,9 +194,8 @@ func (e commandExecutor) prepareInterpretation(ctx context.Context, request comm
 	}, nil
 }
 
-// resolveLanguageArguments normalizes explicit BCP-47 slots. A complete explicit pair can
-// bootstrap API-owned configuration without an existing snapshot; an incomplete pair may use an
-// active snapshot only when exactly one configured direction matches. It never guesses a pair.
+// resolveLanguageArguments normalizes explicit BCP-47 slots. Incomplete pairs may use the active
+// snapshot only when exactly one configured direction matches. It never guesses a pair.
 func resolveLanguageArguments(arguments command.Arguments, snapshot session.LanguageConfigSnapshot) (command.Arguments, bool, error) {
 	sourceRaw := strings.TrimSpace(arguments.SourceLanguage)
 	targetRaw := strings.TrimSpace(arguments.TargetLanguage)

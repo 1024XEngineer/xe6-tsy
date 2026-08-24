@@ -74,20 +74,37 @@ func (h *Handler) configureFromCommand(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, r, err)
 		return
 	}
-	config, err := h.svc.CreateConfig(r.Context(), accountID, request.SessionID, commandIdempotencyKey(request.SessionID, request.CommandID), CreateLanguageConfigRequest{
+	createRequest := CreateLanguageConfigRequest{
 		Languages: []LanguagePair{
 			{Source: request.SourceLanguage, Target: request.TargetLanguage},
 			{Source: request.TargetLanguage, Target: request.SourceLanguage},
 		},
 		OutputRoutes:    commandOutputRoutes(request),
 		ExpectedVersion: request.ExpectedVersion,
-	})
+	}
+	fingerprintRequest := createRequest
+	fingerprintRequest.ExpectedVersion = nil
+	config, err := h.svc.createConfig(
+		r.Context(), accountID, request.SessionID,
+		commandIdempotencyKey(request.SessionID, request.CommandID),
+		createRequest, requestFingerprint(fingerprintRequest),
+	)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
 	}
 	if config.Status != StatusActive {
 		writeServiceError(w, r, ErrStaleCommand)
+		return
+	}
+	if request.OutputMode == "" && request.ExpectedVersion == nil {
+		// Older realtime deployments reject unknown response fields. Preserve the
+		// original v1 response until they have been upgraded.
+		writeJSON(w, http.StatusOK, struct {
+			SessionID string `json:"session_id"`
+			CommandID string `json:"command_id"`
+			Version   int    `json:"version"`
+		}{SessionID: request.SessionID, CommandID: request.CommandID, Version: config.Version})
 		return
 	}
 	writeJSON(w, http.StatusOK, languagesv1.CommandConfigResult{

@@ -184,3 +184,25 @@ func TestPhraseStabilizerDoesNotSilentlyConsumeMeaningfulShortPrefix(t *testing.
 		t.Fatalf("Flush() = %#v, want complete source phrase", got)
 	}
 }
+
+func TestPhraseStabilizerAdvancesPunctuationConfirmedAfterLiveChunk(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{StableAfter: time.Millisecond, LiveMinRunes: 4, LiveMaxRunes: 40})
+	now := time.Unix(1700000000, 0)
+
+	first := "将科技含金量持续转化为发展含金量"
+	stabilizer.Observe(first, now)
+	if got := stabilizer.Advance(now.Add(time.Millisecond)); len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 1, Text: first}) {
+		t.Fatalf("first live chunk = %#v", got)
+	}
+	if got := stabilizer.Observe(first+"，", now.Add(2*time.Millisecond)); len(got) != 0 {
+		t.Fatalf("delayed punctuation = %#v, want cursor-only advance", got)
+	}
+	if stabilizer.consumed != first+"，" {
+		t.Fatalf("consumed = %q, want delayed punctuation included", stabilizer.consumed)
+	}
+	finalText := first + "，为中国式现代化建设，"
+	if got := stabilizer.Flush(finalText); len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 2, Text: "为中国式现代化建设，"}) {
+		t.Fatalf("Flush() = %#v, want only the unconsumed suffix", got)
+	}
+}

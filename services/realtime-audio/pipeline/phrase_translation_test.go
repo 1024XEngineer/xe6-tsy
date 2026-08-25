@@ -196,6 +196,37 @@ func TestPhraseTranslationCoordinatorReusesCompletedPrefixWithPendingTail(t *tes
 	}
 }
 
+func TestPhraseTranslationCoordinatorKeepsPrefixWhenFinalHasUnconfirmedTail(t *testing.T) {
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "en-" + request.Text, Provider: "mock", Model: "v1", InputTokens: 1}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	turn := TurnContext{ID: "turn-prefix-tail", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	waitForPhraseTranslation(t, coordinator, turn.ID)
+
+	summary, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好，尾段")
+	if err != nil || !reused || residual != "，尾段" {
+		t.Fatalf("FinalizePhraseSubtitleTurn() = summary=%#v residual=%q reused=%v err=%v; want prefix reuse and suffix residual", summary, residual, reused, err)
+	}
+	if summary.Text != "en-你好\x00" || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "，尾段" {
+		t.Fatalf("summary = %#v, want translated prefix plus residual marker", summary)
+	}
+}
+
+func TestPhraseTranslationCoordinatorFallsBackToWholeFinalWhenNoPhraseMatches(t *testing.T) {
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "en-" + request.Text, Provider: "mock", Model: "v1"}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	turn := TurnContext{ID: "turn-no-match", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+
+	_, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "整句")
+	if err != nil || reused || residual != "整句" {
+		t.Fatalf("FinalizePhraseSubtitleTurn() = reused=%v residual=%q err=%v; want whole-source fallback", reused, residual, err)
+	}
+}
+
 func TestPhraseTranslationCoordinatorReportsLateUsageAfterCanceledFinalize(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

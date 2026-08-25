@@ -1,6 +1,7 @@
 /** Play TTS audio delivered over the realtime DataChannel (possibly chunked). */
 
 export type TTSAudioEvent = {
+  sessionId: string;
   playbackId: string;
   sampleRateHz: number;
   channels: number;
@@ -99,7 +100,7 @@ function concatChunks(chunks: Map<number, ArrayBuffer>): ArrayBuffer {
 
 async function toAudioBuffer(
   ctx: AudioContext,
-  event: Omit<TTSAudioEvent, "sequence" | "final" | "playbackId"> & {
+  event: Omit<TTSAudioEvent, "sequence" | "final" | "playbackId" | "sessionId"> & {
     pcm: ArrayBuffer;
   },
 ): Promise<AudioBuffer> {
@@ -135,7 +136,7 @@ async function playAssembled(event: {
     scheduledPlaybackIds.delete(event.playbackId);
     return;
   }
-  listener?.(true);
+  let playbackStarted = false;
   try {
     const ctx = getAudioContext(event.sampleRateHz);
     if (ctx.state === "suspended") {
@@ -179,6 +180,8 @@ async function playAssembled(event: {
       cancelActivePlayback = cancel;
       try {
         source.start();
+        playbackStarted = true;
+        listener?.(true);
       } catch (error) {
         if (cancelActivePlayback === cancel) {
           cancelActivePlayback = null;
@@ -196,7 +199,7 @@ async function playAssembled(event: {
     });
   } finally {
     scheduledPlaybackIds.delete(event.playbackId);
-    listener?.(false);
+    if (playbackStarted) listener?.(false);
   }
 }
 
@@ -263,15 +266,23 @@ export function cancelAllTTSAudioPlayback(): void {
 export function parseTTSAudioEvent(payload: unknown): TTSAudioEvent | null {
   if (!payload || typeof payload !== "object") return null;
   const root = payload as Record<string, unknown>;
-  const type = String(root.type ?? root.event ?? "");
-  if (type !== "tts.audio") return null;
   const nested =
     root.payload && typeof root.payload === "object"
       ? (root.payload as Record<string, unknown>)
       : root;
+  const isTTSAudio = [root.type, root.event, nested.type, nested.event].some(
+    (value) => value === "tts.audio",
+  );
+  if (!isTTSAudio) return null;
   const pcmBase64 = String(nested.pcm_base64 ?? nested.pcmBase64 ?? "");
   const sampleRateHz = Number(nested.sample_rate_hz ?? nested.sampleRateHz ?? 0);
-  if (!pcmBase64 || !Number.isFinite(sampleRateHz) || sampleRateHz <= 0) {
+  const sessionId = String(nested.session_id ?? nested.sessionId ?? "").trim();
+  if (
+    !sessionId ||
+    !pcmBase64 ||
+    !Number.isFinite(sampleRateHz) ||
+    sampleRateHz <= 0
+  ) {
     return null;
   }
   try {
@@ -289,6 +300,7 @@ export function parseTTSAudioEvent(payload: unknown): TTSAudioEvent | null {
       // Backward compat: older servers omit `final` and send one full clip.
       !hasFinalField;
     return {
+      sessionId,
       playbackId: String(nested.playback_id ?? nested.playbackId ?? ""),
       sampleRateHz,
       channels: Number(nested.channels ?? 1) || 1,

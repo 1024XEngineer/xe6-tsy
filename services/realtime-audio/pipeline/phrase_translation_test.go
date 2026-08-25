@@ -64,6 +64,12 @@ func TestSplitStreamTTSKeepsValidatedChunksOrdered(t *testing.T) {
 	}
 }
 
+func TestPhraseResidualMarkerIsStorageSafe(t *testing.T) {
+	if strings.ContainsRune(phraseResidualMarker, '\x00') {
+		t.Fatal("phrase residual marker contains PostgreSQL-incompatible NUL")
+	}
+}
+
 func TestSplitStreamTTSPrefersWordBoundariesInsideTargetWindow(t *testing.T) {
 	input := "alpha beta gamma delta epsilon zeta eta theta iota kappa."
 	got := splitStreamTTS(input)
@@ -202,7 +208,7 @@ func TestPhraseTranslationCoordinatorKeepsPrefixWhenFinalHasUnconfirmedTail(t *t
 	if err != nil || !reused || residual != "，尾段" {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = summary=%#v residual=%q reused=%v err=%v; want prefix reuse and suffix residual", summary, residual, reused, err)
 	}
-	if summary.Text != "en-你好\x00" || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "，尾段" {
+	if summary.Text != "en-你好"+phraseResidualMarker || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "，尾段" {
 		t.Fatalf("summary = %#v, want translated prefix plus residual marker", summary)
 	}
 }
@@ -488,7 +494,7 @@ func TestPhraseTranslationCoordinatorReturnsCompletedPhraseUsageOnFallback(t *te
 	if err != nil || !ok || residual != "" {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = ok=%v residual=%q err=%v, want residual settlement", ok, residual, err)
 	}
-	if summary.Text != "hello\x00" || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "失败" {
+	if summary.Text != "hello"+phraseResidualMarker || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "失败" {
 		t.Fatalf("summary = %#v, want marker for 失败", summary)
 	}
 	if len(usage) != 0 {
@@ -525,7 +531,7 @@ func TestPhraseTranslationCoordinatorDoesNotRetranslateAfterMiddleFailure(t *tes
 		time.Sleep(time.Millisecond)
 	}
 	summary, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好失败世界")
-	if err != nil || !reused || residual != "" || summary.Text != "en-你好\x00en-世界" || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "失败" {
+	if err != nil || !reused || residual != "" || summary.Text != "en-你好"+phraseResidualMarker+"en-世界" || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "失败" {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, %q, %v, %v", summary, residual, reused, err)
 	}
 	requestsMu.Lock()

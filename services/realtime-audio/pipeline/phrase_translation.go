@@ -635,7 +635,10 @@ func (c *PhraseTranslationCoordinator) phraseUsageFact(turn TurnContext, phrase 
 	)
 }
 
-const phraseResidualMarker = "\x00"
+// Use a private-use Unicode rune as the in-memory placeholder. PostgreSQL
+// jsonb rejects NUL even when JSON-escaped, so a leaked marker must never make
+// the otherwise valid FinalTurn impossible to persist.
+const phraseResidualMarker = "\uE000"
 
 // phraseSummary builds a final translation template without waiting for phrase
 // workers. Successful phrases are reused; unresolved source segments are replaced

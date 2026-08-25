@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
@@ -245,15 +246,23 @@ func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtt
 }
 
 func shouldFlushStreamTTS(text string) bool {
-	text = strings.TrimSpace(text)
-	if text == "" {
+	if strings.TrimSpace(text) == "" {
 		return false
 	}
 	runes := []rune(text)
 	if strings.ContainsRune(".!?,;:\u3002\uff01\uff1f\uff0c\uff1b\uff1a\u3001\n", runes[len(runes)-1]) {
 		return true
 	}
-	return len([]rune(text)) >= 32
+	// For languages with spaces, wait for a word boundary inside the 20-40
+	// character window. CJK scripts do not require a synthetic separator, so
+	// they can keep the lower-latency 32-character target.
+	if len(runes) >= 20 && unicode.IsSpace(runes[len(runes)-1]) {
+		return true
+	}
+	if len(runes) >= 32 && unicode.In(runes[len(runes)-1], unicode.Han, unicode.Hiragana, unicode.Katakana) {
+		return true
+	}
+	return len(runes) >= 40
 }
 
 func splitStreamTTS(text string) []string {

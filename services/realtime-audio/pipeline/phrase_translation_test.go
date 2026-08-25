@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,33 @@ func TestSplitStreamTTSKeepsValidatedChunksOrdered(t *testing.T) {
 	want := []string{"hello,", "world这是一段较长的尾部"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("splitStreamTTS() = %#v, want %#v", got, want)
+	}
+}
+
+func TestSplitStreamTTSPrefersWordBoundariesInsideTargetWindow(t *testing.T) {
+	input := "alpha beta gamma delta epsilon zeta eta theta iota kappa."
+	got := splitStreamTTS(input)
+	if strings.Join(got, " ") != input {
+		t.Fatalf("splitStreamTTS() = %#v, split or removed a word boundary", got)
+	}
+	for _, chunk := range got {
+		if runes := len([]rune(chunk)); runes > 40 {
+			t.Fatalf("chunk %q has %d runes, want at most 40", chunk, runes)
+		}
+	}
+}
+
+func TestSplitStreamTTSKeepsCJKLatencyTarget(t *testing.T) {
+	input := strings.Repeat("中", 70)
+	got := splitStreamTTS(input)
+	wantLengths := []int{32, 32, 6}
+	if len(got) != len(wantLengths) {
+		t.Fatalf("splitStreamTTS() = %#v, want chunk lengths %#v", got, wantLengths)
+	}
+	for index, want := range wantLengths {
+		if length := len([]rune(got[index])); length != want {
+			t.Fatalf("chunk %d length = %d, want %d", index, length, want)
+		}
 	}
 }
 

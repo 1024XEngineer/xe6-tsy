@@ -46,12 +46,18 @@ run_release() {
     bash "$release_dir/deploy.sh" "$deployment_dir" "$release_dir" session
 }
 
+run_release_without_smoke() {
+  local deployment_dir=$1
+  local release_dir=$2
+  PATH="$test_root/bin:$PATH" bash "$release_dir/deploy.sh" "$deployment_dir" "$release_dir" --no-smoke
+}
+
 write_fake_docker
 
 first_deployment="$test_root/first"
 first_release="$first_deployment/.staging/candidate"
 prepare_release "$first_deployment" "$first_release"
-run_release "$first_deployment" "$first_release" 1
+run_release_without_smoke "$first_deployment" "$first_release"
 cmp "$first_release/.env.production" "$first_deployment/.env.production"
 cmp "$first_release/docker-compose.yml" "$first_deployment/docker-compose.yml"
 cmp "$first_release/deploy.sh" "$first_deployment/deploy.sh"

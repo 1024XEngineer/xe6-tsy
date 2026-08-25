@@ -189,5 +189,5 @@ jobs:
           if [[ -n "${DEPLOY_SMOKE_ACCESS_TOKEN:-}" ]]; then
             printf '%s\n' "$DEPLOY_SMOKE_ACCESS_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${release_dir}/deploy.sh' '${DEPLOY_PATH}' '${release_dir}' '${DEPLOY_SMOKE_SESSION_ID}'"
           else
-            ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${release_dir}/deploy.sh' '${DEPLOY_PATH}' '${release_dir}'"
+            ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${release_dir}/deploy.sh' '${DEPLOY_PATH}' '${release_dir}' --no-smoke"
           fi

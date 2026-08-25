@@ -3,16 +3,23 @@
 set -euo pipefail
 
 if [[ $# -ne 2 && $# -ne 3 ]]; then
-  printf 'usage: %s <deployment-directory> <environment-file> [smoke-session-id]\n' "$0" >&2
+  printf 'usage: %s <deployment-directory> <environment-file>\n' "$0" >&2
+  printf '       %s <deployment-directory> <release-directory> <smoke-session-id|--no-smoke>\n' "$0" >&2
   exit 64
 fi
 
 deployment_dir=$1
+staged_release=false
 if [[ $# -eq 3 ]]; then
   release_dir=$2
   environment_file="$release_dir/.env.production"
-  smoke_session_id=$3
-  smoke_enabled=true
+  staged_release=true
+  if [[ "$3" == --no-smoke ]]; then
+    smoke_enabled=false
+  else
+    smoke_session_id=$3
+    smoke_enabled=true
+  fi
 else
   release_dir=$deployment_dir
   environment_file=$2
@@ -94,6 +101,9 @@ trap rollback_on_failure EXIT
 
 if [[ "$smoke_enabled" == true ]]; then
   printf '%s\n' "$smoke_access_token" | bash "$release_dir/deploy-smoke.sh" "$release_dir" "$environment_file" "$smoke_session_id"
+fi
+
+if [[ "$staged_release" == true ]]; then
   cp "$release_dir/.env.production" "$deployment_dir/.env.production"
   cp "$release_dir/docker-compose.yml" "$deployment_dir/docker-compose.yml"
   cp "$release_dir/deploy.sh" "$deployment_dir/deploy.sh"

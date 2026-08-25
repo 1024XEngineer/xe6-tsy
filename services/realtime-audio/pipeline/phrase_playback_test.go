@@ -209,6 +209,47 @@ func TestPhrasePlaybackSchedulerInterruptDropsLateQueue(t *testing.T) {
 	}
 }
 
+func TestPhrasePlaybackSchedulerInterruptWakesBacklogProducer(t *testing.T) {
+	provider := newPhraseBlockingTTSProvider()
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-blocked", SessionID: "session-blocked"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	if err := scheduler.Enqueue(phraseRequest(turn, 1)); err != nil {
+		t.Fatalf("active phrase rejected: %v", err)
+	}
+	<-provider.started
+	for sequence := int64(2); sequence <= maxPhrasePlaybackBacklog+1; sequence++ {
+		if err := scheduler.Enqueue(phraseRequest(turn, sequence)); err != nil {
+			t.Fatalf("queued phrase %d rejected: %v", sequence, err)
+		}
+	}
+	blocked := make(chan error, 1)
+	go func() { blocked <- scheduler.Enqueue(phraseRequest(turn, maxPhrasePlaybackBacklog+2)) }()
+	select {
+	case err := <-blocked:
+		t.Fatalf("backlog producer returned before interrupt: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	if err := scheduler.InterruptCurrent(context.Background(), turn.SessionID, "wake_word_detected"); err != nil {
+		t.Fatalf("InterruptCurrent() error = %v", err)
+	}
+	select {
+	case err := <-blocked:
+		if !errors.Is(err, ErrPhrasePlaybackGenerationSuperseded) {
+			t.Fatalf("blocked Enqueue() error = %v, want generation superseded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked Enqueue() did not wake after interrupt")
+	}
+	provider.release()
+}
+
 func TestPhrasePlaybackSchedulerReopensSessionAfterStop(t *testing.T) {
 	provider := &recordingTTSProvider{}
 	audio := &recordingPhraseAudio{}

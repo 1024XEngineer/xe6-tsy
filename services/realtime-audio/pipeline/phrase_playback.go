@@ -69,6 +69,10 @@ type phrasePlaybackSession struct {
 	cancel context.CancelFunc
 	wake   chan struct{}
 	space  chan struct{}
+	// generationDone is closed whenever InterruptCurrent supersedes the
+	// current queue generation. Producers waiting for backlog space must wake
+	// on that boundary instead of waiting for a future queue pop.
+	generationDone chan struct{}
 
 	queue      []*phrasePlaybackTask
 	active     *phrasePlaybackTask
@@ -122,10 +126,15 @@ func (s *PhrasePlaybackSchedulerService) Enqueue(request PhrasePlaybackRequest) 
 	}
 	s.mu.Lock()
 	state := s.sessionLocked(request.Turn.SessionID)
+	generation := state.generation
 	s.mu.Unlock()
 	for {
 		s.mu.Lock()
 		if s.sessions[request.Turn.SessionID] != state {
+			s.mu.Unlock()
+			return ErrPhrasePlaybackGenerationSuperseded
+		}
+		if state.generation != generation {
 			s.mu.Unlock()
 			return ErrPhrasePlaybackGenerationSuperseded
 		}
@@ -159,10 +168,13 @@ func (s *PhrasePlaybackSchedulerService) Enqueue(request PhrasePlaybackRequest) 
 			return nil
 		}
 		space := state.space
+		generationDone := state.generationDone
 		done := state.ctx.Done()
 		s.mu.Unlock()
 		select {
 		case <-space:
+		case <-generationDone:
+			return ErrPhrasePlaybackGenerationSuperseded
 		case <-done:
 			return ErrPhrasePlaybackClosed
 		}
@@ -212,6 +224,8 @@ func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, s
 		return nil
 	}
 	state.generation++
+	close(state.generationDone)
+	state.generationDone = make(chan struct{})
 	active := state.active
 	state.queue = nil
 	state.utterances = make(map[string]*phrasePlaybackUtterance)
@@ -261,7 +275,7 @@ func (s *PhrasePlaybackSchedulerService) sessionLocked(sessionID string) *phrase
 	ctx, cancel := context.WithCancel(context.Background())
 	state := &phrasePlaybackSession{
 		ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1),
-		space:      make(chan struct{}, 1),
+		space: make(chan struct{}, 1), generationDone: make(chan struct{}),
 		utterances: make(map[string]*phrasePlaybackUtterance),
 	}
 	s.sessions[sessionID] = state

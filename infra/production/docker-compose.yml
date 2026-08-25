@@ -5,7 +5,7 @@ services:
     image: ${LINGOW_API_IMAGE:?LINGOW_API_IMAGE is required}
     restart: unless-stopped
     environment:
-      APP_ENV: production
+      APP_ENV: ${APP_ENV:-production}
       API_ADDR: :8080
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
@@ -14,6 +14,7 @@ services:
       JWT_AUDIENCE: ${JWT_AUDIENCE:-lingow-client}
       AUTH_PEPPER: ${AUTH_PEPPER:?AUTH_PEPPER is required}
       VERIFICATION_SENDER: ${VERIFICATION_SENDER:?VERIFICATION_SENDER is required}
+      VERIFICATION_UNIVERSAL_CODE: ${VERIFICATION_UNIVERSAL_CODE:-}
       VERIFICATION_SMS_ENDPOINT: ${VERIFICATION_SMS_ENDPOINT:-}
       VERIFICATION_SMS_TOKEN: ${VERIFICATION_SMS_TOKEN:-}
       LINGOW_SESSION_RUNTIME: enabled
@@ -53,7 +54,7 @@ services:
     image: ${LINGOW_REALTIME_AUDIO_IMAGE:?LINGOW_REALTIME_AUDIO_IMAGE is required}
     restart: unless-stopped
     environment:
-      APP_ENV: production
+      APP_ENV: ${APP_ENV:-production}
       REALTIME_ADDR: :8090
       REALTIME_TICKET_SECRET: ${REALTIME_TICKET_SECRET:?REALTIME_TICKET_SECRET is required}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}

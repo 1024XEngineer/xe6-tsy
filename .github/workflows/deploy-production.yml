@@ -1,12 +1,12 @@
-name: Deploy production
+name: Deploy application
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:
-  group: production-deploy
+  group: ${{ github.ref_name }}-deploy
   cancel-in-progress: false
 
 permissions:
@@ -85,11 +85,11 @@ jobs:
         run: ${{ matrix.command }}
 
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: production
+    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -97,8 +97,8 @@ jobs:
       DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
       DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
-      GHCR_PULL_USERNAME: ${{ vars.GHCR_PULL_USERNAME }}
-      GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+      GHCR_PULL_USERNAME: ${{ github.actor }}
+      GHCR_PULL_TOKEN: ${{ github.token }}
       DEPLOY_SMOKE_ACCESS_TOKEN: ${{ secrets.DEPLOY_SMOKE_ACCESS_TOKEN }}
       DEPLOY_SMOKE_SESSION_ID: ${{ secrets.DEPLOY_SMOKE_SESSION_ID }}
     steps:
@@ -140,15 +140,15 @@ jobs:
           : "${DEPLOY_KNOWN_HOSTS:?DEPLOY_KNOWN_HOSTS secret is required}"
           : "${DEPLOY_ENV_FILE:?DEPLOY_ENV_FILE secret is required}"
           : "${DEPLOY_PATH:?DEPLOY_PATH repository variable is required}"
-          : "${GHCR_PULL_USERNAME:?GHCR_PULL_USERNAME repository variable is required}"
-          : "${GHCR_PULL_TOKEN:?GHCR_PULL_TOKEN secret is required}"
-          : "${DEPLOY_SMOKE_ACCESS_TOKEN:?DEPLOY_SMOKE_ACCESS_TOKEN secret is required}"
-          : "${DEPLOY_SMOKE_SESSION_ID:?DEPLOY_SMOKE_SESSION_ID secret is required}"
           [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "DEPLOY_PATH must be an absolute safe path" >&2; exit 1; }
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "DEPLOY_HOST must be a hostname or IPv4 address" >&2; exit 1; }
           [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || { echo "DEPLOY_USER contains unsupported characters" >&2; exit 1; }
           [[ "$GHCR_PULL_USERNAME" =~ ^[A-Za-z0-9-]+$ ]] || { echo "GHCR_PULL_USERNAME contains unsupported characters" >&2; exit 1; }
-          [[ "$DEPLOY_SMOKE_SESSION_ID" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "DEPLOY_SMOKE_SESSION_ID contains unsupported characters" >&2; exit 1; }
+          if [[ -n "${DEPLOY_SMOKE_ACCESS_TOKEN:-}" || -n "${DEPLOY_SMOKE_SESSION_ID:-}" ]]; then
+            : "${DEPLOY_SMOKE_ACCESS_TOKEN:?DEPLOY_SMOKE_ACCESS_TOKEN secret is required when smoke checks are enabled}"
+            : "${DEPLOY_SMOKE_SESSION_ID:?DEPLOY_SMOKE_SESSION_ID secret is required when smoke checks are enabled}"
+            [[ "$DEPLOY_SMOKE_SESSION_ID" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "DEPLOY_SMOKE_SESSION_ID contains unsupported characters" >&2; exit 1; }
+          fi
       - name: Configure SSH
         shell: bash
         run: |
@@ -186,4 +186,8 @@ jobs:
           set -euo pipefail
           destination="${DEPLOY_USER}@${DEPLOY_HOST}"
           release_dir="${DEPLOY_PATH}/.staging/${GITHUB_SHA}"
-          printf '%s\n' "$DEPLOY_SMOKE_ACCESS_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${release_dir}/deploy.sh' '${DEPLOY_PATH}' '${release_dir}' '${DEPLOY_SMOKE_SESSION_ID}'"
+          if [[ -n "${DEPLOY_SMOKE_ACCESS_TOKEN:-}" ]]; then
+            printf '%s\n' "$DEPLOY_SMOKE_ACCESS_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${release_dir}/deploy.sh' '${DEPLOY_PATH}' '${release_dir}' '${DEPLOY_SMOKE_SESSION_ID}'"
+          else
+            ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${release_dir}/deploy.sh' '${DEPLOY_PATH}' '${release_dir}'"
+          fi

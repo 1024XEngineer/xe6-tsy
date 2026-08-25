@@ -777,6 +777,13 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	item := m.entries[sessionID]
 	if item == nil {
 		m.mu.Unlock()
+		// The media worker may have removed its runtime entry after EOF while
+		// an asynchronous phrase translation still owns scheduler state. Keep
+		// this cleanup under the keyed lifecycle lock so a concurrent Start
+		// cannot reopen playback before the stale generation is closed.
+		if m.phrasePlayback != nil {
+			_ = m.phrasePlayback.Stop(ctx, sessionID)
+		}
 		unlock()
 		return nil
 	}

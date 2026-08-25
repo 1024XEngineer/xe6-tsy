@@ -51,7 +51,15 @@ import {
   parseCommandResult,
   type CommandResultEvent,
 } from "../lib/command-results";
-import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
+import {
+  parsePlaybackLifecycleEvent,
+  PlaybackLifecycleTracker,
+} from "../lib/playback-events";
+import {
+  cancelAllTTSAudioPlayback,
+  enqueueTTSAudio,
+  parseTTSAudioEvent,
+} from "../lib/tts-playback";
 import { sendWakeWordDetectedSignal } from "../lib/wake-word-signal";
 import {
   loadVoiceConfig,
@@ -74,6 +82,8 @@ import {
 
 const POLL_INTERVAL_MS = 1200;
 const TTS_INPUT_RESUME_DELAY_MS = 300;
+const TTS_STATUS_IDLE_GRACE_MS = 180;
+const TURN_POLL_PAGE_SIZE = 100;
 export const COMMAND_UPLINK_TIMEOUT_MS = 15_000;
 
 export type SessionDebugInfo = {
@@ -171,6 +181,34 @@ function toTranslationTurn(turn: VoiceTurn): TranslationTurn {
   };
 }
 
+async function listSessionTurnTail(
+  token: string,
+  sessionId: string,
+  startCursor: string | null,
+): Promise<{ items: VoiceTurn[]; tailCursor: string | null }> {
+  const items: VoiceTurn[] = [];
+  const seenCursors = new Set<string>();
+  let pageStartCursor = startCursor;
+
+  while (true) {
+    const page = await listSessionTurns(
+      token,
+      sessionId,
+      TURN_POLL_PAGE_SIZE,
+      pageStartCursor ?? undefined,
+    );
+    items.push(...page.items);
+    if (!page.next_cursor) {
+      return { items, tailCursor: pageStartCursor };
+    }
+    if (seenCursors.has(page.next_cursor)) {
+      throw new Error("会话 Turn 分页游标停滞");
+    }
+    seenCursors.add(page.next_cursor);
+    pageStartCursor = page.next_cursor;
+  }
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : fallback;
   if (
@@ -265,6 +303,8 @@ export function useVoiceSession() {
   const sessionIdRef = useRef<string | null>(null);
   const webrtcRef = useRef<WebRTCSessionHandles | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollInFlightSessionRef = useRef<string | null>(null);
+  const turnPollCursorRef = useRef<string | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
   const realtimeTicketCacheRef = useRef<RealtimeTicketCache | null>(null);
   useEffect(() => {
@@ -321,8 +361,35 @@ export function useVoiceSession() {
   const settledPartialTurnsRef = useRef(new Set<string>());
   const activePartialTurnRef = useRef<string | null>(null);
   const partialTextByTurnRef = useRef(new Map<string, string>());
+  const runtimeStateRef = useRef<RuntimeState | null>(null);
+  const terminalMediaSessionRef = useRef<string | null>(null);
+  const pcmTTSPlayingRef = useRef(false);
+  const opusPlaybackTrackerRef = useRef(new PlaybackLifecycleTracker());
+  const clientTTSPlayingRef = useRef(false);
+  const clientTTSIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
+
+  const presentRuntimeState = useCallback(
+    (runtime: RuntimeState | null) => {
+      const mode = modeStateRef.current?.active_mode ?? initialMode;
+      const mediaTerminal = terminalMediaSessionRef.current === sessionIdRef.current;
+      if (!mediaTerminal && clientTTSPlayingRef.current) {
+        dispatch({ type: "PLAYING" });
+        setStatusMessage(mapRuntimeToStatus("playing", mode));
+        return;
+      }
+      const visibleRuntime = mediaTerminal
+        ? "failed"
+        : runtime ?? (runningRef.current ? "listening" : null);
+      const phase = mapRuntimePhase(visibleRuntime);
+      if (phase === "processing") dispatch({ type: "PROCESSING" });
+      else if (phase === "playing") dispatch({ type: "PLAYING" });
+      else dispatch({ type: "ACTIVATE" });
+      setStatusMessage(mapRuntimeToStatus(visibleRuntime, mode));
+    },
+    [initialMode],
+  );
 
   const applyModeSnapshot = useCallback((snapshot: ModeStateSnapshot): boolean => {
     if (!modeSnapshotTrackerRef.current.observe(snapshot)) return false;
@@ -521,6 +588,18 @@ export function useVoiceSession() {
     openCommandUplinkRef.current = () => undefined;
     webrtcRef.current?.close();
     webrtcRef.current = null;
+    cancelAllTTSAudioPlayback();
+    if (clientTTSIdleTimerRef.current) {
+      clearTimeout(clientTTSIdleTimerRef.current);
+      clientTTSIdleTimerRef.current = null;
+    }
+    pcmTTSPlayingRef.current = false;
+    opusPlaybackTrackerRef.current.reset();
+    clientTTSPlayingRef.current = false;
+    runtimeStateRef.current = null;
+    terminalMediaSessionRef.current = null;
+    pollInFlightSessionRef.current = null;
+    turnPollCursorRef.current = null;
     const activeTurn = activePartialTurnRef.current;
     if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
     activePartialTurnRef.current = null;
@@ -600,30 +679,33 @@ export function useVoiceSession() {
     const token = accessTokenRef.current;
     const sessionId = sessionIdRef.current;
     if (!token || !sessionId || !runningRef.current) return;
+    if (pollInFlightSessionRef.current === sessionId) return;
+    pollInFlightSessionRef.current = sessionId;
 
     try {
       const [turnsPage, snapshot, automaticOutput] = await Promise.all([
-        listSessionTurns(token, sessionId),
+        listSessionTurnTail(token, sessionId, turnPollCursorRef.current),
         getVoiceSessionState(token, sessionId),
         listAutomaticOutputStatus(token, sessionId).catch(() => null),
       ]);
+      if (sessionIdRef.current !== sessionId || !runningRef.current) return;
+      turnPollCursorRef.current = turnsPage.tailCursor;
 
+      const turns = turnsPage.items.map(toTranslationTurn);
+      for (const turn of turns) {
+        settledPartialTurnsRef.current.add(turn.id);
+        partialTextByTurnRef.current.delete(turn.id);
+        if (activePartialTurnRef.current === turn.id) {
+          activePartialTurnRef.current = null;
+        }
+      }
       dispatch({
         type: "SET_TURNS",
-        turns: turnsPage.items.map(toTranslationTurn),
+        turns,
       });
 
-      const phase = mapRuntimePhase(snapshot.runtime_state);
-      if (phase === "processing") dispatch({ type: "PROCESSING" });
-      else if (phase === "playing") dispatch({ type: "PLAYING" });
-      else dispatch({ type: "ACTIVATE" });
-
-      setStatusMessage(
-        mapRuntimeToStatus(
-          snapshot.runtime_state,
-          modeStateRef.current?.active_mode ?? initialMode,
-        ),
-      );
+      runtimeStateRef.current = snapshot.runtime_state;
+      presentRuntimeState(snapshot.runtime_state);
       setDebug((prev) => ({
         ...prev,
         runtimeState: snapshot.runtime_state,
@@ -641,9 +723,15 @@ export function useVoiceSession() {
       }
       void refreshControlSnapshots();
     } catch (error) {
-      setHintMessage(errorMessage(error, "轮询会话状态失败"));
+      if (sessionIdRef.current === sessionId && runningRef.current) {
+        setHintMessage(errorMessage(error, "轮询会话状态失败"));
+      }
+    } finally {
+      if (pollInFlightSessionRef.current === sessionId) {
+        pollInFlightSessionRef.current = null;
+      }
     }
-  }, [initialMode, refreshControlSnapshots, syncAutomaticOutputStatus]);
+  }, [presentRuntimeState, refreshControlSnapshots, syncAutomaticOutputStatus]);
 
   const startPolling = useCallback(() => {
     stopPolling();
@@ -788,6 +876,18 @@ export function useVoiceSession() {
     latestAutomaticOutputStatusRef.current = null;
     settledPartialTurnsRef.current = new Set();
     activePartialTurnRef.current = null;
+    runtimeStateRef.current = null;
+    terminalMediaSessionRef.current = null;
+    pollInFlightSessionRef.current = null;
+    turnPollCursorRef.current = null;
+    pcmTTSPlayingRef.current = false;
+    opusPlaybackTrackerRef.current.reset();
+    clientTTSPlayingRef.current = false;
+    if (clientTTSIdleTimerRef.current) {
+      clearTimeout(clientTTSIdleTimerRef.current);
+      clientTTSIdleTimerRef.current = null;
+    }
+    cancelAllTTSAudioPlayback();
     activeCommandIdRef.current = null;
     setCommandFeedback(null);
     setAutomaticOutputMessage(null);
@@ -934,6 +1034,37 @@ export function useVoiceSession() {
           setSessionOutputSuppressed(false);
         }, TTS_INPUT_RESUME_DELAY_MS);
       };
+      const syncClientTTSPlaying = () => {
+        if (sessionIdRef.current !== session.id || !runningRef.current) return;
+        const playing =
+          pcmTTSPlayingRef.current || opusPlaybackTrackerRef.current.playing;
+        if (clientTTSIdleTimerRef.current) {
+          clearTimeout(clientTTSIdleTimerRef.current);
+          clientTTSIdleTimerRef.current = null;
+        }
+        if (playing) {
+          setTTSOutputSuppressed(true);
+          clientTTSPlayingRef.current = true;
+          presentRuntimeState(runtimeStateRef.current);
+          return;
+        }
+        if (!clientTTSPlayingRef.current) return;
+        setTTSOutputSuppressed(false);
+        // The next Opus/PCM phrase may start just after the terminal event, and
+        // remote jitter buffers can still contain a final fraction of audio.
+        clientTTSIdleTimerRef.current = setTimeout(() => {
+          clientTTSIdleTimerRef.current = null;
+          if (sessionIdRef.current !== session.id || !runningRef.current) return;
+          if (pcmTTSPlayingRef.current || opusPlaybackTrackerRef.current.playing) return;
+          clientTTSPlayingRef.current = false;
+          presentRuntimeState(runtimeStateRef.current);
+        }, TTS_STATUS_IDLE_GRACE_MS);
+      };
+      const setPCMPlaying = (playing: boolean) => {
+        if (sessionIdRef.current !== session.id || !runningRef.current) return;
+        pcmTTSPlayingRef.current = playing;
+        syncClientTTSPlaying();
+      };
       setUplinkEnabledRef.current = (enabled) => {
         if (sessionIdRef.current !== session.id) return;
         setSessionUplinkEnabled(enabled);
@@ -960,6 +1091,13 @@ export function useVoiceSession() {
           sessionId: session.id,
           audioTracks: wakeTracks.length > 0 ? wakeTracks : undefined,
           onDataMessage: (payload) => {
+            if (
+              sessionIdRef.current !== session.id ||
+              !runningRef.current ||
+              terminalMediaSessionRef.current === session.id
+            ) {
+              return;
+            }
             const phraseSubtitle = parsePhraseSubtitle(payload);
             if (phraseSubtitle && phraseSubtitle.sessionId === session.id) {
               if (settledPartialTurnsRef.current.has(phraseSubtitle.utteranceId)) return;
@@ -1009,11 +1147,18 @@ export function useVoiceSession() {
               }
               return;
             }
+            const playbackEvent = parsePlaybackLifecycleEvent(payload);
+            if (playbackEvent) {
+              if (playbackEvent.sessionId === session.id) {
+                const playbackState = opusPlaybackTrackerRef.current.apply(playbackEvent);
+                if (playbackState.changed) syncClientTTSPlaying();
+              }
+              return;
+            }
             const audio = parseTTSAudioEvent(payload);
             if (audio) {
-              enqueueTTSAudio(audio, (playing) => {
-                setTTSOutputSuppressed(playing);
-              });
+              if (audio.sessionId !== session.id) return;
+              enqueueTTSAudio(audio, setPCMPlaying);
               return;
             }
             const assistantReply = parseAssistantReply(payload);
@@ -1039,7 +1184,7 @@ export function useVoiceSession() {
                   language: assistantReply.language,
                 },
               });
-              setStatusMessage("助手已回复");
+              if (!clientTTSPlayingRef.current) setStatusMessage("助手已回复");
               return;
             }
             const event = parseTranslationFinal(payload);
@@ -1069,6 +1214,17 @@ export function useVoiceSession() {
               // channel can continue updating the same live container.
               setHintMessage("实时连接暂时中断，正在等待浏览器恢复媒体连接。");
             } else if (connectionState === "failed" || connectionState === "closed") {
+              terminalMediaSessionRef.current = session.id;
+              cancelAllTTSAudioPlayback();
+              pcmTTSPlayingRef.current = false;
+              opusPlaybackTrackerRef.current.reset();
+              if (clientTTSIdleTimerRef.current) {
+                clearTimeout(clientTTSIdleTimerRef.current);
+                clientTTSIdleTimerRef.current = null;
+              }
+              clientTTSPlayingRef.current = false;
+              setTTSOutputSuppressed(false);
+              presentRuntimeState(runtimeStateRef.current);
               // Failed/closed is still a transport state, not proof that the
               // server emitted a final/abort for the VAD turn. Preserve the
               // partial until an explicit terminal event or session cleanup.
@@ -1218,6 +1374,7 @@ export function useVoiceSession() {
     cleanupMedia,
     closeCommandUplink,
     initialMode,
+    presentRuntimeState,
     refreshControlSnapshots,
     refreshModeSnapshot,
     startPolling,

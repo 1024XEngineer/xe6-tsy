@@ -117,23 +117,43 @@ export function sessionReducer(
       return { ...state, phase: "processing", notice: null };
     case "PLAYING":
       return { ...state, phase: "playing", notice: null };
-    case "SET_TURNS":
+    case "SET_TURNS": {
       // Poll may return [] while FinalTurns only arrive on DataChannel (no API
       // outbox yet). Merge so remote never wipes locally observed subtitles.
+      // A non-empty poll is authoritative only for the IDs it actually returns.
+      // Settle those active containers while preserving every other live Turn.
+      const remoteTurnIds = new Set(event.turns.map((turn) => turn.id));
       return {
         ...state,
         turns: mergeTurns(state.turns, event.turns),
+        asrPartial:
+          state.asrPartial && remoteTurnIds.has(state.asrPartial.turnId)
+            ? null
+            : state.asrPartial,
+        phraseSubtitles: state.phraseSubtitles.filter(
+          (subtitle) => !remoteTurnIds.has(subtitle.utteranceId),
+        ),
         notice: null,
       };
+    }
     case "ADD_TURN":
       if (state.turns.some((turn) => turn.id === event.turn.id)) {
-        return state.asrPartial?.turnId === event.turn.id
-          ? { ...state, asrPartial: null }
-          : state;
+        const hasMatchingPartial = state.asrPartial?.turnId === event.turn.id;
+        const hasMatchingPhrase = state.phraseSubtitles.some(
+          (subtitle) => subtitle.utteranceId === event.turn.id,
+        );
+        if (!hasMatchingPartial && !hasMatchingPhrase) return state;
+        return {
+          ...state,
+          asrPartial: hasMatchingPartial ? null : state.asrPartial,
+          phraseSubtitles: state.phraseSubtitles.filter(
+            (subtitle) => subtitle.utteranceId !== event.turn.id,
+          ),
+        };
       }
       return {
         ...state,
-        phase: "active",
+        phase: state.phase === "playing" ? "playing" : "active",
         turns: [...state.turns, event.turn],
         asrPartial:
           state.asrPartial?.turnId === event.turn.id ? null : state.asrPartial,
@@ -148,7 +168,7 @@ export function sessionReducer(
       }
       return {
         ...state,
-        phase: "active",
+        phase: state.phase === "playing" ? "playing" : "active",
         assistantReplies: [...state.assistantReplies, event.reply],
         notice: null,
       };

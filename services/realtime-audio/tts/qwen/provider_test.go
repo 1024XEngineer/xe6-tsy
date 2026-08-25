@@ -130,6 +130,18 @@ func TestProviderRealtimeDialUsesProviderTimeout(t *testing.T) {
 	}
 }
 
+func TestProviderRealtimeUsesShortDefaultTimeout(t *testing.T) {
+	provider, err := NewProvider(Config{
+		APIKey: "test-key", BaseURL: "ws://127.0.0.1:1", Model: realtimeModel,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	if provider.config.Timeout != defaultProviderTimeout {
+		t.Fatalf("realtime default timeout = %v, want %v", provider.config.Timeout, defaultProviderTimeout)
+	}
+}
+
 func TestProviderRealtimeTimeoutUnblocksStalledRead(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

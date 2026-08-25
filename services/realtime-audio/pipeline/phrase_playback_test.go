@@ -24,11 +24,11 @@ func TestPhrasePlaybackSchedulerPreservesOrderAndUsesIndependentIDs(t *testing.T
 	turn := TurnContext{ID: "turn-1", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1"}
 	scheduler.ResetUtterance(turn.SessionID, turn.ID)
 	for sequence := int64(1); sequence <= 3; sequence++ {
-		if !scheduler.Enqueue(PhrasePlaybackRequest{
+		if err := scheduler.Enqueue(PhrasePlaybackRequest{
 			Turn: turn, UtteranceID: turn.ID, PhraseSequence: sequence,
 			Language: "en-US", Text: "phrase", PlaybackID: "phrase_turn-1_" + string(rune('0'+sequence)),
-		}) {
-			t.Fatalf("Enqueue(%d) rejected", sequence)
+		}); err != nil {
+			t.Fatalf("Enqueue(%d) rejected: %v", sequence, err)
 		}
 	}
 	if !audio.waitFor(3, time.Second) {
@@ -69,8 +69,8 @@ func TestPhrasePlaybackSchedulerRetriesUsageAndReportsPermanentFailure(t *testin
 	})
 	turn := TurnContext{ID: "turn-retry", SessionID: "session-retry", AccountID: "account-1", TraceID: "trace-retry"}
 	scheduler.ResetUtterance(turn.SessionID, turn.ID)
-	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
-		t.Fatal("phrase rejected")
+	if err := scheduler.Enqueue(phraseRequest(turn, 1)); err != nil {
+		t.Fatalf("phrase rejected: %v", err)
 	}
 	deadline := time.Now().Add(time.Second)
 	for usage.attemptsCount() < 2 && time.Now().Before(deadline) {
@@ -95,8 +95,8 @@ func TestPhrasePlaybackSchedulerRetriesUsageAndReportsPermanentFailure(t *testin
 	})
 	turn = TurnContext{ID: "turn-error", SessionID: "session-error", AccountID: "account-1", TraceID: "trace-error"}
 	scheduler.ResetUtterance(turn.SessionID, turn.ID)
-	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
-		t.Fatal("phrase with failing usage sink rejected")
+	if err := scheduler.Enqueue(phraseRequest(turn, 1)); err != nil {
+		t.Fatalf("phrase with failing usage sink rejected: %v", err)
 	}
 	select {
 	case err := <-reported:
@@ -119,40 +119,30 @@ func TestPhrasePlaybackSchedulerCleansCompletedUtteranceAndAcceptsFinalResidual(
 	})
 	turn := TurnContext{ID: "turn-cleanup", SessionID: "session-cleanup", AccountID: "account-1", TraceID: "trace-cleanup"}
 	scheduler.ResetUtterance(turn.SessionID, turn.ID)
-	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
-		t.Fatal("phrase rejected")
+	if err := scheduler.Enqueue(phraseRequest(turn, 1)); err != nil {
+		t.Fatalf("phrase rejected: %v", err)
 	}
 	if !audio.waitFor(1, time.Second) {
 		t.Fatal("phrase did not play")
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		scheduler.mu.Lock()
-		_, exists := scheduler.sessions[turn.SessionID].utterances[turn.ID]
-		scheduler.mu.Unlock()
-		if !exists {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
 	scheduler.mu.Lock()
 	_, exists := scheduler.sessions[turn.SessionID].utterances[turn.ID]
 	scheduler.mu.Unlock()
-	if exists {
-		t.Fatal("completed utterance remains in session state")
+	if !exists {
+		t.Fatal("completed utterance state was discarded while the turn was still active")
 	}
 	final := phraseRequest(turn, 2)
 	final.Final = true
 	final.PlaybackID = "phrase_" + turn.ID + "_final"
-	if !scheduler.Enqueue(final) {
-		t.Fatal("final residual rejected after phrase state cleanup")
+	if err := scheduler.Enqueue(final); err != nil {
+		t.Fatalf("final residual rejected after phrase state cleanup: %v", err)
 	}
 	if !audio.waitFor(2, time.Second) {
 		t.Fatal("final residual did not play")
 	}
 }
 
-func TestPhrasePlaybackSchedulerDegradesAtFiveUnfinishedSegmentsAndResets(t *testing.T) {
+func TestPhrasePlaybackSchedulerMergesBacklogAndResets(t *testing.T) {
 	provider := newPhraseBlockingTTSProvider()
 	audio := &recordingPhraseAudio{}
 	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
@@ -163,29 +153,32 @@ func TestPhrasePlaybackSchedulerDegradesAtFiveUnfinishedSegmentsAndResets(t *tes
 	})
 	turn := TurnContext{ID: "turn-1", SessionID: "session-1"}
 	scheduler.ResetUtterance(turn.SessionID, turn.ID)
-	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
-		t.Fatal("first phrase rejected")
+	if err := scheduler.Enqueue(phraseRequest(turn, 1)); err != nil {
+		t.Fatalf("first phrase rejected: %v", err)
 	}
 	<-provider.started
 	for sequence := int64(2); sequence <= 5; sequence++ {
-		accepted := scheduler.Enqueue(phraseRequest(turn, sequence))
-		if sequence == 5 && accepted {
-			t.Fatal("fifth phrase was accepted after backlog limit")
+		request := phraseRequest(turn, sequence)
+		request.PhraseGroup = 1
+		if err := scheduler.Enqueue(request); err != nil {
+			t.Fatalf("phrase %d rejected while backlog should merge: %v", sequence, err)
 		}
 	}
 	provider.release()
 	if !audio.waitFor(1, time.Second) {
 		t.Fatal("active phrase did not finish")
 	}
-	if scheduler.Enqueue(phraseRequest(turn, 6)) {
-		t.Fatal("degraded utterance accepted a later phrase")
+	request := phraseRequest(turn, 6)
+	request.PhraseGroup = 1
+	if err := scheduler.Enqueue(request); err != nil {
+		t.Fatalf("later phrase rejected after backlog drained: %v", err)
 	}
 
 	newTurn := TurnContext{ID: "turn-2", SessionID: turn.SessionID}
 	scheduler.ResetUtterance(newTurn.SessionID, newTurn.ID)
 	provider.allowImmediate = true
-	if !scheduler.Enqueue(phraseRequest(newTurn, 1)) {
-		t.Fatal("next utterance did not recover playback eligibility")
+	if err := scheduler.Enqueue(phraseRequest(newTurn, 1)); err != nil {
+		t.Fatalf("next utterance did not recover playback eligibility: %v", err)
 	}
 	if !audio.waitFor(2, time.Second) {
 		t.Fatal("next utterance did not play")
@@ -227,8 +220,8 @@ func TestPhrasePlaybackSchedulerReopensSessionAfterStop(t *testing.T) {
 	})
 	turn := TurnContext{ID: "turn-reconnect", SessionID: "session-reconnect"}
 	scheduler.ResetUtterance(turn.SessionID, turn.ID)
-	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
-		t.Fatal("first phrase rejected")
+	if err := scheduler.Enqueue(phraseRequest(turn, 1)); err != nil {
+		t.Fatalf("first phrase rejected: %v", err)
 	}
 	if !audio.waitFor(1, time.Second) {
 		t.Fatal("first phrase did not play")
@@ -238,8 +231,8 @@ func TestPhrasePlaybackSchedulerReopensSessionAfterStop(t *testing.T) {
 	}
 
 	scheduler.ResetUtterance(turn.SessionID, turn.ID)
-	if !scheduler.Enqueue(phraseRequest(turn, 2)) {
-		t.Fatal("phrase after session restart rejected")
+	if err := scheduler.Enqueue(phraseRequest(turn, 2)); err != nil {
+		t.Fatalf("phrase after session restart rejected: %v", err)
 	}
 	if !audio.waitFor(2, time.Second) {
 		t.Fatal("phrase after session restart did not play")
@@ -257,8 +250,8 @@ func TestPhrasePlaybackSchedulerPublishesFirstChunkBeforeTTSFinish(t *testing.T)
 	})
 	turn := TurnContext{ID: "turn-first", SessionID: "session-first"}
 	scheduler.ResetUtterance(turn.SessionID, turn.ID)
-	if !scheduler.Enqueue(phraseRequest(turn, 1)) {
-		t.Fatal("first phrase rejected")
+	if err := scheduler.Enqueue(phraseRequest(turn, 1)); err != nil {
+		t.Fatalf("first phrase rejected: %v", err)
 	}
 	if !audio.waitFor(1, time.Second) {
 		t.Fatal("first audio chunk was not published before TTS finish")

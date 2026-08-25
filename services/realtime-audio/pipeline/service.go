@@ -411,11 +411,13 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 		if strings.TrimSpace(residualPlaybackText) == "" {
 			return nil
 		}
-		_ = s.phrasePlayback.Enqueue(PhrasePlaybackRequest{
+		if err := s.phrasePlayback.Enqueue(PhrasePlaybackRequest{
 			Turn: turn, UtteranceID: turn.ID, PhraseSequence: finalPhrasePlaybackSequence,
 			Language: target, Text: residualPlaybackText,
 			PlaybackID: "phrase_" + turn.ID + "_final", Final: true,
-		})
+		}); err != nil {
+			return finalTurnAcceptedError("enqueue final phrase playback", err)
+		}
 		return nil
 	}
 	playbackID := "playback_" + turn.ID

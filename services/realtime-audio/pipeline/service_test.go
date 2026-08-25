@@ -1079,6 +1079,59 @@ func TestPipelineSettlesFailedPhraseIntoCompleteFinalTranslationOnce(t *testing.
 	}
 }
 
+func TestPipelineKeepsIntermediateResidualBeforeLaterPhrasePlayback(t *testing.T) {
+	ttsProvider := &recordingTTSProvider{}
+	audio := &recordingPhraseAudio{}
+	scheduler := newTestPhrasePlaybackScheduler(ttsProvider, audio)
+	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		if request.Text == "失败" {
+			return translate.Result{}, translate.ErrUnexpectedBehavior
+		}
+		return translate.Result{Text: "phrase-" + request.Text, Provider: "phrase", Model: "v1"}, nil
+	}), "phrase", &recordingPhraseSubtitleObserver{}, nil)
+	phraseCoordinator.SetPhrasePlaybackScheduler(scheduler)
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "retry-en", Provider: "mock", Model: "v1"}}
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: ttsProvider,
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: audio, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phraseCoordinator, PhrasePlayback: scheduler,
+	})
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: true}}
+	phraseCoordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	for sequence, text := range map[int64]string{1: "你好", 2: "失败", 3: "世界"} {
+		phraseCoordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, sequence, text))
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		phraseCoordinator.mu.Lock()
+		utterance := phraseCoordinator.utterances[turn.ID]
+		done := utterance != nil && allPhraseTranslationsDone(utterance)
+		phraseCoordinator.mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !audio.waitFor(1, time.Second) {
+		t.Fatal("successful prefix phrase did not play")
+	}
+	if requests := ttsProvider.requests(); len(requests) != 1 || requests[0].Text != "phrase-你好" {
+		t.Fatalf("prefix playback requests = %#v, want only phrase 1 before final residual", requests)
+	}
+
+	if err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好失败世界", SourceLanguage: "zh-CN"}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	if !audio.waitFor(3, time.Second) {
+		t.Fatal("ordered residual and later phrase playback did not complete")
+	}
+	requests := ttsProvider.requests()
+	if len(requests) != 3 || requests[0].Text != "phrase-你好" || requests[1].Text != "retry-en" || requests[2].Text != "phrase-世界" {
+		t.Fatalf("playback requests = %#v, want phrase 1, residual phrase 2, phrase 3", requests)
+	}
+}
+
 func testTurn() TurnContext {
 	return TurnContext{ID: "turn-1", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", SequenceNo: 1, LanguageConfig: session.LanguageConfigSnapshot{SessionID: "session-1", Version: 3, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}, StartedAt: time.Unix(1700000000, 0).UTC()}
 }

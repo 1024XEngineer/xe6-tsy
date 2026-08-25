@@ -79,7 +79,10 @@ export const END_REQUEST_TIMEOUT_MS = 5_000;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("结束会话请求超时")), timeoutMs);
+    const timer = setTimeout(
+      () => reject(new Error("结束请求超时，服务端可能仍在处理，请稍后确认会话状态。")),
+      timeoutMs,
+    );
     promise.then(
       (value) => {
         clearTimeout(timer);
@@ -669,6 +672,7 @@ export function useVoiceSession() {
 
     const token = accessTokenRef.current;
     const sessionId = sessionIdRef.current;
+    let endHint: string | null = null;
     try {
       if (token && sessionId) {
         await withTimeout(
@@ -677,7 +681,7 @@ export function useVoiceSession() {
         );
       }
     } catch (error) {
-      setHintMessage(errorMessage(error, "结束会话失败"));
+      endHint = errorMessage(error, "结束会话失败");
     } finally {
       cleanupMedia();
       wakeRef.current?.stop();
@@ -698,7 +702,7 @@ export function useVoiceSession() {
     setConfigSyncStatus("idle");
     dispatch({ type: "END" });
     setStatusMessage(initialMode === "assistant" ? "轻触开启助手" : "轻触开启传译");
-    setHintMessage(null);
+    setHintMessage(endHint);
     setDebug((prev) => ({
       accountId: accountIdRef.current,
       sessionId: null,

@@ -1086,6 +1086,9 @@ describe("VoiceExperience", () => {
     });
 
     expect(closeWebRTC).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByText("结束请求超时，服务端可能仍在处理，请稍后确认会话状态。"),
+    ).toBeInTheDocument();
 
     pendingEnd.resolve(
       jsonResponse({

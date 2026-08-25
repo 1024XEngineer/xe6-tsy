@@ -1064,16 +1064,14 @@ export function useVoiceSession() {
             if (sessionIdRef.current !== session.id) return;
             setDebug((prev) => ({ ...prev, connectionState }));
             if (connectionState === "disconnected") {
-              const activeTurn = activePartialTurnRef.current;
-              if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
-              activePartialTurnRef.current = null;
-              dispatch({ type: "CLEAR_ASR_PARTIAL" });
+              // A browser transport interruption is not a VAD boundary. Keep
+              // the active utterance and its turn id so a recovered data
+              // channel can continue updating the same live container.
               setHintMessage("实时连接暂时中断，正在等待浏览器恢复媒体连接。");
             } else if (connectionState === "failed" || connectionState === "closed") {
-              const activeTurn = activePartialTurnRef.current;
-              if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
-              activePartialTurnRef.current = null;
-              dispatch({ type: "CLEAR_ASR_PARTIAL" });
+              // Failed/closed is still a transport state, not proof that the
+              // server emitted a final/abort for the VAD turn. Preserve the
+              // partial until an explicit terminal event or session cleanup.
               setHintMessage("实时媒体连接已失效，请结束当前会话后重新开始。");
             } else if (connectionState === "connected") {
               void refreshControlSnapshots();

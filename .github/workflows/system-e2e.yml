@@ -1,0 +1,181 @@
+name: System E2E
+
+on:
+  push:
+    branches:
+      - "**"
+      - "!xgopilot/**"
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  web-ui:
+    name: Web UI E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run mocked browser E2E
+        run: npm run test:e2e
+
+      - name: Upload browser artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-ui-e2e-artifacts
+          path: apps/web/test-results
+          if-no-files-found: ignore
+
+  real-stack:
+    name: Real API + Realtime E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lingow_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d lingow_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/lingow_e2e?sslmode=disable
+      REDIS_URL: redis://127.0.0.1:6379/0
+      JWT_SECRET: system-e2e-jwt-secret-12345678901234567890
+      REALTIME_TICKET_SECRET: system-e2e-ticket-secret-12345678901234567890
+      LINGOW_SESSION_RUNTIME: enabled
+      REALTIME_BASE_URL: http://127.0.0.1:8090
+      LINGOW_API_BASE_URL: http://127.0.0.1:8080
+      LINGOW_COMMAND_SYSTEM_TOKEN: system-e2e-command-token-12345678901234567890
+      VERIFICATION_SENDER: log
+      VERIFICATION_UNIVERSAL_CODE: "888888"
+      ASR_PROVIDER: mock
+      LLM_PROVIDER: mock
+      TTS_PROVIDER: mock
+      LOCAL_VAD_PROVIDER: energy
+      REALTIME_API_DATABASE: enabled
+      REALTIME_TTS_DOWNLINK: none
+      APP_ENV: test
+      LINGOW_REALTIME_BASE_URL: http://127.0.0.1:8090
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: services/realtime-audio/go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Download Go modules
+        shell: bash
+        run: |
+          go mod download -C packages/contracts
+          go mod download -C services/api
+          go mod download -C services/realtime-audio
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Build services
+        shell: bash
+        run: |
+          mkdir -p .e2e-bin
+          go build -o .e2e-bin/lingow-api ./services/api
+          go build -o .e2e-bin/lingow-realtime-audio ./services/realtime-audio
+
+      - name: Start realtime-audio
+        shell: bash
+        run: |
+          REALTIME_ADDR=:8090 ./.e2e-bin/lingow-realtime-audio > realtime-e2e.log 2>&1 &
+          echo $! > realtime-e2e.pid
+
+      - name: Start API
+        shell: bash
+        run: |
+          API_ADDR=:8080 ./.e2e-bin/lingow-api > api-e2e.log 2>&1 &
+          echo $! > api-e2e.pid
+
+      - name: Wait for services
+        shell: bash
+        run: |
+          set -euo pipefail
+          for port in 8080 8090; do
+            for attempt in $(seq 1 60); do
+              if (echo > "/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1; then
+                break
+              fi
+              if [ "$attempt" = 60 ]; then
+                echo "service on port ${port} did not start"
+                exit 1
+              fi
+              sleep 1
+            done
+          done
+
+      - name: Run real-stack Playwright E2E
+        working-directory: apps/web
+        run: npm run test:e2e:system
+
+      - name: Upload service and Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-stack-e2e-artifacts
+          path: |
+            api-e2e.log
+            realtime-e2e.log
+            apps/web/test-results/system
+          if-no-files-found: ignore

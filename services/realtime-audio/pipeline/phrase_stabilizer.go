@@ -154,7 +154,7 @@ func (s *PhraseStabilizer) consumePunctuation(text string) ([]StablePhrase, stri
 		segment := text[:end]
 		phrases := s.consume(segment)
 		if len(phrases) == 0 {
-			if !isIgnorableConfirmedPhrase(segment) {
+			if !isIgnorableConfirmedGap(segment) {
 				// Keep an unconsumed short but meaningful segment attached to the
 				// tail. Emitting a later phrase would otherwise move the source
 				// cursor past a prefix that it never recorded.
@@ -259,18 +259,21 @@ func phraseBoundary(value rune) bool {
 	}
 }
 
-// isIgnorableConfirmedPhrase accepts only known hesitation/filler tokens where
-// every token has already been closed by a phrase boundary. It deliberately
-// excludes meaningful short replies such as "yes", "好", and "对".
-func isIgnorableConfirmedPhrase(text string) bool {
+// isIgnorableConfirmedGap accepts punctuation-only separators and known
+// hesitation tokens after ASR has confirmed their boundary. A separator may
+// arrive after an unpunctuated live chunk was already consumed; advancing the
+// source cursor keeps later stable phrases aligned with the final transcript.
+// Meaningful short replies such as "yes", "好", and "对" remain source text.
+func isIgnorableConfirmedGap(text string) bool {
 	var token strings.Builder
-	sawFiller := false
+	sawBoundary := false
 	for _, value := range text {
 		if phraseBoundary(value) {
-			if !isPhraseFillerToken(strings.TrimSpace(token.String())) {
+			confirmed := strings.TrimSpace(token.String())
+			if confirmed != "" && !isPhraseFillerToken(confirmed) {
 				return false
 			}
-			sawFiller = true
+			sawBoundary = true
 			token.Reset()
 			continue
 		}
@@ -279,7 +282,7 @@ func isIgnorableConfirmedPhrase(text string) bool {
 		}
 		token.WriteRune(value)
 	}
-	return sawFiller && strings.TrimSpace(token.String()) == ""
+	return sawBoundary && strings.TrimSpace(token.String()) == ""
 }
 
 func isPhraseFillerToken(text string) bool {

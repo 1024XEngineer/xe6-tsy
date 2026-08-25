@@ -11,7 +11,14 @@ import (
 	"unicode"
 )
 
-const maxPhrasePlaybackBacklog = 5
+// A session can contain more than one live utterance while a final settlement
+// is being handed off. Keep a finite global queue as a memory guard, but apply
+// back-pressure instead of discarding accepted translation text.
+const maxPhrasePlaybackQueue = 40
+
+const maxPhrasePlaybackSegmentRunes = 40
+
+const maxRetiredPhraseUtterances = 256
 
 var ErrPhrasePlaybackClosed = errors.New("phrase playback scheduler is closed")
 
@@ -63,36 +70,65 @@ type PhrasePlaybackSchedulerDependencies struct {
 }
 
 type PhrasePlaybackSchedulerService struct {
-	mu         sync.Mutex
-	speech     *SpeechOutput
-	audio      AudioChunkSink
-	usage      UsageFactSink
-	now        func() time.Time
-	usageError func(PhrasePlaybackRequest, UsageFact, error)
-	sessions   map[string]*phrasePlaybackSession
-	closed     map[string]bool
+	mu          sync.Mutex
+	speech      *SpeechOutput
+	audio       AudioChunkSink
+	usage       UsageFactSink
+	now         func() time.Time
+	usageError  func(PhrasePlaybackRequest, UsageFact, error)
+	sessions    map[string]*phrasePlaybackSession
+	closed      map[string]bool
+	generations map[string]uint64
 }
 
 type phrasePlaybackSession struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wake   chan struct{}
+	// capacityChanged broadcasts to producers waiting for global backlog
+	// capacity. The channel is replaced after every broadcast so producers
+	// always re-check the session state under mu.
+	capacityChanged chan struct{}
 
 	queue      []*phrasePlaybackTask
 	active     *phrasePlaybackTask
 	closed     bool
 	generation uint64
 	utterances map[string]*phrasePlaybackUtterance
+	// Once all tasks for a non-final phrase have drained, retain its generation
+	// metadata separately. Streaming ASR may deliver the next stable phrase
+	// after that drain; treating it as a superseded generation loses text.
+	retired      map[string]*phrasePlaybackUtterance
+	retiredOrder []retiredPhrasePlaybackUtterance
+	acceptedIDs  map[string]map[string]struct{}
+}
+
+type retiredPhrasePlaybackUtterance struct {
+	id        string
+	utterance *phrasePlaybackUtterance
 }
 
 type phrasePlaybackUtterance struct {
-	unfinished int
+	unfinished    int
+	finalAccepted bool
 }
+
+type phrasePlaybackTaskStatus string
+
+const (
+	phrasePlaybackAccepted phrasePlaybackTaskStatus = "accepted"
+	phrasePlaybackStarted  phrasePlaybackTaskStatus = "started"
+	phrasePlaybackPlayed   phrasePlaybackTaskStatus = "played"
+	phrasePlaybackFailed   phrasePlaybackTaskStatus = "failed"
+	phrasePlaybackCanceled phrasePlaybackTaskStatus = "canceled"
+)
 
 type phrasePlaybackTask struct {
 	request    PhrasePlaybackRequest
 	generation uint64
 	cancel     context.CancelFunc
+	status     phrasePlaybackTaskStatus
+	utterance  *phrasePlaybackUtterance
 }
 
 // NewPhrasePlaybackScheduler creates one session worker lazily per active
@@ -106,6 +142,7 @@ func NewPhrasePlaybackScheduler(deps PhrasePlaybackSchedulerDependencies) *Phras
 		speech: deps.Speech, audio: deps.Audio, usage: deps.Usage, now: deps.Now,
 		usageError: deps.UsageError,
 		sessions:   make(map[string]*phrasePlaybackSession), closed: make(map[string]bool),
+		generations: make(map[string]uint64),
 	}
 }
 
@@ -117,7 +154,13 @@ func (s *PhrasePlaybackSchedulerService) ResetUtterance(sessionID, utteranceID s
 	delete(s.closed, sessionID)
 	defer s.mu.Unlock()
 	state := s.sessionLocked(sessionID)
+	// Reset is the explicit lifecycle boundary for an utterance. Any retired
+	// metadata and idempotency keys from a previous incarnation must not make a
+	// new request look already accepted.
+	delete(state.retired, utteranceID)
+	delete(state.acceptedIDs, utteranceID)
 	state.utterances[utteranceID] = &phrasePlaybackUtterance{}
+	s.signalCapacityLocked(state)
 }
 
 // Enqueue preserves the original bool API for callers that only need to know
@@ -135,57 +178,136 @@ func (s *PhrasePlaybackSchedulerService) EnqueueWithReason(request PhrasePlaybac
 		request.PlaybackID == "" || request.Language == "" || strings.TrimSpace(request.Text) == "" {
 		return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectInvalid}
 	}
-	s.mu.Lock()
-	if s.closed[request.Turn.SessionID] {
-		s.mu.Unlock()
-		return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectPlaybackClosed}
-	}
-	state := s.sessionLocked(request.Turn.SessionID)
-	if state.closed {
-		s.mu.Unlock()
-		return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectPlaybackClosed}
-	}
-	utterance := state.utterances[request.UtteranceID]
-	if utterance == nil {
-		if !request.Final {
+	var expectedGeneration uint64
+	generationKnown := false
+	for {
+		s.mu.Lock()
+		if s.closed[request.Turn.SessionID] {
+			s.mu.Unlock()
+			return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectPlaybackClosed}
+		}
+		state := s.sessionLocked(request.Turn.SessionID)
+		if state.closed {
+			s.mu.Unlock()
+			return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectPlaybackClosed}
+		}
+		if generationKnown && state.generation != expectedGeneration {
 			s.mu.Unlock()
 			return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectGenerationSuperseded}
 		}
-		utterance = &phrasePlaybackUtterance{}
-		state.utterances[request.UtteranceID] = utterance
-	}
-	task := &phrasePlaybackTask{request: request, generation: state.generation}
-	// Streaming translation frequently yields adjacent micro-chunks. Fold them
-	// into the last queued task for this utterance before considering the cap.
-	if len(state.queue) > 0 {
-		last := state.queue[len(state.queue)-1]
-		if last.request.UtteranceID == request.UtteranceID && last.generation == state.generation &&
-			(last.request.PhraseSequence >= 1000 && request.PhraseSequence >= 1000 ||
-				utterance.unfinished >= maxPhrasePlaybackBacklog) {
-			last.request.Text = joinPhrasePlaybackText(last.request.Text, request.Text)
-			last.request.Final = last.request.Final || request.Final
-			wake := state.wake
+		expectedGeneration, generationKnown = state.generation, true
+		// Playback IDs are the durable idempotency boundary. A retry after a
+		// transient enqueue wait must not synthesize the same text twice.
+		ids := state.acceptedIDs[request.UtteranceID]
+		if ids == nil {
+			ids = make(map[string]struct{})
+			state.acceptedIDs[request.UtteranceID] = ids
+		}
+		if _, exists := ids[request.PlaybackID]; exists {
 			s.mu.Unlock()
-			select {
-			case wake <- struct{}{}:
-			default:
-			}
 			return PhrasePlaybackEnqueueResult{Accepted: true}
 		}
-	}
-	if utterance.unfinished >= maxPhrasePlaybackBacklog {
+
+		utterance := state.utterances[request.UtteranceID]
+		if utterance == nil {
+			// A drained non-final utterance is retired, not superseded. Restore
+			// it so a late ASR stable phrase remains in the same generation.
+			if retired := state.retired[request.UtteranceID]; retired != nil {
+				if retired.finalAccepted {
+					s.mu.Unlock()
+					return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectGenerationSuperseded}
+				}
+				utterance = retired
+				delete(state.retired, request.UtteranceID)
+				state.utterances[request.UtteranceID] = utterance
+			} else if !request.Final {
+				s.mu.Unlock()
+				return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectGenerationSuperseded}
+			} else {
+				utterance = &phrasePlaybackUtterance{}
+				state.utterances[request.UtteranceID] = utterance
+			}
+		}
+		if utterance.finalAccepted {
+			s.mu.Unlock()
+			return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectGenerationSuperseded}
+		}
+
+		// Streaming translation frequently yields adjacent micro-chunks. Fold
+		// them into the queued tail for this utterance when the result remains a
+		// natural TTS micro-segment. Only the queued tail is eligible: merging into an
+		// active task would replay audio that may already be audible.
+		if len(state.queue) > 0 {
+			last := state.queue[len(state.queue)-1]
+			if last.request.UtteranceID == request.UtteranceID && last.generation == state.generation &&
+				shouldMergePhrasePlayback(last.request, request, len(state.queue) >= maxPhrasePlaybackQueue) {
+				last.request.Text = joinPhrasePlaybackText(last.request.Text, request.Text)
+				last.request.Final = last.request.Final || request.Final
+				if request.Final {
+					utterance.finalAccepted = true
+				}
+				ids[request.PlaybackID] = struct{}{}
+				wake := state.wake
+				s.mu.Unlock()
+				signalChannel(wake)
+				return PhrasePlaybackEnqueueResult{Accepted: true}
+			}
+		}
+
+		// Once a task is accepted it is never discarded merely because the
+		// queue is busy. Apply back-pressure until either a task completes or
+		// the session is explicitly stopped/interrupted. This is the critical
+		// difference from the old permanent-degraded path.
+		if len(state.queue) >= maxPhrasePlaybackQueue {
+			wait := state.capacityChanged
+			s.mu.Unlock()
+			<-wait
+			continue
+		}
+
+		task := &phrasePlaybackTask{request: request, generation: state.generation, status: phrasePlaybackAccepted, utterance: utterance}
+		state.queue = append(state.queue, task)
+		utterance.unfinished++
+		if request.Final {
+			utterance.finalAccepted = true
+		}
+		ids[request.PlaybackID] = struct{}{}
+		wake := state.wake
 		s.mu.Unlock()
-		return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectBacklogLimit}
+		signalChannel(wake)
+		return PhrasePlaybackEnqueueResult{Accepted: true}
 	}
-	state.queue = append(state.queue, task)
-	utterance.unfinished++
-	wake := state.wake
-	s.mu.Unlock()
+}
+
+func signalChannel(ch chan struct{}) {
 	select {
-	case wake <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
-	return PhrasePlaybackEnqueueResult{Accepted: true}
+}
+
+func shouldMergePhrasePlayback(left, right PhrasePlaybackRequest, queueFull bool) bool {
+	if queueFull {
+		return true
+	}
+	// Only streamed sub-segments are coalesced during normal operation. Stable
+	// phrase requests already represent a semantic boundary selected by ASR.
+	if left.PhraseSequence < 1000 || right.PhraseSequence < 1000 {
+		return false
+	}
+	leftText := strings.TrimSpace(left.Text)
+	if leftText == "" || phrasePlaybackTextEndsBoundary(leftText) {
+		return false
+	}
+	return len([]rune(joinPhrasePlaybackText(leftText, right.Text))) <= maxPhrasePlaybackSegmentRunes
+}
+
+func phrasePlaybackTextEndsBoundary(text string) bool {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) == 0 {
+		return false
+	}
+	return strings.ContainsRune(".!?,;:\u3002\uff01\uff1f\uff0c\uff1b\uff1a\u3001\n", runes[len(runes)-1])
 }
 
 func joinPhrasePlaybackText(left, right string) string {
@@ -220,12 +342,17 @@ func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, s
 		return nil
 	}
 	state.generation++
+	s.generations[sessionID] = state.generation
 	active := state.active
 	state.queue = nil
 	state.utterances = make(map[string]*phrasePlaybackUtterance)
+	state.retired = make(map[string]*phrasePlaybackUtterance)
+	state.retiredOrder = nil
+	state.acceptedIDs = make(map[string]map[string]struct{})
 	if active != nil && active.cancel != nil {
 		active.cancel()
 	}
+	s.signalCapacityLocked(state)
 	s.mu.Unlock()
 	if interrupter, ok := s.audio.(interface {
 		InterruptCurrent(context.Context, string, string) error
@@ -251,10 +378,12 @@ func (s *PhrasePlaybackSchedulerService) Stop(ctx context.Context, sessionID str
 	state.closed = true
 	s.closed[sessionID] = true
 	state.generation++
+	s.generations[sessionID] = state.generation
 	state.queue = nil
 	if state.active != nil && state.active.cancel != nil {
 		state.active.cancel()
 	}
+	s.signalCapacityLocked(state)
 	state.cancel()
 	// A session ID may be reused after a reconnect. Drop the closed worker so
 	// the next utterance gets a fresh generation and session lifecycle.
@@ -270,7 +399,11 @@ func (s *PhrasePlaybackSchedulerService) sessionLocked(sessionID string) *phrase
 	ctx, cancel := context.WithCancel(context.Background())
 	state := &phrasePlaybackSession{
 		ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1),
-		utterances: make(map[string]*phrasePlaybackUtterance),
+		capacityChanged: make(chan struct{}),
+		generation:      s.generations[sessionID],
+		utterances:      make(map[string]*phrasePlaybackUtterance),
+		retired:         make(map[string]*phrasePlaybackUtterance),
+		acceptedIDs:     make(map[string]map[string]struct{}),
 	}
 	s.sessions[sessionID] = state
 	go s.runSession(state)
@@ -293,32 +426,43 @@ func (s *PhrasePlaybackSchedulerService) runSession(state *phrasePlaybackSession
 			task := state.queue[0]
 			state.queue = state.queue[1:]
 			if task.generation != state.generation {
-				s.decrementLocked(state, task.request.UtteranceID)
+				task.status = phrasePlaybackCanceled
+				s.decrementLocked(state, task)
+				s.signalCapacityLocked(state)
 				s.mu.Unlock()
 				continue
 			}
 			playCtx, cancel := context.WithCancel(state.ctx)
 			task.cancel, state.active = cancel, task
+			task.status = phrasePlaybackStarted
 			s.mu.Unlock()
-			s.play(task, playCtx)
+			playErr := s.play(task, playCtx)
 			cancel()
 			s.mu.Lock()
 			if state.active == task {
 				state.active = nil
 			}
-			s.decrementLocked(state, task.request.UtteranceID)
+			if playErr == nil {
+				task.status = phrasePlaybackPlayed
+			} else if errors.Is(playErr, context.Canceled) || errors.Is(playErr, context.DeadlineExceeded) {
+				task.status = phrasePlaybackCanceled
+			} else {
+				task.status = phrasePlaybackFailed
+			}
+			s.decrementLocked(state, task)
+			s.signalCapacityLocked(state)
 			s.mu.Unlock()
 		}
 	}
 }
 
-func (s *PhrasePlaybackSchedulerService) play(task *phrasePlaybackTask, ctx context.Context) {
+func (s *PhrasePlaybackSchedulerService) play(task *phrasePlaybackTask, ctx context.Context) error {
 	result, err := s.speech.Play(ctx, SpeechOutputRequest{
 		Turn: task.request.Turn, Language: task.request.Language, Text: task.request.Text,
 		PlaybackID: task.request.PlaybackID, SkipRuntime: true,
 	})
 	if err != nil || s.usage == nil {
-		return
+		return err
 	}
 	fact, err := buildUsageFactWithIdentity(task.request.Turn, "tts", result.Provider, result.Model,
 		result.AudioDuration.Milliseconds(), 0, 0, result.CostAmount, result.Currency,
@@ -326,14 +470,14 @@ func (s *PhrasePlaybackSchedulerService) play(task *phrasePlaybackTask, ctx cont
 		fmt.Sprintf("usage:%s:tts", task.request.PlaybackID), s.now())
 	if err != nil {
 		s.reportUsageError(task.request, fact, err)
-		return
+		return nil
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 		err = s.usage.Publish(publishCtx, fact)
 		cancel()
 		if err == nil {
-			return
+			return nil
 		}
 		if attempt < 2 {
 			timer := time.NewTimer(time.Duration(attempt+1) * 25 * time.Millisecond)
@@ -345,15 +489,43 @@ func (s *PhrasePlaybackSchedulerService) play(task *phrasePlaybackTask, ctx cont
 		}
 	}
 	s.reportUsageError(task.request, fact, err)
+	return nil
 }
 
-func (s *PhrasePlaybackSchedulerService) decrementLocked(state *phrasePlaybackSession, utteranceID string) {
-	if utterance := state.utterances[utteranceID]; utterance != nil && utterance.unfinished > 0 {
+func (s *PhrasePlaybackSchedulerService) decrementLocked(state *phrasePlaybackSession, task *phrasePlaybackTask) {
+	if task == nil || task.utterance == nil {
+		return
+	}
+	utterance := task.utterance
+	if utterance.unfinished > 0 {
 		utterance.unfinished--
 		if utterance.unfinished == 0 {
-			delete(state.utterances, utteranceID)
+			utteranceID := task.request.UtteranceID
+			if state.utterances[utteranceID] == utterance {
+				delete(state.utterances, utteranceID)
+				state.retired[utteranceID] = utterance
+				state.retiredOrder = append(state.retiredOrder, retiredPhrasePlaybackUtterance{
+					id: utteranceID, utterance: utterance,
+				})
+				for len(state.retiredOrder) > maxRetiredPhraseUtterances {
+					oldest := state.retiredOrder[0]
+					state.retiredOrder = state.retiredOrder[1:]
+					if state.retired[oldest.id] == oldest.utterance {
+						delete(state.retired, oldest.id)
+						delete(state.acceptedIDs, oldest.id)
+					}
+				}
+			}
 		}
 	}
+}
+
+func (s *PhrasePlaybackSchedulerService) signalCapacityLocked(state *phrasePlaybackSession) {
+	if state == nil || state.capacityChanged == nil {
+		return
+	}
+	close(state.capacityChanged)
+	state.capacityChanged = make(chan struct{})
 }
 
 func (s *PhrasePlaybackSchedulerService) reportUsageError(request PhrasePlaybackRequest, fact UsageFact, err error) {

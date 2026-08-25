@@ -69,9 +69,14 @@ jobs:
     # - name: Setup runtime (example)
     #   uses: actions/setup-example@v1
     - name: Setup Go
-      uses: actions/setup-go@v4
+      if: matrix.language == 'go'
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version: '1.26'
+        cache-dependency-path: |
+          packages/contracts/go.sum
+          services/api/go.sum
+          services/realtime-audio/go.sum
 
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL

@@ -131,6 +131,7 @@ type PipelineService struct {
 	settlementMu         sync.Mutex
 	settlementQueue      chan finalSettlementTask
 	settlementWorkerDone chan struct{}
+	settlementPending    map[finalSettlementScope]*finalSettlementGroup
 	settlementError      func(TurnContext, error)
 	settlementClosed     bool
 	closeOnce            sync.Once
@@ -139,6 +140,16 @@ type PipelineService struct {
 type finalSettlementTask struct {
 	turn   TurnContext
 	result asr.FinalResult
+}
+
+type finalSettlementScope struct {
+	sessionID         string
+	runtimeInstanceID string
+}
+
+type finalSettlementGroup struct {
+	pending int
+	done    chan struct{}
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
@@ -167,7 +178,8 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 		phraseTranslations:  deps.PhraseTranslations,
 		phrasePlayback:      deps.PhrasePlayback,
 		settlementCtx:       settlementCtx, settlementCancel: settlementCancel,
-		settlementError: deps.FinalSettlementError,
+		settlementPending: make(map[finalSettlementScope]*finalSettlementGroup),
+		settlementError:   deps.FinalSettlementError,
 	}
 	service.latePhraseUsage = newLatePhraseUsageQueue(service.usage, service.latency)
 	if service.phraseTranslations != nil {
@@ -213,7 +225,7 @@ func (s *PipelineService) HandleASREvent(ctx context.Context, turn TurnContext, 
 // stage failed; callers must not rerun this method, while Usage and TTS recover
 // at their own processing boundaries.
 func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) (returnErr error) {
-	return s.handleASRFinal(ctx, turn, result, true)
+	return s.handleASRFinal(ctx, turn, result, true, nil)
 }
 
 // HandleASRFinalAsync hands a streaming final to the service-owned settlement
@@ -245,6 +257,7 @@ func (s *PipelineService) HandleASRFinalAsync(ctx context.Context, turn TurnCont
 	}
 	select {
 	case s.settlementQueue <- finalSettlementTask{turn: turn, result: result}:
+		s.registerFinalSettlementLocked(turn)
 		s.settlementMu.Unlock()
 		return nil
 	default:
@@ -256,9 +269,61 @@ func (s *PipelineService) HandleASRFinalAsync(ctx context.Context, turn TurnCont
 func (s *PipelineService) runFinalSettlementWorker(tasks <-chan finalSettlementTask, done chan<- struct{}) {
 	defer close(done)
 	for task := range tasks {
-		if err := s.handleASRFinal(s.settlementCtx, task.turn, task.result, false); err != nil && !errors.Is(err, context.Canceled) {
+		if err := s.handleASRFinal(s.settlementCtx, task.turn, task.result, false, func() {
+			s.completeFinalSettlement(task.turn)
+		}); err != nil && !errors.Is(err, context.Canceled) {
 			s.reportFinalSettlementError(task.turn, err)
 		}
+	}
+}
+
+// WaitFinalSettlements waits only until every accepted async final for one
+// runtime has resolved its FinalTurn commit gate. Provider usage, TTS admission,
+// and playback continue independently after that durable lifecycle boundary.
+func (s *PipelineService) WaitFinalSettlements(ctx context.Context, sessionID, runtimeInstanceID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || sessionID == "" || runtimeInstanceID == "" {
+		return ErrPipelineDependencyRequired
+	}
+	scope := finalSettlementScope{sessionID: sessionID, runtimeInstanceID: runtimeInstanceID}
+	s.settlementMu.Lock()
+	group := s.settlementPending[scope]
+	s.settlementMu.Unlock()
+	if group == nil {
+		return nil
+	}
+	select {
+	case <-group.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *PipelineService) registerFinalSettlementLocked(turn TurnContext) {
+	scope := finalSettlementScope{sessionID: turn.SessionID, runtimeInstanceID: turn.Mode.RuntimeInstanceID}
+	group := s.settlementPending[scope]
+	if group == nil {
+		group = &finalSettlementGroup{done: make(chan struct{})}
+		s.settlementPending[scope] = group
+	}
+	group.pending++
+}
+
+func (s *PipelineService) completeFinalSettlement(turn TurnContext) {
+	scope := finalSettlementScope{sessionID: turn.SessionID, runtimeInstanceID: turn.Mode.RuntimeInstanceID}
+	s.settlementMu.Lock()
+	defer s.settlementMu.Unlock()
+	group := s.settlementPending[scope]
+	if group == nil {
+		return
+	}
+	group.pending--
+	if group.pending == 0 {
+		delete(s.settlementPending, scope)
+		close(group.done)
 	}
 }
 
@@ -273,7 +338,20 @@ func (s *PipelineService) reportFinalSettlementError(turn TurnContext, err error
 	s.latency.ProviderFailure("final_settlement", turn, "", "", err)
 }
 
-func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult, reportRuntime bool) (returnErr error) {
+func (s *PipelineService) handleASRFinal(
+	ctx context.Context,
+	turn TurnContext,
+	result asr.FinalResult,
+	reportRuntime bool,
+	finalSettlementDone func(),
+) (returnErr error) {
+	var finalSettlementOnce sync.Once
+	completeFinalSettlement := func() {
+		if finalSettlementDone != nil {
+			finalSettlementOnce.Do(finalSettlementDone)
+		}
+	}
+	defer completeFinalSettlement()
 	if err := s.validate(); err != nil {
 		return err
 	}
@@ -383,6 +461,7 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 	committed, err := s.finalGate.CommitFinalTurn(ctx, turn, func(commitCtx context.Context) error {
 		return s.finalTurns.Publish(commitCtx, finalEvent)
 	})
+	completeFinalSettlement()
 	if err != nil {
 		return fmt.Errorf("commit FinalTurn: %w", err)
 	}

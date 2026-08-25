@@ -986,6 +986,40 @@ func TestPipelineReusesPendingPhraseInAsyncSettlement(t *testing.T) {
 	}
 }
 
+func TestWaitFinalSettlementsDoesNotWaitForPlaybackAdmission(t *testing.T) {
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock", Model: "v1"}}
+	phraseCoordinator := NewPhraseTranslationCoordinator(translator, "mock", &recordingPhraseSubtitleObserver{}, nil)
+	playback := newBlockingEnqueuePhrasePlaybackScheduler()
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{},
+		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phraseCoordinator, PhrasePlayback: playback,
+	})
+	defer func() {
+		close(playback.releaseEnqueue)
+		service.Close()
+	}()
+	turn := testTurn()
+	turn.Mode.RuntimeInstanceID = "runtime-1"
+
+	if err := service.HandleASRFinalAsync(context.Background(), turn, asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+	}); err != nil {
+		t.Fatalf("HandleASRFinalAsync() error = %v", err)
+	}
+	select {
+	case <-playback.enqueueStarted:
+	case <-time.After(time.Second):
+		t.Fatal("final settlement did not reach playback admission")
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := service.WaitFinalSettlements(waitCtx, turn.SessionID, turn.Mode.RuntimeInstanceID); err != nil {
+		t.Fatalf("WaitFinalSettlements() waited past FinalTurn commit: %v", err)
+	}
+}
+
 func TestPipelineTranslatesFinalFlushTailOnceAndAggregatesUsage(t *testing.T) {
 	phraseCoordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
 		return translate.Result{Text: "hello", Provider: "mock", Model: "v1", InputTokens: 1, CostAmount: "0.10", Currency: "USD"}, nil

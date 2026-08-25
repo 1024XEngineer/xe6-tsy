@@ -8,6 +8,7 @@ const closeWebRTC = vi.fn();
 const wakeWordSend = vi.fn();
 const uplinkTrack = { enabled: true };
 let dataMessageHandler: ((payload: unknown) => void) | undefined;
+let connectionStateHandler: ((state: RTCPeerConnectionState) => void) | undefined;
 let wakeHandler: ((keyword: string) => void) | undefined;
 
 function deferred<T>() {
@@ -19,8 +20,12 @@ function deferred<T>() {
 }
 
 vi.mock("../lib/webrtc-session", () => ({
-  openWebRTCSession: vi.fn(async (options: { onDataMessage: (payload: unknown) => void }) => {
+  openWebRTCSession: vi.fn(async (options: {
+    onDataMessage: (payload: unknown) => void;
+    onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+  }) => {
     dataMessageHandler = options.onDataMessage;
+    connectionStateHandler = options.onConnectionStateChange;
     return {
       connectionId: "conn-1",
       peerConnection: {} as RTCPeerConnection,
@@ -109,6 +114,7 @@ describe("VoiceExperience", () => {
     wakeWordSend.mockClear();
     uplinkTrack.enabled = true;
     dataMessageHandler = undefined;
+    connectionStateHandler = undefined;
     wakeHandler = undefined;
     failFirstStart = false;
     startRequests = 0;
@@ -515,6 +521,54 @@ describe("VoiceExperience", () => {
       occurred_at: "2026-08-18T01:02:05Z",
     });
     expect(screen.queryByText("不应显示的迟到文本")).not.toBeInTheDocument();
+  });
+
+  it("keeps the active utterance through a WebRTC interruption and accepts recovery partials", async () => {
+    vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
+    await waitFor(() => expect(startRequests).toBe(1));
+
+    dataMessageHandler?.({
+      type: "asr.partial",
+      event_version: 1,
+      session_id: "vs-1",
+      turn_id: "turn-transport-1",
+      text: "断线前的原文",
+      occurred_at: "2026-08-18T01:02:03Z",
+    });
+    expect(await screen.findByText("断线前的原文")).toBeInTheDocument();
+
+    act(() => connectionStateHandler?.("disconnected"));
+    expect(screen.getByText("断线前的原文")).toBeInTheDocument();
+
+    dataMessageHandler?.({
+      type: "asr.partial",
+      event_version: 1,
+      session_id: "vs-1",
+      turn_id: "turn-transport-1",
+      text: "断线恢复后的完整原文",
+      occurred_at: "2026-08-18T01:02:04Z",
+    });
+    expect(await screen.findByText("断线恢复后的完整原文")).toBeInTheDocument();
+
+    act(() => connectionStateHandler?.("failed"));
+    expect(screen.getByText("断线恢复后的完整原文")).toBeInTheDocument();
+
+    dataMessageHandler?.({
+      type: "translation.final",
+      turn_id: "turn-transport-1",
+      source_text: "断线恢复后的完整原文",
+      translated_text: "Recovered translation",
+      source_language: "zh-CN",
+      target_language: "en-US",
+    });
+    await waitFor(() => {
+      // The final history row still contains the source text; the invariant
+      // is that the source occurs once, with no duplicate live row left over.
+      expect(screen.getAllByText("断线恢复后的完整原文")).toHaveLength(1);
+      expect(screen.getByText("Recovered translation")).toBeInTheDocument();
+    });
   });
 
   it("starts new Web sessions in assistant mode", async () => {

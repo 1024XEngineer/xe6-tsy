@@ -1,11 +1,17 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
+	"time"
 )
 
 // LogVerificationSender delivers one-time codes to structured logs for local
@@ -14,6 +20,43 @@ type LogVerificationSender struct{}
 
 func (LogVerificationSender) SendCode(_ context.Context, phone, code string) error {
 	slog.Info("phone verification code sent", "phone", maskPhone(phone), "code", code)
+	return nil
+}
+
+type HTTPVerificationSender struct {
+	Endpoint string
+	Token    string
+	Client   *http.Client
+}
+
+func (s HTTPVerificationSender) SendCode(ctx context.Context, phone, code string) error {
+	client := s.Client
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	body, err := json.Marshal(struct {
+		Phone string `json:"phone"`
+		Code  string `json:"code"`
+	}{Phone: phone, Code: code})
+	if err != nil {
+		return fmt.Errorf("encode verification request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.Endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create verification request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	if s.Token != "" {
+		request.Header.Set("Authorization", "Bearer "+s.Token)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("send verification request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("verification provider returned HTTP %d", response.StatusCode)
+	}
 	return nil
 }
 
@@ -49,11 +92,30 @@ func (m *MemoryVerificationSender) LastCode(phone string) (string, bool) {
 // VerificationSenderFromEnv selects the configured verification delivery adapter.
 // Empty or "log" uses structured logs for local development.
 func VerificationSenderFromEnv() VerificationSender {
-	switch os.Getenv("VERIFICATION_SENDER") {
+	sender, _ := VerificationSenderFromEnvChecked()
+	return sender
+}
+
+func VerificationSenderFromEnvChecked() (VerificationSender, error) {
+	sender := strings.ToLower(strings.TrimSpace(os.Getenv("VERIFICATION_SENDER")))
+	switch sender {
 	case "", "log":
-		return LogVerificationSender{}
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
+			return nil, fmt.Errorf("VERIFICATION_SENDER must be http in production")
+		}
+		return LogVerificationSender{}, nil
+	case "http":
+		endpoint := strings.TrimSpace(os.Getenv("VERIFICATION_SMS_ENDPOINT"))
+		parsed, err := url.Parse(endpoint)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") {
+			return nil, fmt.Errorf("VERIFICATION_SMS_ENDPOINT must be a valid HTTP or HTTPS URL")
+		}
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") && parsed.Scheme != "https" {
+			return nil, fmt.Errorf("VERIFICATION_SMS_ENDPOINT must use HTTPS in production")
+		}
+		return HTTPVerificationSender{Endpoint: endpoint, Token: strings.TrimSpace(os.Getenv("VERIFICATION_SMS_TOKEN"))}, nil
 	default:
-		return nil
+		return nil, fmt.Errorf("unsupported VERIFICATION_SENDER %q", sender)
 	}
 }
 

@@ -9,6 +9,7 @@ const realtimeBase =
   "http://127.0.0.1:8090";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   devIndicators: false,
   async headers() {
     return [

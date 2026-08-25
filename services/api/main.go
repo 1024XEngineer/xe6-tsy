@@ -383,11 +383,15 @@ func newRecordsHTTPDependenciesFromPool(
 	if err != nil {
 		return nil, err
 	}
+	verificationSender, err := accounts.VerificationSenderFromEnvChecked()
+	if err != nil {
+		return nil, fmt.Errorf("configure verification sender: %w", err)
+	}
 	accountUseCases := accounts.NewPersistentUseCases(
 		accountRepository,
 		tokens,
 		tokens,
-		accounts.VerificationSenderFromEnv(),
+		verificationSender,
 		digester,
 	).WithVerificationPolicy(policy)
 	return &recordsHTTPDependencies{
@@ -471,6 +475,9 @@ func buildMuxWithServices(
 		deviceHandler = deviceHandlers[0]
 	}
 	mux := internalwebapi.New(accountService, usageService, deliveryService, tokens)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	lang.Register(mux, func(next http.Handler) http.Handler {
 		return internalwebapi.Authenticate(tokens, next)
 	})

@@ -16,7 +16,7 @@ describe("DeliverySettings", () => {
   beforeEach(() => {
     localStorage.clear();
     saveAuthSession({
-      account: { id: "acc-delivery", kind: "anonymous", created_at: "2026-08-01T00:00:00Z" },
+      account: { id: "acc-delivery", kind: "registered", created_at: "2026-08-01T00:00:00Z" },
       tokens: {
         access_token: "access-delivery",
         refresh_token: "refresh-delivery",

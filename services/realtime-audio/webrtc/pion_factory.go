@@ -24,9 +24,10 @@ type ICEServerConfig struct {
 
 // PionTransportConfig supplies the STUN/TURN servers used by new PeerConnections.
 type PionTransportConfig struct {
-	ICEServers []ICEServerConfig
-	Media      MediaConfig
-	Control    ControlConfig
+	ICEServers         []ICEServerConfig
+	ICETransportPolicy string
+	Media              MediaConfig
+	Control            ControlConfig
 }
 
 // PionTransportFactory creates one Pion PeerConnection per connection generation.
@@ -322,7 +323,16 @@ func newPionAPI(config MediaConfig) (*pion.API, error) {
 }
 
 func pionConfiguration(config PionTransportConfig) (pion.Configuration, error) {
-	configuration := pion.Configuration{ICEServers: make([]pion.ICEServer, 0, len(config.ICEServers))}
+	var policy pion.ICETransportPolicy
+	switch strings.ToLower(strings.TrimSpace(config.ICETransportPolicy)) {
+	case "", "all":
+		policy = pion.ICETransportPolicyAll
+	case "relay":
+		policy = pion.ICETransportPolicyRelay
+	default:
+		return pion.Configuration{}, fmt.Errorf("%w: ICE transport policy must be all or relay", ErrICEConfigurationInvalid)
+	}
+	configuration := pion.Configuration{ICETransportPolicy: policy, ICEServers: make([]pion.ICEServer, 0, len(config.ICEServers))}
 	for serverIndex, server := range config.ICEServers {
 		if len(server.URLs) == 0 {
 			return pion.Configuration{}, fmt.Errorf("%w: server %d has no URLs", ErrICEConfigurationInvalid, serverIndex)

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,6 +61,9 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	if cfg.PhraseSubtitles {
 		t.Fatal("PhraseSubtitles = true, want false by default")
 	}
+	if cfg.ICETransportPolicy != "all" || len(cfg.ICEServers) != 1 || cfg.ICEServers[0].URLs[0] != "stun:stun.l.google.com:19302" {
+		t.Fatalf("default ICE config = %#v policy=%q", cfg.ICEServers, cfg.ICETransportPolicy)
+	}
 	if cfg.PhrasePlayback {
 		t.Fatal("PhrasePlayback = true, want false by default")
 	}
@@ -73,6 +77,47 @@ func TestLoadProcessConfigDefaultsAndValidatesSecret(t *testing.T) {
 	t.Setenv("REALTIME_TICKET_SECRET", "")
 	if _, err := loadProcessConfig(nil); err == nil {
 		t.Fatal("loadProcessConfig(nil) error = nil, want secret validation error")
+	}
+}
+
+func TestLoadProcessConfigProductionRequiresTURNAndUsesRelay(t *testing.T) {
+	base := func(values map[string]string) func(string) string {
+		return func(key string) string {
+			if key == "REALTIME_TICKET_SECRET" {
+				return strings.Repeat("s", 32)
+			}
+			return values[key]
+		}
+	}
+	if _, err := loadProcessConfig(base(map[string]string{"APP_ENV": "production"})); err == nil {
+		t.Fatal("production config without TURN accepted")
+	}
+	cfg, err := loadProcessConfig(base(map[string]string{
+		"APP_ENV":                   "production",
+		"REALTIME_ICE_SERVERS_JSON": `[{"urls":["turns:turn.example.test:5349?transport=tcp"],"username":"u","credential":"c"}]`,
+	}))
+	if err != nil {
+		t.Fatalf("production TURN config error = %v", err)
+	}
+	if cfg.ICETransportPolicy != "relay" || len(cfg.ICEServers) != 1 || cfg.ICEServers[0].Username != "u" {
+		t.Fatalf("production ICE config = %#v policy=%q", cfg.ICEServers, cfg.ICETransportPolicy)
+	}
+}
+
+func TestLoadProcessConfigRejectsInvalidICEConfig(t *testing.T) {
+	for _, raw := range []string{"not-json", `[{"urls":["https://example.test"]}]`, `[{"urls":[]}]`} {
+		_, err := loadProcessConfig(func(key string) string {
+			if key == "REALTIME_TICKET_SECRET" {
+				return strings.Repeat("s", 32)
+			}
+			if key == "REALTIME_ICE_SERVERS_JSON" {
+				return raw
+			}
+			return ""
+		})
+		if err == nil {
+			t.Fatalf("ICE config %q accepted", raw)
+		}
 	}
 }
 
@@ -483,6 +528,20 @@ func TestNewControlPlaneHandlerProtectsRealtimeMetrics(t *testing.T) {
 	}
 }
 
+func TestNewControlPlaneHandlerServesUnauthenticatedHealthCheck(t *testing.T) {
+	setMockProviderEnv(t)
+	handler, err := newControlPlaneHandler(strings.Repeat("h", 32))
+	if err != nil {
+		t.Fatalf("newControlPlaneHandler() error = %v", err)
+	}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("health check status = %d, want %d", response.Code, http.StatusOK)
+	}
+}
+
 func TestNewControlPlaneHandlerDoesNotExposeMetricsByDefault(t *testing.T) {
 	setMockProviderEnv(t)
 	handler, err := newControlPlaneHandler(strings.Repeat("m", 32))
@@ -618,12 +677,19 @@ func TestRunReturnsShutdownTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	listenerReady := make(chan net.Listener, 1)
+	connectionAccepted := make(chan struct{})
+	var acceptedOnce sync.Once
 	done := make(chan error, 1)
 	go func() {
 		done <- run(ctx, secretEnv(strings.Repeat("y", 32)), func(server *http.Server) error {
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				return err
+			}
+			server.ConnState = func(_ net.Conn, state http.ConnState) {
+				if state == http.StateNew {
+					acceptedOnce.Do(func() { close(connectionAccepted) })
+				}
 			}
 			listenerReady <- listener
 			return server.Serve(listener)
@@ -644,6 +710,11 @@ func TestRunReturnsShutdownTimeout(t *testing.T) {
 	defer conn.Close()
 	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\n")); err != nil {
 		t.Fatalf("write partial request: %v", err)
+	}
+	select {
+	case <-connectionAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept connection")
 	}
 	cancel()
 

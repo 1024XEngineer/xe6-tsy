@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -59,6 +61,8 @@ type processConfig struct {
 	CommandConfigTimeout time.Duration
 	LongDelivery         bool
 	PhraseSubtitles      bool
+	ICEServers           []webrtc.ICEServerConfig
+	ICETransportPolicy   string
 	PhrasePlayback       bool
 }
 
@@ -136,16 +140,78 @@ func loadProcessConfig(getenv func(string) string) (processConfig, error) {
 	if commandToken != "" && len([]byte(commandToken)) < minCommandTokenBytes {
 		return processConfig{}, fmt.Errorf("LINGOW_COMMAND_SYSTEM_TOKEN must contain at least %d bytes", minCommandTokenBytes)
 	}
+	production := strings.EqualFold(strings.TrimSpace(getenv("APP_ENV")), "production")
+	iceServers, err := parseICEServers(getenv("REALTIME_ICE_SERVERS_JSON"), production)
+	if err != nil {
+		return processConfig{}, err
+	}
+	icePolicy := strings.ToLower(strings.TrimSpace(getenv("REALTIME_ICE_TRANSPORT_POLICY")))
+	if icePolicy == "" {
+		icePolicy = "all"
+		if production {
+			icePolicy = "relay"
+		}
+	}
+	if icePolicy != "all" && icePolicy != "relay" {
+		return processConfig{}, fmt.Errorf("REALTIME_ICE_TRANSPORT_POLICY must be all or relay")
+	}
 	return processConfig{
 		Addr: addr, TicketSecret: ticketSecret, SkipTTSTrack: skipTTS, ForceMockTTS: forceMock,
 		DownlinkMode: mode, DownlinkCodec: codec,
 		SourceLanguage: source, TargetLanguage: target,
 		MetricsToken: strings.TrimSpace(getenv("REALTIME_METRICS_TOKEN")),
 		APIBaseURL:   apiBaseURL, CommandToken: commandToken, CommandConfigTimeout: commandConfigTimeout,
-		LongDelivery:    longSentenceDeliveryEnabled,
-		PhraseSubtitles: phraseSubtitlesEnabled,
-		PhrasePlayback:  phrasePlaybackEnabled,
+		LongDelivery:       longSentenceDeliveryEnabled,
+		PhraseSubtitles:    phraseSubtitlesEnabled,
+		ICEServers:         iceServers,
+		ICETransportPolicy: icePolicy,
+		PhrasePlayback:     phrasePlaybackEnabled,
 	}, nil
+}
+
+func parseICEServers(raw string, production bool) ([]webrtc.ICEServerConfig, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		if production {
+			return nil, fmt.Errorf("REALTIME_ICE_SERVERS_JSON must include a TURN or TURNS server in production")
+		}
+		return []webrtc.ICEServerConfig{{URLs: []string{"stun:stun.l.google.com:19302"}}}, nil
+	}
+	var servers []webrtc.ICEServerConfig
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	if err := decoder.Decode(&servers); err != nil || len(servers) == 0 {
+		return nil, fmt.Errorf("REALTIME_ICE_SERVERS_JSON must be a non-empty JSON array")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err == nil {
+		return nil, fmt.Errorf("REALTIME_ICE_SERVERS_JSON must contain one JSON value")
+	}
+	hasTURN := false
+	for index, server := range servers {
+		if len(server.URLs) == 0 {
+			return nil, fmt.Errorf("REALTIME_ICE_SERVERS_JSON server %d must include urls", index)
+		}
+		for _, rawURL := range server.URLs {
+			parsed, err := url.Parse(rawURL)
+			if err != nil {
+				return nil, fmt.Errorf("REALTIME_ICE_SERVERS_JSON server %d has invalid URL", index)
+			}
+			endpoint := parsed.Host
+			if endpoint == "" {
+				endpoint = parsed.Opaque
+			}
+			if endpoint == "" || (parsed.Scheme != "stun" && parsed.Scheme != "stuns" && parsed.Scheme != "turn" && parsed.Scheme != "turns") {
+				return nil, fmt.Errorf("REALTIME_ICE_SERVERS_JSON server %d has invalid URL", index)
+			}
+			if parsed.Scheme == "turn" || parsed.Scheme == "turns" {
+				hasTURN = true
+			}
+		}
+	}
+	if production && !hasTURN {
+		return nil, fmt.Errorf("REALTIME_ICE_SERVERS_JSON must include a TURN or TURNS server in production")
+	}
+	return servers, nil
 }
 
 func webrtcConfigSampleRate(cfg processConfig) int {
@@ -199,9 +265,8 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 
 	controlHandler := controlchannel.NewHandler()
 	factory, err := webrtc.NewPionTransportFactory(webrtc.PionTransportConfig{
-		ICEServers: []webrtc.ICEServerConfig{{
-			URLs: []string{"stun:stun.l.google.com:19302"},
-		}},
+		ICEServers:         cfg.ICEServers,
+		ICETransportPolicy: cfg.ICETransportPolicy,
 		Media: webrtc.MediaConfig{
 			SkipTTSTrack:  cfg.SkipTTSTrack,
 			DownlinkCodec: cfg.DownlinkCodec,
@@ -386,14 +451,13 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		Connections:     connections,
 		Tickets:         tickets,
 		Config: localruntime.StaticWebRTCConfig{
-			ICEServers: []controlplane.ICEServer{{
-				URLs: []string{"stun:stun.l.google.com:19302"},
-			}},
-			Now:           now,
-			UplinkCodec:   "opus",
-			DownlinkCodec: cfg.DownlinkCodec,
-			SampleRateHz:  webrtcConfigSampleRate(cfg),
-			Channels:      1,
+			ICEServers:         controlplaneICEServers(cfg.ICEServers),
+			ICETransportPolicy: cfg.ICETransportPolicy,
+			Now:                now,
+			UplinkCodec:        "opus",
+			DownlinkCodec:      cfg.DownlinkCodec,
+			SampleRateHz:       webrtcConfigSampleRate(cfg),
+			Channels:           1,
 		},
 		Now: now,
 	})
@@ -401,9 +465,22 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		return nil, fmt.Errorf("configure control-plane: %w", err)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
 	realtimemetrics.Register(mux, metricRegistry, cfg.MetricsToken)
 	mux.Handle("/", handler)
 	return mux, nil
+}
+
+func controlplaneICEServers(servers []webrtc.ICEServerConfig) []controlplane.ICEServer {
+	result := make([]controlplane.ICEServer, 0, len(servers))
+	for _, server := range servers {
+		result = append(result, controlplane.ICEServer{
+			URLs: append([]string(nil), server.URLs...), Username: server.Username, Credential: server.Credential,
+		})
+	}
+	return result
 }
 
 func commandInterpreterFactory(cfg config.CommandConfig) runtime.CommandInterpreterFactory {

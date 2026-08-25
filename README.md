@@ -164,5 +164,6 @@ npm run build
 
 - [Lingow 架构总览](https://github.com/1024XEngineer/xe6-tsy/pull/165)
 - [开发说明](docs/DEVELOPMENT.md)
+- [生产部署](infra/production/README.md)
 - [Lingow 模块详细设计](https://github.com/1024XEngineer/xe6-tsy/pull/169)
 - [Lingow P0 协议设计](https://github.com/1024XEngineer/xe6-tsy/pull/171)

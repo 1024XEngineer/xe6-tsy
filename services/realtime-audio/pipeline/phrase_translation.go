@@ -290,7 +290,7 @@ func (c *PhraseTranslationCoordinator) enqueueStreamPhrasePlayback(utterance *ph
 	sequence := phrase.streamPlaybackSequence
 	if utterance.playbackFailed || playback == nil {
 		utterance.playbackFailed = true
-		phrase.playbackResidualText += text
+		phrase.playbackResidualText = joinPhrasePlaybackText(phrase.playbackResidualText, text)
 		return
 	}
 	request := PhrasePlaybackRequest{
@@ -302,7 +302,7 @@ func (c *PhraseTranslationCoordinator) enqueueStreamPhrasePlayback(utterance *ph
 	result := enqueuePhrasePlayback(playback, request)
 	if !result.Accepted {
 		utterance.playbackFailed = true
-		phrase.playbackResidualText += text
+		phrase.playbackResidualText = joinPhrasePlaybackText(phrase.playbackResidualText, text)
 		slog.Warn("phrase_tts_enqueue_failed", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
 			"phrase_sequence", phrase.event.PhraseSequence, "stream_sequence", sequence, "reason", result.Reason)
 		return
@@ -393,7 +393,7 @@ func (c *PhraseTranslationCoordinator) enqueueTranslatedPhrasePlayback(utterance
 			}
 		} else if utterance.playbackFailed || playback == nil {
 			utterance.playbackFailed = true
-			ready.playbackResidualText += text
+			ready.playbackResidualText = joinPhrasePlaybackText(ready.playbackResidualText, text)
 		} else {
 			result := enqueuePhrasePlayback(playback, PhrasePlaybackRequest{
 				Turn: utterance.turn, UtteranceID: ready.event.UtteranceID,
@@ -403,7 +403,7 @@ func (c *PhraseTranslationCoordinator) enqueueTranslatedPhrasePlayback(utterance
 			})
 			if !result.Accepted {
 				utterance.playbackFailed = true
-				ready.playbackResidualText += text
+				ready.playbackResidualText = joinPhrasePlaybackText(ready.playbackResidualText, text)
 				slog.Warn("phrase_tts_enqueue_failed", "session_id", utterance.turn.SessionID,
 					"turn_id", utterance.turn.ID, "phrase_sequence", ready.event.PhraseSequence,
 					"reason", result.Reason)
@@ -661,7 +661,7 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 		cursor += index + len(phrase.event.SourceText)
 		if phrase.done && phrase.err == nil && strings.TrimSpace(phrase.result.Text) != "" {
 			summary.Text += phrase.result.Text
-			summary.PlaybackResidualText += phrase.playbackResidualText
+			summary.PlaybackResidualText = joinPhrasePlaybackText(summary.PlaybackResidualText, phrase.playbackResidualText)
 			if !mergePhraseUsage(&summary, phrase.result) {
 				return PhraseTranslationSummary{}, 0, false
 			}

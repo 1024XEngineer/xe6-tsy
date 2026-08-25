@@ -126,6 +126,11 @@ func (p *Provider) startRealtimeStream(ctx context.Context, request tts.Request)
 		_ = conn.Close()
 		return nil, fmt.Errorf("configure Qwen TTS realtime session: %w", err)
 	}
+	// gorilla/websocket ReadMessage does not observe context cancellation. Close
+	// the connection when the stream deadline or playback generation is
+	// cancelled so one stalled provider response cannot occupy the session's
+	// serial playback worker forever.
+	go s.closeOnCancellation()
 	go s.run()
 	return s, nil
 }
@@ -154,6 +159,14 @@ type realtimeStream struct {
 }
 
 func (s *realtimeStream) Chunks() <-chan tts.AudioChunk { return s.chunks }
+
+func (s *realtimeStream) closeOnCancellation() {
+	select {
+	case <-s.ctx.Done():
+		_ = s.conn.Close()
+	case <-s.done:
+	}
+}
 
 func (s *realtimeStream) sendSession() error {
 	voice := firstNonEmpty(s.request.VoiceID, s.config.Voice)

@@ -712,6 +712,43 @@ func TestManagerAllowsNewOperationAfterSuccessfulStop(t *testing.T) {
 	}
 }
 
+func TestManagerStopCleansPhrasePlaybackAfterRuntimeEntryIsGone(t *testing.T) {
+	playback := &recordingManagerPhrasePlayback{stopped: make(chan string, 1)}
+	manager := &Manager{
+		entries:        make(map[string]*entry),
+		locks:          newKeyedLocker(),
+		phrasePlayback: playback,
+	}
+	if err := manager.Stop(context.Background(), "session-without-runtime"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	select {
+	case sessionID := <-playback.stopped:
+		if sessionID != "session-without-runtime" {
+			t.Fatalf("stopped session = %q", sessionID)
+		}
+	default:
+		t.Fatal("Stop() skipped phrase playback cleanup after runtime removal")
+	}
+}
+
+type recordingManagerPhrasePlayback struct {
+	stopped chan string
+}
+
+func (*recordingManagerPhrasePlayback) ResetUtterance(string, string) {}
+
+func (*recordingManagerPhrasePlayback) Enqueue(pipeline.PhrasePlaybackRequest) bool { return true }
+
+func (*recordingManagerPhrasePlayback) InterruptCurrent(context.Context, string, string) error {
+	return nil
+}
+
+func (p *recordingManagerPhrasePlayback) Stop(_ context.Context, sessionID string) error {
+	p.stopped <- sessionID
+	return nil
+}
+
 func TestManagerClosesPreparedInputWhenActivationIsCanceled(t *testing.T) {
 	source := &fakeFrameSource{waitForClose: true}
 	manager, err := NewManager(config.ProviderConfig{}, config.Providers{

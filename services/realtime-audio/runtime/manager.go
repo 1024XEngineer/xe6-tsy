@@ -413,6 +413,9 @@ func (m *Manager) Start(ctx context.Context, snapshot session.SessionSnapshot) e
 	item := m.entries[snapshot.SessionID]
 	if item == nil {
 		m.mu.Unlock()
+	} else if item.stopping {
+		m.mu.Unlock()
+		return ErrPipelineStopping
 	} else if !item.terminal {
 		if item.operationID != snapshot.StartOperationID {
 			m.mu.Unlock()
@@ -595,6 +598,14 @@ func (m *Manager) Activate(ctx context.Context, sessionID string, operationID st
 
 func (m *Manager) run(item *entry, ctx context.Context) {
 	err := item.service.Run(ctx, item.request)
+	// FinishStreaming hands VAD finals to a process-owned worker. Keep this
+	// runtime's mode coordinator reachable until every accepted handoff has
+	// resolved its FinalTurn commit; post-commit usage and TTS do not hold the
+	// runtime lifecycle open.
+	mode := item.mode.Snapshot()
+	if settlementErr := m.playback.WaitFinalSettlements(context.Background(), item.request.SessionID, mode.RuntimeInstanceID); settlementErr != nil {
+		err = errors.Join(err, fmt.Errorf("wait for final settlements: %w", settlementErr))
+	}
 	reportFailure := false
 	var reportErr error
 	if err != nil && ctx.Err() == nil {
@@ -766,11 +777,11 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 		return ErrSessionIDRequired
 	}
 	unlock := m.locks.lock(sessionID)
-	defer unlock()
 	m.mu.Lock()
 	item := m.entries[sessionID]
 	if item == nil {
 		m.mu.Unlock()
+		unlock()
 		return nil
 	}
 	// A finished entry keeps the previous worker or cleanup attempt's error.
@@ -780,6 +791,10 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	active := item.active
 	item.cancel()
 	m.mu.Unlock()
+	// Final settlement commit gates need this session lock to resolve the
+	// retained mode coordinator. Release it before waiting for the media worker;
+	// item.stopping prevents mode changes, activation, or replacement meanwhile.
+	unlock()
 	if m.phrasePlayback != nil {
 		_ = m.phrasePlayback.Stop(ctx, sessionID)
 	}
@@ -801,6 +816,7 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	}
 	select {
 	case <-item.done:
+		unlock = m.locks.lock(sessionID)
 		m.mu.Lock()
 		stopped := false
 		err := item.err
@@ -813,6 +829,7 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 			stopped = m.removeEntryLocked(sessionID, item)
 		}
 		m.mu.Unlock()
+		unlock()
 		m.recordRuntimeStopped(stopped)
 		return err
 	case <-ctx.Done():

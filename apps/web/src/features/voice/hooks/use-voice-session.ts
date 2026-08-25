@@ -649,17 +649,18 @@ export function useVoiceSession() {
     startAbortRef.current?.abort();
     startAbortRef.current = null;
     stopPolling();
-    cleanupMedia();
-    wakeRef.current?.stop();
 
     const token = accessTokenRef.current;
     const sessionId = sessionIdRef.current;
-    if (token && sessionId) {
-      try {
+    try {
+      if (token && sessionId) {
         await endVoiceSession(token, sessionId, "user_requested");
-      } catch (error) {
-        setHintMessage(errorMessage(error, "结束会话失败"));
       }
+    } catch (error) {
+      setHintMessage(errorMessage(error, "结束会话失败"));
+    } finally {
+      cleanupMedia();
+      wakeRef.current?.stop();
     }
 
     sessionIdRef.current = null;

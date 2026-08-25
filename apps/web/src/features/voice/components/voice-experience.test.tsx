@@ -75,6 +75,7 @@ describe("VoiceExperience", () => {
   let startInitialModes: Array<string | undefined> = [];
   let createdSessions = 0;
   let endRequests = 0;
+  let endRequestGate: Promise<Response> | null = null;
   let sessionCreationGate: Promise<Response> | null = null;
   let anonymousRequests = 0;
   let modeRequests = 0;
@@ -110,6 +111,7 @@ describe("VoiceExperience", () => {
     startInitialModes = [];
     createdSessions = 0;
     endRequests = 0;
+    endRequestGate = null;
     sessionCreationGate = null;
     anonymousRequests = 0;
     modeRequests = 0;
@@ -362,6 +364,7 @@ describe("VoiceExperience", () => {
 
         if (url.includes("/end") && method === "POST") {
           endRequests += 1;
+          if (endRequestGate) return endRequestGate;
           return jsonResponse({
             id: "vs-1",
             account_id: "acc-1",
@@ -1037,6 +1040,31 @@ describe("VoiceExperience", () => {
       screen.getByText("轻触开启助手"),
     ).toBeInTheDocument();
     expect(closeWebRTC).toHaveBeenCalled();
+  });
+
+  it("stops realtime before closing WebRTC media", async () => {
+    const pendingEnd = deferred<Response>();
+    endRequestGate = pendingEnd.promise;
+
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "停止对话" }));
+    await waitFor(() => expect(endRequests).toBe(1));
+    expect(closeWebRTC).not.toHaveBeenCalled();
+
+    pendingEnd.resolve(
+      jsonResponse({
+        id: "vs-1",
+        account_id: "acc-1",
+        status: "ended",
+        created_at: "2026-07-31T00:00:00Z",
+        ended_at: "2026-07-31T00:00:10Z",
+      }),
+    );
+
+    await waitFor(() => expect(closeWebRTC).toHaveBeenCalledTimes(1));
   });
 
   it("keeps the UI idle and closes a session created after startup cancellation", async () => {

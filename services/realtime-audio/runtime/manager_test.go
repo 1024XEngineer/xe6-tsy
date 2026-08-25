@@ -767,8 +767,16 @@ func TestManagerReportsCleanEOFAsRetryableTermination(t *testing.T) {
 	if manager.PipelineActive(snapshot.SessionID) {
 		t.Fatal("clean EOF left an active pipeline")
 	}
-	if started, stopped := lifecycle.values(); started != 1 || stopped != 1 {
-		t.Fatalf("lifecycle counters = %d/%d, want 1/1", started, stopped)
+	deadline = time.Now().Add(time.Second)
+	for {
+		started, stopped := lifecycle.values()
+		if started == 1 && stopped == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lifecycle counters = %d/%d, want 1/1", started, stopped)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

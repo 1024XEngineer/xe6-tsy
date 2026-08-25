@@ -406,15 +406,22 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 	if !ttsEnabled {
 		return nil
 	}
-	if s.phrasePlayback != nil && reusedPhrases {
-		// Stable phrases have already been queued. Only the final source tail
-		// needs audio, and it must join that same per-session queue.
-		if strings.TrimSpace(residualPlaybackText) == "" {
+	if s.phrasePlayback != nil {
+		// Interpretation audio has one serialization boundary per session. When
+		// stable phrases were reused, queue only their unaccepted/final residual;
+		// otherwise queue the complete final translation. Never bypass the
+		// scheduler with SpeechOutput.Play while an earlier Turn may still be
+		// active on the same downlink.
+		playbackText := translationResult.Text
+		if reusedPhrases {
+			playbackText = residualPlaybackText
+		}
+		if strings.TrimSpace(playbackText) == "" {
 			return nil
 		}
 		result := enqueuePhrasePlayback(s.phrasePlayback, PhrasePlaybackRequest{
 			Turn: turn, UtteranceID: turn.ID, PhraseSequence: finalPhrasePlaybackSequence,
-			Language: target, Text: residualPlaybackText,
+			Language: target, Text: playbackText,
 			PlaybackID: "phrase_" + turn.ID + "_final", Final: true,
 		})
 		if !result.Accepted {
@@ -454,7 +461,7 @@ func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContex
 		return translate.Result{Text: summary.Text}, residual, false, "", nil
 	}
 	result := translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}
-	var residualPlayback strings.Builder
+	residualPlayback := summary.PlaybackResidualText
 	for _, segment := range summary.ResidualSegments {
 		residualResult, translateErr := s.translator.Translate(ctx, translate.Request{
 			SessionID: turn.SessionID, TurnID: turn.ID, Text: segment,
@@ -470,9 +477,9 @@ func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContex
 			return translate.Result{}, "", false, "", err
 		}
 		result.Text = strings.Replace(result.Text, phraseResidualMarker, residualResult.Text, 1)
-		residualPlayback.WriteString(residualResult.Text)
+		residualPlayback = strings.Replace(residualPlayback, phraseResidualMarker, residualResult.Text, 1)
 	}
-	return result, "", true, residualPlayback.String(), nil
+	return result, "", true, residualPlayback, nil
 }
 
 func mergeTranslationResult(total *translate.Result, next translate.Result) error {

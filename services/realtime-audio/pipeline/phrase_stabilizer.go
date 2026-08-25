@@ -151,7 +151,17 @@ func (s *PhraseStabilizer) consumePunctuation(text string) ([]StablePhrase, stri
 			}
 			end += size
 		}
-		phrases := s.consume(text[:end])
+		segment := text[:end]
+		phrases := s.consume(segment)
+		if len(phrases) == 0 {
+			if !isIgnorableConfirmedPhrase(segment) {
+				// Keep an unconsumed short but meaningful segment attached to the
+				// tail. Emitting a later phrase would otherwise move the source
+				// cursor past a prefix that it never recorded.
+				return nil, text
+			}
+			s.appendConsumed(segment)
+		}
 		remaining := text[end:]
 		more, tail := s.consumePunctuation(remaining)
 		return append(phrases, more...), tail
@@ -170,13 +180,17 @@ func (s *PhraseStabilizer) consume(text string) []StablePhrase {
 		// would make the later, longer snapshot impossible to translate.
 		return nil
 	}
-	if s.consumed == "" {
-		s.consumed = text
-	} else {
-		s.consumed += text
-	}
+	s.appendConsumed(text)
 	s.nextSeq++
 	return []StablePhrase{{SequenceNo: s.nextSeq, Text: displayText}}
+}
+
+func (s *PhraseStabilizer) appendConsumed(text string) {
+	if s.consumed == "" {
+		s.consumed = text
+		return
+	}
+	s.consumed += text
 }
 
 func (s *PhraseStabilizer) setCandidate(text string, now time.Time) {
@@ -239,6 +253,40 @@ func (s *PhraseStabilizer) stabilityDelay(now time.Time) (time.Duration, bool) {
 func phraseBoundary(value rune) bool {
 	switch value {
 	case '。', '.', '！', '!', '？', '?', '，', ',', '；', ';', '：', ':':
+		return true
+	default:
+		return false
+	}
+}
+
+// isIgnorableConfirmedPhrase accepts only known hesitation/filler tokens where
+// every token has already been closed by a phrase boundary. It deliberately
+// excludes meaningful short replies such as "yes", "好", and "对".
+func isIgnorableConfirmedPhrase(text string) bool {
+	var token strings.Builder
+	sawFiller := false
+	for _, value := range text {
+		if phraseBoundary(value) {
+			if !isPhraseFillerToken(strings.TrimSpace(token.String())) {
+				return false
+			}
+			sawFiller = true
+			token.Reset()
+			continue
+		}
+		if unicode.IsSpace(value) && token.Len() == 0 {
+			continue
+		}
+		token.WriteRune(value)
+	}
+	return sawFiller && strings.TrimSpace(token.String()) == ""
+}
+
+func isPhraseFillerToken(text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "嗯", "嗯嗯", "啊", "呃", "额", "哎", "欸", "诶", "哦", "噢", "喔",
+		"咳", "咳咳", "嗯哼", "mm", "mmm", "mhm", "uh", "uhh", "um", "umm",
+		"ah", "oh", "hmm", "hm", "huh", "sigh", "ahem":
 		return true
 	default:
 		return false

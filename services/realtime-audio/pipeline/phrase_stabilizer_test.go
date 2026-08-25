@@ -109,3 +109,55 @@ func TestPhraseStabilizerIgnoresRollbackAndNoise(t *testing.T) {
 		t.Fatalf("rollback Flush() = %#v", got)
 	}
 }
+
+func TestPhraseStabilizerConsumesConfirmedFillerWithoutBlockingLaterPartials(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})
+	now := time.Unix(1700000000, 0)
+
+	if got := stabilizer.Observe("嗯，", now); len(got) != 0 {
+		t.Fatalf("filler Observe() = %#v, want no phrase", got)
+	}
+	if stabilizer.consumed != "嗯，" {
+		t.Fatalf("consumed = %q, want confirmed filler prefix", stabilizer.consumed)
+	}
+	if got := stabilizer.Observe("嗯，你好，", now.Add(time.Millisecond)); len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 1, Text: "你好，"}) {
+		t.Fatalf("first translated phrase = %#v", got)
+	}
+	if got := stabilizer.Observe("嗯，你好，今天天气很好，", now.Add(2*time.Millisecond)); len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 2, Text: "今天天气很好，"}) {
+		t.Fatalf("growing partial phrase = %#v", got)
+	}
+	if got := stabilizer.Flush("嗯，你好，今天天气很好，"); len(got) != 0 {
+		t.Fatalf("final Flush() = %#v, want no duplicate", got)
+	}
+}
+
+func TestPhraseStabilizerDoesNotConsumeUnpunctuatedFillerCandidate(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})
+	now := time.Unix(1700000000, 0)
+
+	if got := stabilizer.Observe("嗯", now); len(got) != 0 {
+		t.Fatalf("Observe() = %#v, want no phrase", got)
+	}
+	if stabilizer.consumed != "" {
+		t.Fatalf("consumed = %q, want unconfirmed candidate retained", stabilizer.consumed)
+	}
+	if got := stabilizer.Advance(now.Add(defaultPhraseStableAfter)); len(got) != 0 {
+		t.Fatalf("Advance() = %#v, want no single-character phrase", got)
+	}
+}
+
+func TestPhraseStabilizerDoesNotSilentlyConsumeMeaningfulShortPrefix(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})
+	now := time.Unix(1700000000, 0)
+
+	if got := stabilizer.Observe("我，你好，", now); len(got) != 0 {
+		t.Fatalf("Observe() = %#v, want short meaningful prefix retained", got)
+	}
+	got := stabilizer.Flush("我，你好，")
+	if len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 1, Text: "我，你好，"}) {
+		t.Fatalf("Flush() = %#v, want complete source phrase", got)
+	}
+}

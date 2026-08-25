@@ -654,10 +654,15 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 			break
 		}
 		index := strings.Index(finalText[cursor:], phrase.event.SourceText)
-		if index < 0 || strings.TrimSpace(finalText[cursor:cursor+index]) != "" {
+		if index < 0 {
 			return PhraseTranslationSummary{}, 0, false
 		}
-		summary.Text += finalText[cursor : cursor+index]
+		gap := finalText[cursor : cursor+index]
+		if strings.TrimSpace(gap) == "" {
+			summary.Text += gap
+		} else if !isIgnorableConfirmedPhrase(gap) {
+			return PhraseTranslationSummary{}, 0, false
+		}
 		cursor += index + len(phrase.event.SourceText)
 		if phrase.done && phrase.err == nil && strings.TrimSpace(phrase.result.Text) != "" {
 			summary.Text += phrase.result.Text
@@ -681,10 +686,13 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 	if !covered {
 		return summary, cursor, false
 	}
-	if strings.TrimSpace(finalText[cursor:]) != "" {
+	suffix := finalText[cursor:]
+	if isIgnorableConfirmedPhrase(suffix) {
+		cursor = len(finalText)
+	} else if strings.TrimSpace(suffix) != "" {
 		summary.Text += phraseResidualMarker
 		summary.PlaybackResidualText += phraseResidualMarker
-		summary.ResidualSegments = append(summary.ResidualSegments, finalText[cursor:])
+		summary.ResidualSegments = append(summary.ResidualSegments, suffix)
 	}
 	return summary, cursor, true
 }

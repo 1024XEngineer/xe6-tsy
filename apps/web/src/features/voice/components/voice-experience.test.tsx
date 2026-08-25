@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { saveAuthSession } from "../lib/auth-session";
+import { END_REQUEST_TIMEOUT_MS } from "../hooks/use-voice-session";
 import { VoiceExperience } from "./voice-experience";
 
 const closeWebRTC = vi.fn();
@@ -1065,6 +1066,39 @@ describe("VoiceExperience", () => {
     );
 
     await waitFor(() => expect(closeWebRTC).toHaveBeenCalledTimes(1));
+  });
+
+  it("cleans up WebRTC media when ending the session times out", async () => {
+    const pendingEnd = deferred<Response>();
+    endRequestGate = pendingEnd.promise;
+
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "停止对话" }));
+    expect(endRequests).toBe(1);
+    expect(closeWebRTC).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(END_REQUEST_TIMEOUT_MS);
+    });
+
+    expect(closeWebRTC).toHaveBeenCalledTimes(1);
+
+    pendingEnd.resolve(
+      jsonResponse({
+        id: "vs-1",
+        account_id: "acc-1",
+        status: "ended",
+        created_at: "2026-07-31T00:00:00Z",
+        ended_at: "2026-07-31T00:00:10Z",
+      }),
+    );
+    await act(async () => {
+      await pendingEnd.promise;
+    });
   });
 
   it("keeps the UI idle and closes a session created after startup cancellation", async () => {

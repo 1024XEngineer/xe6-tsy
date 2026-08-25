@@ -660,7 +660,7 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 		gap := finalText[cursor : cursor+index]
 		if strings.TrimSpace(gap) == "" {
 			summary.Text += gap
-		} else if !isIgnorableConfirmedPhrase(gap) {
+		} else if !isIgnorableConfirmedGap(gap) {
 			return PhraseTranslationSummary{}, 0, false
 		}
 		cursor += index + len(phrase.event.SourceText)
@@ -687,7 +687,7 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 		return summary, cursor, false
 	}
 	suffix := finalText[cursor:]
-	if isIgnorableConfirmedPhrase(suffix) {
+	if isIgnorableConfirmedGap(suffix) {
 		cursor = len(finalText)
 	} else if strings.TrimSpace(suffix) != "" {
 		summary.Text += phraseResidualMarker

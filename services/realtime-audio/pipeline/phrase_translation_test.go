@@ -235,9 +235,44 @@ func TestPhraseTranslationCoordinatorIgnoresConfirmedFillerGapsAtFinal(t *testin
 		t.Fatalf("translation requests = %#v, want only stable phrases", requests)
 	}
 	for _, request := range requests {
-		if request == "嗯，你好，啊，今天天气很好，哦。" || isIgnorableConfirmedPhrase(request) {
+		if request == "嗯，你好，啊，今天天气很好，哦。" || isIgnorableConfirmedGap(request) {
 			t.Fatalf("unexpected filler/final translation request = %q", request)
 		}
+	}
+}
+
+func TestPhraseTranslationCoordinatorReusesLiveChunksAcrossDelayedPunctuation(t *testing.T) {
+	var requestsMu sync.Mutex
+	var requests []string
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		requestsMu.Lock()
+		requests = append(requests, request.Text)
+		requestsMu.Unlock()
+		return translate.Result{Text: "ja-" + request.Text, Provider: "mock", Model: "v1"}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	turn := TurnContext{ID: "turn-delayed-punctuation", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "ja-JP"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	for sequence, source := range []string{
+		"将科技含金量持续",
+		"转化为发展含金量",
+		"为中国式现代化建设",
+	} {
+		coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, int64(sequence+1), source))
+	}
+	waitForPhraseTranslation(t, coordinator, turn.ID)
+
+	finalText := "将科技含金量持续转化为发展含金量，为中国式现代化建设，"
+	summary, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, finalText)
+	if err != nil || !reused || residual != "" {
+		t.Fatalf("FinalizePhraseSubtitleTurn() = summary=%#v residual=%q reused=%v err=%v", summary, residual, reused, err)
+	}
+	if summary.Text != "ja-将科技含金量持续ja-转化为发展含金量ja-为中国式现代化建设" || len(summary.ResidualSegments) != 0 {
+		t.Fatalf("summary = %#v, want live translations reused without whole-Turn fallback", summary)
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("translation requests = %#v, want only the three live chunks", requests)
 	}
 }
 

@@ -2,6 +2,9 @@
 
 Go 实时音频服务。
 
+原生 Windows 运行时必须使用 Go 1.26.2 或更高版本；仓库已固定到 Go 1.26.7。更早的 Go 版本在
+Windows overlapped UDP 接收路径中可能破坏栈，导致 Pion RTP 读取期间进程崩溃。
+
 ## 职责
 
 - WebRTC config、offer/answer 和 ICE candidate 信令

@@ -2,6 +2,8 @@ module github.com/1024XEngineer/xe6-tsy/services/realtime-audio
 
 go 1.26
 
+toolchain go1.26.7
+
 require github.com/1024XEngineer/xe6-tsy/packages/contracts v0.0.0
 
 require (

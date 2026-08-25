@@ -48,10 +48,9 @@ type PhrasePlaybackRequest struct {
 	Final          bool
 }
 
-// PhrasePlaybackScheduler accepts translated phrases without blocking the
-// ASR/translation workers. Implementations must preserve enqueue order per
-// session and may coalesce queued text when an utterance reaches its backlog
-// budget.
+// PhrasePlaybackScheduler accepts translated phrases independently from audio
+// playback. Implementations preserve enqueue order per session and may apply
+// back-pressure only at their hard memory boundary.
 type PhrasePlaybackScheduler interface {
 	ResetUtterance(sessionID, utteranceID string)
 	Enqueue(PhrasePlaybackRequest) bool
@@ -70,15 +69,15 @@ type PhrasePlaybackSchedulerDependencies struct {
 }
 
 type PhrasePlaybackSchedulerService struct {
-	mu          sync.Mutex
-	speech      *SpeechOutput
-	audio       AudioChunkSink
-	usage       UsageFactSink
-	now         func() time.Time
-	usageError  func(PhrasePlaybackRequest, UsageFact, error)
-	sessions    map[string]*phrasePlaybackSession
-	closed      map[string]bool
-	generations map[string]uint64
+	mu             sync.Mutex
+	speech         *SpeechOutput
+	audio          AudioChunkSink
+	usage          UsageFactSink
+	now            func() time.Time
+	usageError     func(PhrasePlaybackRequest, UsageFact, error)
+	sessions       map[string]*phrasePlaybackSession
+	closed         map[string]bool
+	nextGeneration uint64
 }
 
 type phrasePlaybackSession struct {
@@ -142,7 +141,7 @@ func NewPhrasePlaybackScheduler(deps PhrasePlaybackSchedulerDependencies) *Phras
 		speech: deps.Speech, audio: deps.Audio, usage: deps.Usage, now: deps.Now,
 		usageError: deps.UsageError,
 		sessions:   make(map[string]*phrasePlaybackSession), closed: make(map[string]bool),
-		generations: make(map[string]uint64),
+		nextGeneration: 1,
 	}
 }
 
@@ -157,7 +156,7 @@ func (s *PhrasePlaybackSchedulerService) ResetUtterance(sessionID, utteranceID s
 	// Reset is the explicit lifecycle boundary for an utterance. Any retired
 	// metadata and idempotency keys from a previous incarnation must not make a
 	// new request look already accepted.
-	delete(state.retired, utteranceID)
+	s.removeRetiredUtteranceLocked(state, utteranceID)
 	delete(state.acceptedIDs, utteranceID)
 	state.utterances[utteranceID] = &phrasePlaybackUtterance{}
 	s.signalCapacityLocked(state)
@@ -218,7 +217,7 @@ func (s *PhrasePlaybackSchedulerService) EnqueueWithReason(request PhrasePlaybac
 					return PhrasePlaybackEnqueueResult{Reason: PhrasePlaybackRejectGenerationSuperseded}
 				}
 				utterance = retired
-				delete(state.retired, request.UtteranceID)
+				s.removeRetiredUtteranceLocked(state, request.UtteranceID)
 				state.utterances[request.UtteranceID] = utterance
 			} else if !request.Final {
 				s.mu.Unlock()
@@ -341,8 +340,7 @@ func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, s
 		s.mu.Unlock()
 		return nil
 	}
-	state.generation++
-	s.generations[sessionID] = state.generation
+	state.generation = s.allocateGenerationLocked()
 	active := state.active
 	state.queue = nil
 	state.utterances = make(map[string]*phrasePlaybackUtterance)
@@ -377,8 +375,7 @@ func (s *PhrasePlaybackSchedulerService) Stop(ctx context.Context, sessionID str
 	}
 	state.closed = true
 	s.closed[sessionID] = true
-	state.generation++
-	s.generations[sessionID] = state.generation
+	state.generation = s.allocateGenerationLocked()
 	state.queue = nil
 	if state.active != nil && state.active.cancel != nil {
 		state.active.cancel()
@@ -400,7 +397,7 @@ func (s *PhrasePlaybackSchedulerService) sessionLocked(sessionID string) *phrase
 	state := &phrasePlaybackSession{
 		ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1),
 		capacityChanged: make(chan struct{}),
-		generation:      s.generations[sessionID],
+		generation:      s.allocateGenerationLocked(),
 		utterances:      make(map[string]*phrasePlaybackUtterance),
 		retired:         make(map[string]*phrasePlaybackUtterance),
 		acceptedIDs:     make(map[string]map[string]struct{}),
@@ -408,6 +405,29 @@ func (s *PhrasePlaybackSchedulerService) sessionLocked(sessionID string) *phrase
 	s.sessions[sessionID] = state
 	go s.runSession(state)
 	return state
+}
+
+func (s *PhrasePlaybackSchedulerService) allocateGenerationLocked() uint64 {
+	if s.nextGeneration == 0 {
+		s.nextGeneration = 1
+	}
+	generation := s.nextGeneration
+	s.nextGeneration++
+	return generation
+}
+
+func (s *PhrasePlaybackSchedulerService) removeRetiredUtteranceLocked(state *phrasePlaybackSession, utteranceID string) {
+	delete(state.retired, utteranceID)
+	if len(state.retiredOrder) == 0 {
+		return
+	}
+	kept := state.retiredOrder[:0]
+	for _, retired := range state.retiredOrder {
+		if retired.id != utteranceID {
+			kept = append(kept, retired)
+		}
+	}
+	state.retiredOrder = kept
 }
 
 func (s *PhrasePlaybackSchedulerService) runSession(state *phrasePlaybackSession) {

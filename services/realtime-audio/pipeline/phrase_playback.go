@@ -319,12 +319,16 @@ func joinPhrasePlaybackText(left, right string) string {
 	}
 	leftRunes, rightRunes := []rune(left), []rune(right)
 	// The chunks are contiguous slices of one validated translation. Preserve
-	// CJK text without inventing a word boundary; Latin chunks need a separator
-	// because splitStreamTTS trims the boundary whitespace.
-	if unicode.Is(unicode.Han, leftRunes[len(leftRunes)-1]) || unicode.Is(unicode.Han, rightRunes[0]) {
+	// Chinese and Japanese text without inventing a word boundary; whitespace-
+	// delimited scripts need a separator because splitStreamTTS trims it.
+	if isUnspacedCJKRune(leftRunes[len(leftRunes)-1]) || isUnspacedCJKRune(rightRunes[0]) {
 		return left + right
 	}
 	return left + " " + right
+}
+
+func isUnspacedCJKRune(r rune) bool {
+	return unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r)
 }
 
 func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, sessionID, reason string) error {
@@ -472,6 +476,15 @@ func (s *PhrasePlaybackSchedulerService) runSession(state *phrasePlaybackSession
 			s.decrementLocked(state, task)
 			s.signalCapacityLocked(state)
 			s.mu.Unlock()
+			if playErr != nil && !errors.Is(playErr, context.Canceled) && !errors.Is(playErr, context.DeadlineExceeded) {
+				slog.Error("phrase_tts_playback_failed",
+					"session_id", task.request.Turn.SessionID,
+					"turn_id", task.request.Turn.ID,
+					"utterance_id", task.request.UtteranceID,
+					"phrase_sequence", task.request.PhraseSequence,
+					"playback_id", task.request.PlaybackID,
+					"error", playErr)
+			}
 		}
 	}
 }

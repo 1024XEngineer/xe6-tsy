@@ -68,6 +68,8 @@ type translatedPhrase struct {
 	translationStarted     bool
 	streamPlaybackStarted  bool
 	streamPlaybackSequence int64
+	streamPlaybackChunks   []string
+	streamPlaybackReady    bool
 	doneCh                 chan struct{}
 	playbackDoneCh         chan struct{}
 	sourceDelivered        chan struct{}
@@ -210,6 +212,11 @@ func (c *PhraseTranslationCoordinator) translate(utterance *phraseTranslationUtt
 			for _, chunk := range splitStreamTTS(result.Text) {
 				c.enqueueStreamPhrasePlayback(utterance, phrase, chunk)
 			}
+			c.mu.Lock()
+			if c.utterances[utterance.turn.ID] == utterance {
+				phrase.streamPlaybackReady = true
+			}
+			c.mu.Unlock()
 		}
 	} else {
 		result, err = c.translator.Translate(utterance.ctx, request)
@@ -249,7 +256,7 @@ func shouldFlushStreamTTS(text string) bool {
 		strings.HasSuffix(text, ",") || strings.HasSuffix(text, ";") || strings.HasSuffix(text, ":") {
 		return true
 	}
-	return len([]rune(text)) >= 12
+	return len([]rune(text)) >= 32
 }
 
 func splitStreamTTS(text string) []string {
@@ -274,31 +281,12 @@ func (c *PhraseTranslationCoordinator) enqueueStreamPhrasePlayback(utterance *ph
 		return
 	}
 	c.mu.Lock()
-	if c.utterances[utterance.turn.ID] != utterance || c.playback == nil {
+	if c.utterances[utterance.turn.ID] != utterance {
 		c.mu.Unlock()
 		return
 	}
 	phrase.streamPlaybackSequence++
-	sequence := phrase.streamPlaybackSequence
-	playback := c.playback
-	request := PhrasePlaybackRequest{
-		Turn: utterance.turn, UtteranceID: phrase.event.UtteranceID,
-		PhraseSequence: phrase.event.PhraseSequence*1000 + sequence,
-		Language:       utterance.target, Text: text,
-		PlaybackID: fmt.Sprintf("phrase_%s_%d_%d", phrase.event.UtteranceID, phrase.event.PhraseSequence, sequence),
-	}
-	c.mu.Unlock()
-	if !playback.Enqueue(request) {
-		slog.Warn("phrase_tts_enqueue_failed", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
-			"phrase_sequence", phrase.event.PhraseSequence, "stream_sequence", sequence)
-		return
-	}
-	slog.Info("phrase_tts_enqueued", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
-		"phrase_sequence", phrase.event.PhraseSequence, "stream_sequence", sequence, "text", text)
-	c.mu.Lock()
-	if c.utterances[utterance.turn.ID] == utterance {
-		phrase.streamPlaybackStarted = true
-	}
+	phrase.streamPlaybackChunks = append(phrase.streamPlaybackChunks, text)
 	c.mu.Unlock()
 }
 
@@ -354,13 +342,32 @@ func (c *PhraseTranslationCoordinator) enqueueTranslatedPhrasePlayback(utterance
 			return
 		}
 		if c.playback != nil && ready.err == nil && strings.TrimSpace(ready.result.Text) != "" {
-			if !ready.streamPlaybackStarted {
-				c.playback.Enqueue(PhrasePlaybackRequest{
+			if ready.streamPlaybackReady {
+				for index, text := range ready.streamPlaybackChunks {
+					if err := c.playback.Enqueue(PhrasePlaybackRequest{
+						Turn: utterance.turn, UtteranceID: ready.event.UtteranceID,
+						PhraseSequence: ready.event.PhraseSequence*1000 + int64(index+1), PhraseGroup: ready.event.PhraseSequence, Language: utterance.target,
+						Text:       text,
+						PlaybackID: fmt.Sprintf("phrase_%s_%d_%d", ready.event.UtteranceID, ready.event.PhraseSequence, index+1),
+					}); err != nil {
+						slog.Warn("phrase_tts_enqueue_failed", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
+							"phrase_sequence", ready.event.PhraseSequence, "stream_sequence", index+1, "reason", err)
+					} else {
+						ready.streamPlaybackStarted = true
+					}
+				}
+			} else if !ready.streamPlaybackStarted {
+				if err := c.playback.Enqueue(PhrasePlaybackRequest{
 					Turn: utterance.turn, UtteranceID: ready.event.UtteranceID,
-					PhraseSequence: ready.event.PhraseSequence, Language: utterance.target,
+					PhraseSequence: ready.event.PhraseSequence, PhraseGroup: ready.event.PhraseSequence, Language: utterance.target,
 					Text:       ready.result.Text,
 					PlaybackID: fmt.Sprintf("phrase_%s_%d", ready.event.UtteranceID, ready.event.PhraseSequence),
-				})
+				}); err != nil {
+					slog.Warn("phrase_tts_enqueue_failed", "session_id", utterance.turn.SessionID, "turn_id", utterance.turn.ID,
+						"phrase_sequence", ready.event.PhraseSequence, "reason", err)
+				} else {
+					ready.streamPlaybackStarted = true
+				}
 			}
 		}
 		close(ready.playbackDoneCh)
@@ -444,11 +451,13 @@ func (c *PhraseTranslationCoordinator) HasPendingPhrase(turnID string) bool {
 func (c *PhraseTranslationCoordinator) waitForPendingPhrases(ctx context.Context, utterance *phraseTranslationUtterance) bool {
 	c.mu.Lock()
 	translationDone := make([]<-chan struct{}, 0, len(utterance.phrases))
+	playbackDone := make([]<-chan struct{}, 0, len(utterance.phrases))
 	for _, phrase := range utterance.phrases {
 		if phrase.translationStarted {
 			if !phrase.done {
 				translationDone = append(translationDone, phrase.doneCh)
 			}
+			playbackDone = append(playbackDone, phrase.playbackDoneCh)
 		}
 	}
 	c.mu.Unlock()
@@ -459,9 +468,13 @@ func (c *PhraseTranslationCoordinator) waitForPendingPhrases(ctx context.Context
 			return false
 		}
 	}
-	// Do not wait for audio playback here. The phrase scheduler already keeps
-	// per-session audio ordered; waiting would make final settlement queue behind
-	// the duration of every previous TTS clip.
+	for _, done := range playbackDone {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return false
+		}
+	}
 	return true
 }
 

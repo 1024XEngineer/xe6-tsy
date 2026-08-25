@@ -22,6 +22,8 @@ const maxRetiredPhraseUtterances = 256
 
 const maxPhrasePlaybackSessionBarriers = 1024
 
+const maxPhrasePlaybackAttempts = 2
+
 var ErrPhrasePlaybackClosed = errors.New("phrase playback scheduler is closed")
 
 const (
@@ -150,6 +152,7 @@ type phrasePlaybackTask struct {
 	cancel     context.CancelFunc
 	status     phrasePlaybackTaskStatus
 	utterance  *phrasePlaybackUtterance
+	attempts   int
 }
 
 // NewPhrasePlaybackScheduler creates one session worker lazily per active
@@ -570,6 +573,26 @@ func (s *PhrasePlaybackSchedulerService) runSession(state *phrasePlaybackSession
 			if state.active == task {
 				state.active = nil
 			}
+			canRetry := playErr != nil && task.attempts < maxPhrasePlaybackAttempts &&
+				!state.closed && state.ctx.Err() == nil && task.generation == state.generation
+			if canRetry {
+				task.status = phrasePlaybackAccepted
+				state.queue = append([]*phrasePlaybackTask{task}, state.queue...)
+				s.signalCapacityLocked(state)
+				wake := state.wake
+				attempt := task.attempts
+				s.mu.Unlock()
+				slog.Warn("phrase_tts_playback_retry",
+					"session_id", task.request.Turn.SessionID,
+					"turn_id", task.request.Turn.ID,
+					"utterance_id", task.request.UtteranceID,
+					"phrase_sequence", task.request.PhraseSequence,
+					"playback_id", task.request.PlaybackID,
+					"attempt", attempt,
+					"error", playErr)
+				signalChannel(wake)
+				continue
+			}
 			if playErr == nil {
 				task.status = phrasePlaybackPlayed
 			} else if errors.Is(playErr, context.Canceled) || errors.Is(playErr, context.DeadlineExceeded) {
@@ -580,13 +603,18 @@ func (s *PhrasePlaybackSchedulerService) runSession(state *phrasePlaybackSession
 			s.decrementLocked(state, task)
 			s.signalCapacityLocked(state)
 			s.mu.Unlock()
-			if playErr != nil && !errors.Is(playErr, context.Canceled) && !errors.Is(playErr, context.DeadlineExceeded) {
-				slog.Error("phrase_tts_playback_failed",
+			if playErr != nil {
+				logFn := slog.Error
+				if errors.Is(playErr, context.Canceled) || errors.Is(playErr, context.DeadlineExceeded) {
+					logFn = slog.Warn
+				}
+				logFn("phrase_tts_playback_failed",
 					"session_id", task.request.Turn.SessionID,
 					"turn_id", task.request.Turn.ID,
 					"utterance_id", task.request.UtteranceID,
 					"phrase_sequence", task.request.PhraseSequence,
 					"playback_id", task.request.PlaybackID,
+					"attempts", task.attempts,
 					"error", playErr)
 			}
 		}
@@ -594,6 +622,7 @@ func (s *PhrasePlaybackSchedulerService) runSession(state *phrasePlaybackSession
 }
 
 func (s *PhrasePlaybackSchedulerService) play(task *phrasePlaybackTask, ctx context.Context) error {
+	task.attempts++
 	result, err := s.speech.Play(ctx, SpeechOutputRequest{
 		Turn: task.request.Turn, Language: task.request.Language, Text: task.request.Text,
 		PlaybackID: task.request.PlaybackID, SkipRuntime: true,

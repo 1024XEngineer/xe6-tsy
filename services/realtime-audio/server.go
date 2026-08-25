@@ -524,9 +524,10 @@ func usageOutboxEnabled(getenv func(string) string) bool {
 }
 
 const (
-	localVADSilenceAfter  = 550 * time.Millisecond
-	localVADMaxDuration   = 0 // natural silence owns Turn boundaries
-	localVADPrefixPadding = 500 * time.Millisecond
+	localVADSilenceAfter        = 550 * time.Millisecond
+	localVADMaxDuration         = 0                // natural silence owns Turn boundaries
+	localVADMaxBufferedDuration = 10 * time.Minute // resource watchdog only; not a normal sentence boundary
+	localVADPrefixPadding       = 500 * time.Millisecond
 )
 
 // newLocalVADFactories wires ordinary and command utterance cutters from one provider
@@ -539,9 +540,10 @@ func newLocalVADFactories(getenv func(string) string) (
 ) {
 	cfg := silero.LoadLocalConfigFromEnv(getenv)
 	options := vad.Options{
-		SilenceAfter:  localVADSilenceAfter,
-		MaxDuration:   localVADMaxDuration,
-		PrefixPadding: localVADPrefixPadding,
+		SilenceAfter:        localVADSilenceAfter,
+		MaxDuration:         localVADMaxDuration,
+		MaxBufferedDuration: localVADMaxBufferedDuration,
+		PrefixPadding:       localVADPrefixPadding,
 	}
 	switch cfg.Provider {
 	case silero.ProviderEnergy:

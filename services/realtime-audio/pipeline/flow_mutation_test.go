@@ -88,6 +88,24 @@ func TestStartAudioRejectsNilASRStreamAndCleansPhraseState(t *testing.T) {
 	}
 }
 
+func TestStartAudioASRStartupFailureWithoutPhraseProcessorDoesNotPanic(t *testing.T) {
+	wantErr := errors.New("ASR unavailable")
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{}, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+	})
+	processor := NewTurnProcessor(TurnProcessorDependencies{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{StartErr: wantErr}),
+		Opener: newTestTurnOpener(&fakeLanguageConfigReader{snapshot: session.LanguageConfigSnapshot{
+			SessionID: "session-1", Version: 1, Status: "active", LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+		}}),
+		Pipeline: service, Finals: service,
+	})
+	if _, err := processor.StartAudio(t.Context(), TurnProcessRequest{SessionID: "session-1"}); !errors.Is(err, wantErr) {
+		t.Fatalf("StartAudio() error = %v, want %v", err, wantErr)
+	}
+}
+
 func TestStartAudioReportsStreamCheckpoint(t *testing.T) {
 	var output bytes.Buffer
 	service := newTestPipelineService(PipelineDependencies{

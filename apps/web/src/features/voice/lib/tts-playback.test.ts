@@ -96,32 +96,62 @@ describe("parseTTSAudioEvent", () => {
     const pcm = new Uint8Array([0, 0, 0, 16]);
     const event = parseTTSAudioEvent({
       type: "tts.audio",
+      session_id: "vs-1",
       playback_id: "playback_1",
       sample_rate_hz: 24000,
       channels: 1,
       pcm_base64: btoa(String.fromCharCode(...pcm)),
     });
     expect(event?.playbackId).toBe("playback_1");
+    expect(event?.sessionId).toBe("vs-1");
     expect(event?.sampleRateHz).toBe(24000);
     expect(new Uint8Array(event!.pcm)).toEqual(pcm);
   });
 
   it("ignores unrelated events", () => {
     expect(parseTTSAudioEvent({ type: "translation.final" })).toBeNull();
+    expect(
+      parseTTSAudioEvent({
+        type: "tts.audio",
+        sample_rate_hz: 24000,
+        pcm_base64: btoa("abcd"),
+      }),
+    ).toBeNull();
   });
 
   it("treats missing final as a complete single clip", () => {
     const event = parseTTSAudioEvent({
       type: "tts.audio",
+      session_id: "vs-1",
       sample_rate_hz: 24000,
       pcm_base64: btoa("abcd"),
     });
     expect(event?.final).toBe(true);
   });
 
+  it("parses payload-wrapped audio with a root envelope type", () => {
+    const event = parseTTSAudioEvent({
+      type: "event",
+      payload: {
+        event: "tts.audio",
+        sessionId: "vs-1",
+        playbackId: "wrapped-playback",
+        sampleRateHz: 24000,
+        pcmBase64: btoa("abcd"),
+      },
+    });
+
+    expect(event).toMatchObject({
+      sessionId: "vs-1",
+      playbackId: "wrapped-playback",
+      final: true,
+    });
+  });
+
   it("waits when final is explicitly false", () => {
     const event = parseTTSAudioEvent({
       type: "tts.audio",
+      session_id: "vs-1",
       sample_rate_hz: 24000,
       sequence: 1,
       final: false,
@@ -137,6 +167,7 @@ describe("parseTTSAudioEvent", () => {
 
     enqueueTTSAudio(
       {
+        sessionId: "vs-1",
         playbackId: "playback-state",
         sampleRateHz: 24000,
         channels: 1,
@@ -151,13 +182,14 @@ describe("parseTTSAudioEvent", () => {
     await vi.waitFor(() => expect(states).toEqual([true, false]));
   });
 
-  it("restores microphone input when autoplay keeps the context suspended", async () => {
+  it("does not report playback when autoplay keeps the context suspended", async () => {
     if (FakeAudioContext.last) FakeAudioContext.last.state = "closed";
     vi.stubGlobal("AudioContext", SuspendedAudioContext);
     const states: boolean[] = [];
 
     enqueueTTSAudio(
       {
+        sessionId: "vs-1",
         playbackId: "playback-suspended",
         sampleRateHz: 24000,
         channels: 1,
@@ -169,7 +201,8 @@ describe("parseTTSAudioEvent", () => {
       (playing) => states.push(playing),
     );
 
-    await vi.waitFor(() => expect(states).toEqual([true, false]));
+    await new Promise<void>((resolve) => queueMicrotask(() => resolve()));
+    expect(states).toEqual([]);
   });
 
   it("restores microphone input when a silent source never emits onended", async () => {
@@ -179,6 +212,7 @@ describe("parseTTSAudioEvent", () => {
 
     enqueueTTSAudio(
       {
+        sessionId: "vs-1",
         playbackId: "playback-silent",
         sampleRateHz: 24000,
         channels: 1,
@@ -203,6 +237,7 @@ describe("parseTTSAudioEvent", () => {
     });
     const states: boolean[] = [];
     const clip = (playbackId: string) => ({
+      sessionId: "vs-1",
       playbackId,
       sampleRateHz: 24000,
       channels: 1,
@@ -228,6 +263,7 @@ describe("parseTTSAudioEvent", () => {
     vi.stubGlobal("AudioContext", FakeAudioContext);
     const states: boolean[] = [];
     const chunk = (sequence: number, final: boolean) => ({
+      sessionId: "vs-1",
       playbackId: "interrupted",
       sampleRateHz: 24000,
       channels: 1,

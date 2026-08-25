@@ -134,7 +134,7 @@ export function sessionReducer(
       return { ...state, phase: "processing", notice: null };
     case "PLAYING":
       return { ...state, phase: "playing", notice: null };
-    case "SET_TURNS":
+    case "SET_TURNS": {
       // Poll may return [] while FinalTurns only arrive on DataChannel (no API
       // outbox yet). Merge so remote never wipes locally observed subtitles.
       const polledTurnIds = new Set(event.turns.map((turn) => turn.id));
@@ -144,6 +144,7 @@ export function sessionReducer(
         turns: mergeTurns(clearedPollState.turns, event.turns),
         notice: null,
       };
+    }
     case "ADD_TURN":
       if (state.turns.some((turn) => turn.id === event.turn.id)) {
         return clearTransientSubtitlesForTurns(state, new Set([event.turn.id]));
@@ -154,7 +155,7 @@ export function sessionReducer(
       );
       return {
         ...clearedTurnState,
-        phase: "active",
+        phase: state.phase === "playing" ? "playing" : "active",
         turns: [...clearedTurnState.turns, event.turn],
         notice: null,
       };
@@ -164,7 +165,7 @@ export function sessionReducer(
       }
       return {
         ...state,
-        phase: "active",
+        phase: state.phase === "playing" ? "playing" : "active",
         assistantReplies: [...state.assistantReplies, event.reply],
         notice: null,
       };

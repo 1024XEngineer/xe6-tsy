@@ -314,6 +314,12 @@ func TestPhrasePlaybackSchedulerMergesQueuedStreamSegmentsAndKeepsActiveTask(t *
 	}
 }
 
+func TestJoinPhrasePlaybackTextPreservesJapaneseChunkBoundary(t *testing.T) {
+	if got := joinPhrasePlaybackText("これはかな", "だけです"); got != "これはかなだけです" {
+		t.Fatalf("joinPhrasePlaybackText() = %q", got)
+	}
+}
+
 func TestPhrasePlaybackSchedulerReportsEnqueueReasons(t *testing.T) {
 	provider := newPhraseBlockingTTSProvider()
 	audio := &recordingPhraseAudio{}

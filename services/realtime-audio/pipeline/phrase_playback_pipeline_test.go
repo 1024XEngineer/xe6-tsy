@@ -314,6 +314,35 @@ func TestPipelineRetriesOnlyUnacceptedValidatedStreamChunksAtFinal(t *testing.T)
 	}
 }
 
+func TestPipelinePreservesWordBoundariesInRejectedStreamResidual(t *testing.T) {
+	const translated = "alpha beta gamma delta epsilon zeta eta theta iota kappa."
+	scheduler := &rejectNthPhrasePlaybackScheduler{rejectAttempt: 1}
+	translator := streamPhraseTranslateFunc(func(context.Context, translate.Request) (translate.Result, error) {
+		return translate.Result{Text: translated, Provider: "phrase", Model: "v1", InputTokens: 1}, nil
+	})
+	coordinator := NewPhraseTranslationCoordinator(translator, "phrase", &recordingPhraseSubtitleObserver{}, nil)
+	coordinator.SetPhrasePlaybackScheduler(scheduler)
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: &recordingTTSProvider{},
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{},
+		Audio: &recordingPhraseAudio{}, Runtime: phraseRuntimeReporter{},
+		PhraseTranslations: coordinator, PhrasePlayback: scheduler,
+	})
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: true}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	waitForPhraseTranslation(t, coordinator, turn.ID)
+
+	if err := service.HandleASRFinal(context.Background(), turn, asr.FinalResult{Text: "你好", SourceLanguage: "zh-CN"}); err != nil {
+		t.Fatalf("HandleASRFinal() error = %v", err)
+	}
+	requests := scheduler.enqueued()
+	if len(requests) != 2 || requests[1].Text != translated || !requests[1].Final {
+		t.Fatalf("phrase playback requests = %#v, want intact rejected translation retried once at final", requests)
+	}
+}
+
 func TestPhraseTranslationInitializesPlaybackBeforeFirstPhraseCanEnqueue(t *testing.T) {
 	scheduler := newStartupPhrasePlaybackScheduler()
 	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(context.Context, translate.Request) (translate.Result, error) {

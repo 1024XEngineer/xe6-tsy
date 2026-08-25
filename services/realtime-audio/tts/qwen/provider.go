@@ -23,6 +23,8 @@ import (
 const defaultModel = "qwen3-tts-flash"
 const realtimeModel = "qwen3-tts-flash-realtime"
 const realtimeSampleRate = 24000
+const defaultProviderTimeout = 30 * time.Second
+const realtimeReadIdleTimeout = 8 * time.Second
 
 var (
 	ErrAPIKeyRequired     = errors.New("Qwen TTS API key is required")
@@ -83,7 +85,7 @@ func NewProvider(config Config) (*Provider, error) {
 		config.Dialer = websocket.DefaultDialer
 	}
 	if config.Timeout <= 0 {
-		config.Timeout = 30 * time.Second
+		config.Timeout = defaultProviderTimeout
 	}
 	return &Provider{config: config}, nil
 }
@@ -223,11 +225,19 @@ func (s *realtimeStream) run() {
 		close(s.done)
 	}()
 	for {
+		if err := s.conn.SetReadDeadline(time.Now().Add(realtimeReadIdleTimeout)); err != nil {
+			s.setError(fmt.Errorf("set Qwen TTS realtime read deadline: %w", err))
+			return
+		}
 		_, data, err := s.conn.ReadMessage()
 		if err != nil {
 			if s.ctx.Err() == nil {
 				s.setError(fmt.Errorf("read Qwen TTS realtime event: %w", err))
 			}
+			return
+		}
+		if err := s.conn.SetReadDeadline(time.Now().Add(realtimeReadIdleTimeout)); err != nil {
+			s.setError(fmt.Errorf("refresh Qwen TTS realtime read deadline: %w", err))
 			return
 		}
 		_ = s.rawLogger.WriteJSON(s.request.SessionID, "tts", "response", rawEventType(data), data)

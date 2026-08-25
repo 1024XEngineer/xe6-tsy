@@ -386,6 +386,32 @@ func TestPhrasePlaybackSchedulerReportsEnqueueReasons(t *testing.T) {
 	}
 }
 
+func TestPhrasePlaybackSchedulerRetriesFailedTaskBeforeAdvancingQueue(t *testing.T) {
+	provider := &flakyPhraseTTSProvider{failures: 1}
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-retry-playback", SessionID: "session-retry-playback"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	first := phraseRequest(turn, 1)
+	second := phraseRequest(turn, 2)
+	if !scheduler.Enqueue(first) || !scheduler.Enqueue(second) {
+		t.Fatal("failed to enqueue retry test tasks")
+	}
+	if !audio.waitFor(2, time.Second) {
+		t.Fatalf("audio chunks = %d, want retry then next task", len(audio.ids()))
+	}
+	requests := provider.requestsSnapshot()
+	if len(requests) != 3 || requests[0].PlaybackID != first.PlaybackID ||
+		requests[1].PlaybackID != first.PlaybackID || requests[2].PlaybackID != second.PlaybackID {
+		t.Fatalf("TTS request order = %#v, want first, first retry, second", requests)
+	}
+}
+
 func TestPhrasePlaybackSchedulerStopWithoutWorkerRejectsLateFinal(t *testing.T) {
 	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
 		Speech: NewSpeechOutput(SpeechOutputDependencies{
@@ -903,6 +929,32 @@ func (*firstChunkTTSStream) Close() error { return nil }
 
 type stubbornFinishTTSProvider struct {
 	release <-chan struct{}
+}
+
+type flakyPhraseTTSProvider struct {
+	mu       sync.Mutex
+	failures int
+	requests []tts.Request
+}
+
+func (p *flakyPhraseTTSProvider) StartStream(ctx context.Context, request tts.Request) (tts.Stream, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, request)
+	fail := p.failures > 0
+	if fail {
+		p.failures--
+	}
+	p.mu.Unlock()
+	if fail {
+		return nil, errors.New("temporary TTS failure")
+	}
+	return (&recordingTTSProvider{}).StartStream(ctx, request)
+}
+
+func (p *flakyPhraseTTSProvider) requestsSnapshot() []tts.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]tts.Request(nil), p.requests...)
 }
 
 func (p stubbornFinishTTSProvider) StartStream(context.Context, tts.Request) (tts.Stream, error) {

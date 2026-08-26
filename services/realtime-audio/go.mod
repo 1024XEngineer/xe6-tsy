@@ -1,6 +1,6 @@
 module github.com/1024XEngineer/xe6-tsy/services/realtime-audio
 
-go 1.26
+go 1.26.7
 
 toolchain go1.26.7
 

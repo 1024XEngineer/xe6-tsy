@@ -15,6 +15,7 @@ import (
 
 	languagesv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/languages/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/command"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/session"
 )
 
 const (
@@ -51,10 +52,30 @@ type Client struct {
 	timeout     time.Duration
 }
 
+// LegacyFallbackReader keeps bidirectional commands available while an older
+// API deployment has not registered the internal read route yet.
+type LegacyFallbackReader struct {
+	Primary  session.LanguageConfigReader
+	Fallback session.LanguageConfigReader
+}
+
 // HTTPError preserves the stable API error code without coupling realtime to API implementation types.
 type HTTPError struct {
 	StatusCode int
 	Code       string
+}
+
+type legacyCommandConfigRequest struct {
+	SessionID      string `json:"session_id"`
+	CommandID      string `json:"command_id"`
+	SourceLanguage string `json:"source_language"`
+	TargetLanguage string `json:"target_language"`
+}
+
+type legacyCommandConfigResult struct {
+	SessionID string `json:"session_id"`
+	CommandID string `json:"command_id"`
+	Version   int    `json:"version"`
 }
 
 func (e *HTTPError) Error() string {
@@ -62,6 +83,26 @@ func (e *HTTPError) Error() string {
 		return fmt.Sprintf("command language-config API returned HTTP %d", e.StatusCode)
 	}
 	return fmt.Sprintf("command language-config API returned HTTP %d (%s)", e.StatusCode, e.Code)
+}
+
+func (r LegacyFallbackReader) GetCurrentConfig(ctx context.Context, sessionID string) (session.LanguageConfigSnapshot, error) {
+	if r.Primary == nil {
+		return session.LanguageConfigSnapshot{}, ErrConfigurationInvalid
+	}
+	snapshot, err := r.Primary.GetCurrentConfig(ctx, sessionID)
+	if err == nil {
+		return snapshot, nil
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) ||
+		(httpErr.StatusCode != http.StatusMethodNotAllowed &&
+			(httpErr.StatusCode != http.StatusNotFound || httpErr.Code != "")) {
+		return session.LanguageConfigSnapshot{}, err
+	}
+	if r.Fallback == nil {
+		return session.LanguageConfigSnapshot{}, err
+	}
+	return r.Fallback.GetCurrentConfig(ctx, sessionID)
 }
 
 // NewClient validates the internal endpoint before any command can execute.
@@ -83,6 +124,61 @@ func NewClient(config Config) (*Client, error) {
 	return &Client{baseURL: baseURL, systemToken: token, http: config.HTTP, timeout: config.Timeout}, nil
 }
 
+// GetCurrentConfig reads the API-owned active snapshot used for command
+// completion and optimistic concurrency.
+func (c *Client) GetCurrentConfig(ctx context.Context, sessionID string) (session.LanguageConfigSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return session.LanguageConfigSnapshot{}, err
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if c == nil || c.baseURL == nil || c.http == nil {
+		return session.LanguageConfigSnapshot{}, ErrConfigurationInvalid
+	}
+	if sessionID == "" {
+		return session.LanguageConfigSnapshot{}, session.ErrSessionIDRequired
+	}
+	endpoint, err := url.JoinPath(c.baseURL.String(), "internal", "v1", "voice-sessions", sessionID, "language-config")
+	if err != nil {
+		return session.LanguageConfigSnapshot{}, fmt.Errorf("build current command language-config URL: %w", err)
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return session.LanguageConfigSnapshot{}, fmt.Errorf("create current command language-config request: %w", err)
+	}
+	httpRequest.Header.Set(systemTokenHeader, c.systemToken)
+	response, err := c.http.Do(httpRequest)
+	if err != nil {
+		return session.LanguageConfigSnapshot{}, fmt.Errorf("call current command language-config API: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := readBounded(response.Body)
+	if err != nil {
+		return session.LanguageConfigSnapshot{}, err
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return session.LanguageConfigSnapshot{}, decodeHTTPError(response.StatusCode, body)
+	}
+	var current languagesv1.CommandConfigSnapshot
+	if err := decodeStrict(body, &current); err != nil || current.Validate() != nil || current.SessionID != sessionID {
+		return session.LanguageConfigSnapshot{}, ErrResponseInvalid
+	}
+	routes := []session.OutputRoute{
+		{TargetLanguage: current.TargetLanguage, TTSEnabled: true},
+		{TargetLanguage: current.SourceLanguage, TTSEnabled: current.OutputMode == languagesv1.InterpretationOutputModeBidirectional,
+			DeliveryEnabled: current.OutputMode == languagesv1.InterpretationOutputModeSingle},
+	}
+	return session.LanguageConfigSnapshot{
+		SessionID: current.SessionID, Version: int64(current.Version), Status: "active", UpdatedAt: time.Now().UTC(),
+		LanguagePairs: []session.LanguagePair{
+			{Source: current.SourceLanguage, Target: current.TargetLanguage},
+			{Source: current.TargetLanguage, Target: current.SourceLanguage},
+		},
+		OutputRoutes: routes,
+	}, nil
+}
+
 // Configure creates or replays one language snapshot. A successful response must echo the
 // request identity, preventing a proxy or routing error from switching mode against stale data.
 func (c *Client) Configure(ctx context.Context, request languagesv1.CommandConfigRequest) (languagesv1.CommandConfigResult, error) {
@@ -92,9 +188,8 @@ func (c *Client) Configure(ctx context.Context, request languagesv1.CommandConfi
 	if c == nil || c.baseURL == nil || c.http == nil || request.Validate() != nil {
 		return languagesv1.CommandConfigResult{}, ErrConfigurationInvalid
 	}
-	payload, err := json.Marshal(request)
-	if err != nil {
-		return languagesv1.CommandConfigResult{}, fmt.Errorf("encode command language configuration: %w", err)
+	if request.OutputMode == "" {
+		request.OutputMode = languagesv1.InterpretationOutputModeBidirectional
 	}
 	endpoint, err := url.JoinPath(c.baseURL.String(), "internal", "v1", "voice-sessions", request.SessionID, "language-config")
 	if err != nil {
@@ -102,30 +197,92 @@ func (c *Client) Configure(ctx context.Context, request languagesv1.CommandConfi
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	result, err := c.configureCurrent(requestCtx, endpoint, request)
+	if !shouldRetryLegacy(err, request) {
+		return result, err
+	}
+	return c.configureLegacy(requestCtx, endpoint, request)
+}
+
+func (c *Client) configureCurrent(ctx context.Context, endpoint string, request languagesv1.CommandConfigRequest) (languagesv1.CommandConfigResult, error) {
+	payload, err := json.Marshal(request)
 	if err != nil {
-		return languagesv1.CommandConfigResult{}, fmt.Errorf("create command language-config request: %w", err)
+		return languagesv1.CommandConfigResult{}, fmt.Errorf("encode command language configuration: %w", err)
+	}
+	status, body, err := c.post(ctx, endpoint, payload)
+	if err != nil {
+		return languagesv1.CommandConfigResult{}, err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return languagesv1.CommandConfigResult{}, commandHTTPError(status, body)
+	}
+	var result languagesv1.CommandConfigResult
+	if err := decodeStrict(body, &result); err != nil || result.SessionID != request.SessionID ||
+		result.CommandID != request.CommandID || result.SourceLanguage != request.SourceLanguage ||
+		result.TargetLanguage != request.TargetLanguage || result.OutputMode != request.OutputMode || result.Version <= 0 {
+		return languagesv1.CommandConfigResult{}, ErrResponseInvalid
+	}
+	return result, nil
+}
+
+func (c *Client) configureLegacy(ctx context.Context, endpoint string, request languagesv1.CommandConfigRequest) (languagesv1.CommandConfigResult, error) {
+	payload, err := json.Marshal(legacyCommandConfigRequest{
+		SessionID: request.SessionID, CommandID: request.CommandID,
+		SourceLanguage: request.SourceLanguage, TargetLanguage: request.TargetLanguage,
+	})
+	if err != nil {
+		return languagesv1.CommandConfigResult{}, fmt.Errorf("encode legacy command language configuration: %w", err)
+	}
+	status, body, err := c.post(ctx, endpoint, payload)
+	if err != nil {
+		return languagesv1.CommandConfigResult{}, err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		return languagesv1.CommandConfigResult{}, commandHTTPError(status, body)
+	}
+	var legacy legacyCommandConfigResult
+	if err := decodeStrict(body, &legacy); err != nil || legacy.SessionID != request.SessionID ||
+		legacy.CommandID != request.CommandID || legacy.Version <= 0 {
+		return languagesv1.CommandConfigResult{}, ErrResponseInvalid
+	}
+	return languagesv1.CommandConfigResult{
+		SessionID: legacy.SessionID, CommandID: legacy.CommandID,
+		SourceLanguage: request.SourceLanguage, TargetLanguage: request.TargetLanguage,
+		OutputMode: request.OutputMode, Version: legacy.Version,
+	}, nil
+}
+
+func (c *Client) post(ctx context.Context, endpoint string, payload []byte) (int, []byte, error) {
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return 0, nil, fmt.Errorf("create command language-config request: %w", err)
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set(systemTokenHeader, c.systemToken)
 	response, err := c.http.Do(httpRequest)
 	if err != nil {
-		return languagesv1.CommandConfigResult{}, fmt.Errorf("call command language-config API: %w", err)
+		return 0, nil, fmt.Errorf("call command language-config API: %w", err)
 	}
 	defer response.Body.Close()
 	body, err := readBounded(response.Body)
-	if err != nil {
-		return languagesv1.CommandConfigResult{}, err
+	return response.StatusCode, body, err
+}
+
+func shouldRetryLegacy(err error, request languagesv1.CommandConfigRequest) bool {
+	if request.OutputMode != languagesv1.InterpretationOutputModeBidirectional {
+		return false
 	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return languagesv1.CommandConfigResult{}, decodeHTTPError(response.StatusCode, body)
+	var httpErr *HTTPError
+	return errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusBadRequest && httpErr.Code == "invalid_request"
+}
+
+func commandHTTPError(status int, body []byte) error {
+	decodedErr := decodeHTTPError(status, body)
+	var httpErr *HTTPError
+	if errors.As(decodedErr, &httpErr) && httpErr.Code == "delivery_target_required" {
+		return errors.Join(command.ErrDeliveryTargetRequired, decodedErr)
 	}
-	var result languagesv1.CommandConfigResult
-	if err := decodeStrict(body, &result); err != nil || result.SessionID != request.SessionID ||
-		result.CommandID != request.CommandID || result.Version <= 0 {
-		return languagesv1.CommandConfigResult{}, ErrResponseInvalid
-	}
-	return result, nil
+	return decodedErr
 }
 
 func readBounded(reader io.Reader) ([]byte, error) {
@@ -157,8 +314,10 @@ func decodeHTTPError(status int, body []byte) error {
 			Code string `json:"code"`
 		} `json:"error"`
 	}
-	_ = decodeStrict(body, &envelope)
+	_ = json.Unmarshal(body, &envelope)
 	return &HTTPError{StatusCode: status, Code: strings.TrimSpace(envelope.Error.Code)}
 }
 
 var _ command.LanguageConfigurator = (*Client)(nil)
+var _ session.LanguageConfigReader = (*Client)(nil)
+var _ session.LanguageConfigReader = LegacyFallbackReader{}

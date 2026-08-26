@@ -15,6 +15,111 @@ import (
 
 const testCommandSystemToken = "command-system-token-secret-123456"
 
+func TestHTTPGetCurrentConfigForCommand(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	_, err := store.CreateActiveConfig(t.Context(), CreateConfigInput{
+		SessionID: "vs_command", CreatedBy: "acct_command",
+		LanguagePairs: []LanguagePair{{Source: "zh-CN", Target: "en-US"}, {Source: "en-US", Target: "zh-CN"}},
+		OutputRoutes: []OutputRoute{
+			{TargetLanguage: "en-US", TTSEnabled: true},
+			{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	handler := NewHandler(NewService(store, MapSessionOwner{"vs_command": "acct_command"}), nil)
+	handler.ConfigureSystemCommands(testCommandSystemToken)
+	mux := http.NewServeMux()
+	handler.Register(mux, withoutAuthentication)
+
+	response := serveCurrentCommandConfig(mux, "vs_command", testCommandSystemToken)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var snapshot languagesv1.CommandConfigSnapshot
+	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if snapshot.SessionID != "vs_command" || snapshot.SourceLanguage != "zh-CN" ||
+		snapshot.TargetLanguage != "en-US" || snapshot.OutputMode != languagesv1.InterpretationOutputModeSingle || snapshot.Version != 1 {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+func TestHTTPGetCurrentConfigForCommandDefaultsLegacyRoutes(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	_, err := store.CreateActiveConfig(t.Context(), CreateConfigInput{
+		SessionID: "vs_command", CreatedBy: "acct_command",
+		LanguagePairs: []LanguagePair{{Source: "zh-CN", Target: "en-US"}, {Source: "en-US", Target: "zh-CN"}},
+	})
+	if err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	handler := NewHandler(NewService(store, MapSessionOwner{"vs_command": "acct_command"}), nil)
+	handler.ConfigureSystemCommands(testCommandSystemToken)
+	mux := http.NewServeMux()
+	handler.Register(mux, withoutAuthentication)
+
+	response := serveCurrentCommandConfig(mux, "vs_command", testCommandSystemToken)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var snapshot languagesv1.CommandConfigSnapshot
+	if err := json.NewDecoder(response.Body).Decode(&snapshot); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if snapshot.OutputMode != languagesv1.InterpretationOutputModeBidirectional {
+		t.Fatalf("output mode = %q, want bidirectional", snapshot.OutputMode)
+	}
+}
+
+func TestHTTPGetCurrentConfigForCommandRejectsUnauthorizedAndUnavailableSnapshots(t *testing.T) {
+	tests := []struct {
+		name       string
+		token      string
+		configured string
+		seed       *CreateConfigInput
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "missing token", configured: testCommandSystemToken, wantStatus: http.StatusForbidden},
+		{name: "wrong token", token: "wrong", configured: testCommandSystemToken, wantStatus: http.StatusForbidden},
+		{name: "endpoint disabled", token: testCommandSystemToken, wantStatus: http.StatusForbidden},
+		{name: "no active config", token: testCommandSystemToken, configured: testCommandSystemToken, wantStatus: http.StatusNotFound, wantCode: CodeNoActiveConfig},
+		{
+			name: "invalid active config", token: testCommandSystemToken, configured: testCommandSystemToken,
+			seed: &CreateConfigInput{
+				SessionID: "vs_command", CreatedBy: "acct_command",
+				LanguagePairs: []LanguagePair{{Source: "zh-CN", Target: "en-US"}},
+			},
+			wantStatus: http.StatusInternalServerError, wantCode: CodeInternalError,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewMemoryStore(nil, nil)
+			if tt.seed != nil {
+				if _, err := store.CreateActiveConfig(t.Context(), *tt.seed); err != nil {
+					t.Fatalf("seed config: %v", err)
+				}
+			}
+			handler := NewHandler(NewService(store, MapSessionOwner{"vs_command": "acct_command"}), nil)
+			handler.ConfigureSystemCommands(tt.configured)
+			mux := http.NewServeMux()
+			handler.Register(mux, withoutAuthentication)
+			response := serveCurrentCommandConfig(mux, "vs_command", tt.token)
+			if tt.wantCode == "" {
+				if response.Code != tt.wantStatus {
+					t.Fatalf("status=%d body=%s, want %d", response.Code, response.Body.String(), tt.wantStatus)
+				}
+				return
+			}
+			assertLanguageError(t, response, tt.wantStatus, tt.wantCode)
+		})
+	}
+}
+
 func TestHTTPConfigureFromCommandCreatesAndReplaysConfig(t *testing.T) {
 	store := NewMemoryStore(nil, nil)
 	handler := NewHandler(NewService(store, MapSessionOwner{"vs_command": "acct_command"}), nil)
@@ -32,12 +137,16 @@ func TestHTTPConfigureFromCommandCreatesAndReplaysConfig(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
 	}
+	firstBody := append([]byte(nil), first.Body.Bytes()...)
 	var firstResult languagesv1.CommandConfigResult
-	if err := json.NewDecoder(first.Body).Decode(&firstResult); err != nil {
+	if err := json.Unmarshal(firstBody, &firstResult); err != nil {
 		t.Fatalf("decode first response: %v", err)
 	}
 	if firstResult.SessionID != request.SessionID || firstResult.CommandID != request.CommandID || firstResult.Version != 1 {
 		t.Fatalf("first result=%#v", firstResult)
+	}
+	if strings.Contains(string(firstBody), `"source_language"`) || strings.Contains(string(firstBody), `"output_mode"`) {
+		t.Fatalf("legacy response contains new fields: %s", firstBody)
 	}
 
 	replay := serveCommandConfig(t, mux, request, testCommandSystemToken)
@@ -54,6 +163,62 @@ func TestHTTPConfigureFromCommandCreatesAndReplaysConfig(t *testing.T) {
 	history, _, err := store.ListConfigs(t.Context(), ListConfigsQuery{SessionID: request.SessionID, Limit: 10})
 	if err != nil || len(history) != 1 {
 		t.Fatalf("history=%#v err=%v, want one config", history, err)
+	}
+}
+
+func TestHTTPConfigureFromCommandCreatesSingleOutputWithVersionCheck(t *testing.T) {
+	store := NewMemoryStore(nil, nil)
+	handler := NewHandler(NewService(
+		store,
+		MapSessionOwner{"vs_command": "acct_command"},
+		&deliveryReadinessStub{ready: true},
+	), nil)
+	handler.ConfigureSystemCommands(testCommandSystemToken)
+	mux := http.NewServeMux()
+	handler.Register(mux, withoutAuthentication)
+
+	seed := languagesv1.CommandConfigRequest{
+		SessionID: "vs_command", CommandID: "cmd_1", SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+		OutputMode: languagesv1.InterpretationOutputModeBidirectional,
+	}
+	if got := serveCommandConfig(t, mux, seed, testCommandSystemToken); got.Code != http.StatusOK {
+		t.Fatalf("seed status=%d body=%s", got.Code, got.Body.String())
+	}
+	expectedVersion := 1
+	request := languagesv1.CommandConfigRequest{
+		SessionID: "vs_command", CommandID: "cmd_2", SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+		OutputMode: languagesv1.InterpretationOutputModeSingle, ExpectedVersion: &expectedVersion,
+	}
+	response := serveCommandConfig(t, mux, request, testCommandSystemToken)
+	if response.Code != http.StatusOK {
+		t.Fatalf("single status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result languagesv1.CommandConfigResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.SourceLanguage != "zh-CN" || result.TargetLanguage != "en-US" ||
+		result.OutputMode != languagesv1.InterpretationOutputModeSingle || result.Version != 2 {
+		t.Fatalf("result = %#v", result)
+	}
+	replayExpected := result.Version
+	request.ExpectedVersion = &replayExpected
+	replay := serveCommandConfig(t, mux, request, testCommandSystemToken)
+	if replay.Code != http.StatusOK {
+		t.Fatalf("replay status=%d body=%s", replay.Code, replay.Body.String())
+	}
+	var replayResult languagesv1.CommandConfigResult
+	if err := json.NewDecoder(replay.Body).Decode(&replayResult); err != nil || replayResult.Version != result.Version {
+		t.Fatalf("replay result=%#v error=%v", replayResult, err)
+	}
+	active, err := store.GetActiveConfig(t.Context(), request.SessionID)
+	if err != nil {
+		t.Fatalf("get active config: %v", err)
+	}
+	if len(active.OutputRoutes) != 2 || !active.OutputRoutes[0].TTSEnabled ||
+		active.OutputRoutes[0].TargetLanguage != "en-US" || !active.OutputRoutes[1].DeliveryEnabled ||
+		active.OutputRoutes[1].TargetLanguage != "zh-CN" {
+		t.Fatalf("output routes = %#v", active.OutputRoutes)
 	}
 }
 
@@ -210,6 +375,14 @@ func serveCommandConfig(t *testing.T, handler http.Handler, request languagesv1.
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func serveCurrentCommandConfig(handler http.Handler, sessionID, token string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/internal/v1/voice-sessions/"+sessionID+"/language-config", nil)
+	req.Header.Set(systemTokenHeader, token)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	return recorder
 }
 
 func mustJSON(t *testing.T, value any) string {

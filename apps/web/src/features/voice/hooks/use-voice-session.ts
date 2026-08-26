@@ -431,12 +431,39 @@ export function useVoiceSession() {
           const current = await getCurrentLanguageConfig(token, sessionId);
           expectedVersion = current.version;
         }
-        const updated = await createLanguageConfig(
-          token,
-          sessionId,
-          normalized,
-          expectedVersion,
-        );
+        let updated: Awaited<ReturnType<typeof createLanguageConfig>>;
+        try {
+          updated = await createLanguageConfig(
+            token,
+            sessionId,
+            normalized,
+            expectedVersion,
+          );
+        } catch (error) {
+          if (
+            !(error instanceof ApiError) ||
+            error.code !== "version_conflict" ||
+            sessionIdRef.current !== sessionId ||
+            configRevisionRef.current !== configRevision
+          ) {
+            throw error;
+          }
+          activeLanguageConfigVersionRef.current = null;
+          const current = await getCurrentLanguageConfig(token, sessionId);
+          if (
+            sessionIdRef.current !== sessionId ||
+            configRevisionRef.current !== configRevision
+          ) {
+            throw error;
+          }
+          activeLanguageConfigVersionRef.current = current.version;
+          updated = await createLanguageConfig(
+            token,
+            sessionId,
+            normalized,
+            current.version,
+          );
+        }
         activeLanguageConfigVersionRef.current = updated.version;
         lastAppliedVoiceConfigRef.current = normalized;
         if (
@@ -586,7 +613,9 @@ export function useVoiceSession() {
         const current = await getCurrentLanguageConfig(token, sessionId);
         if (
           sessionIdRef.current !== sessionId ||
-          configRevisionRef.current !== configRevision
+          configRevisionRef.current !== configRevision ||
+          (activeLanguageConfigVersionRef.current !== null &&
+            current.version < activeLanguageConfigVersionRef.current)
         ) {
           return;
         }
@@ -1016,6 +1045,43 @@ export function useVoiceSession() {
                 commandResult.status === "unchanged"
               ) {
                 void refreshModeSnapshot();
+                if (
+                  commandResult.action === "activate_mode" &&
+                  commandResult.target_mode === "interpretation"
+                ) {
+                  const configRevision = configRevisionRef.current;
+                  void getCurrentLanguageConfig(
+                    auth.tokens.access_token,
+                    session.id,
+                  )
+                    .then((current) => {
+                      if (
+                        sessionIdRef.current !== session.id ||
+                        configRevisionRef.current !== configRevision ||
+                        (activeLanguageConfigVersionRef.current !== null &&
+                          current.version < activeLanguageConfigVersionRef.current)
+                      ) {
+                        return;
+                      }
+                      const next = voiceConfigFromLanguageConfig(
+                        current,
+                        configRef.current,
+                      );
+                      configRef.current = next;
+                      lastAppliedVoiceConfigRef.current = next;
+                      activeLanguageConfigVersionRef.current = current.version;
+                      setVoiceConfig(next);
+                      saveVoiceConfig(next);
+                      setConfigSyncStatus("applied");
+                    })
+                    .catch((error) => {
+                      if (sessionIdRef.current === session.id) {
+                        setHintMessage(
+                          errorMessage(error, "同步语音指令后的语言配置失败"),
+                        );
+                      }
+                    });
+                }
               }
               return;
             }

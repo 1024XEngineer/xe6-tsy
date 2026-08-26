@@ -354,6 +354,9 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure command language client: %w", err)
 	}
+	commandLanguages := languageconfig.LegacyFallbackReader{
+		Primary: languageConfigurator, Fallback: languages,
+	}
 	// Local Silero (or energy) VAD owns utterance cuts; disable Qwen server_vad unless set.
 	if strings.TrimSpace(os.Getenv("ASR_SERVER_VAD")) == "" {
 		providerConfig.ASR.ServerVAD = false
@@ -399,6 +402,7 @@ func newControlPlaneHandlerWithConfig(cfg processConfig) (http.Handler, error) {
 		NewCommandClassifier:  newCommandClassifier,
 		NewCommandInterpreter: commandInterpreterFactory(providerConfig.Command),
 		LanguageConfigurator:  languageConfigurator,
+		CommandLanguages:      commandLanguages,
 		CommandResults:        localruntime.NewDataChannelCommandResultSink(connections, metricRegistry),
 		CommandObserver:       metricRegistry,
 		Languages:             languages,

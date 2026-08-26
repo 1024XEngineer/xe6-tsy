@@ -48,6 +48,29 @@ func TestManagerRejectsNilCommandInterpreterFromFactory(t *testing.T) {
 	}
 }
 
+func TestManagerSelectsCommandLanguageReader(t *testing.T) {
+	turnReader := &fakeLanguageReader{snapshot: activeConfig("session-1")}
+	commandReader := &fakeLanguageReader{snapshot: activeConfig("session-1")}
+	deps := testDependencies(&fakeFrameSource{}, turnReader)
+	deps.CommandLanguages = commandReader
+	manager, err := newManager(testProviders(), deps)
+	if err != nil {
+		t.Fatalf("newManager() error = %v", err)
+	}
+	if manager.deps.CommandLanguages != commandReader {
+		t.Fatalf("command reader = %#v, want explicit reader", manager.deps.CommandLanguages)
+	}
+
+	deps = testDependencies(&fakeFrameSource{}, turnReader)
+	manager, err = newManager(testProviders(), deps)
+	if err != nil {
+		t.Fatalf("newManager() fallback error = %v", err)
+	}
+	if manager.deps.CommandLanguages != turnReader {
+		t.Fatalf("command reader = %#v, want turn reader fallback", manager.deps.CommandLanguages)
+	}
+}
+
 func TestManagerBuildsCommandInterpreterFromRegisteredHandlers(t *testing.T) {
 	tests := []struct {
 		name          string

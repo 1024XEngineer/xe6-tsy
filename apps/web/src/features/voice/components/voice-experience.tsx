@@ -152,9 +152,16 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
           </div>
         </section> : null}
         {state.phase === "idle" ? (
-          <p aria-live="polite" className={styles.idleStatus}>
-            {statusMessage}
-          </p>
+          <>
+            <p aria-live="polite" className={styles.idleStatus}>
+              {statusMessage}
+            </p>
+            {hintMessage ? (
+              <p aria-live="polite" className={styles.idleHint} role="status">
+                {hintMessage}
+              </p>
+            ) : null}
+          </>
         ) : null}
 
         <section className={styles.voiceStage}>

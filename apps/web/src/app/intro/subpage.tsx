@@ -41,11 +41,6 @@ export function AboutPage() {
 export function DocumentationPage() {
   return (
     <SubpageFrame>
-      <section className={styles.docsHero}>
-        <p className={styles.kicker}><span className={styles.liveDot}/>LINGOW DOCUMENTATION</p>
-        <h1>从第一条命令，<br /><span>开始理解 Lingow。</span></h1>
-        <p>从本地联调到实时会话边界，按运行路径阅读 Lingow 的 Web、控制面和媒体面。</p>
-      </section>
       <div className={styles.docsLayout}>
         <aside className={styles.docsSidebar} aria-label="文档目录">
           <p>文档目录</p>

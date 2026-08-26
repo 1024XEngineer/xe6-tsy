@@ -30,6 +30,8 @@ else
   smoke_enabled=false
 fi
 previous_dir="$deployment_dir/.previous"
+proxy_dir="$deployment_dir/proxy"
+previous_proxy_dir="$previous_dir/proxy"
 project_name="${DEPLOY_PROJECT_NAME:-lingow}"
 
 if [[ ! "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
@@ -86,12 +88,54 @@ snapshot_current_release() {
   install -d -m 700 "$previous_dir"
   cp "$deployment_dir/.env.production" "$previous_dir/.env.production"
   cp "$deployment_dir/docker-compose.yml" "$previous_dir/docker-compose.yml"
-  cp "$deployment_dir/deploy.sh" "$previous_dir/deploy.sh"
+  if [[ -f "$deployment_dir/deploy.sh" ]]; then
+    cp "$deployment_dir/deploy.sh" "$previous_dir/deploy.sh"
+  fi
   if [[ -f "$deployment_dir/deploy-smoke.sh" ]]; then
     cp "$deployment_dir/deploy-smoke.sh" "$previous_dir/deploy-smoke.sh"
   fi
   if [[ -f "$deployment_dir/observe.sh" ]]; then
     cp "$deployment_dir/observe.sh" "$previous_dir/observe.sh"
+  fi
+  if [[ -f "$proxy_dir/nginx.conf" && -f "$proxy_dir/docker-compose.yml" ]]; then
+    install -d -m 700 "$previous_proxy_dir"
+    cp "$proxy_dir/nginx.conf" "$previous_proxy_dir/nginx.conf"
+    cp "$proxy_dir/docker-compose.yml" "$previous_proxy_dir/docker-compose.yml"
+  fi
+}
+
+run_proxy_compose() {
+  local compose_file=$1
+  local proxy_env=(env "DEPLOY_PROJECT_NAME=$project_name" "PROXY_CERT_DIR=$proxy_dir/certs")
+  local proxy_compose=(docker compose --project-name "${project_name}-proxy" --env-file "$environment_file" --file "$compose_file")
+  "${proxy_env[@]}" "${proxy_compose[@]}" "${@:2}"
+}
+
+sync_proxy_release() {
+  if [[ ! -f "$release_dir/proxy/nginx.conf" || ! -f "$release_dir/proxy/docker-compose.yml" ]]; then
+    return 0
+  fi
+  if [[ ! -d "$proxy_dir/certs" ]]; then
+    printf 'proxy certificate directory is missing: %s\n' "$proxy_dir/certs" >&2
+    return 66
+  fi
+  install -d -m 700 "$proxy_dir"
+  cp "$release_dir/proxy/nginx.conf" "$proxy_dir/nginx.conf"
+  cp "$release_dir/proxy/docker-compose.yml" "$proxy_dir/docker-compose.yml"
+  run_proxy_compose "$release_dir/proxy/docker-compose.yml" config --quiet
+  run_proxy_compose "$release_dir/proxy/docker-compose.yml" up --detach --remove-orphans --wait --wait-timeout 60
+}
+
+restore_previous_proxy() {
+  if [[ ! -f "$previous_proxy_dir/nginx.conf" || ! -f "$previous_proxy_dir/docker-compose.yml" ]]; then
+    return 0
+  fi
+  install -d -m 700 "$proxy_dir"
+  cp "$previous_proxy_dir/nginx.conf" "$proxy_dir/nginx.conf"
+  cp "$previous_proxy_dir/docker-compose.yml" "$proxy_dir/docker-compose.yml"
+  if ! run_proxy_compose "$proxy_dir/docker-compose.yml" config --quiet ||
+    ! run_proxy_compose "$proxy_dir/docker-compose.yml" up --detach --remove-orphans --wait --wait-timeout 60; then
+    printf 'previous proxy release recovery failed\n' >&2
   fi
 }
 
@@ -101,7 +145,7 @@ rollback_on_failure() {
   if (( status == 0 )); then
     exit 0
   fi
-  if [[ ! -f "$previous_dir/.env.production" || ! -f "$previous_dir/docker-compose.yml" || ! -f "$previous_dir/deploy.sh" ]]; then
+  if [[ ! -f "$previous_dir/.env.production" || ! -f "$previous_dir/docker-compose.yml" ]]; then
     printf 'deployment failed; no previous release is available for recovery\n' >&2
     # A first deployment has no stable application to restore. Remove only the
     # candidate containers and network; named data volumes are never removed.
@@ -111,7 +155,9 @@ rollback_on_failure() {
   printf 'deployment failed; restoring previous application release\n' >&2
   cp "$previous_dir/.env.production" "$environment_file"
   cp "$previous_dir/docker-compose.yml" "$deployment_dir/docker-compose.yml"
-  cp "$previous_dir/deploy.sh" "$deployment_dir/deploy.sh"
+  if [[ -f "$previous_dir/deploy.sh" ]]; then
+    cp "$previous_dir/deploy.sh" "$deployment_dir/deploy.sh"
+  fi
   if [[ -f "$previous_dir/deploy-smoke.sh" ]]; then
     cp "$previous_dir/deploy-smoke.sh" "$deployment_dir/deploy-smoke.sh"
   fi
@@ -120,7 +166,7 @@ rollback_on_failure() {
   fi
   cp "$previous_dir/.env.production" "$deployment_dir/.env.production"
   chmod 600 "$environment_file" "$deployment_dir/.env.production"
-  chmod 700 "$deployment_dir/deploy.sh"
+  [[ ! -f "$deployment_dir/deploy.sh" ]] || chmod 700 "$deployment_dir/deploy.sh"
   [[ ! -f "$deployment_dir/observe.sh" ]] || chmod 700 "$deployment_dir/observe.sh"
   previous_compose=(docker compose --project-name "$project_name" --env-file "$deployment_dir/.env.production" --file "$deployment_dir/docker-compose.yml")
   if "${previous_compose[@]}" config --quiet && "${previous_compose[@]}" up --detach --remove-orphans --wait --wait-timeout 180; then
@@ -128,6 +174,7 @@ rollback_on_failure() {
   else
     printf 'previous release recovery failed; database schema was not rolled back\n' >&2
   fi
+  restore_previous_proxy
   exit "$status"
 }
 
@@ -137,6 +184,7 @@ trap rollback_on_failure EXIT
 "${compose[@]}" config --quiet
 "${compose[@]}" pull
 "${compose[@]}" up --detach --remove-orphans --wait --wait-timeout 180
+sync_proxy_release
 "${compose[@]}" ps
 
 if [[ "$smoke_enabled" == true ]]; then
@@ -150,6 +198,11 @@ if [[ "$staged_release" == true ]]; then
   cp "$release_dir/deploy-smoke.sh" "$deployment_dir/deploy-smoke.sh"
   if [[ -f "$release_dir/observe.sh" ]]; then
     cp "$release_dir/observe.sh" "$deployment_dir/observe.sh"
+  fi
+  if [[ -d "$release_dir/proxy" ]]; then
+    install -d -m 700 "$deployment_dir/proxy"
+    cp "$release_dir/proxy/nginx.conf" "$deployment_dir/proxy/nginx.conf"
+    cp "$release_dir/proxy/docker-compose.yml" "$deployment_dir/proxy/docker-compose.yml"
   fi
   chmod 600 "$deployment_dir/.env.production"
   chmod 700 "$deployment_dir/deploy.sh" "$deployment_dir/deploy-smoke.sh"

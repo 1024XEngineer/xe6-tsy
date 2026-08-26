@@ -8,14 +8,15 @@ Compose 默认使用 `APP_ENV=staging`，便于在没有外部供应商凭证时
 SMTP 和企业微信配置留空即禁用真实出站调用。正式生产发布必须显式设置 `APP_ENV=production`，并改用
 真实短信、SMTP、企业微信和模型配置。
 
-Web 默认只绑定宿主机回环地址 `127.0.0.1:3000`。如需绑定其他地址，在环境文件中修改 `WEB_BIND_IP`；在其前方配置已有的 HTTPS 反向代理，将公网流量转发到该端口。WebRTC 的 ICE/TURN 配置由 `REALTIME_ICE_SERVERS_JSON` 同时提供给浏览器和 realtime 服务；生产配置必须包含可从客户端访问的 TURN/TURNS 地址，推荐使用短期凭据和 `relay` 策略。
+Web 默认只绑定宿主机回环地址 `127.0.0.1:3000`。部署工作流同时维护 `proxy/` 下的 Nginx 配置；代理必须使用部署主机上的 `${DEPLOY_PATH}/proxy/certs/tls.crt` 和 `tls.key`，并将 80/443 端口交给该代理。代理通过 Docker DNS 动态解析 `web`、`api` 和 `realtime-audio`，应用容器重建后无需手工重启代理。WebRTC 的 ICE/TURN 配置由 `REALTIME_ICE_SERVERS_JSON` 同时提供给浏览器和 realtime 服务；生产配置必须包含可从客户端访问的 TURN/TURNS 地址，推荐使用短期凭据和 `relay` 策略。
 
 ## 首次配置
 
 1. 在 Linux x86_64 部署主机安装 Docker Engine、Docker Compose v2 和 Bash，创建专用非 root 部署用户，并确保该用户可以使用 Docker。当前工作流发布 `linux/amd64` 镜像。
-2. 从 `.env.production.example` 创建部署环境文件。实际文件只保存在 GitHub 对应 Environment（`development` 或 `production`）的 `DEPLOY_ENV_FILE` secret 和部署主机，不能提交到仓库。模板中的尖括号字段就是需要替换的值，具体位置见下方“占位符位置”。
-3. 将 PostgreSQL 与 Redis/Valkey 地址配置为仅部署主机可访问的 TLS/认证连接。为 API 生成独立且至少 32 字节的 `JWT_SECRET`、`AUTH_PEPPER`、`REALTIME_TICKET_SECRET`、`LINGOW_DELIVERY_DESTINATION_KEY`、`LINGOW_RECORDS_SYSTEM_TOKEN` 与 `LINGOW_COMMAND_SYSTEM_TOKEN`。
-4. 配置 GitHub `development`/`production` Environment，可为 production 开启 required reviewers。分别添加以下 secrets：
+2. 为 `${DEPLOY_PATH}/proxy/certs/` 准备证书文件 `tls.crt` 和 `tls.key`，并限制为部署用户可读。开发环境可以使用自签名证书；浏览器冒烟会忽略证书校验，正式环境应使用受信任证书。
+3. 从 `.env.production.example` 创建部署环境文件。实际文件只保存在 GitHub 对应 Environment（`development` 或 `production`）的 `DEPLOY_ENV_FILE` secret 和部署主机，不能提交到仓库。模板中的尖括号字段就是需要替换的值，具体位置见下方“占位符位置”。
+4. 将 PostgreSQL 与 Redis/Valkey 地址配置为仅部署主机可访问的 TLS/认证连接。为 API 生成独立且至少 32 字节的 `JWT_SECRET`、`AUTH_PEPPER`、`REALTIME_TICKET_SECRET`、`LINGOW_DELIVERY_DESTINATION_KEY`、`LINGOW_RECORDS_SYSTEM_TOKEN` 与 `LINGOW_COMMAND_SYSTEM_TOKEN`。
+5. 配置 GitHub `development`/`production` Environment，可为 production 开启 required reviewers。分别添加以下 secrets：
 
    - `DEPLOY_HOST`：部署主机名或 IPv4 地址。
    - `DEPLOY_USER`：部署用户。
@@ -36,7 +37,7 @@ Web 默认只绑定宿主机回环地址 `127.0.0.1:3000`。如需绑定其他�
    - `DEPLOY_OBSERVE_MAX_PROVIDER_FAILURES`、`DEPLOY_OBSERVE_MAX_DATA_CHANNEL_FAILURES`、`DEPLOY_OBSERVE_MAX_INTERPRETATION_FAILURES`：观察窗口允许的失败计数增量，默认均为 0。
    - `DEPLOY_DATABASE_BACKUP_CONFIRMED=true`：管理员完成外部 PostgreSQL 备份后设置。应用回滚不会回退数据库 schema。
 
-5. 工作流使用当前运行的短期 `GITHUB_TOKEN` 发布和拉取三个 GHCR package，不需要额外长期 PAT；确保 package 与该仓库关联且允许 Actions 读写即可。
+6. 工作流使用当前运行的短期 `GITHUB_TOKEN` 发布和拉取三个 GHCR package，不需要额外长期 PAT；确保 package 与该仓库关联且允许 Actions 读写即可。
 
 ## 占位符位置
 

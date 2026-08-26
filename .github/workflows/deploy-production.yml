@@ -182,7 +182,7 @@ jobs:
           set -euo pipefail
           destination="${DEPLOY_USER}@${DEPLOY_HOST}"
           release_dir="${DEPLOY_PATH}/.staging/${GITHUB_SHA}"
-          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "install -d -m 700 '${release_dir}'"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "install -d -m 700 '${release_dir}/proxy'"
           {
             printf '%s\n' "$DEPLOY_ENV_FILE"
             printf 'LINGOW_DEPLOY_ENV=%s\n' "$DEPLOY_ENVIRONMENT"
@@ -192,6 +192,7 @@ jobs:
           } > "$RUNNER_TEMP/.env.production"
           chmod 600 "$RUNNER_TEMP/.env.production"
           scp -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml scripts/deploy.sh scripts/deploy-smoke.sh scripts/rollback.sh scripts/observe.sh "$RUNNER_TEMP/.env.production" "${destination}:${release_dir}/"
+          scp -i "$HOME/.ssh/id_ed25519" infra/production/proxy/nginx.conf infra/production/proxy/docker-compose.yml "${destination}:${release_dir}/proxy/"
           ssh -i "$HOME/.ssh/id_ed25519" "$destination" "chmod 600 '${release_dir}/.env.production' && chmod 700 '${release_dir}/deploy.sh' '${release_dir}/deploy-smoke.sh' '${release_dir}/rollback.sh' '${release_dir}/observe.sh'"
       - name: Authenticate deployment host to GHCR
         shell: bash

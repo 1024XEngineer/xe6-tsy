@@ -1,0 +1,25 @@
+name: lingow-proxy
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${PROXY_CERT_DIR:?PROXY_CERT_DIR is required}:/etc/nginx/certs:ro
+    networks:
+      app:
+        aliases: [lingow-proxy]
+
+networks:
+  app:
+    external: true
+    name: ${DEPLOY_PROJECT_NAME:?DEPLOY_PROJECT_NAME is required}_default

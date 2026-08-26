@@ -152,12 +152,31 @@ export function DocumentationPage() {
               <h2>快速开始</h2>
               <p>本地联调由 API、Realtime Audio 与 Web 三部分组成。先启动后端依赖，再启动浏览器入口。</p>
               <div className={styles.docsCallout}><strong>开始之前</strong><p>需要本地可用的 Node.js 环境；完整语音会话还需要 API 与 Realtime Audio 服务。</p></div>
+              <h3>准备环境</h3>
+              <ul className={styles.docsList}>
+                <li><Check size={16} weight="bold" />Node.js 22 LTS、npm 与 Go 1.26.7。</li>
+                <li><Check size={16} weight="bold" />PostgreSQL 16、Redis/Valkey 7；也可以使用 Docker Desktop 启动它们。</li>
+              </ul>
+              <h3>配置根环境</h3>
+              <p>从仓库根目录复制环境变量示例，并为 API 与 Realtime Audio 配置共享的票据密钥和命令服务凭证。</p>
+              <pre className={styles.docsCodeBlock}><code>{"cp .env.example .env\nLINGOW_SESSION_RUNTIME=enabled\nREALTIME_TICKET_SECRET=<至少 32 字节>\nLINGOW_COMMAND_SYSTEM_TOKEN=<至少 32 字节>\nCOMMAND_LLM_API_KEY=<Qwen API key>\nCOMMAND_LLM_BASE_URL=<Qwen compatible API base URL>"}</code></pre>
+              <p className={styles.docsFootnote}>本地普通音频链路默认使用 mock ASR、翻译和 TTS；要验证真实语音命令，还需要配置 Qwen 意图识别，并将 ASR 切换为可用的真实 Provider。</p>
               <h3>启动本地服务</h3>
-              <p>在仓库根目录运行启动脚本，默认会启动 API 与 Realtime Audio。</p>
-              <pre className={styles.docsCodeBlock}><code>{".\\start-local.ps1"}</code></pre>
+              <p>Windows 从仓库根目录启动 API、Realtime Audio 和 Docker 依赖：</p>
+              <pre className={styles.docsCodeBlock}><code>{".\\start-local.ps1 -UseDocker"}</code></pre>
+              <p>不使用 Docker 时，脚本会优先连接 `.env` 中的本地 PostgreSQL 和 Redis；也可以通过 <code>-Service api</code> 或 <code>-Service realtime</code> 只启动一个后端服务。</p>
+              <p>非 Windows 环境先导入 `.env`，再启动基础依赖和两个 Go 服务：</p>
+              <pre className={styles.docsCodeBlock}><code>{"set -a\n. ./.env\nset +a\ndocker compose -f infra/docker-compose.yml up -d\n(cd services/api && go run .)\n(cd services/realtime-audio && go run .)"}</code></pre>
               <h3>启动 Web 入口</h3>
               <p>复制 Web 环境变量示例后安装依赖，并启动本地开发服务器。</p>
               <pre className={styles.docsCodeBlock}><code>{"cd apps/web\ncp .env.example .env.local\nnpm install\nnpm run dev"}</code></pre>
+              <h3>默认地址</h3>
+              <ul className={styles.docsList}>
+                <li><Check size={16} weight="bold" />Web：<code>http://localhost:3000</code></li>
+                <li><Check size={16} weight="bold" />API：<code>http://localhost:8080</code></li>
+                <li><Check size={16} weight="bold" />Realtime Audio：<code>http://localhost:8090</code></li>
+                <li><Check size={16} weight="bold" />PostgreSQL：<code>localhost:5432</code>；Redis/Valkey：<code>localhost:6379</code></li>
+              </ul>
               <p className={styles.docsFootnote}>Web 默认以 AI 助手模式创建会话；可通过 <code>NEXT_PUBLIC_LINGOW_INITIAL_MODE</code> 选择同传入口。</p>
             </section>
           </Reveal>
@@ -166,17 +185,22 @@ export function DocumentationPage() {
             <section className={styles.docsSection} id="architecture">
               <p className={styles.sectionEyebrow}>03 / ARCHITECTURE</p>
               <h2>系统架构</h2>
-              <p>Lingow 把产品交互、业务会话和实时媒体处理分在三个清晰的职责层中。</p>
+              <p>Lingow 将客户端、API 控制面和 Realtime Audio 媒体面分开：客户端只负责采集、播放和交互，API 拥有长期业务状态，Realtime Audio 拥有实时连接与运行状态。</p>
               <div className={styles.docsFlow}>
                 <div><span>01</span><strong>Web / Mobile / Device</strong><p>会话配置、字幕、播报与控制入口。</p></div>
                 <div><span>02</span><strong>API Control Plane</strong><p>账户、会话、语言配置与实时连接票据。</p></div>
                 <div><span>03</span><strong>Realtime Audio</strong><p>WebRTC、VAD、ASR、翻译、TTS 与运行状态。</p></div>
+                <div><span>04</span><strong>packages/contracts</strong><p>统一维护 REST、信令、实时事件、错误码和状态定义。</p></div>
+                <div><span>05</span><strong>infra</strong><p>提供 PostgreSQL、Redis/Valkey 和可选的 realtime 会话哈希网关。</p></div>
               </div>
+              <h3>一条实时链路</h3>
+              <pre className={styles.docsCodeBlock}><code>{"Web / Mobile / Device\n  -> API: account / session / language config / realtime ticket\n  -> Realtime Audio: WebRTC signaling / audio / control events\n  -> VAD -> ASR -> translation -> TTS or message delivery\n  -> API: Final Turn / usage / history / asynchronous messages"}</code></pre>
               <h3>一条会话的职责边界</h3>
               <ul className={styles.docsList}>
                 <li><Check size={16} weight="bold" />Web 负责用户交互、会话 API 调用与字幕、TTS 呈现。</li>
-                <li><Check size={16} weight="bold" />API 负责业务会话、配置与实时连接票据。</li>
-                <li><Check size={16} weight="bold" />Realtime Audio 负责 WebRTC 连接和运行时状态机。</li>
+                <li><Check size={16} weight="bold" />API 负责账户、会话、语言配置、Final Turn、用量和异步消息等长期业务状态。</li>
+                <li><Check size={16} weight="bold" />Realtime Audio 负责 WebRTC 连接、VAD、ASR、翻译、TTS、打断和运行时状态机。</li>
+                <li><Check size={16} weight="bold" />API 只查询实时状态快照，不重复维护实时播放状态机；跨服务数据必须通过 contracts 并支持幂等、重试和可靠投递。</li>
               </ul>
             </section>
           </Reveal>
@@ -189,10 +213,19 @@ export function DocumentationPage() {
               <div className={styles.docsContractGrid}>
                 <article><span>REST</span><h3>OpenAPI</h3><p>账户、会话、语言配置、历史记录与连接票据。</p></article>
                 <article><span>EVENTS</span><h3>AsyncAPI</h3><p>运行状态、字幕、助手回复、模式切换与错误事件。</p></article>
+                <article><span>LANGUAGE</span><h3>Go / TypeScript</h3><p>共享 realtime、records、语言配置和错误码类型，避免各端重复定义 DTO。</p></article>
               </div>
+              <h3>契约唯一来源</h3>
+              <p><code>packages/contracts</code> 同时维护 OpenAPI、实时事件、WebRTC 信令边界、错误码、会话状态机以及 Go/TypeScript 绑定。跨端字段先改契约，再改 API、Realtime Audio、Web 或 Device SDK。</p>
               <h3>实时连接票据</h3>
               <p>正式联调由 API 为已创建的语音会话签发实时连接票据。Web 在建立 WebRTC 连接前获取该票据。</p>
               <pre className={styles.docsCodeBlock}><code>{"POST /api/v1/voice-sessions/{id}/realtime-ticket"}</code></pre>
+              <h3>媒体与事件方向</h3>
+              <ul className={styles.docsList}>
+                <li><Check size={16} weight="bold" />音频媒体使用 WebRTC audio track，不通过 WebSocket 传输。</li>
+                <li><Check size={16} weight="bold" />WebRTC DataChannel 或 realtime HTTP 接口承载控制事件；API 不交换 SDP/ICE。</li>
+                <li><Check size={16} weight="bold" />核心事件包括 <code>session.start</code>、<code>language.selected</code>、<code>wake_word.detected</code>、<code>command.result</code>、<code>webrtc.connected</code>、<code>asr.partial</code>、<code>asr.final</code>、<code>translation.final</code>、<code>tts.ready</code>、<code>playback.start</code>、<code>playback.stop</code>、<code>session.end</code> 和 <code>error</code>。</li>
+              </ul>
               <p className={styles.docsFootnote}>本地开发旁路仅用于显式启用的 <code>next dev</code> 环境，不应用于生产部署。</p>
             </section>
           </Reveal>
@@ -201,13 +234,22 @@ export function DocumentationPage() {
             <section className={styles.docsSection} id="device-sdk">
               <p className={styles.sectionEyebrow}>05 / DEVICE SDK</p>
               <h2>设备接入边界</h2>
-              <p>Device SDK 提供会话、模式命令、唤醒事件与重连控制的边界；具体芯片音频 HAL、WebRTC 与 KWS 模型由设备平台适配。</p>
+              <p>Device SDK 是面向硬件厂商和方案商的 Go 控制核心参考实现，提供会话、模式命令、唤醒事件、状态投影与弱网重连边界；具体芯片音频 HAL、WebRTC 和 KWS 模型由设备平台适配。</p>
               <div className={styles.docsCallout}><strong>保持同一条会话</strong><p>唤醒与模式切换应复用现有 Runtime 和 WebRTC 连接，不应为每次语音命令重建连接。</p></div>
-              <h3>当前接入原则</h3>
+              <h3>当前能力</h3>
               <ul className={styles.docsList}>
-                <li><Check size={16} weight="bold" />设备发送统一的 <code>wake_word.detected</code> 契约。</li>
-                <li><Check size={16} weight="bold" />自然语言命令沿用当前 WebRTC 音轨进入实时服务。</li>
-                <li><Check size={16} weight="bold" />模型文件、阈值和本地推理运行时由客户端负责。</li>
+                <li><Check size={16} weight="bold" /><code>ModeController</code> 通过 <code>GET/POST /realtime/v1/sessions/{'{session_id}'}/mode</code> 读取和切换模式，并携带 runtime 与 generation 进行冲突保护。</li>
+                <li><Check size={16} weight="bold" /><code>StateStore</code> 过滤迟到快照，<code>Reconnector</code> 通过平台注入的策略恢复连接。</li>
+                <li><Check size={16} weight="bold" /><code>SessionStartClient</code> 发送类型化 <code>initial_mode</code>；省略时显式使用 <code>interpretation</code>。</li>
+                <li><Check size={16} weight="bold" /><code>DeviceAuthClient</code> 使用设备身份和 Ed25519 私钥完成挑战签名，换取短期 device token。</li>
+              </ul>
+              <h3>事件方向</h3>
+              <pre className={styles.docsCodeBlock}><code>{"device -> api: device.pair / device-auth.challenge / device-auth.token / session.start / realtime_ticket.request / session.end\ndevice -> realtime-audio: webrtc.offer / ice.candidate / audio track / wake_word.detected\nrealtime-audio -> device: webrtc.answer / ice.candidate / runtime.snapshot / mode.snapshot / asr.partial / asr.final / translation.final / playback.start / playback.stop / error / command.result"}</code></pre>
+              <h3>平台适配边界</h3>
+              <ul className={styles.docsList}>
+                <li><Check size={16} weight="bold" />固定唤醒词“小灵小灵”命中后只发送 <code>wake_word.detected</code>，设备不解析业务命令，也不把模型名、阈值、目标模式或语言方向放进事件。</li>
+                <li><Check size={16} weight="bold" />同一份麦克风 PCM 持续进入板载 KWS 和既有 WebRTC 编码链路；KWS、音频 HAL、PeerConnection 生命周期由平台实现。</li>
+                <li><Check size={16} weight="bold" />设备不能保存用户 Access Token 或 Refresh Token；生产固件使用 <code>/api/v1/device/voice-sessions/*</code>，只在短期 device token 有效时请求 realtime ticket。</li>
               </ul>
             </section>
           </Reveal>
@@ -223,6 +265,9 @@ export function DocumentationPage() {
                 <ResourceLink title="Lingow 模块详细设计" label="MODULE DESIGN" href="https://github.com/1024XEngineer/xe6-tsy/pull/169" />
                 <ResourceLink title="Lingow P0 协议设计" label="P0 CONTRACTS" href="https://github.com/1024XEngineer/xe6-tsy/pull/171" />
                 <ResourceLink title="产品需求文档（PRD）" label="PRODUCT REQUIREMENTS" href="https://github.com/1024XEngineer/xe6-tsy/issues/302" />
+                <ResourceLink title="跨端契约说明" label="CONTRACTS" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/packages/contracts/README.md" />
+                <ResourceLink title="Device SDK 接入说明" label="DEVICE SDK" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/sdks/device/README.md" />
+                <ResourceLink title="本地基础设施说明" label="INFRA" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/infra/README.md" />
               </div>
             </section>
           </Reveal>

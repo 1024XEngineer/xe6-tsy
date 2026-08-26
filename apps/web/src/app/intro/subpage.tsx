@@ -172,10 +172,10 @@ export function DocumentationPage() {
               <pre className={styles.docsCodeBlock}><code>{"cd apps/web\ncp .env.example .env.local\nnpm install\nnpm run dev"}</code></pre>
               <h3>默认地址</h3>
               <ul className={styles.docsList}>
-                <li><Check size={16} weight="bold" />Web：<code>http://localhost:3000</code></li>
-                <li><Check size={16} weight="bold" />API：<code>http://localhost:8080</code></li>
-                <li><Check size={16} weight="bold" />Realtime Audio：<code>http://localhost:8090</code></li>
-                <li><Check size={16} weight="bold" />PostgreSQL：<code>localhost:5432</code>；Redis/Valkey：<code>localhost:6379</code></li>
+                <li><Check size={16} weight="bold" /><span>Web：<code>http://localhost:3000</code></span></li>
+                <li><Check size={16} weight="bold" /><span>API：<code>http://localhost:8080</code></span></li>
+                <li><Check size={16} weight="bold" /><span>Realtime Audio：<code>http://localhost:8090</code></span></li>
+                <li><Check size={16} weight="bold" /><span>PostgreSQL：<code>localhost:5432</code>；Redis/Valkey：<code>localhost:6379</code></span></li>
               </ul>
               <p className={styles.docsFootnote}>Web 默认以 AI 助手模式创建会话；可通过 <code>NEXT_PUBLIC_LINGOW_INITIAL_MODE</code> 选择同传入口。</p>
             </section>
@@ -224,7 +224,7 @@ export function DocumentationPage() {
               <ul className={styles.docsList}>
                 <li><Check size={16} weight="bold" />音频媒体使用 WebRTC audio track，不通过 WebSocket 传输。</li>
                 <li><Check size={16} weight="bold" />WebRTC DataChannel 或 realtime HTTP 接口承载控制事件；API 不交换 SDP/ICE。</li>
-                <li><Check size={16} weight="bold" />核心事件包括 <code>session.start</code>、<code>language.selected</code>、<code>wake_word.detected</code>、<code>command.result</code>、<code>webrtc.connected</code>、<code>asr.partial</code>、<code>asr.final</code>、<code>translation.final</code>、<code>tts.ready</code>、<code>playback.start</code>、<code>playback.stop</code>、<code>session.end</code> 和 <code>error</code>。</li>
+                <li><Check size={16} weight="bold" /><span>核心事件包括 <code>session.start</code>、<code>language.selected</code>、<code>wake_word.detected</code>、<code>command.result</code>、<code>webrtc.connected</code>、<code>asr.partial</code>、<code>asr.final</code>、<code>translation.final</code>、<code>tts.ready</code>、<code>playback.start</code>、<code>playback.stop</code>、<code>session.end</code> 和 <code>error</code>。</span></li>
               </ul>
               <p className={styles.docsFootnote}>本地开发旁路仅用于显式启用的 <code>next dev</code> 环境，不应用于生产部署。</p>
             </section>
@@ -238,18 +238,18 @@ export function DocumentationPage() {
               <div className={styles.docsCallout}><strong>保持同一条会话</strong><p>唤醒与模式切换应复用现有 Runtime 和 WebRTC 连接，不应为每次语音命令重建连接。</p></div>
               <h3>当前能力</h3>
               <ul className={styles.docsList}>
-                <li><Check size={16} weight="bold" /><code>ModeController</code> 通过 <code>GET/POST /realtime/v1/sessions/{'{session_id}'}/mode</code> 读取和切换模式，并携带 runtime 与 generation 进行冲突保护。</li>
-                <li><Check size={16} weight="bold" /><code>StateStore</code> 过滤迟到快照，<code>Reconnector</code> 通过平台注入的策略恢复连接。</li>
-                <li><Check size={16} weight="bold" /><code>SessionStartClient</code> 发送类型化 <code>initial_mode</code>；省略时显式使用 <code>interpretation</code>。</li>
-                <li><Check size={16} weight="bold" /><code>DeviceAuthClient</code> 使用设备身份和 Ed25519 私钥完成挑战签名，换取短期 device token。</li>
+                <li><Check size={16} weight="bold" /><span><code>ModeController</code> 通过 <code>GET/POST /realtime/v1/sessions/{'{session_id}'}/mode</code> 读取和切换模式，并携带 runtime 与 generation 进行冲突保护。</span></li>
+                <li><Check size={16} weight="bold" /><span><code>StateStore</code> 过滤迟到快照，<code>Reconnector</code> 通过平台注入的策略恢复连接。</span></li>
+                <li><Check size={16} weight="bold" /><span><code>SessionStartClient</code> 发送类型化 <code>initial_mode</code>；省略时显式使用 <code>interpretation</code>。</span></li>
+                <li><Check size={16} weight="bold" /><span><code>DeviceAuthClient</code> 使用设备身份和 Ed25519 私钥完成挑战签名，换取短期 device token。</span></li>
               </ul>
               <h3>事件方向</h3>
-              <pre className={styles.docsCodeBlock}><code>{"device -> api: device.pair / device-auth.challenge / device-auth.token / session.start / realtime_ticket.request / session.end\ndevice -> realtime-audio: webrtc.offer / ice.candidate / audio track / wake_word.detected\nrealtime-audio -> device: webrtc.answer / ice.candidate / runtime.snapshot / mode.snapshot / asr.partial / asr.final / translation.final / playback.start / playback.stop / error / command.result"}</code></pre>
+              <pre className={styles.docsCodeBlock}><code>{"device -> api:\n  device.pair / device-auth.challenge / device-auth.token\n  session.start / realtime_ticket.request / session.end\n\ndevice -> realtime-audio:\n  webrtc.offer / ice.candidate / audio track / wake_word.detected\n\nrealtime-audio -> device:\n  webrtc.answer / ice.candidate / runtime.snapshot / mode.snapshot\n  asr.partial / asr.final / translation.final\n  playback.start / playback.stop / error / command.result"}</code></pre>
               <h3>平台适配边界</h3>
               <ul className={styles.docsList}>
-                <li><Check size={16} weight="bold" />固定唤醒词“小灵小灵”命中后只发送 <code>wake_word.detected</code>，设备不解析业务命令，也不把模型名、阈值、目标模式或语言方向放进事件。</li>
-                <li><Check size={16} weight="bold" />同一份麦克风 PCM 持续进入板载 KWS 和既有 WebRTC 编码链路；KWS、音频 HAL、PeerConnection 生命周期由平台实现。</li>
-                <li><Check size={16} weight="bold" />设备不能保存用户 Access Token 或 Refresh Token；生产固件使用 <code>/api/v1/device/voice-sessions/*</code>，只在短期 device token 有效时请求 realtime ticket。</li>
+                <li><Check size={16} weight="bold" /><span>固定唤醒词“小灵小灵”命中后只发送 <code>wake_word.detected</code>，设备不解析业务命令，也不把模型名、阈值、目标模式或语言方向放进事件。</span></li>
+                <li><Check size={16} weight="bold" /><span>同一份麦克风 PCM 持续进入板载 KWS 和既有 WebRTC 编码链路；KWS、音频 HAL、PeerConnection 生命周期由平台实现。</span></li>
+                <li><Check size={16} weight="bold" /><span>设备不能保存用户 Access Token 或 Refresh Token；生产固件使用 <code>/api/v1/device/voice-sessions/*</code>，只在短期 device token 有效时请求 realtime ticket。</span></li>
               </ul>
             </section>
           </Reveal>

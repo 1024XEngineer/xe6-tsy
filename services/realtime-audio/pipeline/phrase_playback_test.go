@@ -289,6 +289,7 @@ func TestPhrasePlaybackSchedulerMergesQueuedStreamSegmentsAndKeepsActiveTask(t *
 	turn := TurnContext{ID: "turn-stream-merge", SessionID: "session-stream-merge"}
 	scheduler.ResetUtterance(turn.SessionID, turn.ID)
 	first := phraseRequest(turn, 1001)
+	first.PhraseGroup = 1
 	first.Text = "first"
 	if result := scheduler.EnqueueWithReason(first); !result.Accepted {
 		t.Fatalf("first stream segment rejected: %#v", result)
@@ -299,6 +300,7 @@ func TestPhrasePlaybackSchedulerMergesQueuedStreamSegmentsAndKeepsActiveTask(t *
 		text     string
 	}{{1002, "second"}, {1003, "third"}, {1004, "fourth"}, {1005, "fifth"}, {1006, "sixth"}} {
 		request := phraseRequest(turn, segment.sequence)
+		request.PhraseGroup = 1
 		request.Text = segment.text
 		if result := scheduler.EnqueueWithReason(request); !result.Accepted {
 			t.Fatalf("stream segment %d rejected: %#v", segment.sequence, result)
@@ -311,6 +313,22 @@ func TestPhrasePlaybackSchedulerMergesQueuedStreamSegmentsAndKeepsActiveTask(t *
 	requests := provider.requests()
 	if len(requests) != 2 || requests[0].Text != "first" || requests[1].Text != "second third fourth fifth sixth" {
 		t.Fatalf("TTS requests = %#v, want active plus one merged queued task", requests)
+	}
+}
+
+func TestPhrasePlaybackSchedulerDoesNotMergeDifferentStreamPhraseGroups(t *testing.T) {
+	turn := TurnContext{ID: "turn-stream-groups", SessionID: "session-stream-groups"}
+	left := phraseRequest(turn, 1001)
+	left.PhraseGroup = 1
+	right := phraseRequest(turn, 2001)
+	right.PhraseGroup = 2
+	if shouldMergePhrasePlayback(left, right, false) {
+		t.Fatal("stream chunks from different phrase groups must remain separate")
+	}
+
+	right.PhraseGroup = 1
+	if !shouldMergePhrasePlayback(left, right, false) {
+		t.Fatal("stream chunks from the same phrase group should remain mergeable")
 	}
 }
 

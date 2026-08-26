@@ -42,10 +42,15 @@ type PhrasePlaybackRequest struct {
 	Turn           TurnContext
 	UtteranceID    string
 	PhraseSequence int64
-	Language       string
-	Text           string
-	PlaybackID     string
-	Final          bool
+	// PhraseGroup identifies the stabilized source phrase that produced a
+	// streamed playback chunk. Chunks from different groups must remain
+	// separate scheduler tasks even when their synthetic sequence numbers are
+	// adjacent.
+	PhraseGroup int64
+	Language    string
+	Text        string
+	PlaybackID  string
+	Final       bool
 }
 
 // PhrasePlaybackScheduler accepts translated phrases independently from audio
@@ -290,6 +295,17 @@ func shouldMergePhrasePlayback(left, right PhrasePlaybackRequest, queueFull bool
 	// coalesce them, even though their synthetic sequence numbers are large.
 	if left.Final || right.Final {
 		return false
+	}
+	leftStreamed := left.PhraseSequence >= 1000
+	rightStreamed := right.PhraseSequence >= 1000
+	if leftStreamed || rightStreamed {
+		// Synthetic stream sequence numbers are scoped to their source phrase.
+		// A missing group is accepted only for legacy callers where both sides
+		// omit it; a partially populated or mismatched group is never merged.
+		if !leftStreamed || !rightStreamed ||
+			(left.PhraseGroup != 0 || right.PhraseGroup != 0) && left.PhraseGroup != right.PhraseGroup {
+			return false
+		}
 	}
 	if queueFull {
 		return true

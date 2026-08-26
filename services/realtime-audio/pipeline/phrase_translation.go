@@ -301,6 +301,7 @@ func (c *PhraseTranslationCoordinator) enqueueStreamPhrasePlayback(utterance *ph
 	request := PhrasePlaybackRequest{
 		Turn: utterance.turn, UtteranceID: phrase.event.UtteranceID,
 		PhraseSequence: phrase.event.PhraseSequence*1000 + sequence,
+		PhraseGroup:    phrase.event.PhraseSequence,
 		Language:       utterance.target, Text: text,
 		PlaybackID: fmt.Sprintf("phrase_%s_%d_%d", phrase.event.UtteranceID, phrase.event.PhraseSequence, sequence),
 	}

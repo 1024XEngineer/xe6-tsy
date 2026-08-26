@@ -255,7 +255,7 @@ func shouldFlushStreamTTS(text string) bool {
 		return false
 	}
 	runes := []rune(text)
-	if strings.ContainsRune(".!?,;:\u3002\uff01\uff1f\uff0c\uff1b\uff1a\u3001\n", runes[len(runes)-1]) {
+	if isStreamTextBoundary(runes[len(runes)-1]) {
 		return true
 	}
 	// For languages with spaces, wait for a word boundary inside the 20-40
@@ -264,7 +264,7 @@ func shouldFlushStreamTTS(text string) bool {
 	if len(runes) >= 20 && unicode.IsSpace(runes[len(runes)-1]) {
 		return true
 	}
-	if len(runes) >= 32 && unicode.In(runes[len(runes)-1], unicode.Han, unicode.Hiragana, unicode.Katakana) {
+	if len(runes) >= 32 && isUnspacedCJKRune(runes[len(runes)-1]) {
 		return true
 	}
 	return len(runes) >= 40

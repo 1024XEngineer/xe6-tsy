@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 )
 
 // A session can contain more than one live utterance while a final settlement
@@ -327,7 +326,7 @@ func phrasePlaybackTextEndsBoundary(text string) bool {
 	if len(runes) == 0 {
 		return false
 	}
-	return strings.ContainsRune(".!?,;:\u3002\uff01\uff1f\uff0c\uff1b\uff1a\u3001\n", runes[len(runes)-1])
+	return isStreamTextBoundary(runes[len(runes)-1])
 }
 
 func joinPhrasePlaybackText(left, right string) string {
@@ -346,10 +345,6 @@ func joinPhrasePlaybackText(left, right string) string {
 		return left + right
 	}
 	return left + " " + right
-}
-
-func isUnspacedCJKRune(r rune) bool {
-	return unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r)
 }
 
 func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, sessionID, reason string) error {

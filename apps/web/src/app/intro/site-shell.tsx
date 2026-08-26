@@ -22,9 +22,7 @@ export function SiteNav() {
         </nav>
         <MobileNav />
         <div className={styles.navActions}>
-          <button className={styles.languageButton} type="button">
-            中文 <CaretDown size={14} weight="bold" />
-          </button>
+          <span className={styles.languageLabel} aria-label="当前语言：中文">中文</span>
           <a className={styles.navCta} href={siteHref("/intro#contact")}>
             预约体验 <ArrowUpRight size={16} weight="bold" />
           </a>

@@ -35,6 +35,7 @@
 .mobileNavCurrentMark { font-family: var(--font-geist-mono), monospace; font-size: 10px; letter-spacing: .06em; }
 .navActions { display: flex; align-items: center; gap: 20px; font-size: 13px; }
 .languageButton { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: none; cursor: pointer; }
+.languageLabel { color: var(--muted); font-size: 12px; }
 .navCta, .primaryButton { display: inline-flex; align-items: center; gap: 9px; border: 1px solid var(--ink); background: var(--ink); color: white !important; transition: transform .2s ease, background .2s ease; }
 .navCta { padding: 10px 15px; font-size: 12px; }
 .primaryButton { padding: 14px 18px; font-size: 13px; }
@@ -728,4 +729,115 @@
   .docsResourceGrid {
     grid-template-columns: 1fr;
   }
+}
+
+/* Product and about pages use compact evidence blocks instead of decorative placeholders. */
+.productSignalGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 58px;
+  border: 1px solid #334257;
+  background: #334257;
+}
+
+.productSignal {
+  min-height: 190px;
+  padding: 22px;
+  background: #111927;
+}
+
+.productSignal > span,
+.aboutArchitectureRow > svg,
+.aboutArchitectureRow > svg + div + svg {
+  color: var(--accent);
+}
+
+.productSignal > span {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  letter-spacing: .08em;
+}
+
+.productSignal h3 {
+  margin: 42px 0 10px;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.productSignal p {
+  max-width: 280px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.aboutArchitecture {
+  display: grid;
+  gap: 1px;
+  margin-top: 58px;
+  border: 1px solid #334257;
+  background: #334257;
+}
+
+.aboutArchitectureRow {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 20px;
+  gap: 16px;
+  align-items: center;
+  padding: 22px;
+  background: #111927;
+}
+
+.aboutArchitectureRow h3 {
+  margin: 0 0 6px;
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.aboutArchitectureRow p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.aboutResourceGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  max-width: 760px;
+  margin-top: 58px;
+}
+
+.aboutResourceGrid .docsResourceLink {
+  min-height: 104px;
+}
+
+.detailSectionHeader > p:not(.sectionEyebrow) {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: start;
+  max-width: 450px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+@media (max-width: 900px) {
+  .productSignalGrid { grid-template-columns: 1fr; }
+  .productSignal { min-height: 0; }
+  .productSignal h3 { margin-top: 24px; }
+  .detailSectionHeader > p:not(.sectionEyebrow) { grid-column: 1; grid-row: auto; }
+}
+
+@media (max-width: 620px) {
+  .aboutResourceGrid { grid-template-columns: 1fr; margin-top: 44px; }
+  .aboutArchitecture { margin-top: 44px; }
+  .aboutArchitectureRow { grid-template-columns: 24px minmax(0, 1fr) 18px; gap: 12px; padding: 18px; }
+  .languageLabel { display: none; }
 }

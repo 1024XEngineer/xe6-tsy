@@ -57,7 +57,6 @@ Web / Mobile / Device
 ## 本地启动
 
 建议准备 Go 1.26.7、Node.js 22、npm，以及 PostgreSQL 16 和 Redis/Valkey 7。需要容器化依赖时安装
-建议准备 Go 1.26、Node.js 22、npm，以及 PostgreSQL 16 和 Redis/Valkey 7。需要容器化依赖时安装
 Docker Desktop。
 
 1. 复制根配置并填写本地凭证：

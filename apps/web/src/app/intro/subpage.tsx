@@ -78,6 +78,15 @@ export function DocumentationPage() {
               <strong>扩展</strong>
               <a href="#device-sdk"><span>04</span>Device SDK</a>
             </div>
+            <div className={styles.docsNavGroup}>
+              <strong>产品</strong>
+              <a href="#capabilities"><span>05</span>核心能力</a>
+              <a href="#scope"><span>06</span>当前边界</a>
+            </div>
+            <div className={styles.docsNavGroup}>
+              <strong>资源</strong>
+              <a href="#resources"><span>07</span>相关文档</a>
+            </div>
           </nav>
           <a className={styles.docsRepositoryLink} href="https://github.com/jinyu918/xe6-tsy" target="_blank" rel="noreferrer">查看仓库 <ArrowUpRight size={15}/></a>
         </aside>
@@ -147,6 +156,50 @@ export function DocumentationPage() {
               </ul>
             </section>
           </Reveal>
+
+          <Reveal>
+            <section className={styles.docsSection} id="capabilities">
+              <p className={styles.sectionEyebrow}>05 / CAPABILITIES</p>
+              <h2>核心能力</h2>
+              <p>Lingow 将语音入口、实时媒体链路和可扩展的设备边界组合成一条会话体验。</p>
+              <div className={styles.docsCapabilityGrid}>
+                <article><span>01</span><h3>AI 语音助手</h3><p>支持唤醒词检测、自然语言命令、助手问答与模式切换。</p></article>
+                <article><span>02</span><h3>面对面同传</h3><p>在选定语言对内完成自动语言识别、流式 ASR、翻译与句末 TTS。</p></article>
+                <article><span>03</span><h3>实时会话</h3><p>通过 WebRTC 音频、可靠有序 DataChannel、运行状态和模式快照保持链路连续。</p></article>
+                <article><span>04</span><h3>记录与投递</h3><p>保存文本 Final Turn 和用量事实，并按配置支持 Email、企业微信等异步投递。</p></article>
+              </div>
+            </section>
+          </Reveal>
+
+          <Reveal>
+            <section className={styles.docsSection} id="scope">
+              <p className={styles.sectionEyebrow}>06 / CURRENT SCOPE</p>
+              <h2>当前边界</h2>
+              <p>以下边界来自当前仓库实现和 PRD，帮助接入者区分已可联调能力与仍在演进的方向。</p>
+              <ul className={styles.docsList}>
+                <li><Check size={16} weight="bold" />Web 是当前主要可运行的联调入口，默认以 AI 助手模式创建新会话。</li>
+                <li><Check size={16} weight="bold" />Mobile 当前提供可编译、可测试的控制面核心，不包含 UI、PeerConnection 或原生 KWS。</li>
+                <li><Check size={16} weight="bold" />Device SDK 提供鉴权、会话、模式、唤醒事件和重连边界，具体音频 HAL、WebRTC 与 KWS 模型由平台适配。</li>
+                <li><Check size={16} weight="bold" />管理后台、订单、支付、发票、多人会议同传和硬件制造不属于当前产品范围。</li>
+              </ul>
+              <div className={styles.docsCallout}><strong>P0 产品闭环</strong><p>当前优先验证免登录临时会话、双语听译、播放控制、失败恢复和不重复投递；账户化与长句增强属于后续阶段。</p></div>
+            </section>
+          </Reveal>
+
+          <Reveal>
+            <section className={styles.docsSection} id="resources">
+              <p className={styles.sectionEyebrow}>07 / RESOURCES</p>
+              <h2>相关文档</h2>
+              <p>从系统结构、开发约定到协议和产品范围，按需要打开对应的设计资料。</p>
+              <div className={styles.docsResourceGrid}>
+                <ResourceLink title="Lingow 架构总览" label="ARCHITECTURE" href="https://github.com/1024XEngineer/xe6-tsy/pull/165" />
+                <ResourceLink title="开发说明" label="DEVELOPMENT" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/docs/DEVELOPMENT.md" />
+                <ResourceLink title="Lingow 模块详细设计" label="MODULE DESIGN" href="https://github.com/1024XEngineer/xe6-tsy/pull/169" />
+                <ResourceLink title="Lingow P0 协议设计" label="P0 CONTRACTS" href="https://github.com/1024XEngineer/xe6-tsy/pull/171" />
+                <ResourceLink title="产品需求文档（PRD）" label="PRODUCT REQUIREMENTS" href="https://github.com/1024XEngineer/xe6-tsy/issues/302" />
+              </div>
+            </section>
+          </Reveal>
         </div>
       </div>
     </SubpageFrame>
@@ -169,4 +222,5 @@ function OutputItem({ title, copy }: { title: string; copy: string }) { return <
 function ContractItem({ title, copy }: { title: string; copy: string }) { return <article className={styles.contractItem}><Code size={19}/><h3>{title}</h3><p>{copy}</p><a href="https://github.com/1024XEngineer/xe6-tsy" target="_blank" rel="noreferrer">查看仓库 <ArrowUpRight size={15}/></a></article>; }
 function ArchitectureNode({ icon: Icon, title, copy }: { icon: typeof Code; title: string; copy: string }) { return <div className={styles.architectureNodeLarge}><Icon size={21}/><div><strong>{title}</strong><span>{copy}</span></div></div>; }
 function Principle({ icon: Icon, title, copy }: { icon: typeof Code; title: string; copy: string }) { return <article className={styles.principleItem}><Icon size={22}/><h3>{title}</h3><p>{copy}</p></article>; }
+function ResourceLink({ title, label, href }: { title: string; label: string; href: string }) { return <a className={styles.docsResourceLink} href={href} target="_blank" rel="noreferrer"><span>{label}</span><strong>{title}</strong><ArrowUpRight size={17}/></a>; }
 function Boundary() { return <section className={styles.detailSectionAlt}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>04 / CURRENT SCOPE</p><h2>清楚知道<br /><span>现在能做到什么。</span></h2></div><div className={styles.boundaryGrid}><div><p>介绍页只承诺已经验证的能力，更多终端和集成方向逐步开放。</p></div><ul><li><Check size={16} weight="bold"/>面对面双向交流</li><li><Check size={16} weight="bold"/>Web 主要体验入口</li><li><Check size={16} weight="bold"/>实时语音、翻译与播报</li><li><Check size={16} weight="bold"/>可扩展的协议与设备控制核心</li></ul></div></section>; }

@@ -99,6 +99,11 @@ function languageConfigResponse(
   });
 }
 
+function chooseMode(label: "AI 助手" | "同声传译") {
+  fireEvent.click(screen.getByRole("button", { name: "切换工作模式" }));
+  fireEvent.click(screen.getByRole("menuitemradio", { name: label }));
+}
+
 describe("VoiceExperience", () => {
   let failFirstStart = false;
   let startRequests = 0;
@@ -441,6 +446,15 @@ describe("VoiceExperience", () => {
     await waitFor(() => expect(startRequests).toBe(1));
 
     dataMessageHandler?.({
+      type: "asr.partial",
+      event_version: 1,
+      session_id: "vs-1",
+      turn_id: "turn-1",
+      text: "请帮我查找路线。",
+      occurred_at: "2026-08-18T01:02:03Z",
+    });
+
+    dataMessageHandler?.({
       type: "assistant.reply",
       id: "reply-1",
       turn_id: "turn-1",
@@ -450,6 +464,7 @@ describe("VoiceExperience", () => {
 
     expect(await screen.findByText("我可以帮你查找路线。"))
       .toBeInTheDocument();
+    expect(screen.getByText("请帮我查找路线。")).toBeInTheDocument();
   });
 
   it("settles the matching ASR partial when an assistant reply arrives", async () => {
@@ -728,7 +743,7 @@ describe("VoiceExperience", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => {
-      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(screen.getByText("AI 助手 · 常驻模式")).toBeInTheDocument();
       expect(languageConfigReadGate).toBeNull();
       expect(wakeHandler).toBeDefined();
     });
@@ -818,18 +833,17 @@ describe("VoiceExperience", () => {
     });
   });
 
-  it("shows runtime connection/mode state and sends a typed mode command", async () => {
+  it("shows the capsule mode state and sends a typed mode command", async () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
     await waitFor(() => {
-      expect(screen.getByText(/连接：connected/)).toBeInTheDocument();
-      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(screen.getByText("AI 助手 · 常驻模式")).toBeInTheDocument();
     });
-    fireEvent.click(screen.getByRole("button", { name: "同声传译" }));
+    chooseMode("同声传译");
     await waitFor(() => {
       expect(modeRequests).toBe(1);
-      expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+      expect(screen.getByText("同声传译 · 常驻模式")).toBeInTheDocument();
     });
   });
 
@@ -838,7 +852,7 @@ describe("VoiceExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
     await waitFor(() => {
-      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(screen.getByText("AI 助手 · 常驻模式")).toBeInTheDocument();
       expect(wakeHandler).toBeDefined();
     });
 
@@ -891,7 +905,7 @@ describe("VoiceExperience", () => {
 
     await waitFor(() => {
       expect(screen.getByText("已进入同声传译模式")).toBeInTheDocument();
-      expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+      expect(screen.getByText("同声传译 · 常驻模式")).toBeInTheDocument();
       expect(localStorage.getItem("lingow-voice-config-v2")).toContain(
         '"outputMode":"single"',
       );
@@ -902,7 +916,7 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => {
-      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(screen.getByText("AI 助手 · 常驻模式")).toBeInTheDocument();
       expect(wakeHandler).toBeDefined();
     });
 
@@ -954,13 +968,14 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
-    const continuous = await screen.findByRole("button", { name: "常驻模式" });
-    const wakeWord = screen.getByRole("button", { name: "唤醒词模式" });
-    expect(continuous).toHaveAttribute("aria-pressed", "true");
+    const policyToggle = await screen.findByRole("switch", { name: /监听方式/ });
+    expect(policyToggle).toHaveTextContent("常驻模式");
+    expect(policyToggle).toHaveAttribute("aria-checked", "false");
     expect(uplinkTrack.enabled).toBe(true);
 
-    fireEvent.click(wakeWord);
-    expect(wakeWord).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(policyToggle);
+    expect(policyToggle).toHaveTextContent("唤醒词模式");
+    expect(policyToggle).toHaveAttribute("aria-checked", "true");
     expect(uplinkTrack.enabled).toBe(false);
     expect(localStorage.getItem("lingow.voice.interaction-policy")).toBe("wake_word");
 
@@ -987,23 +1002,20 @@ describe("VoiceExperience", () => {
     await waitFor(() => expect(uplinkTrack.enabled).toBe(false));
   });
 
-  it("forces continuous uplink in interpretation and restores wake-word policy after voice exit", async () => {
+  it("keeps the selected wake-word policy when switching between business modes", async () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
-    const wakeWord = await screen.findByRole("button", { name: "唤醒词模式" });
-    fireEvent.click(wakeWord);
+    const policyToggle = await screen.findByRole("switch", { name: /监听方式/ });
+    fireEvent.click(policyToggle);
     expect(uplinkTrack.enabled).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "同声传译" }));
+    chooseMode("同声传译");
     await waitFor(() => {
-      expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "常驻模式" })).toHaveAttribute(
-        "aria-pressed",
-        "true",
-      );
-      expect(wakeWord).toBeDisabled();
-      expect(uplinkTrack.enabled).toBe(true);
+      expect(screen.getByText("同声传译 · 唤醒词模式")).toBeInTheDocument();
+      expect(policyToggle).toHaveTextContent("唤醒词模式");
+      expect(policyToggle).toBeEnabled();
+      expect(uplinkTrack.enabled).toBe(false);
     });
 
     wakeHandler?.("小灵小灵");
@@ -1028,9 +1040,9 @@ describe("VoiceExperience", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
-      expect(wakeWord).toBeEnabled();
-      expect(wakeWord).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByText("AI 助手 · 唤醒词模式")).toBeInTheDocument();
+      expect(policyToggle).toBeEnabled();
+      expect(policyToggle).toHaveAttribute("aria-checked", "true");
       expect(uplinkTrack.enabled).toBe(false);
     });
   });
@@ -1047,7 +1059,7 @@ describe("VoiceExperience", () => {
     });
     expect(uplinkTrack.enabled).toBe(true);
     await act(async () => {
-      vi.advanceTimersByTime(15_000);
+      await vi.advanceTimersByTimeAsync(15_000);
     });
 
     expect(uplinkTrack.enabled).toBe(false);
@@ -1060,7 +1072,7 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => {
-      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(screen.getByText("AI 助手 · 常驻模式")).toBeInTheDocument();
     });
 
     dataMessageHandler?.({
@@ -1072,7 +1084,7 @@ describe("VoiceExperience", () => {
     });
     expect(await screen.findByText("这是切换前的助手回复。")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "同声传译" }));
+    chooseMode("同声传译");
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "停止翻译" })).toBeVisible();
@@ -1088,13 +1100,13 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
     await waitFor(() => {
-      expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+      expect(screen.getByText("同声传译 · 常驻模式")).toBeInTheDocument();
       expect(
         screen.getByText("Hello, how can I get to the main venue?"),
       ).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "AI 助手" }));
+    chooseMode("AI 助手");
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "停止对话" })).toBeVisible();
@@ -1163,7 +1175,7 @@ describe("VoiceExperience", () => {
     expect(languageConfigExpectedVersions).toEqual([undefined, 1, 2]);
   });
 
-  it("opens the complete history from the newest subtitle", async () => {
+  it("keeps the newest bilingual turn in the scrollable transcript", async () => {
     vi.stubEnv("NEXT_PUBLIC_LINGOW_INITIAL_MODE", "interpretation");
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
@@ -1174,9 +1186,10 @@ describe("VoiceExperience", () => {
       ).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /完整会话记录/ }));
-    expect(screen.getByRole("dialog", { name: /会话记录/ })).toBeInTheDocument();
-    expect(screen.getAllByTestId("history-turn")).toHaveLength(1);
+    const transcript = screen.getByRole("region", { name: "同声传译记录" });
+    expect(transcript).toBeInTheDocument();
+    expect(transcript).toHaveTextContent("你好，请问这里怎么去主会场？");
+    expect(transcript).toHaveTextContent("Hello, how can I get to the main venue?");
   });
 
   it("ends the session from the same central control", async () => {

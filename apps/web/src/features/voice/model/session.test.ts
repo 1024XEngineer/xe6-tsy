@@ -113,6 +113,43 @@ describe("sessionReducer", () => {
     expect(latePartial.asrPartial).toBeNull();
   });
 
+  it("clears matching transient subtitles when polling or duplicate final turns settle", () => {
+    const finalTurn = {
+      id: "turn-1",
+      sourceLanguage: "中文",
+      targetLanguage: "English",
+      source: "你好，请问",
+      translation: "Hello",
+    };
+    const live = sessionReducer(
+      sessionReducer(initialSession, {
+        type: "SET_ASR_PARTIAL",
+        partial: { turnId: "turn-1", text: "你好", sourceLanguage: "zh-CN" },
+      }),
+      {
+        type: "ADD_PHRASE_SUBTITLE",
+        subtitle: {
+          utteranceId: "turn-1",
+          phraseSequence: 1,
+          sourceText: "你好，",
+          translatedText: "Hello,",
+          status: "translated",
+        },
+      },
+    );
+
+    const polled = sessionReducer(live, { type: "SET_TURNS", turns: [finalTurn] });
+    expect(polled.asrPartial).toBeNull();
+    expect(polled.phraseSubtitles).toEqual([]);
+
+    const duplicate = sessionReducer(
+      { ...live, turns: [finalTurn] },
+      { type: "ADD_TURN", turn: finalTurn },
+    );
+    expect(duplicate.asrPartial).toBeNull();
+    expect(duplicate.phraseSubtitles).toEqual([]);
+  });
+
   it("keeps stable phrase subtitles in order and clears them after the final", () => {
     const first = sessionReducer(initialSession, {
       type: "ADD_PHRASE_SUBTITLE",

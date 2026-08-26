@@ -1,7 +1,9 @@
 package accounts
 
 import (
+	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"fmt"
 	"sync"
@@ -64,6 +66,22 @@ func TestPhoneAndVerificationCodeContracts(t *testing.T) {
 	}
 	if !verificationCodePattern.MatchString("012345") {
 		t.Fatal("verificationCodePattern rejected six ASCII digits")
+	}
+}
+
+func TestRandomDigitsRejectsOutOfRangeRandomBytes(t *testing.T) {
+	originalReader := cryptorand.Reader
+	cryptorand.Reader = bytes.NewReader([]byte{255, 7})
+	t.Cleanup(func() {
+		cryptorand.Reader = originalReader
+	})
+
+	digits, err := randomDigits(1)
+	if err != nil {
+		t.Fatalf("randomDigits() error = %v", err)
+	}
+	if digits != "7" {
+		t.Fatalf("randomDigits() = %q, want %q", digits, "7")
 	}
 }
 

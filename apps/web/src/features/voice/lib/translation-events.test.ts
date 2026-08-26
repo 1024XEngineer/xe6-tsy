@@ -65,6 +65,7 @@ describe("parseASRPartial", () => {
       event_version: 1,
       session_id: "session-1",
       turn_id: "turn-1",
+      text: "",
       stash: "听得见吗？",
       occurred_at: "2026-08-18T01:02:03Z",
     });

@@ -109,3 +109,26 @@ func TestPhraseStabilizerIgnoresRollbackAndNoise(t *testing.T) {
 		t.Fatalf("rollback Flush() = %#v", got)
 	}
 }
+
+func TestCommonPhrasePrefix(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		left       string
+		right      string
+		wantPrefix string
+	}{
+		{name: "shared unicode prefix", left: "今天去北京", right: "今天到上海", wantPrefix: "今天"},
+		{name: "right value is the prefix", left: "streaming", right: "stream", wantPrefix: "stream"},
+		{name: "no shared prefix", left: "hello", right: "world", wantPrefix: ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := commonPhrasePrefix(test.left, test.right); got != test.wantPrefix {
+				t.Fatalf("commonPhrasePrefix(%q, %q) = %q, want %q", test.left, test.right, got, test.wantPrefix)
+			}
+		})
+	}
+}

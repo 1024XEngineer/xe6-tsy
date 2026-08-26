@@ -8,9 +8,9 @@ import {
 } from "./interaction-policy";
 
 describe("voice interaction policy", () => {
-  it("forces continuous uplink only while interpretation is active", () => {
+  it("honors the selected policy in both business modes", () => {
     expect(effectiveVoiceInteractionPolicy("interpretation", "wake_word")).toBe(
-      "continuous",
+      "wake_word",
     );
     expect(effectiveVoiceInteractionPolicy("assistant", "wake_word")).toBe(
       "wake_word",

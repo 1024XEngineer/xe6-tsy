@@ -2,11 +2,13 @@
 
 import { useEffect, useRef } from "react";
 
-import { activeAmplitude } from "../model/voice-geometry";
 import styles from "../voice.module.css";
 
 const STRAND_COUNT = 23;
-const FRAME_INTERVAL = 1000 / 30;
+const PHASE_SPEED = 0.018;
+const STRAND_SPACING = 2.1;
+const PRIMARY_AMPLITUDE = 0.21;
+const DETAIL_AMPLITUDE = 0.032;
 
 export function AuroraStrands() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -18,9 +20,6 @@ export function AuroraStrands() {
     const context = canvas.getContext("2d");
     if (!context) return;
 
-    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    let animationFrame = 0;
-    let lastFrame = 0;
     let displayWidth = 0;
     let displayHeight = 0;
 
@@ -34,7 +33,11 @@ export function AuroraStrands() {
       context.setTransform(scale, 0, 0, scale, 0, 0);
     };
 
-    const draw = (elapsed: number) => {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let animationFrame = 0;
+    let phase = 0;
+
+    const draw = (animate = true) => {
       const width = displayWidth;
       const height = displayHeight;
       if (!width || !height) return;
@@ -42,7 +45,7 @@ export function AuroraStrands() {
       context.clearRect(0, 0, width, height);
       context.lineCap = "round";
       context.lineJoin = "round";
-      const amplitude = activeAmplitude(motionQuery.matches ? 0 : elapsed);
+      const amplitude = 1;
 
       for (let strand = 0; strand < STRAND_COUNT; strand += 1) {
         const offset = strand - (STRAND_COUNT - 1) / 2;
@@ -60,19 +63,19 @@ export function AuroraStrands() {
         for (let x = 0; x <= width; x += 2) {
           const progress = x / width;
           const envelope = Math.pow(Math.sin(progress * Math.PI), 1.7);
-          const currentTime = motionQuery.matches ? 0 : elapsed;
           const primaryWave = Math.sin(
-            progress * Math.PI * 4.2 - currentTime * 0.0019 + strand * 0.31,
+            progress * Math.PI * 4.2 + strand * 0.31 + phase,
           );
           const detailWave = Math.sin(
-            progress * Math.PI * 8.5 + currentTime * 0.0011 - strand * 0.17,
+            progress * Math.PI * 8.5 - strand * 0.17 - phase * 1.35,
           );
           const y =
             height / 2 +
-            offset * 2.1 +
+            offset * STRAND_SPACING +
             envelope *
               amplitude *
-              (primaryWave * height * 0.21 + detailWave * height * 0.032);
+              (primaryWave * height * PRIMARY_AMPLITUDE +
+                detailWave * height * DETAIL_AMPLITUDE);
 
           if (x === 0) context.moveTo(x, y);
           else context.lineTo(x, y);
@@ -84,32 +87,34 @@ export function AuroraStrands() {
         context.shadowColor = "rgb(255 255 255 / 0.2)";
         context.stroke();
       }
+
+      if (!animate) return;
+      phase += PHASE_SPEED;
+      animationFrame = window.requestAnimationFrame(() => draw(true));
     };
 
-    const render = (elapsed: number) => {
-      if (elapsed - lastFrame >= FRAME_INTERVAL || motionQuery.matches) {
-        draw(elapsed);
-        lastFrame = elapsed;
+    const restartAnimation = () => {
+      window.cancelAnimationFrame(animationFrame);
+      if (reducedMotion.matches) {
+        draw(false);
+        return;
       }
-      if (!motionQuery.matches) animationFrame = requestAnimationFrame(render);
-    };
-
-    const handleMotionChange = () => {
-      cancelAnimationFrame(animationFrame);
-      lastFrame = 0;
-      animationFrame = requestAnimationFrame(render);
+      draw(true);
     };
 
     resize();
-    const resizeObserver = new ResizeObserver(resize);
+    restartAnimation();
+    const resizeObserver = new ResizeObserver(() => {
+      resize();
+      if (reducedMotion.matches) draw(false);
+    });
     resizeObserver.observe(canvas);
-    motionQuery.addEventListener("change", handleMotionChange);
-    animationFrame = requestAnimationFrame(render);
+    reducedMotion.addEventListener("change", restartAnimation);
 
     return () => {
-      cancelAnimationFrame(animationFrame);
+      window.cancelAnimationFrame(animationFrame);
       resizeObserver.disconnect();
-      motionQuery.removeEventListener("change", handleMotionChange);
+      reducedMotion.removeEventListener("change", restartAnimation);
     };
   }, []);
 

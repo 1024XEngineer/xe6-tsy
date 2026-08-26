@@ -15,7 +15,13 @@ access_token=$(cat)
 [[ "$session_id" =~ ^[A-Za-z0-9._:-]+$ ]] || { printf 'invalid session ID\n' >&2; exit 64; }
 [[ -n "$access_token" ]] || { printf 'missing smoke access token\n' >&2; exit 64; }
 
-compose=(docker compose --project-name lingow --env-file "$environment_file" --file "$deployment_dir/docker-compose.yml")
+project_name="${DEPLOY_PROJECT_NAME:-lingow}"
+if [[ ! "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+  printf 'invalid DEPLOY_PROJECT_NAME\n' >&2
+  exit 64
+fi
+
+compose=(docker compose --project-name "$project_name" --env-file "$environment_file" --file "$deployment_dir/docker-compose.yml")
 "${compose[@]}" exec -T api curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null
 "${compose[@]}" exec -T realtime-audio curl --fail --silent http://127.0.0.1:8090/healthz >/dev/null
 

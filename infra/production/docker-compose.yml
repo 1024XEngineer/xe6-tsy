@@ -5,7 +5,8 @@ services:
     image: ${LINGOW_API_IMAGE:?LINGOW_API_IMAGE is required}
     restart: unless-stopped
     environment:
-      APP_ENV: ${APP_ENV:-production}
+      # Staging keeps fake providers usable for isolated deployment checks.
+      APP_ENV: ${APP_ENV:-staging}
       API_ADDR: :8080
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
@@ -54,7 +55,7 @@ services:
     image: ${LINGOW_REALTIME_AUDIO_IMAGE:?LINGOW_REALTIME_AUDIO_IMAGE is required}
     restart: unless-stopped
     environment:
-      APP_ENV: ${APP_ENV:-production}
+      APP_ENV: ${APP_ENV:-staging}
       REALTIME_ADDR: :8090
       REALTIME_TICKET_SECRET: ${REALTIME_TICKET_SECRET:?REALTIME_TICKET_SECRET is required}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
@@ -63,6 +64,7 @@ services:
       REALTIME_OUTBOX: valkey
       REALTIME_LONG_SENTENCE_DELIVERY: ${REALTIME_LONG_SENTENCE_DELIVERY:-enabled}
       REALTIME_TTS_DOWNLINK: ${REALTIME_TTS_DOWNLINK:-pcm}
+      REALTIME_METRICS_TOKEN: ${REALTIME_METRICS_TOKEN:-}
       LINGOW_API_BASE_URL: http://api:8080
       LINGOW_COMMAND_SYSTEM_TOKEN: ${LINGOW_COMMAND_SYSTEM_TOKEN:?LINGOW_COMMAND_SYSTEM_TOKEN is required}
       COMMAND_CONFIG_TIMEOUT_MS: ${COMMAND_CONFIG_TIMEOUT_MS:-3000}

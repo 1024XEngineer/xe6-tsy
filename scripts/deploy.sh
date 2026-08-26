@@ -14,8 +14,12 @@ if [[ $# -eq 3 ]]; then
   release_dir=$2
   environment_file="$release_dir/.env.production"
   staged_release=true
-  if [[ "$3" == --no-smoke ]]; then
+  if [[ "$3" == "--no-smoke" ]]; then
     smoke_enabled=false
+    if [[ "${DEPLOY_ALLOW_NO_SMOKE:-false}" != "true" ]]; then
+      printf 'staged releases require an authenticated smoke test\n' >&2
+      exit 64
+    fi
   else
     smoke_session_id=$3
     smoke_enabled=true
@@ -26,6 +30,30 @@ else
   smoke_enabled=false
 fi
 previous_dir="$deployment_dir/.previous"
+project_name="${DEPLOY_PROJECT_NAME:-lingow}"
+
+if [[ ! "$project_name" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+  printf 'invalid DEPLOY_PROJECT_NAME\n' >&2
+  exit 64
+fi
+
+if [[ -n "${DEPLOY_EXPECTED_ENV:-}" ]]; then
+  deployment_env="$(awk -F= '$1 == "LINGOW_DEPLOY_ENV" { print substr($0, index($0, "=") + 1); exit }' "$environment_file" 2>/dev/null || true)"
+  if [[ "$deployment_env" != "$DEPLOY_EXPECTED_ENV" ]]; then
+    printf 'deployment environment mismatch: expected %s, got %s\n' "$DEPLOY_EXPECTED_ENV" "${deployment_env:-<missing>}" >&2
+    exit 64
+  fi
+fi
+
+install -d -m 700 "$deployment_dir"
+lock_file="$deployment_dir/.deploy.lock"
+if command -v flock >/dev/null 2>&1; then
+  exec {lock_fd}>"$lock_file"
+  if ! flock -n "$lock_fd"; then
+    printf 'another deployment is already running for %s\n' "$deployment_dir" >&2
+    exit 75
+  fi
+fi
 
 if [[ ! -f "$release_dir/docker-compose.yml" ]]; then
   printf 'missing compose file: %s/docker-compose.yml\n' "$release_dir" >&2
@@ -47,7 +75,7 @@ if [[ "$smoke_enabled" == true ]]; then
   fi
 fi
 
-compose=(docker compose --project-name lingow --env-file "$environment_file" --file "$release_dir/docker-compose.yml")
+compose=(docker compose --project-name "$project_name" --env-file "$environment_file" --file "$release_dir/docker-compose.yml")
 
 snapshot_current_release() {
   if [[ ! -f "$deployment_dir/.env.production" || ! -f "$deployment_dir/docker-compose.yml" || ! -f "$deployment_dir/deploy.sh" ]]; then
@@ -60,6 +88,9 @@ snapshot_current_release() {
   if [[ -f "$deployment_dir/deploy-smoke.sh" ]]; then
     cp "$deployment_dir/deploy-smoke.sh" "$previous_dir/deploy-smoke.sh"
   fi
+  if [[ -f "$deployment_dir/observe.sh" ]]; then
+    cp "$deployment_dir/observe.sh" "$previous_dir/observe.sh"
+  fi
 }
 
 rollback_on_failure() {
@@ -70,6 +101,9 @@ rollback_on_failure() {
   fi
   if [[ ! -f "$previous_dir/.env.production" || ! -f "$previous_dir/docker-compose.yml" || ! -f "$previous_dir/deploy.sh" ]]; then
     printf 'deployment failed; no previous release is available for recovery\n' >&2
+    # A first deployment has no stable application to restore. Remove only the
+    # candidate containers and network; named data volumes are never removed.
+    "${compose[@]}" down --remove-orphans || true
     exit "$status"
   fi
   printf 'deployment failed; restoring previous application release\n' >&2
@@ -79,10 +113,14 @@ rollback_on_failure() {
   if [[ -f "$previous_dir/deploy-smoke.sh" ]]; then
     cp "$previous_dir/deploy-smoke.sh" "$deployment_dir/deploy-smoke.sh"
   fi
+  if [[ -f "$previous_dir/observe.sh" ]]; then
+    cp "$previous_dir/observe.sh" "$deployment_dir/observe.sh"
+  fi
   cp "$previous_dir/.env.production" "$deployment_dir/.env.production"
   chmod 600 "$environment_file" "$deployment_dir/.env.production"
   chmod 700 "$deployment_dir/deploy.sh"
-  previous_compose=(docker compose --project-name lingow --env-file "$deployment_dir/.env.production" --file "$deployment_dir/docker-compose.yml")
+  [[ ! -f "$deployment_dir/observe.sh" ]] || chmod 700 "$deployment_dir/observe.sh"
+  previous_compose=(docker compose --project-name "$project_name" --env-file "$deployment_dir/.env.production" --file "$deployment_dir/docker-compose.yml")
   if "${previous_compose[@]}" config --quiet && "${previous_compose[@]}" up --detach --remove-orphans --wait --wait-timeout 180; then
     printf 'previous application release restored; database schema was not rolled back\n' >&2
   else
@@ -108,6 +146,10 @@ if [[ "$staged_release" == true ]]; then
   cp "$release_dir/docker-compose.yml" "$deployment_dir/docker-compose.yml"
   cp "$release_dir/deploy.sh" "$deployment_dir/deploy.sh"
   cp "$release_dir/deploy-smoke.sh" "$deployment_dir/deploy-smoke.sh"
+  if [[ -f "$release_dir/observe.sh" ]]; then
+    cp "$release_dir/observe.sh" "$deployment_dir/observe.sh"
+  fi
   chmod 600 "$deployment_dir/.env.production"
   chmod 700 "$deployment_dir/deploy.sh" "$deployment_dir/deploy-smoke.sh"
+  [[ ! -f "$deployment_dir/observe.sh" ]] || chmod 700 "$deployment_dir/observe.sh"
 fi

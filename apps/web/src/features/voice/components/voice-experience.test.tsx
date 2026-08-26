@@ -743,7 +743,7 @@ describe("VoiceExperience", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => {
-      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(screen.getByText("AI 助手 · 常驻模式")).toBeInTheDocument();
       expect(languageConfigReadGate).toBeNull();
       expect(wakeHandler).toBeDefined();
     });
@@ -916,7 +916,7 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => {
-      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(screen.getByText("AI 助手 · 常驻模式")).toBeInTheDocument();
       expect(wakeHandler).toBeDefined();
     });
 

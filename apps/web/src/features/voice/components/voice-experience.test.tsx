@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { saveAuthSession } from "../lib/auth-session";
+import { END_REQUEST_TIMEOUT_MS } from "../hooks/use-voice-session";
 import { VoiceExperience } from "./voice-experience";
 
 const closeWebRTC = vi.fn();
@@ -68,20 +70,53 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+function languageConfigResponse(
+  version: number,
+  outputMode: "single" | "bidirectional",
+) {
+  return jsonResponse({
+    id: "lc-1",
+    session_id: "vs-1",
+    version,
+    language_pairs: [
+      { source: "zh-CN", target: "en-US" },
+      { source: "en-US", target: "zh-CN" },
+    ],
+    output_routes: [
+      { target_language: "en-US", tts_enabled: true, delivery_enabled: false },
+      {
+        target_language: "zh-CN",
+        tts_enabled: outputMode === "bidirectional",
+        delivery_enabled: outputMode === "single",
+      },
+    ],
+    output_mode: outputMode,
+    status: "active",
+    effective_from: "2026-07-31T00:00:00Z",
+    effective_until: null,
+    created_by: "acc-1",
+    created_at: "2026-07-31T00:00:00Z",
+  });
+}
+
 describe("VoiceExperience", () => {
   let failFirstStart = false;
   let startRequests = 0;
   let startInitialModes: Array<string | undefined> = [];
   let createdSessions = 0;
   let endRequests = 0;
+  let endRequestGate: Promise<Response> | null = null;
   let sessionCreationGate: Promise<Response> | null = null;
   let anonymousRequests = 0;
   let modeRequests = 0;
   let activeMode: "assistant" | "interpretation" = "interpretation";
   let modeGeneration = 1;
   let languageConfigVersion = 0;
-  let conflictNextLanguageConfig = false;
+  let languageConfigConflictsRemaining = 0;
   let automaticDeliveryReady = true;
+  let currentLanguageConfigOutputMode: "single" | "bidirectional" =
+    "bidirectional";
+  let languageConfigReadGate: Promise<Response> | null = null;
   let automaticOutputStatuses: Array<{
     turn_id: string;
     status: "fallback_pending" | "fallback_played" | "restored";
@@ -109,18 +144,33 @@ describe("VoiceExperience", () => {
     startInitialModes = [];
     createdSessions = 0;
     endRequests = 0;
+    endRequestGate = null;
     sessionCreationGate = null;
     anonymousRequests = 0;
     modeRequests = 0;
     activeMode = "interpretation";
     modeGeneration = 1;
     languageConfigVersion = 0;
-    conflictNextLanguageConfig = false;
+    languageConfigConflictsRemaining = 0;
     automaticDeliveryReady = true;
+    currentLanguageConfigOutputMode = "bidirectional";
+    languageConfigReadGate = null;
     automaticOutputStatuses = [];
     languageConfigExpectedVersions = [];
     languageConfigRequests = [];
     localStorage.clear();
+    saveAuthSession({
+      account: {
+        id: "acc-1",
+        kind: "registered",
+        created_at: "2026-07-31T00:00:00Z",
+      },
+      tokens: {
+        access_token: "access-1",
+        refresh_token: "refresh-1",
+        expires_at: "2099-07-31T01:00:00Z",
+      },
+    });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -171,9 +221,9 @@ describe("VoiceExperience", () => {
           };
           languageConfigExpectedVersions.push(body.expected_version);
           languageConfigRequests.push(body);
-          if (conflictNextLanguageConfig) {
-            conflictNextLanguageConfig = false;
-            languageConfigVersion = 2;
+          if (languageConfigConflictsRemaining > 0) {
+            languageConfigConflictsRemaining -= 1;
+            languageConfigVersion += 1;
             return jsonResponse(
               { error: { code: "version_conflict", message: "stale version" } },
               409,
@@ -199,25 +249,15 @@ describe("VoiceExperience", () => {
         }
 
         if (url.endsWith("/language-config") && method === "GET") {
-          return jsonResponse({
-            id: "lc-1",
-            session_id: "vs-1",
-            version: languageConfigVersion,
-            language_pairs: [
-              { source: "zh-CN", target: "en-US" },
-              { source: "en-US", target: "zh-CN" },
-            ],
-            output_routes: [
-              { target_language: "en-US", tts_enabled: true, delivery_enabled: false },
-              { target_language: "zh-CN", tts_enabled: true, delivery_enabled: false },
-            ],
-            output_mode: "bidirectional",
-            status: "active",
-            effective_from: "2026-07-31T00:00:00Z",
-            effective_until: null,
-            created_by: "acc-1",
-            created_at: "2026-07-31T00:00:00Z",
-          });
+          if (languageConfigReadGate) {
+            const response = languageConfigReadGate;
+            languageConfigReadGate = null;
+            return response;
+          }
+          return languageConfigResponse(
+            languageConfigVersion,
+            currentLanguageConfigOutputMode,
+          );
         }
 
         if (url.includes("/realtime-ticket") && method === "POST") {
@@ -349,6 +389,7 @@ describe("VoiceExperience", () => {
 
         if (url.includes("/end") && method === "POST") {
           endRequests += 1;
+          if (endRequestGate) return endRequestGate;
           return jsonResponse({
             id: "vs-1",
             account_id: "acc-1",
@@ -512,8 +553,9 @@ describe("VoiceExperience", () => {
     expect(screen.getByRole("button", { name: "停止翻译" })).toBeVisible();
   });
 
-  it("opens the curved settings wheel from the header", () => {
-    render(<VoiceExperience />);
+  it("shows account status immediately above about in settings", async () => {
+    const onLogout = vi.fn();
+    render(<VoiceExperience onLogout={onLogout} />);
 
     fireEvent.click(screen.getByRole("button", { name: "设置" }));
 
@@ -525,9 +567,18 @@ describe("VoiceExperience", () => {
     expect(screen.getByRole("option", { name: "联调会话" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "历史会话" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "用量管理" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "关于" })).toBeInTheDocument();
+    const accountOption = screen.getByRole("option", { name: "登录状态" });
+    const aboutOption = screen.getByRole("option", { name: "关于" });
+    expect(accountOption.compareDocumentPosition(aboutOption)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     expect(screen.getByText("01")).toBeInTheDocument();
-    expect(screen.getByText("06")).toBeInTheDocument();
+    expect(screen.getByText("07")).toBeInTheDocument();
+
+    fireEvent.click(accountOption);
+    expect(await screen.findByText("手机号验证账户")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
+    expect(onLogout).toHaveBeenCalledTimes(1);
   });
 
   it("uses a localized custom drawer to choose the source language", () => {
@@ -663,6 +714,64 @@ describe("VoiceExperience", () => {
     });
   });
 
+  it("ignores an older automatic recovery read after a voice command update", async () => {
+    const delayedRecovery = deferred<Response>();
+    languageConfigReadGate = delayedRecovery.promise;
+    automaticOutputStatuses = [
+      {
+        turn_id: "turn-1",
+        status: "restored",
+        updated_at: "2026-07-31T00:00:05Z",
+      },
+    ];
+    render(<VoiceExperience />);
+
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(languageConfigReadGate).toBeNull();
+      expect(wakeHandler).toBeDefined();
+    });
+
+    wakeHandler?.("小灵小灵");
+    await waitFor(() => expect(wakeWordSend).toHaveBeenCalledTimes(1));
+    const signal = JSON.parse(String(wakeWordSend.mock.calls[0]?.[0])) as {
+      signal_id: string;
+    };
+    languageConfigVersion = 4;
+    currentLanguageConfigOutputMode = "single";
+    activeMode = "interpretation";
+    modeGeneration = 2;
+    dataMessageHandler?.({
+      type: "command.result",
+      event_version: 1,
+      command_id: signal.signal_id,
+      session_id: "vs-1",
+      runtime_instance_id: "rt-1",
+      generation: 2,
+      status: "applied",
+      action: "activate_mode",
+      target_mode: "interpretation",
+      message: "已进入单向传译模式",
+      occurred_at: "2026-08-13T10:00:01Z",
+    });
+    await waitFor(() => {
+      expect(localStorage.getItem("lingow-voice-config-v2")).toContain(
+        '"outputMode":"single"',
+      );
+    });
+
+    await act(async () => {
+      delayedRecovery.resolve(languageConfigResponse(3, "bidirectional"));
+      await delayedRecovery.promise;
+    });
+    await waitFor(() => {
+      expect(localStorage.getItem("lingow-voice-config-v2")).toContain(
+        '"outputMode":"single"',
+      );
+    });
+  });
+
   it("keeps the settings wheel open while showing the history preview", async () => {
     render(<VoiceExperience />);
 
@@ -764,6 +873,8 @@ describe("VoiceExperience", () => {
 
     activeMode = "interpretation";
     modeGeneration = 2;
+    languageConfigVersion = 2;
+    currentLanguageConfigOutputMode = "single";
     dataMessageHandler?.({
       type: "command.result",
       event_version: 1,
@@ -781,7 +892,62 @@ describe("VoiceExperience", () => {
     await waitFor(() => {
       expect(screen.getByText("已进入同声传译模式")).toBeInTheDocument();
       expect(screen.getByText(/Mode：interpretation/)).toBeInTheDocument();
+      expect(localStorage.getItem("lingow-voice-config-v2")).toContain(
+        '"outputMode":"single"',
+      );
     });
+  });
+
+  it("ignores a stale command readback after a newer settings update", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => {
+      expect(screen.getByText(/Mode：assistant/)).toBeInTheDocument();
+      expect(wakeHandler).toBeDefined();
+    });
+
+    wakeHandler?.("小灵小灵");
+    await waitFor(() => expect(wakeWordSend).toHaveBeenCalledTimes(1));
+    const signal = JSON.parse(String(wakeWordSend.mock.calls[0]?.[0])) as {
+      signal_id: string;
+    };
+    const delayedRead = deferred<Response>();
+    languageConfigReadGate = delayedRead.promise;
+    activeMode = "interpretation";
+    modeGeneration = 2;
+    dataMessageHandler?.({
+      type: "command.result",
+      event_version: 1,
+      command_id: signal.signal_id,
+      session_id: "vs-1",
+      runtime_instance_id: "rt-1",
+      generation: 2,
+      status: "applied",
+      action: "activate_mode",
+      target_mode: "interpretation",
+      message: "已进入同声传译模式",
+      occurred_at: "2026-08-13T10:00:01Z",
+    });
+    await waitFor(() => expect(languageConfigReadGate).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const singleMode = screen.getByRole("button", { name: "单向播报" });
+    await waitFor(() => expect(singleMode).not.toBeDisabled());
+    languageConfigConflictsRemaining = 1;
+    fireEvent.click(singleMode);
+    await waitFor(() => {
+      expect(singleMode).toHaveAttribute("aria-pressed", "true");
+      expect(languageConfigExpectedVersions).toEqual([undefined, 1, 2]);
+    });
+
+    await act(async () => {
+      delayedRead.resolve(languageConfigResponse(2, "bidirectional"));
+      await delayedRead.promise;
+    });
+    await waitFor(() => expect(singleMode).toHaveAttribute("aria-pressed", "true"));
+    expect(localStorage.getItem("lingow-voice-config-v2")).toContain(
+      '"outputMode":"single"',
+    );
   });
 
   it("gates WebRTC uplink to one bounded turn in wake-word mode", async () => {
@@ -953,7 +1119,7 @@ describe("VoiceExperience", () => {
     });
   });
 
-  it("refreshes the language config version after a concurrent update", async () => {
+  it("retries the latest language config after a concurrent update", async () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
@@ -962,22 +1128,37 @@ describe("VoiceExperience", () => {
     const singleMode = screen.getByRole("button", { name: "单向播报" });
     await waitFor(() => expect(singleMode).not.toBeDisabled());
 
-    conflictNextLanguageConfig = true;
+    languageConfigConflictsRemaining = 1;
+    fireEvent.click(singleMode);
+    await waitFor(() => {
+      expect(screen.getByText(/已应用到当前会话/)).toBeInTheDocument();
+      expect(singleMode).toHaveAttribute("aria-pressed", "true");
+      expect(JSON.parse(localStorage.getItem("lingow-voice-config-v2") ?? "{}")).toMatchObject({
+        outputMode: "single",
+      });
+    });
+
+    expect(languageConfigExpectedVersions).toEqual([undefined, 1, 2]);
+  });
+
+  it("stops retrying and restores the applied config after repeated conflicts", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const singleMode = screen.getByRole("button", { name: "单向播报" });
+    await waitFor(() => expect(singleMode).not.toBeDisabled());
+
+    languageConfigConflictsRemaining = 2;
     fireEvent.click(singleMode);
     await waitFor(() => {
       expect(screen.getByText(/当前会话应用失败，已恢复上一次配置/)).toBeInTheDocument();
       expect(singleMode).toHaveAttribute("aria-pressed", "false");
-      expect(screen.getByRole("button", { name: "双向播报" })).toHaveAttribute(
-        "aria-pressed",
-        "true",
-      );
       expect(JSON.parse(localStorage.getItem("lingow-voice-config-v2") ?? "{}")).toMatchObject({
         outputMode: "bidirectional",
       });
     });
-
-    fireEvent.click(screen.getByRole("button", { name: "双向播报" }));
-    await waitFor(() => expect(screen.getByText(/已应用到当前会话/)).toBeInTheDocument());
 
     expect(languageConfigExpectedVersions).toEqual([undefined, 1, 2]);
   });
@@ -1016,6 +1197,67 @@ describe("VoiceExperience", () => {
     expect(closeWebRTC).toHaveBeenCalled();
   });
 
+  it("stops realtime before closing WebRTC media", async () => {
+    const pendingEnd = deferred<Response>();
+    endRequestGate = pendingEnd.promise;
+
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "停止对话" }));
+    await waitFor(() => expect(endRequests).toBe(1));
+    expect(closeWebRTC).not.toHaveBeenCalled();
+
+    pendingEnd.resolve(
+      jsonResponse({
+        id: "vs-1",
+        account_id: "acc-1",
+        status: "ended",
+        created_at: "2026-07-31T00:00:00Z",
+        ended_at: "2026-07-31T00:00:10Z",
+      }),
+    );
+
+    await waitFor(() => expect(closeWebRTC).toHaveBeenCalledTimes(1));
+  });
+
+  it("cleans up WebRTC media when ending the session times out", async () => {
+    const pendingEnd = deferred<Response>();
+    endRequestGate = pendingEnd.promise;
+
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+    await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
+
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "停止对话" }));
+    expect(endRequests).toBe(1);
+    expect(closeWebRTC).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(END_REQUEST_TIMEOUT_MS);
+    });
+
+    expect(closeWebRTC).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByText("结束请求超时，服务端可能仍在处理，请稍后确认会话状态。"),
+    ).toBeInTheDocument();
+
+    pendingEnd.resolve(
+      jsonResponse({
+        id: "vs-1",
+        account_id: "acc-1",
+        status: "ended",
+        created_at: "2026-07-31T00:00:00Z",
+        ended_at: "2026-07-31T00:00:10Z",
+      }),
+    );
+    await act(async () => {
+      await pendingEnd.promise;
+    });
+  });
+
   it("keeps the UI idle and closes a session created after startup cancellation", async () => {
     const pendingSession = deferred<Response>();
     sessionCreationGate = pendingSession.promise;
@@ -1046,7 +1288,7 @@ describe("VoiceExperience", () => {
     expect(screen.getByText("轻触开启助手")).toBeInTheDocument();
   });
 
-  it("reuses the same anonymous account for later sessions", async () => {
+  it("reuses the same registered account for later sessions", async () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(screen.getByText("正在聆听")).toBeInTheDocument());
@@ -1058,7 +1300,7 @@ describe("VoiceExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => expect(createdSessions).toBe(2));
 
-    expect(anonymousRequests).toBe(1);
+    expect(anonymousRequests).toBe(0);
   });
 
   it("returns to a fresh start after a failed session startup", async () => {

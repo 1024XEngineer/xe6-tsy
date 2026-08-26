@@ -24,7 +24,7 @@ func TestInterpreterProducesUntrustedCandidateFromStrictJSON(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		if body.ResponseFormat.Type != "json_object" || body.EnableThinking || len(body.Messages) != 2 || body.Messages[1].Content != "帮我进入中文翻译成英文的同传状态" {
+		if body.ResponseFormat.Type != "json_object" || body.EnableThinking || len(body.Messages) != 2 || body.Messages[1].Content != "帮我进入中文翻译成英文的单向同传状态" {
 			t.Errorf("body = %#v", body)
 		}
 		if !strings.Contains(body.Messages[0].Content, `"mode":"interpretation"`) ||
@@ -32,10 +32,11 @@ func TestInterpreterProducesUntrustedCandidateFromStrictJSON(t *testing.T) {
 			strings.Contains(body.Messages[0].Content, "english_practice") {
 			t.Errorf("system prompt capability surface = %q", body.Messages[0].Content)
 		}
-		if !strings.Contains(body.Messages[0].Content, "Chinese zh-CN") || !strings.Contains(body.Messages[0].Content, "Japanese ja-JP") {
+		if !strings.Contains(body.Messages[0].Content, "Chinese zh-CN") || !strings.Contains(body.Messages[0].Content, "Japanese ja-JP") ||
+			!strings.Contains(body.Messages[0].Content, "output_mode") {
 			t.Errorf("system prompt language guidance = %q", body.Messages[0].Content)
 		}
-		_, _ = w.Write([]byte(`{"id":"chatcmpl-command","object":"chat.completion","created":1760000000,"model":"qwen3.6-flash","system_fingerprint":{},"choices":[{"index":0,"message":{"role":"assistant","content":"{\"action\":\"activate_mode\",\"target_mode\":\"interpretation\",\"arguments\":{\"source_language\":\"zh-CN\",\"target_language\":\"en-US\"}}"},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":42,"completion_tokens":12,"total_tokens":54,"prompt_tokens_details":{"text_tokens":42},"completion_tokens_details":{"text_tokens":12}}}`))
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-command","object":"chat.completion","created":1760000000,"model":"qwen3.6-flash","system_fingerprint":{},"choices":[{"index":0,"message":{"role":"assistant","content":"{\"action\":\"activate_mode\",\"target_mode\":\"interpretation\",\"arguments\":{\"source_language\":\"zh-CN\",\"target_language\":\"en-US\",\"output_mode\":\"single\"}}"},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":42,"completion_tokens":12,"total_tokens":54,"prompt_tokens_details":{"text_tokens":42},"completion_tokens_details":{"text_tokens":12}}}`))
 	}))
 	defer server.Close()
 	interpreter := newTestInterpreter(t, Config{APIKey: "test-key", BaseURL: server.URL + "/compatible-mode/v1", HTTPClient: server.Client()})
@@ -44,7 +45,8 @@ func TestInterpreterProducesUntrustedCandidateFromStrictJSON(t *testing.T) {
 		t.Fatalf("Interpret() error = %v", err)
 	}
 	if candidate.Action != command.ActionActivateMode || candidate.TargetMode != realtimev1.ModeInterpretation ||
-		candidate.Arguments.SourceLanguage != "zh-CN" || candidate.Arguments.TargetLanguage != "en-US" {
+		candidate.Arguments.SourceLanguage != "zh-CN" || candidate.Arguments.TargetLanguage != "en-US" ||
+		candidate.Arguments.OutputMode != "single" {
 		t.Fatalf("candidate = %#v", candidate)
 	}
 }
@@ -113,7 +115,7 @@ func TestInterpreterGeneratesSuccessFeedbackFromAuthoritativeFacts(t *testing.T)
 		if facts.UserCommand != "切换为中日传译" || facts.ResponseLanguage != "zh-CN" ||
 			facts.ModeSwitchStatus != realtimev1.ModeSwitchUnchanged || facts.LanguageConfig == nil ||
 			facts.LanguageConfig.SourceLanguage != "zh-CN" || facts.LanguageConfig.TargetLanguage != "ja-JP" ||
-			facts.LanguageConfig.Version != 3 {
+			facts.LanguageConfig.OutputMode != "single" || facts.LanguageConfig.Version != 3 {
 			t.Errorf("feedback facts = %#v", facts)
 		}
 		_, _ = w.Write([]byte(`{"model":"qwen3.6-flash","choices":[{"message":{"role":"assistant","content":"{\"message\":\"好的，已切换为中文和日语同声传译。\"}"}}],"usage":{"prompt_tokens":21,"completion_tokens":9}}`))
@@ -129,7 +131,7 @@ func TestInterpreterGeneratesSuccessFeedbackFromAuthoritativeFacts(t *testing.T)
 			Status: realtimev1.ModeSwitchUnchanged,
 			State:  realtimev1.ModeStateSnapshot{ActiveMode: realtimev1.ModeInterpretation},
 			LanguageConfig: &command.AppliedLanguageConfig{
-				SourceLanguage: "zh-CN", TargetLanguage: "ja-JP", Version: 3,
+				SourceLanguage: "zh-CN", TargetLanguage: "ja-JP", OutputMode: "single", Version: 3,
 			},
 		},
 		ResponseLanguage: "zh-CN",
@@ -269,6 +271,6 @@ func newTestInterpreter(t *testing.T, config Config) *Interpreter {
 
 func validRequest() command.InterpretRequest {
 	return command.InterpretRequest{
-		SessionID: "session-1", CommandID: "command-1", Text: "帮我进入中文翻译成英文的同传状态", Language: "zh-CN",
+		SessionID: "session-1", CommandID: "command-1", Text: "帮我进入中文翻译成英文的单向同传状态", Language: "zh-CN",
 	}
 }

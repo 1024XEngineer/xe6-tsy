@@ -1,6 +1,11 @@
 .env
 .env.*
 !.env.example
+!infra/production/.env.production.example
+
+# Per-session provider raw JSON diagnostics and local runtime captures
+log/
+realtime-runtime*.log
 
 # Temporary inbound PCM WAV dumps from realtime-audio debug_inbound_wav.go
 debug-inbound-wav/

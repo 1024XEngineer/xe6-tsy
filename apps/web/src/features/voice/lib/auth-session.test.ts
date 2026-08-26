@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  getOrCreateAuthSession,
+  AuthenticationRequiredError,
+  clearAuthSession,
+  getAuthSession,
   loadAuthSession,
   saveAuthSession,
 } from "./auth-session";
@@ -9,7 +11,7 @@ import {
 const storedAuth = {
   account: {
     id: "acc-1",
-    kind: "anonymous" as const,
+    kind: "registered" as const,
     created_at: "2026-08-01T00:00:00Z",
   },
   tokens: {
@@ -25,40 +27,51 @@ describe("auth-session", () => {
     vi.restoreAllMocks();
   });
 
-  it("stores and restores the current anonymous account", () => {
+  it("stores and restores a registered account", () => {
     saveAuthSession(storedAuth);
 
     expect(loadAuthSession()).toEqual(storedAuth);
+    clearAuthSession();
+    expect(loadAuthSession()).toBeNull();
+  });
+
+  it("rejects an old anonymous account without creating a replacement", async () => {
+    localStorage.setItem(
+      "lingow-auth-session-v1",
+      JSON.stringify({
+        ...storedAuth,
+        account: { ...storedAuth.account, kind: "anonymous" },
+      }),
+    );
+    const refresh = vi.fn();
+
+    expect(loadAuthSession()).toBeNull();
+    await expect(getAuthSession({ refresh })).rejects.toBeInstanceOf(
+      AuthenticationRequiredError,
+    );
+    expect(refresh).not.toHaveBeenCalled();
   });
 
   it("reuses a stored account while its access token is valid", async () => {
     saveAuthSession(storedAuth);
-    const create = vi.fn();
     const refresh = vi.fn();
 
-    await expect(getOrCreateAuthSession({ create, refresh })).resolves.toEqual(
-      storedAuth,
-    );
-    expect(create).not.toHaveBeenCalled();
+    await expect(getAuthSession({ refresh })).resolves.toEqual(storedAuth);
     expect(refresh).not.toHaveBeenCalled();
   });
 
   it("refreshes an expired account without changing its owner", async () => {
-    const expired = {
+    saveAuthSession({
       ...storedAuth,
       tokens: { ...storedAuth.tokens, expires_at: "2020-01-01T00:00:00Z" },
-    };
-    saveAuthSession(expired);
+    });
     const refresh = vi.fn(async () => ({
       access_token: "access-2",
       refresh_token: "refresh-2",
       expires_at: "2099-08-01T02:00:00Z",
     }));
 
-    const result = await getOrCreateAuthSession({
-      create: vi.fn(),
-      refresh,
-    });
+    const result = await getAuthSession({ refresh });
 
     expect(refresh).toHaveBeenCalledWith("refresh-1");
     expect(result.account.id).toBe("acc-1");
@@ -67,11 +80,10 @@ describe("auth-session", () => {
   });
 
   it("shares one in-flight refresh across concurrent callers", async () => {
-    const expired = {
+    saveAuthSession({
       ...storedAuth,
       tokens: { ...storedAuth.tokens, expires_at: "2020-01-01T00:00:00Z" },
-    };
-    saveAuthSession(expired);
+    });
     let resolveRefresh: ((value: typeof storedAuth.tokens) => void) | undefined;
     const refresh = vi.fn(
       () =>
@@ -79,10 +91,9 @@ describe("auth-session", () => {
           resolveRefresh = resolve;
         }),
     );
-    const create = vi.fn();
 
-    const first = getOrCreateAuthSession({ create, refresh });
-    const second = getOrCreateAuthSession({ create, refresh });
+    const first = getAuthSession({ refresh });
+    const second = getAuthSession({ refresh });
 
     expect(refresh).toHaveBeenCalledTimes(1);
     resolveRefresh?.({
@@ -91,28 +102,21 @@ describe("auth-session", () => {
       expires_at: "2099-08-01T02:00:00Z",
     });
     await expect(Promise.all([first, second])).resolves.toHaveLength(2);
-    expect(create).not.toHaveBeenCalled();
   });
 
-  it("creates a replacement account when refresh fails", async () => {
+  it("clears expired credentials when refresh fails", async () => {
     saveAuthSession({
       ...storedAuth,
       tokens: { ...storedAuth.tokens, expires_at: "2020-01-01T00:00:00Z" },
     });
-    const replacement = {
-      ...storedAuth,
-      account: { ...storedAuth.account, id: "acc-2" },
-    };
-    const create = vi.fn(async () => replacement);
 
     await expect(
-      getOrCreateAuthSession({
-        create,
+      getAuthSession({
         refresh: vi.fn(async () => {
           throw new Error("expired refresh token");
         }),
       }),
-    ).resolves.toEqual(replacement);
-    expect(loadAuthSession()).toEqual(replacement);
+    ).rejects.toBeInstanceOf(AuthenticationRequiredError);
+    expect(loadAuthSession()).toBeNull();
   });
 });

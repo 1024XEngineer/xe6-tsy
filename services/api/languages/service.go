@@ -77,6 +77,17 @@ func (s *Service) CreateConfig(
 	accountID, sessionID, idempotencyKey string,
 	req CreateLanguageConfigRequest,
 ) (LanguageConfig, error) {
+	return s.createConfig(ctx, accountID, sessionID, idempotencyKey, req, requestFingerprint(req))
+}
+
+// createConfig accepts a caller-owned fingerprint so internal command retries can keep their
+// idempotency identity stable while the optimistic-lock precondition advances after success.
+func (s *Service) createConfig(
+	ctx context.Context,
+	accountID, sessionID, idempotencyKey string,
+	req CreateLanguageConfigRequest,
+	fingerprint string,
+) (LanguageConfig, error) {
 	if accountID == "" {
 		return LanguageConfig{}, ErrUnauthenticated
 	}
@@ -102,7 +113,6 @@ func (s *Service) CreateConfig(
 		return LanguageConfig{}, err
 	}
 
-	fingerprint := requestFingerprint(req)
 	if idempotencyKey != "" {
 		existing, err := s.store.GetConfigByIdempotencyKey(ctx, idempotencyKey)
 		switch {

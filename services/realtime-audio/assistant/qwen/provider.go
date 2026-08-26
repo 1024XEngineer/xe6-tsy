@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/assistant"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/rawlog"
 )
 
 const defaultModel = "qwen3.6-flash"
@@ -29,6 +30,7 @@ type Config struct {
 	HTTPClient     *http.Client
 	EnableThinking bool
 	Timeout        time.Duration
+	RawLogger      *rawlog.Logger
 }
 
 type Provider struct {
@@ -77,6 +79,7 @@ func (p *Provider) Reply(ctx context.Context, request assistant.Request) (assist
 	if err != nil {
 		return assistant.Result{}, fmt.Errorf("encode Qwen assistant request: %w", err)
 	}
+	_ = p.config.RawLogger.WriteJSON(request.SessionID, "llm", "request", "assistant.chat.completions", encoded)
 	requestCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	defer cancel()
 	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost,
@@ -95,6 +98,7 @@ func (p *Provider) Reply(ctx context.Context, request assistant.Request) (assist
 	if err != nil {
 		return assistant.Result{}, fmt.Errorf("read Qwen assistant response: %w", err)
 	}
+	_ = p.config.RawLogger.WriteJSON(request.SessionID, "llm", "response", "assistant.chat.completions", responseBytes)
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return assistant.Result{}, fmt.Errorf("Qwen assistant returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBytes)))
 	}
@@ -117,7 +121,9 @@ func (p *Provider) Reply(ctx context.Context, request assistant.Request) (assist
 }
 
 func systemPrompt(language string) string {
-	return "You are Lingow, a concise voice assistant. Answer the user's request directly in " + language + ". Keep the response natural for speech output."
+	return "You are 小灵, the Lingow voice assistant. Lingow is the product brand, while 小灵 is your Chinese spoken name. " +
+		"When answering in Chinese or speaking with a Chinese user, always refer to yourself as 小灵, never as Lingow. " +
+		"Answer the user's request directly in " + language + ". Keep the response concise and natural for speech output."
 }
 
 type chatRequest struct {

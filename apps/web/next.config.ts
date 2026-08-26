@@ -12,10 +12,10 @@ const staticExport = process.env.NEXT_STATIC_EXPORT === "1";
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH?.replace(/\/$/, "") ?? "";
 
 const nextConfig: NextConfig = {
+  output: staticExport ? "export" : "standalone",
   devIndicators: false,
   ...(staticExport
     ? {
-        output: "export" as const,
         trailingSlash: true,
         basePath,
         assetPrefix: basePath ? `${basePath}/` : undefined,

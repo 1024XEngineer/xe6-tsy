@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
+	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/rawlog"
 	"github.com/gorilla/websocket"
 )
 
@@ -43,6 +44,7 @@ type Config struct {
 	// utterance boundaries (avoids double VAD / duplicate finals).
 	DisableServerVAD bool
 	Dialer           *websocket.Dialer
+	RawLogger        *rawlog.Logger
 }
 
 // Provider starts Qwen realtime ASR streams.
@@ -83,6 +85,7 @@ func (p *Provider) StartStream(ctx context.Context, request asr.StreamRequest) (
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	_ = p.config.RawLogger.EnsureSession(request.SessionID)
 	endpoint, err := realtimeEndpoint(p.config.WebSocketURL, p.config.Model)
 	if err != nil {
 		return nil, err
@@ -97,7 +100,8 @@ func (p *Provider) StartStream(ctx context.Context, request asr.StreamRequest) (
 		conn: conn, cancel: cancel, model: p.config.Model, provider: p.config.Provider,
 		sampleRate: p.config.SampleRate, sourceLanguage: request.SourceLanguage,
 		manualMode: p.config.DisableServerVAD,
-		events:     make(chan asr.Event, eventBufferSize+1), done: make(chan struct{}), readDone: make(chan struct{}),
+		sessionID:  request.SessionID, rawLogger: p.config.RawLogger,
+		events: make(chan asr.Event, eventBufferSize+1), done: make(chan struct{}), readDone: make(chan struct{}),
 	}
 	if err := s.write(streamCtx, sessionUpdateEvent(request.SourceLanguage, p.config)); err != nil {
 		cancel()
@@ -185,6 +189,8 @@ type stream struct {
 	sampleRate     int
 	sourceLanguage string
 	manualMode     bool
+	sessionID      string
+	rawLogger      *rawlog.Logger
 	events         chan asr.Event
 	done           chan struct{}
 	readDone       chan struct{}
@@ -312,6 +318,11 @@ func (s *stream) write(ctx context.Context, value any) error {
 		}
 		return err
 	}
+	if event, ok := value.(map[string]any); ok {
+		if eventType, _ := event["type"].(string); eventType != "input_audio_buffer.append" {
+			_ = s.rawLogger.WriteJSON(s.sessionID, "asr", "request", eventType, data)
+		}
+	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
@@ -339,6 +350,7 @@ func (s *stream) readLoop(ctx context.Context) {
 			}
 			return
 		}
+		_ = s.rawLogger.WriteJSON(s.sessionID, "asr", "response", rawEventType(data), data)
 		if err := s.handleEvent(data); err != nil {
 			s.setError(err)
 			return
@@ -347,6 +359,16 @@ func (s *stream) readLoop(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func rawEventType(data []byte) string {
+	var event struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil || event.Type == "" {
+		return "unknown"
+	}
+	return event.Type
 }
 
 func (s *stream) handleEvent(data []byte) error {
@@ -360,12 +382,11 @@ func (s *stream) handleEvent(data []byte) error {
 	case "input_audio_buffer.speech_stopped":
 		s.ended = event.AudioEndMS
 	case "conversation.item.input_audio_transcription.text":
-		text := event.Text
-		if text == "" {
-			text = event.Stash
-		}
-		if text != "" {
-			s.emitEvent(asr.Event{Type: asr.EventPartial, Text: text})
+		if event.Text != "" || event.Stash != "" {
+			if err := s.emitEvent(asr.Event{Type: asr.EventPartial, Text: event.Text, Stash: event.Stash,
+				Language: asr.NormalizeLanguage(event.Language)}); err != nil {
+				return err
+			}
 		}
 	case "conversation.item.input_audio_transcription.completed":
 		sourceLanguage := asr.NormalizeLanguage(s.sourceLanguage)

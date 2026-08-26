@@ -20,9 +20,10 @@ type Classifier interface {
 }
 
 type Options struct {
-	SilenceAfter  time.Duration
-	MaxDuration   time.Duration
-	PrefixPadding time.Duration
+	SilenceAfter        time.Duration
+	MaxDuration         time.Duration
+	MaxBufferedDuration time.Duration
+	PrefixPadding       time.Duration
 }
 
 type EventType string
@@ -35,6 +36,7 @@ const (
 
 type Event struct {
 	Type      EventType
+	Reason    string
 	Frame     *audio.Frame
 	Frames    []audio.Frame
 	StartedAt time.Time
@@ -42,16 +44,17 @@ type Event struct {
 }
 
 type Segmenter struct {
-	classifier    Classifier
-	silenceAfter  time.Duration
-	maxDuration   time.Duration
-	prefixPadding time.Duration
-	active        bool
-	startedAt     time.Time
-	lastSpeech    time.Time
-	lastSeen      time.Time
-	frames        []audio.Frame
-	prefixFrames  []audio.Frame
+	classifier          Classifier
+	silenceAfter        time.Duration
+	maxDuration         time.Duration
+	maxBufferedDuration time.Duration
+	prefixPadding       time.Duration
+	active              bool
+	startedAt           time.Time
+	lastSpeech          time.Time
+	lastSeen            time.Time
+	frames              []audio.Frame
+	prefixFrames        []audio.Frame
 }
 
 // Reset abandons the current utterance and all timestamp/prefix history.
@@ -85,13 +88,16 @@ func NewSegmenter(classifier Classifier, options Options) (*Segmenter, error) {
 	if classifier == nil {
 		return nil, ErrClassifierRequired
 	}
-	if options.SilenceAfter <= 0 || options.MaxDuration <= 0 || options.SilenceAfter >= options.MaxDuration ||
-		options.PrefixPadding < 0 || options.PrefixPadding >= options.MaxDuration {
+	if options.SilenceAfter <= 0 || options.PrefixPadding < 0 ||
+		options.MaxBufferedDuration < 0 ||
+		(options.MaxDuration > 0 && options.SilenceAfter >= options.MaxDuration) ||
+		(options.MaxDuration > 0 && options.PrefixPadding >= options.MaxDuration) {
 		return nil, ErrInvalidOptions
 	}
 	return &Segmenter{
 		classifier: classifier, silenceAfter: options.SilenceAfter,
-		maxDuration: options.MaxDuration, prefixPadding: options.PrefixPadding,
+		maxDuration: options.MaxDuration, maxBufferedDuration: options.MaxBufferedDuration,
+		prefixPadding: options.PrefixPadding,
 	}, nil
 }
 
@@ -114,7 +120,22 @@ func (s *Segmenter) Push(ctx context.Context, frame audio.Frame) ([]Event, error
 	s.lastSeen = frame.CapturedAt
 
 	isSpeech := s.classifier.Speech(frame)
-	if s.active && frame.CapturedAt.Sub(s.startedAt) >= s.maxDuration {
+	if s.active && s.maxBufferedDuration > 0 && frame.CapturedAt.Sub(s.startedAt) >= s.maxBufferedDuration {
+		events := s.finalize(s.startedAt.Add(s.maxBufferedDuration))
+		if len(events) > 0 {
+			events[0].Reason = "turn_watchdog"
+		}
+		if isSpeech {
+			s.start(frame)
+			events = append(events, s.openedEvent(), s.audioEvent(frame))
+		} else {
+			s.rememberPrefix(frame)
+		}
+		return events, nil
+	}
+	// A non-positive max duration disables normal product-level Turn cuts.
+	// An outer stream watchdog can still protect the process from unbounded input.
+	if s.active && s.maxDuration > 0 && frame.CapturedAt.Sub(s.startedAt) >= s.maxDuration {
 		events := s.finalize(s.startedAt.Add(s.maxDuration))
 		if isSpeech {
 			s.start(frame)

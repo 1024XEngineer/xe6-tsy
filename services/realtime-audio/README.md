@@ -2,6 +2,9 @@
 
 Go 实时音频服务。
 
+原生 Windows 运行时必须使用 Go 1.26.2 或更高版本；仓库已固定到 Go 1.26.7。更早的 Go 版本在
+Windows overlapped UDP 接收路径中可能破坏栈，导致 Pion RTP 读取期间进程崩溃。
+
 ## 职责
 
 - WebRTC config、offer/answer 和 ICE candidate 信令
@@ -21,8 +24,8 @@ Go 实时音频服务。
 - 每个会话只支持一组双语语言对，默认 `zh-CN <-> en-US`
 - 只支持两方面对面
 - `asr.partial` 在已鉴权的 `translation-events` DataChannel 上作为可丢弃、同 Turn 覆盖的临时原文字幕发送；它不持久化，也不进入翻译、TTS、FinalTurn、用量、命令或投递
-- `phrase.subtitle` 仅在 `REALTIME_PHRASE_SUBTITLES=enabled` 时为同传 Turn 发送稳定原文短语；它按 utterance 内 sequence 有序、best-effort 交付，且不持久化、不进入翻译、TTS、FinalTurn 或用量
-- 只有句末 final 原文才进入翻译和 TTS；`translation.final` 到达后客户端清理对应临时字幕；启用长句投递能力后，原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
+- `phrase.subtitle` 仅在 `REALTIME_PHRASE_SUBTITLES=enabled` 时为同传 Turn 发送稳定原文短语；它按 utterance 内 sequence 有序、best-effort 交付，且不持久化。稳定短语会在讲话过程中立即进入增量翻译；译文完成后按同一 sequence 进入有序 TTS 调度
+- VAD final 只负责冲刷当前 Turn 尚未提交的 residual 文本，避免重复翻译；`translation.final` 到达后客户端清理对应临时字幕；启用长句投递能力后，原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
 - TTS / 渠道输出可按 target_language 单独关闭
 - TTS 播放中检测到对方发言时，发送 `playback.stop`
 
@@ -145,7 +148,8 @@ hysteresis). On first Windows start, missing ONNX Runtime is downloaded into
 `LOCAL_VAD_PROVIDER=energy`.
 
 The Command Gate owns a separate classifier and `vad.Segmenter` state, but uses the same
-800 ms end-silence and 12 second safety boundary as ordinary turns. A validated wake transfers
+550 ms end-silence as ordinary turns. Normal Turn segmentation has no product-level maximum
+duration; the command gate still has its own bounded command window. A validated wake transfers
 the ordinary Segmenter's complete active utterance into the command Segmenter; there is no fixed
 two-second server pre-roll. A duplicate wake never claims or resets ordinary audio.
 
@@ -178,7 +182,7 @@ Required env:
 | --- | --- | --- |
 | `REALTIME_ADDR` | `:8090` | Listen address |
 | `REALTIME_TICKET_SECRET` | _(required)_ | Raw secret (≥32 bytes), must match API `REALTIME_TICKET_SECRET` |
-| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun`; mock ASR returns fixed offline text and cannot validate spoken semantic commands |
+| `ASR_PROVIDER` / `LLM_PROVIDER` / `TTS_PROVIDER` | `mock` | `mock` or `aliyun`; mock ASR returns fixed offline text, reports a fixed 1-second duration for local usage verification, and cannot validate spoken semantic commands |
 | `COMMAND_LLM_API_KEY` | 与地址同时回退到 `LLM_API_KEY` | 必需的 Qwen Command Interpreter 凭证；没有固定指令回退，不得写入日志 |
 | `COMMAND_LLM_BASE_URL` | 与凭证同时回退到 `LLM_BASE_URL` | 必需的 OpenAI-compatible 地址；必须与 Command 凭证成对配置 |
 | `COMMAND_LLM_MODEL` | 回退到 `LLM_MODEL` | 语义命令模型 |
@@ -190,11 +194,12 @@ Required env:
 | `REALTIME_SOURCE_LANGUAGE` / `REALTIME_TARGET_LANGUAGE` | `zh-CN` / `en-US` | Fallback pair when API DB link is off |
 | `REALTIME_API_DATABASE` | _(off)_ | `enabled` + `DATABASE_URL` → Postgres session/language readers + FinalTurn outbox |
 | `REALTIME_LONG_SENTENCE_DELIVERY` | `disabled` | 新 API delivery/fallback 已就绪后设为 `enabled`；未启用时长句保持原 TTS 路由 |
-| `REALTIME_PHRASE_SUBTITLES` | `disabled` | Enable ordered, ephemeral stable source phrases before VAD final; translation and TTS remain disabled for these events. |
+| `REALTIME_PHRASE_SUBTITLES` | `disabled` | Enable ordered, ephemeral stable source phrases before VAD final and their live translations; phrase TTS remains disabled unless `REALTIME_PHRASE_PLAYBACK=enabled`. |
+| `REALTIME_PHRASE_PLAYBACK` | `disabled` | Enable ordered phrase translation TTS playback on the existing Opus track; requires `REALTIME_PHRASE_SUBTITLES=enabled` and `REALTIME_TTS_DOWNLINK=opus`. |
 | `REALTIME_OUTBOX` | `memory` | `memory` 仅允许 `APP_ENV=local/test/development`；其他环境使用 `valkey`，需要 `REDIS_URL` |
 | `REALTIME_REDIS_MODE` | `standalone` | `standalone` 或 `cluster`；Cluster endpoint 必须显式选择 `cluster`，且 `REDIS_URL` 不带数据库路径 |
 | `LINGOW_MODE_CHANGED_STREAM` | `lingow:realtime:mode:changed` | `realtime.mode.changed` 的 Valkey Stream |
-| `ASR_SERVER_VAD` | _(unset → false in entrypoint)_ | Set `true` to enable Qwen server_vad; the local VAD keeps 500 ms prefix audio and preserves quiet frames inside an utterance |
+| `ASR_SERVER_VAD` | _(unset → false in entrypoint)_ | Set `true` only when Qwen should own endpointing; by default the local VAD owns Turn boundaries, keeps 500 ms prefix audio, and preserves quiet frames inside an utterance |
 | `LOCAL_VAD_PROVIDER` | `silero` | `silero` (default) or `energy` fallback |
 | `LOCAL_VAD_MODEL_PATH` | `vad/silero/silero_vad.onnx` | Silero v5 ONNX model used by the local segmenter |
 | `ONNXRUNTIME_SHARED_LIBRARY_PATH` | auto (`third_party/onnxruntime/lib/...`) | downloaded on first Windows start when missing |

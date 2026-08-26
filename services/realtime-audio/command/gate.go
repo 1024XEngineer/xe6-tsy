@@ -10,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	languagesv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/languages/v1"
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/asr"
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/audio"
@@ -87,9 +88,10 @@ type ExecuteRequest struct {
 // AppliedLanguageConfig records an explicit language direction accepted by the API control plane.
 // A non-nil value is an authoritative execution fact even when the realtime mode was unchanged.
 type AppliedLanguageConfig struct {
-	SourceLanguage string `json:"source_language"`
-	TargetLanguage string `json:"target_language"`
-	Version        int    `json:"version"`
+	SourceLanguage string                               `json:"source_language"`
+	TargetLanguage string                               `json:"target_language"`
+	OutputMode     languagesv1.InterpretationOutputMode `json:"output_mode"`
+	Version        int                                  `json:"version"`
 }
 
 // ExecutionResult carries the authoritative state returned by the runtime coordinator. The Gate
@@ -677,6 +679,12 @@ func commandSuccessFallback(parsed Command, execution ExecutionResult) string {
 		return "助手已处理本轮提问"
 	}
 	if execution.LanguageConfig != nil && parsed.TargetMode == realtimev1.ModeInterpretation {
+		if execution.LanguageConfig.OutputMode == languagesv1.InterpretationOutputModeSingle {
+			return "已开启" + spokenLanguageName(execution.LanguageConfig.SourceLanguage) + "译" +
+				spokenLanguageName(execution.LanguageConfig.TargetLanguage) + "单向传译，" +
+				spokenLanguageName(execution.LanguageConfig.TargetLanguage) + "播报，" +
+				spokenLanguageName(execution.LanguageConfig.SourceLanguage) + "译文自动投递"
+		}
 		return "已设置为" + spokenLanguageName(execution.LanguageConfig.SourceLanguage) + "和" +
 			spokenLanguageName(execution.LanguageConfig.TargetLanguage) + "同声传译"
 	}
@@ -717,6 +725,9 @@ func spokenLanguageName(code string) string {
 }
 
 func executionFailureFeedback(parsed Command, err error) (realtimev1.CommandResultStatus, string) {
+	if errors.Is(err, ErrDeliveryTargetRequired) {
+		return realtimev1.CommandResultFailed, "请先设置可用的自动投递目标，再开启单向传译"
+	}
 	if errors.Is(err, ErrClarificationRequired) {
 		return realtimev1.CommandResultClarificationRequired, "请说明需要使用的语言方向"
 	}

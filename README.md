@@ -56,7 +56,7 @@ Web / Mobile / Device
 
 ## 本地启动
 
-建议准备 Go 1.26、Node.js 22、npm，以及 PostgreSQL 16 和 Redis/Valkey 7。需要容器化依赖时安装
+建议准备 Go 1.26.7、Node.js 22、npm，以及 PostgreSQL 16 和 Redis/Valkey 7。需要容器化依赖时安装
 Docker Desktop。
 
 1. 复制根配置并填写本地凭证：
@@ -150,6 +150,16 @@ npm test
 npm run build
 ```
 
+真实服务系统 E2E（CI 工作流会自动准备 PostgreSQL、Redis、API、realtime-audio 和 Web）：
+
+```bash
+cd apps/web
+npm run test:e2e:system
+```
+
+本地执行前需先启动 API 和 realtime-audio，并设置 `LINGOW_SESSION_RUNTIME=enabled`、
+`REALTIME_API_DATABASE=enabled` 及对应数据库/Redis 配置。
+
 Mobile 控制核心：
 
 ```bash
@@ -164,5 +174,6 @@ npm run build
 
 - [Lingow 架构总览](https://github.com/1024XEngineer/xe6-tsy/pull/165)
 - [开发说明](docs/DEVELOPMENT.md)
+- [生产部署](infra/production/README.md)
 - [Lingow 模块详细设计](https://github.com/1024XEngineer/xe6-tsy/pull/169)
 - [Lingow P0 协议设计](https://github.com/1024XEngineer/xe6-tsy/pull/171)

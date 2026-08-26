@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	languagesv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/languages/v1"
 	realtimev1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/realtime/v1"
 )
 
@@ -42,8 +43,9 @@ type InterpretRequest struct {
 // Arguments is the typed, vendor-neutral argument surface shared by semantic interpreters and
 // deterministic validators. Fields remain optional at the untrusted candidate boundary.
 type Arguments struct {
-	SourceLanguage string `json:"source_language,omitempty"`
-	TargetLanguage string `json:"target_language,omitempty"`
+	SourceLanguage string                               `json:"source_language,omitempty"`
+	TargetLanguage string                               `json:"target_language,omitempty"`
+	OutputMode     languagesv1.InterpretationOutputMode `json:"output_mode,omitempty"`
 }
 
 // Candidate is untrusted interpreter output. It carries no callbacks or provider-specific data

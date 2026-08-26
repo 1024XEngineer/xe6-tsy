@@ -120,6 +120,22 @@ func TestBuildMuxAuthenticatesLanguageRoutes(t *testing.T) {
 	}
 }
 
+func TestBuildMuxServesUnauthenticatedHealthCheck(t *testing.T) {
+	handler := buildMux(
+		languages.NewHandler(nil, nil),
+		nil,
+		newRecordsTestHandler(),
+		accounts.NewUseCases(),
+		mainTokenVerifier{},
+	)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("health check status = %d, want %d", response.Code, http.StatusOK)
+	}
+}
+
 func TestBuildMuxMountsVoiceSessionRoutes(t *testing.T) {
 	sessionHandler := sessions.NewHandler(
 		mainSessionUseCases{now: time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)},

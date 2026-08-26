@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { getOrCreateAuthSession } from "../lib/auth-session";
+import { getAuthSession } from "../lib/auth-session";
 import { ApiError } from "../lib/http";
 import { getAccountUsageSummary } from "../lib/lingow-api";
 import styles from "../voice.module.css";
 
-const FREE_MINUTES = 500;
+// Replace this display value once the account quota API is available.
+const TOTAL_MINUTES = 500;
 
 function currentMonthPeriod(now = new Date()): { start: string; end: string } {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
@@ -16,7 +17,7 @@ function currentMonthPeriod(now = new Date()): { start: string; end: string } {
 }
 
 function asrMinutes(audioDurationMs: number): number {
-  return Math.round((Math.max(0, audioDurationMs) / 60_000) * 10) / 10;
+  return Math.round((Math.max(0, audioDurationMs) / 60_000) * 100) / 100;
 }
 
 export function UsageSettings() {
@@ -29,7 +30,7 @@ export function UsageSettings() {
     setNotice(null);
     setError(null);
     try {
-      const auth = await getOrCreateAuthSession();
+      const auth = await getAuthSession();
       const period = currentMonthPeriod();
       const summary = await getAccountUsageSummary(
         auth.tokens.access_token,
@@ -72,21 +73,17 @@ export function UsageSettings() {
     return <p className={styles.settingsState}>正在读取本月用量...</p>;
   }
 
-  const remainingMinutes = Math.max(0, FREE_MINUTES - usedMinutes);
-  const usedPercent = Math.min(100, (usedMinutes / FREE_MINUTES) * 100);
-
   return (
     <div className={styles.historySetting}>
-      <div className={styles.quotaValue}>
-        <strong>{remainingMinutes}</strong>
-        <span>分钟剩余</span>
-      </div>
-      <div aria-label={`已使用 ${usedMinutes} 分钟`} className={styles.quotaTrack}>
-        <span style={{ width: `${usedPercent}%` }} />
-      </div>
-      <div className={styles.quotaMeta}>
-        <span>已使用 {usedMinutes} 分钟</span>
-        <span>免费额度 {FREE_MINUTES} 分钟</span>
+      <div className={styles.usageSummary}>
+        <div className={styles.usageStat}>
+          <strong>{TOTAL_MINUTES}</strong>
+          <span>本月总额（分钟）</span>
+        </div>
+        <div className={styles.usageStat}>
+          <strong>{usedMinutes}</strong>
+          <span>已使用（分钟）</span>
+        </div>
       </div>
       {notice ? <p className={styles.settingsState}>{notice}</p> : null}
     </div>

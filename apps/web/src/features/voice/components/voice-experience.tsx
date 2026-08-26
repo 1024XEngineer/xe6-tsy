@@ -12,7 +12,11 @@ import { LatestTranslation } from "./latest-translation";
 import { SettingsPanel } from "./settings-panel";
 import { VoiceControl } from "./voice-control";
 
-export function VoiceExperience() {
+type VoiceExperienceProps = {
+  onLogout?: () => void | Promise<void>;
+};
+
+export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
   const {
     state,
     transientASRSubtitle,
@@ -181,6 +185,9 @@ export function VoiceExperience() {
           {transientASRSubtitle ? (
             <p aria-label="临时识别结果" aria-live="polite" className={styles.transientASRSubtitle}>
               {transientASRSubtitle.text}
+              {transientASRSubtitle.stash ? (
+                <span className={styles.transientASRStash}>{transientASRSubtitle.stash}</span>
+              ) : null}
             </p>
           ) : null}
           {transientPhraseSubtitles.length > 0 ? (
@@ -224,8 +231,10 @@ export function VoiceExperience() {
             <SettingsPanel
               debug={debug}
               configSyncStatus={configSyncStatus}
+              logoutDisabled={state.phase !== "idle"}
               onClose={() => setSettingsOpen(false)}
               onConfigChange={updateConfig}
+              onLogout={onLogout}
               voiceConfig={voiceConfig}
             />
           ) : null}

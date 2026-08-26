@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 )
 
 var normalizedVerificationCodePattern = regexp.MustCompile(`^[0-9]{6}$`)
@@ -21,7 +22,7 @@ func (p VerificationPolicy) enabled() bool {
 // VerificationPolicyFromEnv enables a fixed universal code for local verification flows.
 // When VERIFICATION_SENDER is log (the default), all challenges use the universal code.
 func VerificationPolicyFromEnv() (VerificationPolicy, error) {
-	switch os.Getenv("VERIFICATION_SENDER") {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("VERIFICATION_SENDER"))) {
 	case "", "log":
 		code := os.Getenv("VERIFICATION_UNIVERSAL_CODE")
 		if code == "" {

@@ -458,6 +458,7 @@ func (s *Service) logVADCheckpoint(request Request, event vad.Event) {
 			"stage", "vad_final",
 			"session_id", request.SessionID,
 			"trace_id", request.TraceID,
+			"reason", event.Reason,
 			"started_at", event.StartedAt,
 			"ended_at", event.EndedAt,
 			"segment_audio_ms", event.EndedAt.Sub(event.StartedAt).Milliseconds(),

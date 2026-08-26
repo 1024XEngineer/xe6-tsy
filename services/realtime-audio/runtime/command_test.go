@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -114,11 +115,101 @@ func TestCommandExecutorReportsConfiguredLanguagesWhenModeIsUnchanged(t *testing
 	}
 }
 
-func TestCommandExecutorBootstrapsExplicitLanguagesWithoutSnapshot(t *testing.T) {
+func TestCommandExecutorConfiguresSingleOutputWithCurrentVersion(t *testing.T) {
+	t.Parallel()
+	manager := commandTestManager(t, realtimev1.ModeAssistant, &recordingModeChangedSink{})
+	configurator := &recordingLanguageConfigurator{}
+	result, err := (commandExecutor{
+		manager: manager, languages: commandLanguageReader(), configurator: configurator,
+	}).ExecuteCommand(t.Context(), interpretationRequest(command.Arguments{
+		SourceLanguage: "zh-CN", TargetLanguage: "en-US",
+		OutputMode: languagesv1.InterpretationOutputModeSingle,
+	}))
+	if err != nil {
+		t.Fatalf("ExecuteCommand() error = %v", err)
+	}
+	if len(configurator.requests) != 1 {
+		t.Fatalf("configure requests = %#v", configurator.requests)
+	}
+	request := configurator.requests[0]
+	if request.OutputMode != languagesv1.InterpretationOutputModeSingle ||
+		request.ExpectedVersion == nil || *request.ExpectedVersion != 1 {
+		t.Fatalf("configure request = %#v", request)
+	}
+	if result.LanguageConfig == nil || result.LanguageConfig.OutputMode != languagesv1.InterpretationOutputModeSingle {
+		t.Fatalf("execution result = %#v", result)
+	}
+}
+
+func TestCommandExecutorRequiresDirectionWhenChangingBidirectionalConfigToSingle(t *testing.T) {
+	t.Parallel()
+	manager := commandTestManager(t, realtimev1.ModeAssistant, &recordingModeChangedSink{})
+	configurator := &recordingLanguageConfigurator{}
+	_, err := (commandExecutor{
+		manager: manager, languages: commandLanguageReader(), configurator: configurator,
+	}).ExecuteCommand(t.Context(), interpretationRequest(command.Arguments{
+		OutputMode: languagesv1.InterpretationOutputModeSingle,
+	}))
+	if !errors.Is(err, ErrCommandLanguageClarification) {
+		t.Fatalf("ExecuteCommand() error = %v, want clarification", err)
+	}
+	if len(configurator.requests) != 0 {
+		t.Fatalf("configure requests = %#v", configurator.requests)
+	}
+}
+
+func TestCommandExecutorRestoresBidirectionalOutputWithCurrentPair(t *testing.T) {
+	t.Parallel()
+	manager := commandTestManager(t, realtimev1.ModeInterpretation, &recordingModeChangedSink{})
+	configurator := &recordingLanguageConfigurator{}
+	_, err := (commandExecutor{
+		manager: manager, languages: commandLanguageReader(), configurator: configurator,
+	}).ExecuteCommand(t.Context(), interpretationRequest(command.Arguments{
+		OutputMode: languagesv1.InterpretationOutputModeBidirectional,
+	}))
+	if err != nil {
+		t.Fatalf("ExecuteCommand() error = %v", err)
+	}
+	if len(configurator.requests) != 1 || configurator.requests[0].SourceLanguage != "zh-CN" ||
+		configurator.requests[0].TargetLanguage != "en-US" || configurator.requests[0].ExpectedVersion == nil {
+		t.Fatalf("configure requests = %#v", configurator.requests)
+	}
+}
+
+func TestCommandExecutorKeepsCurrentSingleDirection(t *testing.T) {
+	t.Parallel()
+	manager := commandTestManager(t, realtimev1.ModeInterpretation, &recordingModeChangedSink{})
+	configurator := &recordingLanguageConfigurator{}
+	snapshot := session.LanguageConfigSnapshot{
+		SessionID: "session-1", Version: 4, Status: "active",
+		LanguagePairs: []session.LanguagePair{
+			{Source: "zh-CN", Target: "en-US"}, {Source: "en-US", Target: "zh-CN"},
+		},
+		OutputRoutes: []session.OutputRoute{
+			{TargetLanguage: "en-US", TTSEnabled: true},
+			{TargetLanguage: "zh-CN", DeliveryEnabled: true},
+		},
+	}
+	_, err := (commandExecutor{
+		manager: manager, languages: commandLanguageReaderWith(snapshot), configurator: configurator,
+	}).ExecuteCommand(t.Context(), interpretationRequest(command.Arguments{
+		OutputMode: languagesv1.InterpretationOutputModeSingle,
+	}))
+	if err != nil {
+		t.Fatalf("ExecuteCommand() error = %v", err)
+	}
+	if len(configurator.requests) != 1 || configurator.requests[0].SourceLanguage != "zh-CN" ||
+		configurator.requests[0].TargetLanguage != "en-US" || configurator.requests[0].ExpectedVersion == nil ||
+		*configurator.requests[0].ExpectedVersion != 4 {
+		t.Fatalf("configure requests = %#v", configurator.requests)
+	}
+}
+
+func TestCommandExecutorUsesCurrentVersionForExplicitLanguages(t *testing.T) {
 	t.Parallel()
 	sink := &recordingModeChangedSink{}
 	manager := commandTestManager(t, realtimev1.ModeAssistant, sink)
-	reader := &countingLanguageReader{err: errors.New("snapshot must not be read")}
+	reader := &countingLanguageReader{snapshot: activeConfig("session-1")}
 	configurator := &recordingLanguageConfigurator{}
 
 	_, err := (commandExecutor{
@@ -129,11 +220,12 @@ func TestCommandExecutorBootstrapsExplicitLanguagesWithoutSnapshot(t *testing.T)
 	if err != nil {
 		t.Fatalf("ExecuteCommand() error = %v", err)
 	}
-	if reader.calls != 0 {
-		t.Fatalf("language snapshot reads = %d, want 0", reader.calls)
+	if reader.calls != 1 {
+		t.Fatalf("language snapshot reads = %d, want 1", reader.calls)
 	}
 	if len(configurator.requests) != 1 || configurator.requests[0].SourceLanguage != "zh-CN" ||
-		configurator.requests[0].TargetLanguage != "ja-JP" {
+		configurator.requests[0].TargetLanguage != "ja-JP" || configurator.requests[0].ExpectedVersion == nil ||
+		*configurator.requests[0].ExpectedVersion != 1 {
 		t.Fatalf("configure requests = %#v", configurator.requests)
 	}
 	if manager.entries["session-1"].mode.Snapshot().ActiveMode != realtimev1.ModeInterpretation {
@@ -272,7 +364,7 @@ func TestCommandExecutorReplaysConfigurationAfterModeCASFailure(t *testing.T) {
 	if _, err := executor.ExecuteCommand(t.Context(), request); err != nil {
 		t.Fatalf("retry ExecuteCommand() error = %v", err)
 	}
-	if len(configurator.requests) != 2 || configurator.requests[0] != configurator.requests[1] {
+	if len(configurator.requests) != 2 || !reflect.DeepEqual(configurator.requests[0], configurator.requests[1]) {
 		t.Fatalf("configuration retries = %#v", configurator.requests)
 	}
 	if len(sink.Events()) != 1 || manager.entries["session-1"].mode.Snapshot().ActiveMode != realtimev1.ModeInterpretation {
@@ -314,6 +406,7 @@ func TestCommandExecutorRejectsAmbiguousAndInvalidLanguages(t *testing.T) {
 	}{
 		{name: "slot cannot be completed", arguments: command.Arguments{SourceLanguage: "ja-JP"}, reader: commandLanguageReader(), want: ErrCommandLanguageClarification},
 		{name: "same source and target", arguments: command.Arguments{SourceLanguage: "zh-CN", TargetLanguage: "zh-CN"}, reader: commandLanguageReader(), want: ErrCommandLanguageInvalid},
+		{name: "invalid output mode", arguments: command.Arguments{SourceLanguage: "zh-CN", TargetLanguage: "en-US", OutputMode: "speaker"}, reader: commandLanguageReader(), want: ErrCommandLanguageInvalid},
 		{name: "inactive current config", reader: commandLanguageReaderWith(session.LanguageConfigSnapshot{
 			SessionID: "session-1", Version: 1, Status: "superseded",
 			LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}},
@@ -530,7 +623,11 @@ func (c *recordingLanguageConfigurator) Configure(_ context.Context, request lan
 	if c.err != nil {
 		return languagesv1.CommandConfigResult{}, c.err
 	}
-	return languagesv1.CommandConfigResult{SessionID: request.SessionID, CommandID: request.CommandID, Version: 2}, nil
+	return languagesv1.CommandConfigResult{
+		SessionID: request.SessionID, CommandID: request.CommandID,
+		SourceLanguage: request.SourceLanguage, TargetLanguage: request.TargetLanguage,
+		OutputMode: request.OutputMode, Version: 2,
+	}, nil
 }
 
 func TestRuntimeCommandGateInterruptsPlaybackBeforeArming(t *testing.T) {

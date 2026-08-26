@@ -4,16 +4,8 @@ import { ArrowUp, ArrowUpRight, CaretDown } from "@phosphor-icons/react";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { siteHref } from "./site-paths";
+import { currentSiteNavItem, siteHref, siteNavItems } from "./site-paths";
 import styles from "./intro.module.css";
-
-const primaryNavItems = [
-  { href: "/intro", label: "首页" },
-  { href: "/intro/product", label: "产品" },
-  { href: "/intro/developer", label: "开发者" },
-  { href: "/intro/docs", label: "文档" },
-  { href: "/intro/about", label: "关于 Lingow" },
-] as const;
 
 export function SiteNav() {
   return (
@@ -24,7 +16,7 @@ export function SiteNav() {
       </a>
       <div className={styles.navRight}>
         <nav className={styles.navLinks} aria-label="主导航">
-          {primaryNavItems.slice(1).map((item) => (
+          {siteNavItems.slice(1).map((item) => (
             <a key={item.href} href={siteHref(item.href)}>{item.label}</a>
           ))}
         </nav>
@@ -46,9 +38,7 @@ function MobileNav() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const navRef = useRef<HTMLDivElement>(null);
-  const currentItem = primaryNavItems.find(
-    (item) => pathname === item.href || pathname?.endsWith(item.href),
-  ) ?? primaryNavItems[0];
+  const currentItem = currentSiteNavItem(pathname);
 
   useEffect(() => {
     if (!open) return;
@@ -86,7 +76,7 @@ function MobileNav() {
         className={`${styles.mobileNavPanel} ${open ? styles.mobileNavPanelOpen : ""}`}
         aria-label="移动端主导航"
       >
-        {primaryNavItems.map((item) => {
+        {siteNavItems.map((item) => {
           const isCurrent = item.href === currentItem.href;
           return (
             <a

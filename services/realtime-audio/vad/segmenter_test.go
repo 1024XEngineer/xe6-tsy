@@ -228,6 +228,27 @@ func TestSegmenterClampsMaximumDurationAfterLongFrameGap(t *testing.T) {
 	}
 }
 
+func TestSegmenterUsesWatchdogWithoutNormalTurnCut(t *testing.T) {
+	segmenter, err := NewSegmenter(fakeClassifier{speech: true}, Options{
+		SilenceAfter:        500 * time.Millisecond,
+		MaxBufferedDuration: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSegmenter() error = %v", err)
+	}
+	startedAt := time.Unix(23, 0)
+	if _, err := segmenter.Push(context.Background(), testFrame(t, 1, startedAt)); err != nil {
+		t.Fatalf("Push(first) error = %v", err)
+	}
+	events, err := segmenter.Push(context.Background(), testFrame(t, 2, startedAt.Add(time.Second)))
+	if err != nil {
+		t.Fatalf("Push(watchdog) error = %v", err)
+	}
+	if len(events) < 1 || events[0].Type != EventFinal || events[0].Reason != "turn_watchdog" {
+		t.Fatalf("Push(watchdog) events = %#v, want watchdog final", events)
+	}
+}
+
 func TestSegmenterRejectsNonMonotonicFrames(t *testing.T) {
 	segmenter := newTestSegmenter(t, fakeClassifier{speech: true})
 	if _, err := segmenter.Push(context.Background(), testFrame(t, 1, time.Unix(30, 0))); err != nil {

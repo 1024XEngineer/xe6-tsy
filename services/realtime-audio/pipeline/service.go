@@ -411,11 +411,13 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 		if strings.TrimSpace(residualPlaybackText) == "" {
 			return nil
 		}
-		_ = s.phrasePlayback.Enqueue(PhrasePlaybackRequest{
+		if err := s.phrasePlayback.Enqueue(PhrasePlaybackRequest{
 			Turn: turn, UtteranceID: turn.ID, PhraseSequence: finalPhrasePlaybackSequence,
 			Language: target, Text: residualPlaybackText,
 			PlaybackID: "phrase_" + turn.ID + "_final", Final: true,
-		})
+		}); err != nil {
+			return finalTurnAcceptedError("enqueue final phrase playback", err)
+		}
 		return nil
 	}
 	playbackID := "playback_" + turn.ID
@@ -442,6 +444,9 @@ func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContex
 	}
 	for _, fact := range usage {
 		if err := s.usage.Publish(ctx, fact); err != nil {
+			if ok {
+				s.phraseTranslations.DiscardPhraseSubtitleTurn(turn.ID)
+			}
 			return translate.Result{}, "", false, "", err
 		}
 	}
@@ -456,16 +461,25 @@ func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContex
 			SourceLanguage: sourceLanguage, TargetLanguage: targetLanguage,
 		})
 		if translateErr != nil {
+			s.phraseTranslations.DiscardPhraseSubtitleTurn(turn.ID)
 			if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, residualResult); usageErr != nil {
 				return translate.Result{}, "", false, "", errors.Join(translateErr, usageErr)
 			}
 			return translate.Result{}, "", false, "", translateErr
 		}
 		if err := mergeTranslationResult(&result, residualResult); err != nil {
+			s.phraseTranslations.DiscardPhraseSubtitleTurn(turn.ID)
 			return translate.Result{}, "", false, "", err
 		}
 		result.Text = strings.Replace(result.Text, phraseResidualMarker, residualResult.Text, 1)
-		residualPlayback.WriteString(residualResult.Text)
+		resolved, resolveErr := s.phraseTranslations.ResolvePhraseResidualPlayback(turn.ID, segment, residualResult.Text)
+		if resolveErr != nil {
+			s.phraseTranslations.DiscardPhraseSubtitleTurn(turn.ID)
+			return translate.Result{}, "", false, "", resolveErr
+		}
+		if !resolved {
+			residualPlayback.WriteString(residualResult.Text)
+		}
 	}
 	return result, "", true, residualPlayback.String(), nil
 }

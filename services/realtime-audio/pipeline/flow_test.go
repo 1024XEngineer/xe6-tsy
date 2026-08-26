@@ -401,6 +401,18 @@ func TestMergeFinalResultPreservesFinishMetadata(t *testing.T) {
 	}
 }
 
+func TestRetainConfirmedPartialTextForStashOnlySnapshot(t *testing.T) {
+	lastConfirmed := "你好，"
+	got := retainConfirmedPartialText(asr.Event{Type: asr.EventPartial, Stash: "世界"}, &lastConfirmed)
+	if got.Text != "你好，" || got.Stash != "世界" {
+		t.Fatalf("stash-only partial = %#v, want confirmed text plus stash", got)
+	}
+	got = retainConfirmedPartialText(asr.Event{Type: asr.EventPartial, Text: "你好，世界", Stash: ""}, &lastConfirmed)
+	if got.Text != "你好，世界" || lastConfirmed != "你好，世界" {
+		t.Fatalf("confirmed partial = %#v, lastConfirmed=%q", got, lastConfirmed)
+	}
+}
+
 func TestDispatchASRPartialsDropsQueuedSnapshotsAfterFinalSettlement(t *testing.T) {
 	t.Parallel()
 	events := make(chan asr.Event, 2)
@@ -412,7 +424,7 @@ func TestDispatchASRPartialsDropsQueuedSnapshotsAfterFinalSettlement(t *testing.
 	observer := &recordingASRPartialObserver{events: make(chan realtimev1.ASRPartialEvent, 1)}
 	done := make(chan struct{})
 	go func() {
-		dispatchASRPartials(context.Background(), observer, nil, TurnContext{SessionID: "session-1", ID: "turn-1"}, "zh-CN", events, settled)
+		dispatchASRPartials(context.Background(), observer, nil, TurnContext{SessionID: "session-1", ID: "turn-1"}, "zh-CN", events, settled, nil)
 		close(done)
 	}()
 	select {

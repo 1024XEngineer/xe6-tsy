@@ -62,7 +62,10 @@ export interface ASRPartialEvent {
   event_version: 1;
   session_id: string;
   turn_id: string;
-  text: string;
+	/** Confirmed ASR prefix; omitted for a stash-only provider snapshot. */
+	text?: string;
+	/** Replaceable ASR tail; may be present without a confirmed prefix. */
+	stash?: string;
   source_language?: string;
   occurred_at: string;
 }

@@ -185,6 +185,9 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
           {transientASRSubtitle ? (
             <p aria-label="临时识别结果" aria-live="polite" className={styles.transientASRSubtitle}>
               {transientASRSubtitle.text}
+              {transientASRSubtitle.stash ? (
+                <span className={styles.transientASRStash}>{transientASRSubtitle.stash}</span>
+              ) : null}
             </p>
           ) : null}
           {transientPhraseSubtitles.length > 0 ? (

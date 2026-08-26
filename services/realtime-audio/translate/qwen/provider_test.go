@@ -206,6 +206,41 @@ func TestProviderTranslatesWithQwenChatCompletion(t *testing.T) {
 	}
 }
 
+func TestProviderTranslateStreamEmitsDeltas(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if !request.Stream {
+			t.Errorf("stream = false, want true")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+	provider, err := NewProvider(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	var deltas []string
+	result, err := provider.TranslateStream(context.Background(), translate.Request{Text: "你好", SourceLanguage: "zh-CN", TargetLanguage: "en-US"}, func(delta string) { deltas = append(deltas, delta) })
+	if err != nil {
+		t.Fatalf("TranslateStream() error = %v", err)
+	}
+	if result.Text != "hello" || len(deltas) != 2 || deltas[0] != "hel" || deltas[1] != "lo" {
+		t.Fatalf("result=%#v deltas=%#v", result, deltas)
+	}
+}
+
 func TestProviderRetriesAfterMetaRefusal(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -161,14 +161,14 @@ func (s *startupPhrasePlaybackScheduler) ResetUtterance(string, string) {
 	s.mu.Unlock()
 }
 
-func (s *startupPhrasePlaybackScheduler) Enqueue(request PhrasePlaybackRequest) bool {
+func (s *startupPhrasePlaybackScheduler) Enqueue(request PhrasePlaybackRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.ready {
-		return false
+		return ErrPhrasePlaybackClosed
 	}
 	s.requests = append(s.requests, request)
-	return true
+	return nil
 }
 
 func (*startupPhrasePlaybackScheduler) InterruptCurrent(context.Context, string, string) error {

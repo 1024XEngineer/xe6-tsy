@@ -406,14 +406,18 @@ components:
     ASRPartialEvent:
       type: object
       additionalProperties: false
-      description: An ephemeral full-text ASR snapshot. Consumers replace text for the same turn_id and discard it after final settlement.
-      required: [type, event_version, session_id, turn_id, text, occurred_at]
+      description: An ephemeral ASR snapshot with a confirmed text prefix and replaceable stash tail.
+      required: [type, event_version, session_id, turn_id, occurred_at]
+      anyOf:
+        - required: [text]
+        - required: [stash]
       properties:
         type: { type: string, const: asr.partial }
         event_version: { type: integer, const: 1 }
         session_id: { type: string, minLength: 1, maxLength: 128 }
         turn_id: { type: string, minLength: 1, maxLength: 128 }
-        text: { type: string, minLength: 1, maxLength: 4096 }
+        text: { type: string, maxLength: 4096, description: Confirmed provider text eligible for phrase translation. }
+        stash: { type: string, minLength: 1, maxLength: 4096, description: Replaceable provider tail shown but not translated until confirmed. }
         source_language: { type: string, minLength: 1, maxLength: 128, description: Omitted while provider language detection is incomplete. }
         occurred_at: { type: string, format: date-time }
     PhraseSubtitleEvent:

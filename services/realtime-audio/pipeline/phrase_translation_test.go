@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +52,71 @@ func TestPhraseTranslationCoordinatorPublishesAndReusesOrderedPhrases(t *testing
 	}
 	if len(sourceIndex) != 2 || len(translated) != 2 || translated[0] != 1 || translated[1] != 2 {
 		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestSplitStreamTTSKeepsValidatedChunksOrdered(t *testing.T) {
+	got := splitStreamTTS("hello,world这是一段较长的尾部")
+	want := []string{"hello,", "world这是一段较长的尾部"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("splitStreamTTS() = %#v, want %#v", got, want)
+	}
+}
+
+func TestPhraseTranslationCoordinatorEnqueuesValidatedStreamResult(t *testing.T) {
+	ttsProvider := &recordingTTSProvider{}
+	audio := &recordingPhraseAudio{}
+	scheduler := newTestPhrasePlaybackScheduler(ttsProvider, audio)
+	coordinator := NewPhraseTranslationCoordinator(streamPhraseTranslateFunc(func(_ context.Context, _ translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "validated", Provider: "stream", Model: "v1"}, nil
+	}), "stream", &recordingPhraseSubtitleObserver{}, nil)
+	coordinator.SetPhrasePlaybackScheduler(scheduler)
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: true}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	waitForPhraseTranslation(t, coordinator, turn.ID)
+	if !audio.waitFor(1, time.Second) {
+		t.Fatal("validated stream playback did not start")
+	}
+	requests := ttsProvider.requests()
+	if len(requests) != 1 || requests[0].Text != "validated" {
+		t.Fatalf("TTS requests = %#v, want validated stream result only", requests)
+	}
+}
+
+func TestPhraseTranslationCoordinatorOrdersOutOfOrderStreamPlayback(t *testing.T) {
+	ttsProvider := &recordingTTSProvider{}
+	audio := &recordingPhraseAudio{}
+	scheduler := newTestPhrasePlaybackScheduler(ttsProvider, audio)
+	translator := &orderedStreamTranslator{
+		started: map[string]chan struct{}{"第一句": make(chan struct{}), "第二句": make(chan struct{})},
+		release: map[string]chan struct{}{"第一句": make(chan struct{}), "第二句": make(chan struct{})},
+	}
+	coordinator := NewPhraseTranslationCoordinator(translator, "stream", &recordingPhraseSubtitleObserver{}, nil)
+	coordinator.SetPhrasePlaybackScheduler(scheduler)
+	turn := testTurn()
+	turn.LanguageConfig.OutputRoutes = []session.OutputRoute{{TargetLanguage: "en-US", TTSEnabled: true}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "第一句"))
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 2, "第二句"))
+	<-translator.started["第二句"]
+	close(translator.release["第二句"])
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(audio.ids()) != 0 {
+			t.Fatal("phrase 2 playback started before phrase 1")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	<-translator.started["第一句"]
+	close(translator.release["第一句"])
+	if !audio.waitFor(2, time.Second) {
+		t.Fatal("ordered stream playback did not start")
+	}
+	requests := ttsProvider.requests()
+	if len(requests) != 2 || requests[0].Text != "第一句译文" || requests[1].Text != "第二句译文" {
+		t.Fatalf("stream playback requests = %#v, want phrase 1 then phrase 2", requests)
 	}
 }
 
@@ -401,6 +467,42 @@ func (f phraseTranslateFunc) Translate(ctx context.Context, request translate.Re
 }
 
 var _ translate.Provider = phraseTranslateFunc(nil)
+
+type streamPhraseTranslateFunc func(context.Context, translate.Request) (translate.Result, error)
+
+func (f streamPhraseTranslateFunc) Translate(ctx context.Context, request translate.Request) (translate.Result, error) {
+	return f(ctx, request)
+}
+
+func (f streamPhraseTranslateFunc) TranslateStream(ctx context.Context, request translate.Request, onDelta func(string)) (translate.Result, error) {
+	if onDelta != nil {
+		onDelta("provisional")
+	}
+	return f(ctx, request)
+}
+
+var _ translate.StreamProvider = streamPhraseTranslateFunc(nil)
+
+type orderedStreamTranslator struct {
+	started map[string]chan struct{}
+	release map[string]chan struct{}
+}
+
+func (t *orderedStreamTranslator) Translate(context.Context, translate.Request) (translate.Result, error) {
+	return translate.Result{}, nil
+}
+
+func (t *orderedStreamTranslator) TranslateStream(ctx context.Context, request translate.Request, _ func(string)) (translate.Result, error) {
+	close(t.started[request.Text])
+	select {
+	case <-t.release[request.Text]:
+	case <-ctx.Done():
+		return translate.Result{}, ctx.Err()
+	}
+	return translate.Result{Text: request.Text + "译文", Provider: "stream", Model: "v1"}, nil
+}
+
+var _ translate.StreamProvider = (*orderedStreamTranslator)(nil)
 
 type phraseObserverFunc func(context.Context, realtimev1.PhraseSubtitleEvent)
 

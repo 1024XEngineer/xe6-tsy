@@ -30,6 +30,7 @@ type ASRPartialEvent struct {
 	SessionID      string    `json:"session_id"`
 	TurnID         string    `json:"turn_id"`
 	Text           string    `json:"text"`
+	Stash          string    `json:"stash,omitempty"`
 	SourceLanguage string    `json:"source_language,omitempty"`
 	OccurredAt     time.Time `json:"occurred_at"`
 }
@@ -45,8 +46,12 @@ func (event ASRPartialEvent) Validate() error {
 		return invalidASRPartialField("session_id")
 	case !validASRPartialText(event.TurnID, maxASRPartialIDLength):
 		return invalidASRPartialField("turn_id")
-	case !validASRPartialText(event.Text, maxASRPartialTextLength):
+	case event.Text == "" && event.Stash == "":
 		return invalidASRPartialField("text")
+	case event.Text != "" && !validASRPartialText(event.Text, maxASRPartialTextLength):
+		return invalidASRPartialField("text")
+	case event.Stash != "" && !validASRPartialText(event.Stash, maxASRPartialTextLength):
+		return invalidASRPartialField("stash")
 	case event.SourceLanguage != "" && !validASRPartialText(event.SourceLanguage, maxASRPartialIDLength):
 		return invalidASRPartialField("source_language")
 	case event.OccurredAt.IsZero():

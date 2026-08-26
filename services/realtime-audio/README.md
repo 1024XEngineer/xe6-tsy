@@ -24,8 +24,8 @@ Windows overlapped UDP 接收路径中可能破坏栈，导致 Pion RTP 读取�
 - 每个会话只支持一组双语语言对，默认 `zh-CN <-> en-US`
 - 只支持两方面对面
 - `asr.partial` 在已鉴权的 `translation-events` DataChannel 上作为可丢弃、同 Turn 覆盖的临时原文字幕发送；它不持久化，也不进入翻译、TTS、FinalTurn、用量、命令或投递
-- `phrase.subtitle` 仅在 `REALTIME_PHRASE_SUBTITLES=enabled` 时为同传 Turn 发送稳定原文短语；它按 utterance 内 sequence 有序、best-effort 交付，且不持久化、不进入翻译、TTS、FinalTurn 或用量
-- 只有句末 final 原文才进入翻译和 TTS；`translation.final` 到达后客户端清理对应临时字幕；启用长句投递能力后，原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
+- `phrase.subtitle` 仅在 `REALTIME_PHRASE_SUBTITLES=enabled` 时为同传 Turn 发送稳定原文短语；它按 utterance 内 sequence 有序、best-effort 交付，且不持久化。稳定短语会在讲话过程中立即进入增量翻译；译文完成后按同一 sequence 进入有序 TTS 调度
+- VAD final 只负责冲刷当前 Turn 尚未提交的 residual 文本，避免重复翻译；`translation.final` 到达后客户端清理对应临时字幕；启用长句投递能力后，原文超过 50 个 Unicode 字符或原声音频时长达到 20 秒的 Turn 跳过初始 TTS
 - TTS / 渠道输出可按 target_language 单独关闭
 - TTS 播放中检测到对方发言时，发送 `playback.stop`
 
@@ -148,7 +148,8 @@ hysteresis). On first Windows start, missing ONNX Runtime is downloaded into
 `LOCAL_VAD_PROVIDER=energy`.
 
 The Command Gate owns a separate classifier and `vad.Segmenter` state, but uses the same
-800 ms end-silence and 12 second safety boundary as ordinary turns. A validated wake transfers
+550 ms end-silence as ordinary turns. Normal Turn segmentation has no product-level maximum
+duration; the command gate still has its own bounded command window. A validated wake transfers
 the ordinary Segmenter's complete active utterance into the command Segmenter; there is no fixed
 two-second server pre-roll. A duplicate wake never claims or resets ordinary audio.
 
@@ -198,7 +199,7 @@ Required env:
 | `REALTIME_OUTBOX` | `memory` | `memory` 仅允许 `APP_ENV=local/test/development`；其他环境使用 `valkey`，需要 `REDIS_URL` |
 | `REALTIME_REDIS_MODE` | `standalone` | `standalone` 或 `cluster`；Cluster endpoint 必须显式选择 `cluster`，且 `REDIS_URL` 不带数据库路径 |
 | `LINGOW_MODE_CHANGED_STREAM` | `lingow:realtime:mode:changed` | `realtime.mode.changed` 的 Valkey Stream |
-| `ASR_SERVER_VAD` | _(unset → false in entrypoint)_ | Set `true` to enable Qwen server_vad; the local VAD keeps 500 ms prefix audio and preserves quiet frames inside an utterance |
+| `ASR_SERVER_VAD` | _(unset → false in entrypoint)_ | Set `true` only when Qwen should own endpointing; by default the local VAD owns Turn boundaries, keeps 500 ms prefix audio, and preserves quiet frames inside an utterance |
 | `LOCAL_VAD_PROVIDER` | `silero` | `silero` (default) or `energy` fallback |
 | `LOCAL_VAD_MODEL_PATH` | `vad/silero/silero_vad.onnx` | Silero v5 ONNX model used by the local segmenter |
 | `ONNXRUNTIME_SHARED_LIBRARY_PATH` | auto (`third_party/onnxruntime/lib/...`) | downloaded on first Windows start when missing |

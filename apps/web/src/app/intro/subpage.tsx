@@ -66,34 +66,63 @@ export function DocumentationPage() {
           <p>文档目录</p>
           <nav>
             <div className={styles.docsNavGroup}>
+              <strong>产品</strong>
+              <a href="#overview"><span>01</span>产品概览</a>
+              <a href="#capabilities"><span>06</span>核心能力</a>
+              <a href="#scope"><span>07</span>当前边界</a>
+            </div>
+            <div className={styles.docsNavGroup}>
               <strong>入门</strong>
-              <a href="#quickstart"><span>01</span>快速开始</a>
+              <a href="#quickstart"><span>02</span>快速开始</a>
             </div>
             <div className={styles.docsNavGroup}>
               <strong>系统</strong>
-              <a href="#architecture"><span>02</span>系统架构</a>
-              <a href="#contracts"><span>03</span>协议与事件</a>
+              <a href="#architecture"><span>03</span>系统架构</a>
+              <a href="#contracts"><span>04</span>协议与事件</a>
             </div>
             <div className={styles.docsNavGroup}>
               <strong>扩展</strong>
-              <a href="#device-sdk"><span>04</span>Device SDK</a>
-            </div>
-            <div className={styles.docsNavGroup}>
-              <strong>产品</strong>
-              <a href="#capabilities"><span>05</span>核心能力</a>
-              <a href="#scope"><span>06</span>当前边界</a>
+              <a href="#device-sdk"><span>05</span>Device SDK</a>
             </div>
             <div className={styles.docsNavGroup}>
               <strong>资源</strong>
-              <a href="#resources"><span>07</span>相关文档</a>
+              <a href="#resources"><span>08</span>相关文档</a>
             </div>
           </nav>
           <a className={styles.docsRepositoryLink} href="https://github.com/jinyu918/xe6-tsy" target="_blank" rel="noreferrer">查看仓库 <ArrowUpRight size={15}/></a>
         </aside>
         <div className={styles.docsContent}>
           <Reveal>
+            <section className={styles.docsSection} id="overview">
+              <p className={styles.sectionEyebrow}>01 / PRODUCT OVERVIEW</p>
+              <h2>先理解产品，<br /><span>再理解技术。</span></h2>
+              <p>Lingow 面向同一物理空间内的临时双语交流。用户选择一组语言对，使用现有音频终端开始会话，系统在这组语言内识别当前发言、翻译成另一种语言，并通过译音或企业微信投递帮助双方继续交流。</p>
+              <div className={styles.docsCallout}><strong>P0 产品目标</strong><p>不要求登录、注册或参与者登记，让通常为两人的临时交流完成稳定的双语听译闭环。字幕是可选展示，音频是主链路。</p></div>
+              <h3>它解决什么问题</h3>
+              <ul className={styles.docsList}>
+                <li><Check size={16} weight="bold" />双方没有共同语言时，仍能在同一场对话中自然来回交流。</li>
+                <li><Check size={16} weight="bold" />交流是临时发生的，不需要先登录、注册或建立参与者资料。</li>
+                <li><Check size={16} weight="bold" />译音过长时，可通过单向输出和异步投递减少对交流节奏的阻塞。</li>
+                <li><Check size={16} weight="bold" />语言可能在交流中变化，会话内修改配置并从下一 Turn 生效。</li>
+              </ul>
+              <h3>两种输出方式</h3>
+              <div className={styles.docsContractGrid}>
+                <article><span>BIDIRECTIONAL</span><h3>双向听译</h3><p>双方都听到目标语言译音，每个有效 Turn 都经过识别、翻译、Final Turn 保存和 TTS。</p></article>
+                <article><span>ONE-WAY + DELIVERY</span><h3>单向听译与投递</h3><p>一侧播放译音，另一侧的有效 Final Turn 异步发送到已绑定的企业微信目标。</p></article>
+              </div>
+              <h3>一次会话如何开始</h3>
+              <div className={styles.docsFlow}>
+                <div><span>01</span><strong>选择语言对与输出方式</strong><p>在会话开始前确定当前支持的语言范围。</p></div>
+                <div><span>02</span><strong>创建临时会话并建立实时连接</strong><p>API 签发短期票据，Realtime Audio 建立 WebRTC 链路。</p></div>
+                <div><span>03</span><strong>听音、处理、播放或投递</strong><p>每轮语音完成 VAD、ASR、翻译，再按输出配置继续。</p></div>
+                <div><span>04</span><strong>结束并释放资源</strong><p>客户端停止采集和播放，服务端幂等结束并回收实时资源。</p></div>
+              </div>
+            </section>
+          </Reveal>
+
+          <Reveal>
             <section className={styles.docsSection} id="quickstart">
-              <p className={styles.sectionEyebrow}>01 / GETTING STARTED</p>
+              <p className={styles.sectionEyebrow}>02 / GETTING STARTED</p>
               <h2>快速开始</h2>
               <p>本地联调由 API、Realtime Audio 与 Web 三部分组成。先启动后端依赖，再启动浏览器入口。</p>
               <div className={styles.docsCallout}><strong>开始之前</strong><p>需要本地可用的 Node.js 环境；完整语音会话还需要 API 与 Realtime Audio 服务。</p></div>
@@ -109,7 +138,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="architecture">
-              <p className={styles.sectionEyebrow}>02 / ARCHITECTURE</p>
+              <p className={styles.sectionEyebrow}>03 / ARCHITECTURE</p>
               <h2>系统架构</h2>
               <p>Lingow 把产品交互、业务会话和实时媒体处理分在三个清晰的职责层中。</p>
               <div className={styles.docsFlow}>
@@ -128,7 +157,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="contracts">
-              <p className={styles.sectionEyebrow}>03 / CONTRACTS</p>
+              <p className={styles.sectionEyebrow}>04 / CONTRACTS</p>
               <h2>协议与事件</h2>
               <p>控制面与实时面使用不同契约表达各自的边界。它们由同一个会话状态连接，但不重复维护媒体运行态。</p>
               <div className={styles.docsContractGrid}>
@@ -144,7 +173,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="device-sdk">
-              <p className={styles.sectionEyebrow}>04 / DEVICE SDK</p>
+              <p className={styles.sectionEyebrow}>05 / DEVICE SDK</p>
               <h2>设备接入边界</h2>
               <p>Device SDK 提供会话、模式命令、唤醒事件与重连控制的边界；具体芯片音频 HAL、WebRTC 与 KWS 模型由设备平台适配。</p>
               <div className={styles.docsCallout}><strong>保持同一条会话</strong><p>唤醒与模式切换应复用现有 Runtime 和 WebRTC 连接，不应为每次语音命令重建连接。</p></div>
@@ -159,7 +188,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="capabilities">
-              <p className={styles.sectionEyebrow}>05 / CAPABILITIES</p>
+              <p className={styles.sectionEyebrow}>06 / CAPABILITIES</p>
               <h2>核心能力</h2>
               <p>Lingow 将语音入口、实时媒体链路和可扩展的设备边界组合成一条会话体验。</p>
               <div className={styles.docsCapabilityGrid}>
@@ -173,7 +202,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="scope">
-              <p className={styles.sectionEyebrow}>06 / CURRENT SCOPE</p>
+              <p className={styles.sectionEyebrow}>07 / CURRENT SCOPE</p>
               <h2>当前边界</h2>
               <p>以下边界来自当前仓库实现和 PRD，帮助接入者区分已可联调能力与仍在演进的方向。</p>
               <ul className={styles.docsList}>
@@ -188,7 +217,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="resources">
-              <p className={styles.sectionEyebrow}>07 / RESOURCES</p>
+              <p className={styles.sectionEyebrow}>08 / RESOURCES</p>
               <h2>相关文档</h2>
               <p>从系统结构、开发约定到协议和产品范围，按需要打开对应的设计资料。</p>
               <div className={styles.docsResourceGrid}>

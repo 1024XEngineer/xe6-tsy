@@ -95,7 +95,7 @@ export function DocumentationPage() {
           <Reveal>
             <section className={styles.docsSection} id="overview">
               <p className={styles.sectionEyebrow}>01 / PRODUCT OVERVIEW</p>
-              <h2>先理解产品，<br /><span>再理解技术。</span></h2>
+              <h2>产品简介</h2>
               <p>Lingow 面向同一物理空间内的临时双语交流。用户选择一组语言对，使用现有音频终端开始会话，系统在这组语言内识别当前发言、翻译成另一种语言，并通过译音或企业微信投递帮助双方继续交流。</p>
               <h3>它解决什么问题</h3>
               <ul className={styles.docsList}>
@@ -116,6 +116,35 @@ export function DocumentationPage() {
                 <div><span>03</span><strong>听音、处理、播放或投递</strong><p>每轮语音完成 VAD、ASR、翻译，再按输出配置继续。</p></div>
                 <div><span>04</span><strong>结束并释放资源</strong><p>客户端停止采集和播放，服务端幂等结束并回收实时资源。</p></div>
               </div>
+            </section>
+          </Reveal>
+
+          <Reveal>
+            <section className={styles.docsSection} id="capabilities">
+              <p className={styles.sectionEyebrow}>06 / CAPABILITIES</p>
+              <h2>核心能力</h2>
+              <p>Lingow 将语音入口、实时媒体链路和可扩展的设备边界组合成一条会话体验。</p>
+              <div className={styles.docsCapabilityGrid}>
+                <article><span>01</span><h3>AI 语音助手</h3><p>支持唤醒词检测、自然语言命令、助手问答与模式切换。</p></article>
+                <article><span>02</span><h3>面对面同传</h3><p>在选定语言对内完成自动语言识别、流式 ASR、翻译与句末 TTS。</p></article>
+                <article><span>03</span><h3>实时会话</h3><p>通过 WebRTC 音频、可靠有序 DataChannel、运行状态和模式快照保持链路连续。</p></article>
+                <article><span>04</span><h3>记录与投递</h3><p>保存文本 Final Turn 和用量事实，并按配置支持 Email、企业微信等异步投递。</p></article>
+              </div>
+            </section>
+          </Reveal>
+
+          <Reveal>
+            <section className={styles.docsSection} id="scope">
+              <p className={styles.sectionEyebrow}>07 / CURRENT SCOPE</p>
+              <h2>当前边界</h2>
+              <p>以下边界来自当前仓库实现和 PRD，帮助接入者区分已可联调能力与仍在演进的方向。</p>
+              <ul className={styles.docsList}>
+                <li><Check size={16} weight="bold" />Web 是当前主要可运行的联调入口，默认以 AI 助手模式创建新会话。</li>
+                <li><Check size={16} weight="bold" />Mobile 当前提供可编译、可测试的控制面核心，不包含 UI、PeerConnection 或原生 KWS。</li>
+                <li><Check size={16} weight="bold" />Device SDK 提供鉴权、会话、模式、唤醒事件和重连边界，具体音频 HAL、WebRTC 与 KWS 模型由平台适配。</li>
+                <li><Check size={16} weight="bold" />管理后台、订单、支付、发票、多人会议同传和硬件制造不属于当前产品范围。</li>
+              </ul>
+              <div className={styles.docsCallout}><strong>P0 产品闭环</strong><p>当前优先验证免登录临时会话、双语听译、播放控制、失败恢复和不重复投递；账户化与长句增强属于后续阶段。</p></div>
             </section>
           </Reveal>
 
@@ -182,35 +211,6 @@ export function DocumentationPage() {
                 <li><Check size={16} weight="bold" />自然语言命令沿用当前 WebRTC 音轨进入实时服务。</li>
                 <li><Check size={16} weight="bold" />模型文件、阈值和本地推理运行时由客户端负责。</li>
               </ul>
-            </section>
-          </Reveal>
-
-          <Reveal>
-            <section className={styles.docsSection} id="capabilities">
-              <p className={styles.sectionEyebrow}>06 / CAPABILITIES</p>
-              <h2>核心能力</h2>
-              <p>Lingow 将语音入口、实时媒体链路和可扩展的设备边界组合成一条会话体验。</p>
-              <div className={styles.docsCapabilityGrid}>
-                <article><span>01</span><h3>AI 语音助手</h3><p>支持唤醒词检测、自然语言命令、助手问答与模式切换。</p></article>
-                <article><span>02</span><h3>面对面同传</h3><p>在选定语言对内完成自动语言识别、流式 ASR、翻译与句末 TTS。</p></article>
-                <article><span>03</span><h3>实时会话</h3><p>通过 WebRTC 音频、可靠有序 DataChannel、运行状态和模式快照保持链路连续。</p></article>
-                <article><span>04</span><h3>记录与投递</h3><p>保存文本 Final Turn 和用量事实，并按配置支持 Email、企业微信等异步投递。</p></article>
-              </div>
-            </section>
-          </Reveal>
-
-          <Reveal>
-            <section className={styles.docsSection} id="scope">
-              <p className={styles.sectionEyebrow}>07 / CURRENT SCOPE</p>
-              <h2>当前边界</h2>
-              <p>以下边界来自当前仓库实现和 PRD，帮助接入者区分已可联调能力与仍在演进的方向。</p>
-              <ul className={styles.docsList}>
-                <li><Check size={16} weight="bold" />Web 是当前主要可运行的联调入口，默认以 AI 助手模式创建新会话。</li>
-                <li><Check size={16} weight="bold" />Mobile 当前提供可编译、可测试的控制面核心，不包含 UI、PeerConnection 或原生 KWS。</li>
-                <li><Check size={16} weight="bold" />Device SDK 提供鉴权、会话、模式、唤醒事件和重连边界，具体音频 HAL、WebRTC 与 KWS 模型由平台适配。</li>
-                <li><Check size={16} weight="bold" />管理后台、订单、支付、发票、多人会议同传和硬件制造不属于当前产品范围。</li>
-              </ul>
-              <div className={styles.docsCallout}><strong>P0 产品闭环</strong><p>当前优先验证免登录临时会话、双语听译、播放控制、失败恢复和不重复投递；账户化与长句增强属于后续阶段。</p></div>
             </section>
           </Reveal>
 

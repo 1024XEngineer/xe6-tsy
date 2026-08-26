@@ -13,6 +13,27 @@ import styles from "../voice.module.css";
 
 const transcriptLimit = 12;
 
+const cjkTextPattern = /[\u2e80-\u2fff\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]/u;
+const noSpaceBeforePattern = /^[\s.,!?;:，。！？；：、)\]}»”’]/u;
+const noSpaceAfterPattern = /[\s([{«“‘]$/u;
+
+function joinPhraseChunks(chunks: string[]) {
+  return chunks.reduce((result, chunk) => {
+    if (!result) return chunk;
+    if (
+      /\s$/u.test(result) ||
+      /^\s/u.test(chunk) ||
+      cjkTextPattern.test(result) ||
+      cjkTextPattern.test(chunk) ||
+      noSpaceBeforePattern.test(chunk) ||
+      noSpaceAfterPattern.test(result)
+    ) {
+      return result + chunk;
+    }
+    return `${result} ${chunk}`;
+  }, "");
+}
+
 type Props = {
   activeMode: "assistant" | "interpretation";
   assistantReplies: AssistantReply[];
@@ -30,11 +51,11 @@ function LiveInterpretationTurn({
   const activePhrases = activeUtteranceId
     ? phraseSubtitles.filter((subtitle) => subtitle.utteranceId === activeUtteranceId)
     : [];
-  const phraseSource = activePhrases.map((subtitle) => subtitle.sourceText).join("");
+  const phraseSource = joinPhraseChunks(activePhrases.map((subtitle) => subtitle.sourceText));
   const phraseTranslation = activePhrases
     .filter((subtitle) => subtitle.status === "translated")
-    .map((subtitle) => subtitle.translatedText)
-    .join("");
+    .map((subtitle) => subtitle.translatedText);
+  const joinedPhraseTranslation = joinPhraseChunks(phraseTranslation);
   // ASR partials are the freshest whole-utterance snapshot. Phrase subtitles
   // fill the same row while the snapshot is catching up or unavailable.
   const partialSource = asrPartial?.text || "";
@@ -42,7 +63,7 @@ function LiveInterpretationTurn({
     partialSource.length >= phraseSource.length ? partialSource : phraseSource;
   const stash = asrPartial?.stash || "";
 
-  if (!source && !stash && !phraseTranslation) return null;
+  if (!source && !stash && !joinedPhraseTranslation) return null;
 
   return (
     <motion.article
@@ -57,8 +78,8 @@ function LiveInterpretationTurn({
           {stash ? <span className={styles.transcriptStash}>{stash}</span> : null}
         </p>
       ) : null}
-      {phraseTranslation ? (
-        <p className={styles.transcriptTranslation}>{phraseTranslation}</p>
+      {joinedPhraseTranslation ? (
+        <p className={styles.transcriptTranslation}>{joinedPhraseTranslation}</p>
       ) : null}
     </motion.article>
   );

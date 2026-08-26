@@ -76,6 +76,37 @@ describe("ConversationTranscript", () => {
     expect(within(transcript).getByText("未确认尾巴").className).toContain("transcriptStash");
   });
 
+  it("preserves word boundaries for English phrase subtitles", () => {
+    render(
+      <ConversationTranscript
+        activeMode="interpretation"
+        assistantReplies={[]}
+        asrPartial={null}
+        phraseSubtitles={[
+          {
+            utteranceId: "turn-2",
+            phraseSequence: 1,
+            sourceText: "Hello,",
+            translatedText: "Bonjour,",
+            status: "translated",
+          },
+          {
+            utteranceId: "turn-2",
+            phraseSequence: 2,
+            sourceText: "world",
+            translatedText: "monde",
+            status: "translated",
+          },
+        ]}
+        turns={[]}
+      />,
+    );
+
+    const transcript = screen.getByRole("region", { name: "同声传译记录" });
+    expect(transcript).toHaveTextContent("Hello, world");
+    expect(transcript).toHaveTextContent("Bonjour, monde");
+  });
+
   it("seals the final turn and opens a separate group for the next VAD", () => {
     render(
       <ConversationTranscript

@@ -97,7 +97,6 @@ export function DocumentationPage() {
               <p className={styles.sectionEyebrow}>01 / PRODUCT OVERVIEW</p>
               <h2>先理解产品，<br /><span>再理解技术。</span></h2>
               <p>Lingow 面向同一物理空间内的临时双语交流。用户选择一组语言对，使用现有音频终端开始会话，系统在这组语言内识别当前发言、翻译成另一种语言，并通过译音或企业微信投递帮助双方继续交流。</p>
-              <div className={styles.docsCallout}><strong>P0 产品目标</strong><p>让通常为两人的临时交流完成稳定的双语听译闭环。</p></div>
               <h3>它解决什么问题</h3>
               <ul className={styles.docsList}>
                 <li><Check size={16} weight="bold" />双方没有共同语言时，仍能在同一场对话中自然来回交流。</li>

@@ -75,6 +75,26 @@ import {
 const POLL_INTERVAL_MS = 1200;
 const TTS_INPUT_RESUME_DELAY_MS = 300;
 export const COMMAND_UPLINK_TIMEOUT_MS = 15_000;
+export const END_REQUEST_TIMEOUT_MS = 5_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("结束请求超时，服务端可能仍在处理，请稍后确认会话状态。")),
+      timeoutMs,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 export type SessionDebugInfo = {
   accountId: string | null;
@@ -649,17 +669,22 @@ export function useVoiceSession() {
     startAbortRef.current?.abort();
     startAbortRef.current = null;
     stopPolling();
-    cleanupMedia();
-    wakeRef.current?.stop();
 
     const token = accessTokenRef.current;
     const sessionId = sessionIdRef.current;
-    if (token && sessionId) {
-      try {
-        await endVoiceSession(token, sessionId, "user_requested");
-      } catch (error) {
-        setHintMessage(errorMessage(error, "结束会话失败"));
+    let endHint: string | null = null;
+    try {
+      if (token && sessionId) {
+        await withTimeout(
+          endVoiceSession(token, sessionId, "user_requested"),
+          END_REQUEST_TIMEOUT_MS,
+        );
       }
+    } catch (error) {
+      endHint = errorMessage(error, "结束会话失败");
+    } finally {
+      cleanupMedia();
+      wakeRef.current?.stop();
     }
 
     sessionIdRef.current = null;
@@ -677,7 +702,7 @@ export function useVoiceSession() {
     setConfigSyncStatus("idle");
     dispatch({ type: "END" });
     setStatusMessage(initialMode === "assistant" ? "轻触开启助手" : "轻触开启传译");
-    setHintMessage(null);
+    setHintMessage(endHint);
     setDebug((prev) => ({
       accountId: accountIdRef.current,
       sessionId: null,

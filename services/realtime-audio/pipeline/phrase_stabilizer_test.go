@@ -127,7 +127,7 @@ func TestCommonPhrasePrefix(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			if got := commonPhrasePrefix(test.left, test.right); got != test.wantPrefix {
-			t.Fatalf("commonPhrasePrefix(%q, %q) = %q, want %q", test.left, test.right, got, test.wantPrefix)
+				t.Fatalf("commonPhrasePrefix(%q, %q) = %q, want %q", test.left, test.right, got, test.wantPrefix)
 			}
 		})
 	}

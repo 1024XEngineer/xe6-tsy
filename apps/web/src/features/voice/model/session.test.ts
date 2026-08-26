@@ -86,11 +86,11 @@ describe("sessionReducer", () => {
   it("replaces partial text and clears it when the matching final settles", () => {
     const partial = sessionReducer(initialSession, {
       type: "SET_ASR_PARTIAL",
-      partial: { turnId: "turn-1", text: "你好", sourceLanguage: "zh-CN" },
+      partial: { turnId: "turn-1", text: "你好", stash: "，请", sourceLanguage: "zh-CN" },
     });
     const replaced = sessionReducer(partial, {
       type: "SET_ASR_PARTIAL",
-      partial: { turnId: "turn-1", text: "你好，请问", sourceLanguage: "zh-CN" },
+      partial: { turnId: "turn-1", text: "你好，请问", stash: "您好吗？", sourceLanguage: "zh-CN" },
     });
     const settled = sessionReducer(replaced, {
       type: "ADD_TURN",
@@ -108,6 +108,7 @@ describe("sessionReducer", () => {
     });
 
     expect(replaced.asrPartial?.text).toBe("你好，请问");
+    expect(replaced.asrPartial?.stash).toBe("您好吗？");
     expect(settled.asrPartial).toBeNull();
     expect(latePartial.asrPartial).toBeNull();
   });

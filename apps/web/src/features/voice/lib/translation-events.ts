@@ -13,6 +13,7 @@ export type ASRPartialEvent = {
   sessionId: string;
   turnId: string;
   text: string;
+  stash?: string;
   sourceLanguage: string;
   occurredAt: string;
 };
@@ -97,8 +98,9 @@ export function parseASRPartial(payload: unknown): ASRPartialEvent | null {
   const sessionId = readString(source, "session_id", "sessionId");
   const turnId = readString(source, "turn_id", "turnId");
   const text = readString(source, "text");
+  const stash = readString(source, "stash");
   const occurredAt = readString(source, "occurred_at", "occurredAt");
-  if (!sessionId || !turnId || !text || !occurredAt || Number.isNaN(Date.parse(occurredAt))) {
+  if (!sessionId || !turnId || (!text && !stash) || !occurredAt || Number.isNaN(Date.parse(occurredAt))) {
     return null;
   }
 
@@ -108,6 +110,7 @@ export function parseASRPartial(payload: unknown): ASRPartialEvent | null {
     sessionId,
     turnId,
     text,
+    stash,
     sourceLanguage: readString(source, "source_language", "sourceLanguage"),
     occurredAt,
   };

@@ -970,6 +970,7 @@ export function useVoiceSession() {
                 partial: {
                   turnId: partial.turnId,
                   text: partial.text,
+                  stash: partial.stash,
                   sourceLanguage: partial.sourceLanguage,
                 },
               });

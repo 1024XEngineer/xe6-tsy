@@ -18,7 +18,7 @@ import styles from "./intro.module.css";
 export function ProductPage() {
   return (
     <SubpageFrame>
-      <SubpageHero eyebrow="PRODUCT / 01" title={<>一个实时系统，<br /><span>两种工作方式。</span></>} copy="Lingow 面向同一物理空间内的临时交流：选择语言对，开始会话，让双方继续用自己的语言说话。" />
+      <SubpageHero eyebrow="PRODUCT / 01" title={<>一个实时系统，<br /><span>两种工作方式。</span></>} copy="Lingow 面向同一物理空间内的临时交流：选择语言对，开始会话，让双方继续用自己的语言说话。" aside={<HeroAside label="SESSION / P0" title="zh-CN ↔ en-US" items={["临时会话", "双向听译", "企业微信投递"]} />} />
       <Reveal><section className={styles.detailSection}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>01 / MODES</p><h2>根据现场，选择<br /><span>合适的声音入口。</span></h2></div><div className={styles.detailSplit}><DetailPanel label="P0 / 面对面同传" title="让双方用自己的语言交流。" copy="一场临时会话只需要一组语言对。系统在当前配置内识别发言、翻译并播报，字幕和投递是可选输出。" items={["不要求登录、注册或参与者登记", "语言配置固定在当前 Turn，修改从下一 Turn 生效", "双向听译或单向听译与企业微信投递"]} visual="双语会话 / zh-CN ↔ en-US" /><DetailPanel label="P1 / AI 语音助手" title="把下一步交给声音。" copy="Web 当前默认以助手模式启动。唤醒 Lingow 后，可用自然语言完成问答、命令和模式切换，并复用现有实时连接。" items={["本地唤醒词“小灵小灵”", "自然语言语义命令与助手问答", "与 interpretation 模式共用一条 WebRTC 会话"]} visual="assistant / interpretation" /></div></section></Reveal>
       <Reveal><section className={styles.detailSectionAlt}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>02 / PIPELINE</p><h2>每一次回应，<br /><span>都有清晰的路径。</span></h2></div><div className={styles.detailPipeline}>{[{title:"聆听", copy:"捕捉双方语音，保持对话节奏。", icon:Microphone},{title:"识别", copy:"将连续声音转换为可理解的文本。", icon:Waveform},{title:"翻译", copy:"在两个语言槽位之间完成实时转换。", icon:Translate},{title:"传达", copy:"通过语音、字幕或消息传递结果。", icon:ArrowRight}].map(({title,copy,icon:Icon}, index)=><div className={styles.detailPipelineItem} key={title}><span>0{index+1}</span><Icon size={24}/><h3>{title}</h3><p>{copy}</p></div>)}</div></section></Reveal>
       <Reveal><section className={styles.detailSection}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>03 / SESSION RULES</p><h2>轻量开始，<br /><span>明确结束。</span></h2><p>产品页只展示已经写进协议和实现边界的行为。它是一场活动会话，不是历史工作区。</p></div><div className={styles.productSignalGrid}><Signal title="开始" value="选择语言对，取得短期票据，建立 WebRTC 连接。" label="TEMPORARY SESSION" /><Signal title="进行中" value="听音 → 处理 → 播放或投递；有效新发言可以打断当前译音。" label="RUNTIME STATE" /><Signal title="结束" value="停止采集和播放，幂等 End，服务端确认后释放实时资源。" label="IDEMPOTENT END" /></div></section></Reveal>
@@ -31,7 +31,7 @@ export function ProductPage() {
 export function AboutPage() {
   return (
     <SubpageFrame>
-      <SubpageHero eyebrow="ABOUT LINGOW / 01" title={<>把语言转换，<br /><span>变成对话的连续性。</span></>} copy="Lingow 是面向 Web、移动端和设备控制核心的 AI 语音助手与面对面同传系统。我们先把一场临时交流做短、做清楚，再把边界交给更多终端。" />
+      <SubpageHero eyebrow="ABOUT LINGOW / 01" title={<>把语言转换，<br /><span>变成对话的连续性。</span></>} copy="Lingow 是面向 Web、移动端和设备控制核心的 AI 语音助手与面对面同传系统。我们先把一场临时交流做短、做清楚，再把边界交给更多终端。" aside={<HeroAside label="PROJECT STATUS" title="Open source" items={["Web / 可运行入口", "Mobile / 控制核心", "Device / 平台适配"]} />} />
       <Reveal><section className={styles.detailSection}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>01 / PRINCIPLE</p><h2>让技术退后一步，<br /><span>让人回到对话里。</span></h2></div><div className={styles.principleGrid}><Principle icon={Microphone} title="先听见" copy="把连续语音当成对话，而不是一串等待处理的文件。" /><Principle icon={Translate} title="再理解" copy="在双方语言之间建立自然的来回，不打断交流节奏。" /><Principle icon={GlobeHemisphereWest} title="能扩展" copy="用清晰的协议和控制边界连接更多终端与场景。" /></div></section></Reveal>
       <Reveal><section className={styles.architectureSection}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>02 / ARCHITECTURE</p><h2>三层职责，<br /><span>一条会话。</span></h2><p>客户端负责采集、播放和交互；API 拥有长期业务状态；Realtime Audio 是 WebRTC 连接和运行时状态机的事实来源。跨端字段先进入 contracts。</p></div><div className={styles.aboutArchitecture}><ArchitectureRow icon={GlobeHemisphereWest} title="Web / Mobile / Device" copy="会话配置、字幕、播报、唤醒和控制入口。" /><ArchitectureRow icon={Code} title="API Control Plane" copy="账户、会话、语言配置、Final Turn、用量和异步消息。" /><ArchitectureRow icon={Waveform} title="Realtime Audio" copy="WebRTC、VAD、ASR、翻译、TTS、打断和运行状态。" /><ArchitectureRow icon={Code} title="packages/contracts" copy="REST、信令、实时事件、错误码和状态定义的唯一来源。" /></div></section></Reveal>
       <Reveal><section className={styles.detailSectionAlt}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>03 / CURRENT STAGE</p><h2>诚实地展示，<br /><span>正在发生的事情。</span></h2><p>README 和工程文档把“可运行入口”“控制核心”和“平台适配”分得很清楚，介绍页也保持同样的边界。</p></div><div className={styles.stageGrid}><div><p className={styles.stageNumber}>WEB</p><h3>主要可运行入口</h3><p>Next.js Web 负责会话、语言设置、WebRTC、字幕、助手回复和 TTS 交互，默认从 AI 助手模式开始。</p></div><div><p className={styles.stageNumber}>MOBILE</p><h3>控制面核心</h3><p>Mobile 当前提供可编译、可测试的 TypeScript 控制面核心，尚未绑定 UI、PeerConnection 或原生 KWS。</p></div><div><p className={styles.stageNumber}>DEVICE SDK</p><h3>接口而非成品硬件</h3><p>Device SDK 提供鉴权、会话、模式、唤醒事件和重连边界；具体音频 HAL、WebRTC 和 KWS 模型由平台适配。</p></div><div><p className={styles.stageNumber}>OUT OF SCOPE</p><h3>明确不承诺</h3><p>当前不提供管理后台、订单、支付、发票、多人会议同传或硬件制造能力。</p></div></div></section></Reveal>
@@ -264,8 +264,12 @@ function SubpageFrame({ children }: { children: ReactNode }) {
   return <main className={styles.site}><SiteNav />{children}<SiteFooter /><BackToTop /></main>;
 }
 
-function SubpageHero({ eyebrow, title, copy }: { eyebrow: string; title: ReactNode; copy: string }) {
-  return <section className={styles.subpageHero}><p className={styles.kicker}><span className={styles.liveDot}/>{eyebrow}</p><h1>{title}</h1><p>{copy}</p></section>;
+function SubpageHero({ eyebrow, title, copy, aside }: { eyebrow: string; title: ReactNode; copy: string; aside: ReactNode }) {
+  return <section className={styles.subpageHero}><div className={styles.subpageHeroBody}><p className={styles.kicker}><span className={styles.liveDot}/>{eyebrow}</p><h1>{title}</h1><p>{copy}</p></div>{aside}</section>;
+}
+
+function HeroAside({ label, title, items }: { label: string; title: string; items: string[] }) {
+  return <aside className={styles.subpageHeroAside}><span>{label}</span><strong>{title}</strong><ul>{items.map((item, index) => <li key={item}><span>0{index + 1}</span>{item}</li>)}</ul></aside>;
 }
 
 function DetailPanel({ label, title, copy, items, visual }: { label: string; title: string; copy: string; items: string[]; visual: string }) {

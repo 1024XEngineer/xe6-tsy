@@ -841,3 +841,93 @@
   .aboutArchitectureRow { grid-template-columns: 24px minmax(0, 1fr) 18px; gap: 12px; padding: 18px; }
   .languageLabel { display: none; }
 }
+
+/* Subpage hero: pair the message with a compact, scannable product fact rail. */
+.subpageHero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 300px);
+  gap: clamp(48px, 8vw, 120px);
+  align-items: end;
+  padding: clamp(84px, 10vw, 130px) max(24px, calc((100vw - 1296px) / 2)) 92px;
+  text-align: left;
+}
+
+.subpageHeroBody {
+  max-width: 820px;
+}
+
+.subpageHero .kicker {
+  justify-content: flex-start;
+}
+
+.subpageHero h1 {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.subpageHero > .subpageHeroBody > p:last-child {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.subpageHeroAside {
+  align-self: end;
+  padding: 20px 0 0;
+  border-top: 1px solid #334257;
+}
+
+.subpageHeroAside > span {
+  display: block;
+  color: var(--accent);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  letter-spacing: .08em;
+}
+
+.subpageHeroAside > strong {
+  display: block;
+  margin-top: 16px;
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -.04em;
+}
+
+.subpageHeroAside ul {
+  display: grid;
+  gap: 10px;
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.subpageHeroAside li {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.subpageHeroAside li > span {
+  color: var(--accent);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+}
+
+.detailPanel {
+  min-height: 0;
+}
+
+@media (max-width: 760px) {
+  .subpageHero {
+    grid-template-columns: 1fr;
+    gap: 50px;
+    padding-top: 76px;
+    padding-bottom: 76px;
+  }
+
+  .subpageHeroAside {
+    width: min(100%, 360px);
+  }
+}

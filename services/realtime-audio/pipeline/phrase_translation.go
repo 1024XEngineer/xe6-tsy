@@ -21,6 +21,11 @@ type PhraseTranslationSummary struct {
 	InputTokens, OutputTokens                   int64
 	ResidualSegments                            []string
 	PlaybackResidualText                        string
+	// PlaybackResidualSegments preserves phrase order when a failed or
+	// unaccepted phrase leaves later translated text waiting behind it.
+	// PlaybackResidualText remains the compact representation for callers that
+	// only need a single fallback string.
+	PlaybackResidualSegments []string
 }
 
 // PhraseTranslationCoordinator translates stable source phrases without blocking ASR reads.
@@ -637,6 +642,11 @@ func (c *PhraseTranslationCoordinator) phraseUsageFact(turn TurnContext, phrase 
 
 const phraseResidualMarker = "\x00"
 
+// Internal separator used only while passing ordered residual playback from
+// phrase settlement to the scheduler. Provider text cannot contain this
+// control byte under the validated translation contract.
+const phrasePlaybackResidualSeparator = "\x1e"
+
 // phraseSummary builds a final translation template without waiting for phrase
 // workers. Successful phrases are reused; unresolved source segments are replaced
 // by markers and translated once by the final settlement path. The returned
@@ -667,12 +677,16 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 		if phrase.done && phrase.err == nil && strings.TrimSpace(phrase.result.Text) != "" {
 			summary.Text += phrase.result.Text
 			summary.PlaybackResidualText = joinPhrasePlaybackText(summary.PlaybackResidualText, phrase.playbackResidualText)
+			if residual := strings.TrimSpace(phrase.playbackResidualText); residual != "" {
+				summary.PlaybackResidualSegments = append(summary.PlaybackResidualSegments, residual)
+			}
 			if !mergePhraseUsage(&summary, phrase.result) {
 				return PhraseTranslationSummary{}, 0, false
 			}
 		} else {
 			summary.Text += phraseResidualMarker
 			summary.PlaybackResidualText += phraseResidualMarker
+			summary.PlaybackResidualSegments = append(summary.PlaybackResidualSegments, phraseResidualMarker)
 			summary.ResidualSegments = append(summary.ResidualSegments, phrase.event.SourceText)
 			if phrase.done && hasPhraseUsage(phrase.result) {
 				if !mergePhraseUsage(&summary, phrase.result) {
@@ -692,6 +706,7 @@ func phraseSummary(finalText string, utterance *phraseTranslationUtterance) (Phr
 	} else if strings.TrimSpace(suffix) != "" {
 		summary.Text += phraseResidualMarker
 		summary.PlaybackResidualText += phraseResidualMarker
+		summary.PlaybackResidualSegments = append(summary.PlaybackResidualSegments, phraseResidualMarker)
 		summary.ResidualSegments = append(summary.ResidualSegments, suffix)
 	}
 	return summary, cursor, true

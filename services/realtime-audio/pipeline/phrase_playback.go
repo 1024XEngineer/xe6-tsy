@@ -286,6 +286,11 @@ func signalChannel(ch chan struct{}) {
 }
 
 func shouldMergePhrasePlayback(left, right PhrasePlaybackRequest, queueFull bool) bool {
+	// Final settlement chunks represent distinct ordered playback slots. Do not
+	// coalesce them, even though their synthetic sequence numbers are large.
+	if left.Final || right.Final {
+		return false
+	}
 	if queueFull {
 		return true
 	}

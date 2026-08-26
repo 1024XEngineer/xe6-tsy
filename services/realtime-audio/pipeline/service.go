@@ -498,14 +498,24 @@ func (s *PipelineService) handleASRFinal(
 		if strings.TrimSpace(playbackText) == "" {
 			return nil
 		}
-		result := enqueuePhrasePlayback(s.phrasePlayback, PhrasePlaybackRequest{
-			Turn: turn, UtteranceID: turn.ID, PhraseSequence: finalPhrasePlaybackSequence,
-			Language: target, Text: playbackText,
-			PlaybackID: "phrase_" + turn.ID + "_final", Final: true,
-		})
-		if !result.Accepted {
-			slog.Warn("phrase_tts_enqueue_failed", "session_id", turn.SessionID, "turn_id", turn.ID,
-				"phrase_sequence", finalPhrasePlaybackSequence, "reason", result.Reason)
+		playbackChunks := strings.Split(playbackText, phrasePlaybackResidualSeparator)
+		for index, chunk := range playbackChunks {
+			if strings.TrimSpace(chunk) == "" {
+				continue
+			}
+			playbackID := "phrase_" + turn.ID + "_final"
+			if len(playbackChunks) > 1 {
+				playbackID = fmt.Sprintf("%s_%d", playbackID, index+1)
+			}
+			result := enqueuePhrasePlayback(s.phrasePlayback, PhrasePlaybackRequest{
+				Turn: turn, UtteranceID: turn.ID, PhraseSequence: finalPhrasePlaybackSequence + int64(index),
+				Language: target, Text: chunk,
+				PlaybackID: playbackID, Final: index == len(playbackChunks)-1,
+			})
+			if !result.Accepted {
+				slog.Warn("phrase_tts_enqueue_failed", "session_id", turn.SessionID, "turn_id", turn.ID,
+					"phrase_sequence", finalPhrasePlaybackSequence+int64(index), "reason", result.Reason)
+			}
 		}
 		return nil
 	}
@@ -541,6 +551,7 @@ func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContex
 	}
 	result := translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}
 	residualPlayback := summary.PlaybackResidualText
+	playbackSegments := append([]string(nil), summary.PlaybackResidualSegments...)
 	for _, segment := range summary.ResidualSegments {
 		residualResult, translateErr := s.translator.Translate(ctx, translate.Request{
 			SessionID: turn.SessionID, TurnID: turn.ID, Text: segment,
@@ -556,7 +567,19 @@ func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContex
 			return translate.Result{}, "", false, "", err
 		}
 		result.Text = strings.Replace(result.Text, phraseResidualMarker, residualResult.Text, 1)
-		residualPlayback = strings.Replace(residualPlayback, phraseResidualMarker, residualResult.Text, 1)
+		if len(playbackSegments) > 0 {
+			for index, playbackSegment := range playbackSegments {
+				if playbackSegment == phraseResidualMarker {
+					playbackSegments[index] = residualResult.Text
+					break
+				}
+			}
+		} else {
+			residualPlayback = strings.Replace(residualPlayback, phraseResidualMarker, residualResult.Text, 1)
+		}
+	}
+	if len(playbackSegments) > 0 {
+		residualPlayback = strings.Join(playbackSegments, phrasePlaybackResidualSeparator)
 	}
 	return result, "", true, residualPlayback, nil
 }

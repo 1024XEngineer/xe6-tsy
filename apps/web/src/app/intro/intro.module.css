@@ -931,3 +931,114 @@
     width: min(100%, 360px);
   }
 }
+
+/* Keep chapter metadata, headline, and context visible as one balanced row. */
+.detailSection,
+.detailSectionAlt,
+.architectureSection {
+  padding-top: 84px;
+  padding-bottom: 84px;
+}
+
+.detailSectionHeader {
+  grid-template-columns: minmax(90px, .22fr) minmax(0, 1.2fr) minmax(220px, .72fr);
+  gap: 32px;
+  align-items: start;
+}
+
+.detailSectionHeader .sectionEyebrow {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.detailSectionHeader h2 {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  margin: 0;
+  max-width: 680px;
+}
+
+.detailSectionHeader > p:not(.sectionEyebrow) {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: end;
+  max-width: 330px;
+}
+
+.detailSplit,
+.detailPipeline,
+.outputGrid,
+.principleGrid,
+.stageGrid,
+.productSignalGrid,
+.aboutArchitecture,
+.aboutResourceGrid {
+  margin-top: 48px;
+}
+
+.detailPipelineItem {
+  min-height: 220px;
+}
+
+.detailPipelineItem svg {
+  margin-top: 28px;
+}
+
+.outputItem,
+.principleItem {
+  min-height: 170px;
+}
+
+.stageGrid > div {
+  min-height: 210px;
+}
+
+@media (max-width: 900px) {
+  .detailSection,
+  .detailSectionAlt,
+  .architectureSection {
+    padding-top: 72px;
+    padding-bottom: 72px;
+  }
+
+  .detailSectionHeader {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .detailSectionHeader .sectionEyebrow,
+  .detailSectionHeader h2,
+  .detailSectionHeader > p:not(.sectionEyebrow) {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .detailSectionHeader > p:not(.sectionEyebrow) {
+    align-self: start;
+    max-width: 520px;
+  }
+}
+
+@media (max-width: 620px) {
+  .detailSection,
+  .detailSectionAlt,
+  .architectureSection {
+    padding-top: 64px;
+    padding-bottom: 64px;
+  }
+
+  .detailSplit,
+  .detailPipeline,
+  .outputGrid,
+  .principleGrid,
+  .stageGrid,
+  .productSignalGrid,
+  .aboutArchitecture,
+  .aboutResourceGrid {
+    margin-top: 36px;
+  }
+
+  .detailPipelineItem {
+    min-height: 176px;
+  }
+}

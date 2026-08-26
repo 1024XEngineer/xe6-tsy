@@ -74,7 +74,11 @@ func (l *Logger) WriteJSON(sessionID, kind, direction, event string, payload []b
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if err := os.MkdirAll(filepath.Join(l.dir, sessionID), 0o755); err != nil {
+	sessionDir := filepath.Join(l.dir, sessionID)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(sessionDir, 0o700); err != nil {
 		return err
 	}
 	path := filepath.Join(l.dir, sessionID, kind+".jsonl")
@@ -86,8 +90,12 @@ func (l *Logger) WriteJSON(sessionID, kind, direction, event string, payload []b
 		return err
 	}
 	line = append(line, '\n')
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
+		return err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = file.Close()
 		return err
 	}
 	_, writeErr := file.Write(line)
@@ -104,12 +112,21 @@ func (l *Logger) EnsureSession(sessionID string) error {
 	sessionID = safeComponent(sessionID)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if err := os.MkdirAll(filepath.Join(l.dir, sessionID), 0o755); err != nil {
+	sessionDir := filepath.Join(l.dir, sessionID)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(sessionDir, 0o700); err != nil {
 		return err
 	}
 	for _, kind := range []string{"asr", "llm", "tts"} {
-		file, err := os.OpenFile(filepath.Join(l.dir, sessionID, kind+".jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		path := filepath.Join(sessionDir, kind+".jsonl")
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
+			return err
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			_ = file.Close()
 			return err
 		}
 		_ = file.Close()

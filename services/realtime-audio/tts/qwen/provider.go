@@ -120,6 +120,7 @@ func (p *Provider) startRealtimeStream(ctx context.Context, request tts.Request)
 	}
 	streamCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	s := &realtimeStream{ctx: streamCtx, cancel: cancel, conn: conn, config: p.config, request: request, rawLogger: p.config.RawLogger, chunks: make(chan tts.AudioChunk, 16), done: make(chan struct{})}
+	go s.closeOnContextCancellation()
 	if err := s.sendSession(); err != nil {
 		cancel()
 		_ = conn.Close()
@@ -127,6 +128,11 @@ func (p *Provider) startRealtimeStream(ctx context.Context, request tts.Request)
 	}
 	go s.run()
 	return s, nil
+}
+
+func (s *realtimeStream) closeOnContextCancellation() {
+	<-s.ctx.Done()
+	_ = s.conn.Close()
 }
 
 type realtimeStream struct {
@@ -171,6 +177,11 @@ func (s *realtimeStream) write(value map[string]any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
+	}
+	if deadline, ok := s.ctx.Deadline(); ok {
+		if err := s.conn.SetWriteDeadline(deadline); err != nil {
+			return err
+		}
 	}
 	if err := s.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		return err

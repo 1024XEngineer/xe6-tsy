@@ -104,6 +104,23 @@ function mergeTurns(
   return ordered;
 }
 
+function clearTransientSubtitlesForTurns(
+  state: SessionState,
+  turnIds: ReadonlySet<string>,
+): SessionState {
+  const asrPartial =
+    state.asrPartial && turnIds.has(state.asrPartial.turnId)
+      ? null
+      : state.asrPartial;
+  const phraseSubtitles = state.phraseSubtitles.filter(
+    (subtitle) => !turnIds.has(subtitle.utteranceId),
+  );
+  if (asrPartial === state.asrPartial && phraseSubtitles.length === state.phraseSubtitles.length) {
+    return state;
+  }
+  return { ...state, asrPartial, phraseSubtitles };
+}
+
 export function sessionReducer(
   state: SessionState,
   event: SessionEvent,
@@ -120,26 +137,25 @@ export function sessionReducer(
     case "SET_TURNS":
       // Poll may return [] while FinalTurns only arrive on DataChannel (no API
       // outbox yet). Merge so remote never wipes locally observed subtitles.
+      const polledTurnIds = new Set(event.turns.map((turn) => turn.id));
+      const clearedPollState = clearTransientSubtitlesForTurns(state, polledTurnIds);
       return {
-        ...state,
-        turns: mergeTurns(state.turns, event.turns),
+        ...clearedPollState,
+        turns: mergeTurns(clearedPollState.turns, event.turns),
         notice: null,
       };
     case "ADD_TURN":
       if (state.turns.some((turn) => turn.id === event.turn.id)) {
-        return state.asrPartial?.turnId === event.turn.id
-          ? { ...state, asrPartial: null }
-          : state;
+        return clearTransientSubtitlesForTurns(state, new Set([event.turn.id]));
       }
+      const clearedTurnState = clearTransientSubtitlesForTurns(
+        state,
+        new Set([event.turn.id]),
+      );
       return {
-        ...state,
+        ...clearedTurnState,
         phase: "active",
-        turns: [...state.turns, event.turn],
-        asrPartial:
-          state.asrPartial?.turnId === event.turn.id ? null : state.asrPartial,
-        phraseSubtitles: state.phraseSubtitles.filter(
-          (subtitle) => subtitle.utteranceId !== event.turn.id,
-        ),
+        turns: [...clearedTurnState.turns, event.turn],
         notice: null,
       };
     case "ADD_ASSISTANT_REPLY":

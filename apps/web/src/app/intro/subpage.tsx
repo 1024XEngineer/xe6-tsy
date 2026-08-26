@@ -5,17 +5,14 @@ import {
   ArrowUpRight,
   Check,
   Code,
-  DeviceMobile,
   GlobeHemisphereWest,
   Microphone,
   Translate,
   Waveform,
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
-import Link from "next/link";
 
 import { BackToTop, Reveal, SiteFooter, SiteNav } from "./site-shell";
-import { siteHref } from "./site-paths";
 import styles from "./intro.module.css";
 
 export function ProductPage() {
@@ -26,18 +23,6 @@ export function ProductPage() {
       <Reveal><section className={styles.detailSectionAlt}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>02 / PIPELINE</p><h2>每一次回应，<br /><span>都有清晰的路径。</span></h2></div><div className={styles.detailPipeline}>{[{title:"聆听", copy:"捕捉双方语音，保持对话节奏。", icon:Microphone},{title:"识别", copy:"将连续声音转换为可理解的文本。", icon:Waveform},{title:"翻译", copy:"在两个语言槽位之间完成实时转换。", icon:Translate},{title:"传达", copy:"通过语音、字幕或消息传递结果。", icon:ArrowRight}].map(({title,copy,icon:Icon}, index)=><div className={styles.detailPipelineItem} key={title}><span>0{index+1}</span><Icon size={24}/><h3>{title}</h3><p>{copy}</p></div>)}</div></section></Reveal>
       <Reveal><section className={styles.detailSection}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>03 / OUTPUT</p><h2>对话结束之后，<br /><span>结果仍然在。</span></h2></div><div className={styles.outputGrid}><OutputItem title="记录与归属" copy="Final Turn 持久化，支持临时说话人与后续归属修正。" /><OutputItem title="字幕与播报" copy="双向或单向输出，字幕和语音保持同一条状态链路。" /><OutputItem title="可选投递" copy="Email、企业微信与长句字幕投递，按场景启用。" /></div></section></Reveal>
       <Reveal><Boundary /></Reveal>
-    </SubpageFrame>
-  );
-}
-
-export function DeveloperPage() {
-  return (
-    <SubpageFrame>
-      <SubpageHero eyebrow="DEVELOPER / 01" title={<>从 Web Demo，<br /><span>到你的产品。</span></>} copy="通过统一协议、实时事件和设备控制核心，了解 Lingow 如何接入更多终端。" />
-      <Reveal><section className={styles.detailSection}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>01 / QUICK START</p><h2>先跑起来，<br /><span>再深入每一层。</span></h2></div><div className={styles.quickStart}><div className={styles.quickStep}><span>01</span><h3>启动 Web 入口</h3><p>使用 Next.js Web 应用查看会话、语言配置、字幕和助手回复。</p><Link href={siteHref("/")} className={styles.textButton}>打开 Web 联调 <ArrowRight size={18}/></Link></div><div className={styles.quickStep}><span>02</span><h3>连接控制面</h3><p>API 服务管理账户、会话、语言配置、记录和实时票据。</p><a href="https://github.com/1024XEngineer/xe6-tsy" target="_blank" rel="noreferrer" className={styles.textButton}>查看仓库 <ArrowUpRight size={18}/></a></div><div className={styles.quickStep}><span>03</span><h3>接入媒体面</h3><p>Realtime Audio 负责 WebRTC、VAD、ASR、翻译、TTS 与运行状态。</p><a href="https://github.com/1024XEngineer/xe6-tsy" target="_blank" rel="noreferrer" className={styles.textButton}>阅读协议 <ArrowUpRight size={18}/></a></div></div></section></Reveal>
-      <Reveal><section className={styles.architectureSection}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>02 / ARCHITECTURE</p><h2>一条会话，<br /><span>连接三个世界。</span></h2></div><div className={styles.architectureLarge}><ArchitectureNode icon={GlobeHemisphereWest} title="Web / Mobile / Device" copy="多端控制与交互入口" /><div className={styles.architectureConnector}/><ArchitectureNode icon={Code} title="API Control Plane" copy="账户、会话、记录与语言配置" /><div className={styles.architectureConnector}/><ArchitectureNode icon={Waveform} title="Realtime Audio" copy="WebRTC、VAD、ASR、翻译与 TTS" /><div className={styles.architectureConnector}/><div className={styles.architectureFlow}><span>ASR</span><span>TRANSLATE</span><span>TTS</span></div></div></section></Reveal>
-      <Reveal><section className={styles.detailSection}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>03 / CONTRACTS</p><h2>从协议开始，<br /><span>让边界保持清晰。</span></h2></div><div className={styles.contractGrid}><ContractItem title="OpenAPI" copy="REST 接口、账户、会话、语言配置与历史记录。" /><ContractItem title="AsyncAPI" copy="实时状态、字幕、助手回复与错误事件。" /><ContractItem title="Device SDK" copy="设备鉴权、模式命令、唤醒事件和重连控制。" /></div></section></Reveal>
-      <Reveal><section className={styles.developerNote}><DeviceMobile size={26}/><div><h3>设备能力正在扩展</h3><p>Device SDK 提供控制核心和接口边界，具体芯片 HAL、WebRTC 与 KWS 模型由平台适配。</p></div></section></Reveal>
     </SubpageFrame>
   );
 }
@@ -290,8 +275,6 @@ function DetailPanel({ label, title, copy, items }: { label: string; title: stri
 }
 
 function OutputItem({ title, copy }: { title: string; copy: string }) { return <article className={styles.outputItem}><Check size={18} weight="bold"/><h3>{title}</h3><p>{copy}</p></article>; }
-function ContractItem({ title, copy }: { title: string; copy: string }) { return <article className={styles.contractItem}><Code size={19}/><h3>{title}</h3><p>{copy}</p><a href="https://github.com/1024XEngineer/xe6-tsy" target="_blank" rel="noreferrer">查看仓库 <ArrowUpRight size={15}/></a></article>; }
-function ArchitectureNode({ icon: Icon, title, copy }: { icon: typeof Code; title: string; copy: string }) { return <div className={styles.architectureNodeLarge}><Icon size={21}/><div><strong>{title}</strong><span>{copy}</span></div></div>; }
 function Principle({ icon: Icon, title, copy }: { icon: typeof Code; title: string; copy: string }) { return <article className={styles.principleItem}><Icon size={22}/><h3>{title}</h3><p>{copy}</p></article>; }
 function ResourceLink({ title, label, href }: { title: string; label: string; href: string }) { return <a className={styles.docsResourceLink} href={href} target="_blank" rel="noreferrer"><span>{label}</span><strong>{title}</strong><ArrowUpRight size={17}/></a>; }
 function Boundary() { return <section className={styles.detailSectionAlt}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>04 / CURRENT SCOPE</p><h2>清楚知道<br /><span>现在能做到什么。</span></h2></div><div className={styles.boundaryGrid}><div><p>介绍页只承诺已经验证的能力，更多终端和集成方向逐步开放。</p></div><ul><li><Check size={16} weight="bold"/>面对面双向交流</li><li><Check size={16} weight="bold"/>Web 主要体验入口</li><li><Check size={16} weight="bold"/>实时语音、翻译与播报</li><li><Check size={16} weight="bold"/>可扩展的协议与设备控制核心</li></ul></div></section>; }

@@ -20,7 +20,7 @@ export default function IntroPage() {
           </p>
           <div className={styles.heroActions}>
             <a className={styles.primaryButton} href="#contact">预约体验 <ArrowUpRight size={18} weight="bold" /></a>
-            <a className={styles.textButton} href={siteHref("/intro/developer")}>查看开发者入口 <ArrowRight size={18} /></a>
+            <a className={styles.textButton} href={siteHref("/intro/docs")}>阅读开发文档 <ArrowRight size={18} /></a>
           </div>
           <div className={styles.heroMeta}>
             <span>Web 入口</span><span>·</span><span>双向对话</span><span>·</span><span>中文 ↔ English</span>

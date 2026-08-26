@@ -103,7 +103,7 @@ export function SiteFooter() {
       <p>实时语音助手与面对面同传系统。</p>
       <div>
         <a href="https://github.com/1024XEngineer/xe6-tsy" target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={14} /></a>
-        <a href={siteHref("/intro/developer")}>开发者入口 <ArrowUpRight size={14} /></a>
+        <a href={siteHref("/intro/docs")}>阅读开发文档 <ArrowUpRight size={14} /></a>
       </div>
     </footer>
   );

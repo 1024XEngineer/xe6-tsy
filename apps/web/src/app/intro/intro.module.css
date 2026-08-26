@@ -941,51 +941,55 @@
 }
 
 .detailSectionHeader {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(90px, .22fr);
+  grid-template-columns: minmax(90px, .22fr) minmax(0, 1.2fr) minmax(220px, .72fr);
   gap: 32px;
   align-items: start;
 }
 
 .detailSectionHeader .sectionEyebrow {
-  grid-column: 3;
-  grid-row: 1;
-  justify-self: end;
-  text-align: right;
-}
-
-.detailSectionHeader h2 {
   grid-column: 1;
-  grid-row: 1 / span 2;
-  margin: 0;
-  max-width: 680px;
+  grid-row: 1;
   justify-self: start;
   text-align: left;
 }
 
-.detailSectionHeader > p:not(.sectionEyebrow) {
+.detailSectionHeader h2 {
   grid-column: 2;
   grid-row: 1 / span 2;
+  margin: 0;
+  max-width: 680px;
+  justify-self: center;
+  text-align: center;
+}
+
+.detailSectionHeader > p:not(.sectionEyebrow) {
+  grid-column: 3;
+  grid-row: 1 / span 2;
   align-self: end;
-  max-width: 460px;
+  max-width: 330px;
   justify-self: end;
   text-align: left;
 }
 
 .detailSectionAlt .detailSectionHeader .sectionEyebrow {
-  grid-column: 3;
-  text-align: right;
+  grid-column: 1;
+  text-align: left;
 }
 
 .detailSectionAlt .detailSectionHeader h2 {
-  grid-column: 2;
+  grid-column: 3;
   justify-self: end;
   text-align: right;
 }
 
 .detailSectionAlt .detailSectionHeader > p:not(.sectionEyebrow) {
-  grid-column: 1;
+  grid-column: 2;
   justify-self: start;
   text-align: left;
+}
+
+.detailSectionAlt .detailSectionHeader h2:last-child {
+  grid-column: 2 / span 2;
 }
 
 .detailSplit,
@@ -1032,8 +1036,8 @@
   .detailSectionHeader .sectionEyebrow {
     grid-column: 1;
     grid-row: auto;
-    justify-self: end;
-    text-align: right;
+    justify-self: start;
+    text-align: left;
   }
 
   .detailSectionHeader h2,
@@ -1049,6 +1053,10 @@
     grid-column: 1;
     justify-self: start;
     text-align: left;
+  }
+
+  .detailSectionAlt .detailSectionHeader h2:last-child {
+    grid-column: 1;
   }
 
   .detailSectionHeader > p:not(.sectionEyebrow) {

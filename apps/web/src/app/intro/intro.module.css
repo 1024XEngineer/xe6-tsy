@@ -965,6 +965,17 @@
   max-width: 330px;
 }
 
+.detailSectionAlt .detailSectionHeader .sectionEyebrow {
+  grid-column: 3;
+  text-align: right;
+}
+
+.detailSectionAlt .detailSectionHeader > p:not(.sectionEyebrow) {
+  grid-column: 1;
+  justify-self: start;
+  text-align: left;
+}
+
 .detailSplit,
 .detailPipeline,
 .outputGrid,
@@ -1011,6 +1022,8 @@
   .detailSectionHeader > p:not(.sectionEyebrow) {
     grid-column: 1;
     grid-row: auto;
+    justify-self: start;
+    text-align: left;
   }
 
   .detailSectionHeader > p:not(.sectionEyebrow) {
@@ -1041,4 +1054,24 @@
   .detailPipelineItem {
     min-height: 176px;
   }
+}
+
+/* Full-bleed chapter bands remove the artificial seam between sections. */
+.subpageHero,
+.detailSection,
+.detailSectionAlt,
+.architectureSection {
+  max-width: none;
+  background: #0b111b;
+}
+
+.detailSection > *,
+.detailSectionAlt > *,
+.architectureSection > * {
+  width: 100%;
+  max-width: none;
+}
+
+.aboutResourceGrid {
+  max-width: 760px;
 }

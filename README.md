@@ -150,6 +150,16 @@ npm test
 npm run build
 ```
 
+真实服务系统 E2E（CI 工作流会自动准备 PostgreSQL、Redis、API、realtime-audio 和 Web）：
+
+```bash
+cd apps/web
+npm run test:e2e:system
+```
+
+本地执行前需先启动 API 和 realtime-audio，并设置 `LINGOW_SESSION_RUNTIME=enabled`、
+`REALTIME_API_DATABASE=enabled` 及对应数据库/Redis 配置。
+
 Mobile 控制核心：
 
 ```bash

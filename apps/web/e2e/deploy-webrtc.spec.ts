@@ -72,6 +72,7 @@ test("connects an external browser through TURN and realtime", async ({ page, re
         if (!configResponse.ok) throw new Error(`config failed: ${configResponse.status}`);
         const config = (await configResponse.json()) as {
           ice_servers: RTCIceServer[];
+          ice_transport_policy?: RTCIceTransportPolicy;
           data_channel: { label: string; ordered: boolean };
           control_data_channel?: { label: string; ordered: boolean };
         };
@@ -81,7 +82,10 @@ test("connects an external browser through TURN and realtime", async ({ page, re
           ),
         )) throw new Error("TURN server missing from WebRTC config");
 
-        const peer = new RTCPeerConnection({ iceServers: config.ice_servers });
+        const peer = new RTCPeerConnection({
+          iceServers: config.ice_servers,
+          iceTransportPolicy: config.ice_transport_policy === "relay" ? "relay" : "all",
+        });
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         for (const track of stream.getTracks()) peer.addTrack(track, stream);
         const events = peer.createDataChannel(config.data_channel.label, {
@@ -155,12 +159,6 @@ test("connects an external browser through TURN and realtime", async ({ page, re
         };
 
         await peer.setLocalDescription(await peer.createOffer({ offerToReceiveAudio: true }));
-        await new Promise<void>((resolve) => {
-          if (peer.iceGatheringState === "complete") return resolve();
-          peer.addEventListener("icegatheringstatechange", () => {
-            if (peer.iceGatheringState === "complete") resolve();
-          });
-        });
         const offerResponse = await fetch(`/realtime/v1/sessions/${sessionId}/webrtc/offer`, {
           method: "POST",
           headers: { ...auth, "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },

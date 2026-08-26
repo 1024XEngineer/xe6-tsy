@@ -172,8 +172,15 @@ jobs:
             printf 'LINGOW_WEB_IMAGE=%s\n' '${{ steps.images.outputs.web_image }}'
           } > "$RUNNER_TEMP/.env.production"
           chmod 600 "$RUNNER_TEMP/.env.production"
-          scp -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml scripts/deploy.sh scripts/deploy-smoke.sh "$RUNNER_TEMP/.env.production" "${destination}:${release_dir}/"
-          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "chmod 600 '${release_dir}/.env.production' && chmod 700 '${release_dir}/deploy.sh' '${release_dir}/deploy-smoke.sh'"
+          scp -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml scripts/deploy.sh scripts/deploy-smoke.sh scripts/ensure-turn-config.sh "$RUNNER_TEMP/.env.production" "${destination}:${release_dir}/"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "chmod 600 '${release_dir}/.env.production' && chmod 700 '${release_dir}/deploy.sh' '${release_dir}/deploy-smoke.sh' '${release_dir}/ensure-turn-config.sh'"
+      - name: Ensure TURN configuration is usable
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="${DEPLOY_USER}@${DEPLOY_HOST}"
+          release_dir="${DEPLOY_PATH}/.staging/${GITHUB_SHA}"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${release_dir}/ensure-turn-config.sh' '${DEPLOY_PATH}'"
       - name: Authenticate deployment host to GHCR
         shell: bash
         run: |

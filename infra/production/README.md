@@ -48,6 +48,8 @@ Web 默认只绑定宿主机回环地址 `127.0.0.1:3000`。如需绑定其他�
 
 `.github/workflows/deploy-production.yml` 在 `dev` 和 `main` 分支有新提交时执行。工作流构建三个不可变的 commit-SHA 镜像，并将 Compose、环境文件和发布脚本上传到 `${DEPLOY_PATH}/.staging/<commit SHA>`。`scripts/deploy.sh` 在同一个远程发布事务中校验 Compose 插值、拉取镜像并等待 health check；配置可选冒烟凭证时还会执行认证 TURN 冒烟。全部成功后才提升 staging 版本，失败时恢复上一次成功发布的 Compose、环境文件和应用容器。数据库迁移是向前兼容、不会自动回滚，回退前必须确认 schema 仍兼容旧版本。
 
+每次自动部署在应用发布前都会运行 `scripts/ensure-turn-config.sh`。它会修正依赖目录中 `turnserver.conf` 对 coturn 运行用户的权限；只有检测到 TURN 容器没有加载配置时才自动重建 TURN。默认路径为 `${DEPLOY_PATH}/dependencies/turnserver.conf`，默认容器为 `lingow-dependencies-turn-1`，可通过 `TURN_CONFIG_PATH`、`TURN_CONTAINER_NAME`、`TURN_COMPOSE_FILE` 和 `TURN_COMPOSE_ENV_FILE` 覆盖。
+
 回滚时，把上一成功部署的三个 SHA 镜像值写入部署主机的 `.env.production`，再执行：
 
 ```bash

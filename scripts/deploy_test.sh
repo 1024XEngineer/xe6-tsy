@@ -3,6 +3,7 @@
 set -euo pipefail
 
 repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+bash -n "$repo_dir/scripts/ensure-turn-config.sh"
 test_root=$(mktemp -d)
 trap 'rm -rf "$test_root"' EXIT
 mkdir -p "$test_root/bin"

@@ -1,10 +1,19 @@
 "use client";
 
 import { ArrowUp, ArrowUpRight, CaretDown } from "@phosphor-icons/react";
+import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { siteHref } from "./site-paths";
 import styles from "./intro.module.css";
+
+const primaryNavItems = [
+  { href: "/intro", label: "首页" },
+  { href: "/intro/product", label: "产品" },
+  { href: "/intro/developer", label: "开发者" },
+  { href: "/intro/docs", label: "文档" },
+  { href: "/intro/about", label: "关于 Lingow" },
+] as const;
 
 export function SiteNav() {
   return (
@@ -15,11 +24,11 @@ export function SiteNav() {
       </a>
       <div className={styles.navRight}>
         <nav className={styles.navLinks} aria-label="主导航">
-          <a href={siteHref("/intro/product")}>产品</a>
-          <a href={siteHref("/intro/developer")}>开发者</a>
-          <a href={siteHref("/intro/docs")}>文档</a>
-          <a href={siteHref("/intro/about")}>关于 Lingow</a>
+          {primaryNavItems.slice(1).map((item) => (
+            <a key={item.href} href={siteHref(item.href)}>{item.label}</a>
+          ))}
         </nav>
+        <MobileNav />
         <div className={styles.navActions}>
           <button className={styles.languageButton} type="button">
             中文 <CaretDown size={14} weight="bold" />
@@ -30,6 +39,70 @@ export function SiteNav() {
         </div>
       </div>
     </header>
+  );
+}
+
+function MobileNav() {
+  const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+  const navRef = useRef<HTMLDivElement>(null);
+  const currentItem = primaryNavItems.find(
+    (item) => pathname === item.href || pathname?.endsWith(item.href),
+  ) ?? primaryNavItems[0];
+
+  useEffect(() => {
+    if (!open) return;
+
+    const onPointerDown = (event: PointerEvent) => {
+      if (!navRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={navRef} className={styles.mobileNav}>
+      <button
+        className={styles.mobileNavToggle}
+        type="button"
+        aria-expanded={open}
+        aria-controls="mobile-site-navigation"
+        aria-label={`当前页面：${currentItem.label}，${open ? "收起" : "展开"}导航`}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span>当前：{currentItem.label}</span>
+        <CaretDown className={styles.mobileNavToggleIcon} size={16} weight="bold" aria-hidden="true" />
+      </button>
+      <nav
+        id="mobile-site-navigation"
+        className={`${styles.mobileNavPanel} ${open ? styles.mobileNavPanelOpen : ""}`}
+        aria-label="移动端主导航"
+      >
+        {primaryNavItems.map((item) => {
+          const isCurrent = item.href === currentItem.href;
+          return (
+            <a
+              key={item.href}
+              className={`${styles.mobileNavLink} ${isCurrent ? styles.mobileNavLinkActive : ""}`}
+              href={siteHref(item.href)}
+              aria-current={isCurrent ? "page" : undefined}
+              onClick={() => setOpen(false)}
+            >
+              <span>{item.label}</span>
+              {isCurrent ? <span className={styles.mobileNavCurrentMark}>当前</span> : null}
+            </a>
+          );
+        })}
+      </nav>
+    </div>
   );
 }
 

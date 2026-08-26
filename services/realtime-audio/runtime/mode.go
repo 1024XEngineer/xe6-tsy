@@ -454,6 +454,19 @@ func (m *Manager) currentModeCoordinator(sessionID string) (*modeCoordinator, er
 	return coordinator, err
 }
 
+// currentFinalTurnCoordinator includes a retained runtime after Stop has begun.
+// Successfully handed-off VAD finals own settlement past media cancellation;
+// Manager.run keeps the entry present until their commit gates have resolved.
+func (m *Manager) currentFinalTurnCoordinator(sessionID string) (*modeCoordinator, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item := m.entries[sessionID]
+	if item == nil || item.mode == nil || item.terminal || item.finished {
+		return nil, session.ErrRuntimeNotFound
+	}
+	return item.mode, nil
+}
+
 func (m *Manager) currentModeRuntime(sessionID string) (*modeCoordinator, context.Context, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -504,7 +517,7 @@ func (g managerTurnCommitGate) CommitFinalTurn(
 		return false, ErrDependencyRequired
 	}
 	unlock := g.manager.locks.lock(turn.SessionID)
-	coordinator, err := g.manager.currentModeCoordinator(turn.SessionID)
+	coordinator, err := g.manager.currentFinalTurnCoordinator(turn.SessionID)
 	unlock()
 	if err != nil {
 		return false, err

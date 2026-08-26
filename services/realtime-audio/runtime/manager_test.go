@@ -456,6 +456,136 @@ func TestManagerRunsOneTurnThroughConfiguredProviders(t *testing.T) {
 	}
 }
 
+func TestManagerRetainsRuntimeUntilAsyncFinalSettlementAfterEOF(t *testing.T) {
+	base := time.Unix(1700000000, 0).UTC()
+	source := &fakeFrameSource{frames: []audio.Frame{
+		mustFrame(t, []byte{1, 0}, base),
+		mustFrame(t, []byte{1, 0}, base.Add(20*time.Millisecond)),
+		mustFrame(t, []byte{0, 0}, base.Add(100*time.Millisecond)),
+	}}
+	translator := &blockingPhraseTranslator{started: make(chan struct{}), release: make(chan struct{})}
+	finals := &recordingFinalSink{events: make(chan recordsv1.FinalTurnEvent, 1)}
+	manager := newFinalSettlementTestManager(t, source, translator, finals)
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1",
+	}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	var releaseOnce sync.Once
+	releaseTranslation := func() { releaseOnce.Do(func() { close(translator.release) }) }
+	t.Cleanup(func() {
+		releaseTranslation()
+		_ = manager.Stop(context.Background(), snapshot.SessionID)
+	})
+	if err := manager.Activate(t.Context(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	select {
+	case <-translator.started:
+	case <-time.After(time.Second):
+		t.Fatal("async final translation did not start")
+	}
+	manager.mu.Lock()
+	retained := manager.entries[snapshot.SessionID] != nil
+	manager.mu.Unlock()
+	if !retained {
+		t.Fatal("runtime entry was removed before handed-off FinalTurn settlement")
+	}
+	releaseTranslation()
+	select {
+	case event := <-finals.events:
+		if event.SourceText != "你好" || event.TranslatedText != "hello" {
+			t.Fatalf("FinalTurn = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handed-off FinalTurn was not committed after media EOF")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		removed := manager.entries[snapshot.SessionID] == nil
+		manager.mu.Unlock()
+		if removed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("runtime entry was not removed after FinalTurn settlement")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestManagerStopWaitsForHandedOffFinalWithoutCommitGateDeadlock(t *testing.T) {
+	base := time.Unix(1700000000, 0).UTC()
+	source := &fakeFrameSource{frames: []audio.Frame{
+		mustFrame(t, []byte{1, 0}, base),
+		mustFrame(t, []byte{1, 0}, base.Add(20*time.Millisecond)),
+		mustFrame(t, []byte{0, 0}, base.Add(100*time.Millisecond)),
+	}, waitForClose: true}
+	translator := &blockingPhraseTranslator{started: make(chan struct{}), release: make(chan struct{})}
+	finals := &recordingFinalSink{events: make(chan recordsv1.FinalTurnEvent, 1)}
+	manager := newFinalSettlementTestManager(t, source, translator, finals)
+	snapshot := session.SessionSnapshot{
+		SessionID: "session-1", AccountID: "account-1", StartOperationID: "operation-1", TraceID: "trace-1",
+	}
+	if err := manager.Start(t.Context(), snapshot); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	var releaseOnce sync.Once
+	releaseTranslation := func() { releaseOnce.Do(func() { close(translator.release) }) }
+	t.Cleanup(func() {
+		releaseTranslation()
+		_ = manager.Stop(context.Background(), snapshot.SessionID)
+	})
+	if err := manager.Activate(t.Context(), snapshot.SessionID, snapshot.StartOperationID); err != nil {
+		t.Fatalf("Activate() error = %v", err)
+	}
+	select {
+	case <-translator.started:
+	case <-time.After(time.Second):
+		t.Fatal("async final translation did not start")
+	}
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- manager.Stop(context.Background(), snapshot.SessionID) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		item := manager.entries[snapshot.SessionID]
+		stopping := item != nil && item.stopping
+		manager.mu.Unlock()
+		if stopping {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Stop() did not mark runtime stopping")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-stopDone:
+		t.Fatalf("Stop() returned before handed-off FinalTurn settled: %v", err)
+	default:
+	}
+	releaseTranslation()
+	select {
+	case event := <-finals.events:
+		if event.SourceText != "你好" || event.TranslatedText != "hello" {
+			t.Fatalf("FinalTurn = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handed-off FinalTurn was not committed during Stop")
+	}
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop() deadlocked with FinalTurn commit gate")
+	}
+}
+
 func TestManagerPlaysFallbackThroughActiveSession(t *testing.T) {
 	source := &fakeFrameSource{waitForClose: true}
 	audioSink := &recordingAudioSink{}
@@ -1426,6 +1556,30 @@ func testDependencies(source segment.FrameSource, languages session.LanguageConf
 		Languages: languages, FinalTurns: &recordingFinalSink{}, ModeChanges: &recordingModeChangedSink{}, Usage: &recordingUsageSink{},
 		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
 	}
+}
+
+func newFinalSettlementTestManager(
+	t *testing.T,
+	source segment.FrameSource,
+	translator translate.Provider,
+	finals recordsv1.FinalTurnSink,
+) *Manager {
+	t.Helper()
+	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
+	deps.FinalTurns = finals
+	deps.PhraseSubtitles = noopPhraseSubtitleObserver{}
+	deps.NewRuntimeInstanceID = func() (string, error) { return "runtime-1", nil }
+	manager, err := NewManager(config.ProviderConfig{}, config.Providers{
+		ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{
+			Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+		}}),
+		Translation: translator,
+		TTS:         tts.NewFakeProvider(tts.FakeProviderConfig{Result: tts.Result{Provider: "mock-tts", Model: "v1"}}),
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	return manager
 }
 
 func testCommandInterpreter() command.Interpreter {

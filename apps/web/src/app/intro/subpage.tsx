@@ -137,14 +137,12 @@ export function DocumentationPage() {
             <section className={styles.docsSection} id="scope">
               <p className={styles.sectionEyebrow}>07 / CURRENT SCOPE</p>
               <h2>当前边界</h2>
-              <p>以下边界来自当前仓库实现和 PRD，帮助接入者区分已可联调能力与仍在演进的方向。</p>
               <ul className={styles.docsList}>
                 <li><Check size={16} weight="bold" />Web 是当前主要可运行的联调入口，默认以 AI 助手模式创建新会话。</li>
                 <li><Check size={16} weight="bold" />Mobile 当前提供可编译、可测试的控制面核心，不包含 UI、PeerConnection 或原生 KWS。</li>
                 <li><Check size={16} weight="bold" />Device SDK 提供鉴权、会话、模式、唤醒事件和重连边界，具体音频 HAL、WebRTC 与 KWS 模型由平台适配。</li>
                 <li><Check size={16} weight="bold" />管理后台、订单、支付、发票、多人会议同传和硬件制造不属于当前产品范围。</li>
               </ul>
-              <div className={styles.docsCallout}><strong>P0 产品闭环</strong><p>当前优先验证免登录临时会话、双语听译、播放控制、失败恢复和不重复投递；账户化与长句增强属于后续阶段。</p></div>
             </section>
           </Reveal>
 

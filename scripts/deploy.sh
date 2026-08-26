@@ -78,7 +78,9 @@ fi
 compose=(docker compose --project-name "$project_name" --env-file "$environment_file" --file "$release_dir/docker-compose.yml")
 
 snapshot_current_release() {
-  if [[ ! -f "$deployment_dir/.env.production" || ! -f "$deployment_dir/docker-compose.yml" || ! -f "$deployment_dir/deploy.sh" ]]; then
+  # An older manually-created release may not have the helper scripts yet;
+  # its Compose and environment files are still enough to restore the app.
+  if [[ ! -f "$deployment_dir/.env.production" || ! -f "$deployment_dir/docker-compose.yml" ]]; then
     return 0
   fi
   install -d -m 700 "$previous_dir"

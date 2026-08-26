@@ -977,19 +977,19 @@
 }
 
 .detailSectionAlt .detailSectionHeader h2 {
-  grid-column: 3;
-  justify-self: end;
-  text-align: right;
-}
-
-.detailSectionAlt .detailSectionHeader > p:not(.sectionEyebrow) {
   grid-column: 2;
   justify-self: start;
   text-align: left;
 }
 
+.detailSectionAlt .detailSectionHeader > p:not(.sectionEyebrow) {
+  grid-column: 3;
+  justify-self: start;
+  text-align: left;
+}
+
 .detailSectionAlt .detailSectionHeader h2:last-child {
-  grid-column: 2 / span 2;
+  grid-column: 2;
 }
 
 .detailSectionHeader h2 {

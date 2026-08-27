@@ -18,6 +18,7 @@ import {
 } from "@/features/voice/lib/lingow-api";
 
 import styles from "./auth.module.css";
+import Ferrofluid from "./ferrofluid";
 
 const RESEND_SECONDS = 60;
 
@@ -155,16 +156,25 @@ export function PhoneLogin({ onAuthenticated }: PhoneLoginProps) {
 
   return (
     <main className={styles.login}>
-      <video
-        aria-hidden="true"
-        autoPlay
-        className={styles.backdropVideo}
-        disablePictureInPicture
-        loop
-        muted
-        playsInline
-        src="/media/loop.mp4"
-      />
+      <div className={styles.backgroundLayer}>
+        <Ferrofluid
+          colors={["#ffffff", "#ffffff", "#ffffff"]}
+          flowDirection="down"
+          fluidity={0.1}
+          glow={2}
+          mouseInteraction
+          mouseDampening={0.15}
+          mouseRadius={0.35}
+          mouseStrength={1}
+          opacity={1}
+          rimWidth={0.2}
+          scale={1.6}
+          sharpness={2.5}
+          shimmer={1.5}
+          speed={0.5}
+          turbulence={1}
+        />
+      </div>
       <header className={styles.header}>
         <h1 translate="no">lingow</h1>
         <span>账户登录</span>

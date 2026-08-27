@@ -2,7 +2,7 @@ name: Deploy Web To GitHub Pages
 
 on:
   push:
-    branches: [feat/intro-pages]
+    branches: [dev, main]
   workflow_dispatch:
 
 concurrency:

@@ -53,7 +53,7 @@ export function DocumentationPage() {
     <SubpageFrame>
       <div className={styles.docsActions} aria-label="文档固定操作">
         <a href={siteHref("/")}><ArrowRight size={16} weight="bold" />返回 Web 体验</a>
-        <a href="https://github.com/jinyu918/xe6-tsy" target="_blank" rel="noreferrer"><ArrowUpRight size={16} weight="bold" />查看仓库</a>
+        <a href="https://github.com/1024XEngineer/xe6-tsy" target="_blank" rel="noreferrer"><ArrowUpRight size={16} weight="bold" />查看仓库</a>
       </div>
       <div className={styles.docsLayout}>
         <aside className={styles.docsSidebar} aria-label="文档目录">
@@ -266,7 +266,7 @@ export function DocumentationPage() {
               <p>从系统结构、开发约定到协议和产品范围，按需要打开对应的设计资料。</p>
               <div className={styles.docsResourceGroups}>
                 <ResourceGroup title="README / 开发说明">
-                  <ResourceLink title="仓库 README" label="README" href="https://github.com/jinyu918/xe6-tsy" />
+                  <ResourceLink title="仓库 README" label="README" href="https://github.com/1024XEngineer/xe6-tsy" />
                   <ResourceLink title="开发说明" label="DEVELOPMENT" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/docs/DEVELOPMENT.md" />
                   <ResourceLink title="产品需求文档（PRD）" label="PRODUCT REQUIREMENTS" href="https://github.com/1024XEngineer/xe6-tsy/issues/302" />
                 </ResourceGroup>

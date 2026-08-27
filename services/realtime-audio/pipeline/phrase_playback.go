@@ -595,6 +595,17 @@ func (s *PhrasePlaybackSchedulerService) runSession(state *phrasePlaybackSession
 			canRetry := playErr != nil && task.attempts < maxPhrasePlaybackAttempts &&
 				!state.closed && state.ctx.Err() == nil && task.generation == state.generation
 			if canRetry {
+				// SpeechOutput cancels a started playback on stream/finish failure.
+				// Playback sinks settle that ID permanently, so a retry must open a
+				// fresh lifecycle while retaining the same logical task/utterance.
+				previousPlaybackID := task.request.PlaybackID
+				task.request.PlaybackID = fmt.Sprintf("%s_retry_%d", previousPlaybackID, task.attempts+1)
+				ids := state.acceptedIDs[task.request.UtteranceID]
+				if ids == nil {
+					ids = make(map[string]struct{})
+					state.acceptedIDs[task.request.UtteranceID] = ids
+				}
+				ids[task.request.PlaybackID] = struct{}{}
 				task.status = phrasePlaybackAccepted
 				state.queue = append([]*phrasePlaybackTask{task}, state.queue...)
 				s.signalCapacityLocked(state)

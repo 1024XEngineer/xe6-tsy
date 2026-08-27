@@ -407,8 +407,36 @@ func TestPhrasePlaybackSchedulerRetriesFailedTaskBeforeAdvancingQueue(t *testing
 	}
 	requests := provider.requestsSnapshot()
 	if len(requests) != 3 || requests[0].PlaybackID != first.PlaybackID ||
-		requests[1].PlaybackID != first.PlaybackID || requests[2].PlaybackID != second.PlaybackID {
+		requests[1].PlaybackID != first.PlaybackID+"_retry_2" || requests[2].PlaybackID != second.PlaybackID {
 		t.Fatalf("TTS request order = %#v, want first, first retry, second", requests)
+	}
+}
+
+func TestPhrasePlaybackSchedulerRetriesWithFreshPlaybackIDAfterFirstChunk(t *testing.T) {
+	provider := &finishFailingAfterChunkTTSProvider{}
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-retry-after-chunk", SessionID: "session-retry-after-chunk"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	request := phraseRequest(turn, 1)
+	if !scheduler.Enqueue(request) {
+		t.Fatal("failed to enqueue retry test task")
+	}
+	if !audio.waitFor(2, time.Second) {
+		t.Fatalf("audio chunks = %#v, want failed attempt plus fresh retry", audio.ids())
+	}
+	ids := audio.ids()
+	if ids[0] != request.PlaybackID || ids[1] != request.PlaybackID+"_retry_2" {
+		t.Fatalf("audio playback IDs = %#v, want original then fresh retry ID", ids)
+	}
+	requests := provider.requestsSnapshot()
+	if len(requests) != 2 || requests[0].PlaybackID != ids[0] || requests[1].PlaybackID != ids[1] {
+		t.Fatalf("TTS requests = %#v, want lifecycle IDs %#v", requests, ids)
 	}
 }
 
@@ -936,6 +964,44 @@ type flakyPhraseTTSProvider struct {
 	failures int
 	requests []tts.Request
 }
+
+type finishFailingAfterChunkTTSProvider struct {
+	mu       sync.Mutex
+	requests []tts.Request
+}
+
+func (p *finishFailingAfterChunkTTSProvider) StartStream(_ context.Context, request tts.Request) (tts.Stream, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requests = append(p.requests, request)
+	return &finishFailingAfterChunkTTSStream{failFinish: len(p.requests) == 1}, nil
+}
+
+func (p *finishFailingAfterChunkTTSProvider) requestsSnapshot() []tts.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]tts.Request(nil), p.requests...)
+}
+
+type finishFailingAfterChunkTTSStream struct {
+	failFinish bool
+}
+
+func (*finishFailingAfterChunkTTSStream) Chunks() <-chan tts.AudioChunk {
+	chunks := make(chan tts.AudioChunk, 1)
+	chunks <- tts.AudioChunk{SequenceNo: 1, Data: []byte{1}}
+	close(chunks)
+	return chunks
+}
+
+func (s *finishFailingAfterChunkTTSStream) Finish(context.Context) (tts.Result, error) {
+	if s.failFinish {
+		return tts.Result{}, errors.New("temporary finish failure")
+	}
+	return tts.Result{Provider: "fake-provider", Model: "fake-model"}, nil
+}
+
+func (*finishFailingAfterChunkTTSStream) Close() error { return nil }
 
 func (p *flakyPhraseTTSProvider) StartStream(ctx context.Context, request tts.Request) (tts.Stream, error) {
 	p.mu.Lock()

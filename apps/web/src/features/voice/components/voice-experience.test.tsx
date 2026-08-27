@@ -12,6 +12,7 @@ let dataMessageHandler: ((payload: unknown) => void) | undefined;
 let dataMessageHandlers: Array<(payload: unknown) => void> = [];
 let connectionStateHandler: ((state: RTCPeerConnectionState) => void) | undefined;
 let wakeHandler: ((keyword: string) => void) | undefined;
+let wakeWordStartFails = false;
 let controlledAudioSource: {
   onended: (() => void) | null;
   start: ReturnType<typeof vi.fn>;
@@ -57,12 +58,25 @@ vi.mock("../lib/webrtc-session", () => ({
 vi.mock("../lib/wake-word/wake-listener", () => {
   class WakeWordListener {
     start = vi.fn(async () => {
+      if (wakeWordStartFails) {
+        this.handlers.onStatus?.("error", "sherpa-onnx WASM 加载失败");
+        throw new Error("sherpa-onnx WASM 加载失败");
+      }
       this.handlers.onStatus?.("listening");
     });
     stop = vi.fn();
     getStatus = vi.fn(() => "listening" as const);
     getMediaStream = vi.fn(() => null);
-    cloneAudioTracksForPeer = vi.fn(() => []);
+    setUplinkEnabled = vi.fn((enabled: boolean) => {
+      uplinkTrack.enabled = enabled;
+    });
+    setOutputSuppressed = vi.fn();
+    openCommandUplink = vi.fn(() => {
+      uplinkTrack.enabled = true;
+    });
+    cloneAudioTracksForPeer = vi.fn(() =>
+      wakeWordStartFails ? [] : ([{}] as MediaStreamTrack[]),
+    );
     constructor(
       private readonly handlers: {
         onWake: (keyword: string) => void;
@@ -192,6 +206,7 @@ describe("VoiceExperience", () => {
     dataMessageHandlers = [];
     connectionStateHandler = undefined;
     wakeHandler = undefined;
+    wakeWordStartFails = false;
     failFirstStart = false;
     startRequests = 0;
     startInitialModes = [];
@@ -1211,6 +1226,15 @@ describe("VoiceExperience", () => {
       occurred_at: "2026-08-13T10:00:01Z",
     });
     await waitFor(() => expect(uplinkTrack.enabled).toBe(false));
+  });
+
+  it("keeps assistant capture continuous when wake-word startup fails", async () => {
+    wakeWordStartFails = true;
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+
+    await waitFor(() => expect(screen.getByText("AI 助手模式")).toBeInTheDocument());
+    expect(uplinkTrack.enabled).toBe(true);
   });
 
   it("closes a wake-word uplink turn when no command result arrives", async () => {

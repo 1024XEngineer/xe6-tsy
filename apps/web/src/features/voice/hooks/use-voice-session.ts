@@ -45,6 +45,7 @@ import {
   loadVoiceInteractionPolicy,
   saveVoiceInteractionPolicy,
   shouldSuppressMicrophoneDuringTTS,
+  type VoiceBusinessMode,
   type VoiceInteractionPolicy,
 } from "../lib/interaction-policy";
 import {
@@ -362,6 +363,7 @@ export function useVoiceSession() {
   const pendingConfigUpdatesRef = useRef(0);
   const latestAutomaticOutputStatusRef = useRef<string | null>(null);
   const wakeRef = useRef<WakeWordListener | null>(null);
+  const wakeWordCaptureAvailableRef = useRef(false);
   const activeCommandIdRef = useRef<string | null>(null);
   // The rendered state stays deterministic for hydration, while startup reads
   // the persisted policy immediately if the user clicks before the effect runs.
@@ -370,6 +372,15 @@ export function useVoiceSession() {
   );
   const setUplinkEnabledRef = useRef<(enabled: boolean) => void>(() => undefined);
   const openCommandUplinkRef = useRef<() => void>(() => undefined);
+  const effectiveCapturePolicy = useCallback(
+    (mode: VoiceBusinessMode, preferred: VoiceInteractionPolicy) => {
+      const policy = effectiveVoiceInteractionPolicy(mode, preferred);
+      return policy === "wake_word" && !wakeWordCaptureAvailableRef.current
+        ? "continuous"
+        : policy;
+    },
+    [],
+  );
 
   useEffect(() => {
     const savedPolicy = loadVoiceInteractionPolicy();
@@ -443,14 +454,14 @@ export function useVoiceSession() {
         commandUplinkTimerRef.current = null;
       }
       setUplinkEnabledRef.current(
-        effectiveVoiceInteractionPolicy(
+        effectiveCapturePolicy(
           snapshot.active_mode,
           interactionPolicyRef.current,
         ) === "continuous",
       );
     }
     return true;
-  }, []);
+  }, [effectiveCapturePolicy]);
 
   const refreshModeSnapshot = useCallback(async (): Promise<ModeStateSnapshot | null> => {
     const sessionId = sessionIdRef.current;
@@ -603,12 +614,12 @@ export function useVoiceSession() {
     clearCommandUplinkTimer();
     const mode = modeStateRef.current?.active_mode ?? initialMode;
     if (
-      effectiveVoiceInteractionPolicy(mode, interactionPolicyRef.current) ===
+      effectiveCapturePolicy(mode, interactionPolicyRef.current) ===
       "wake_word"
     ) {
       setUplinkEnabledRef.current(false);
     }
-  }, [clearCommandUplinkTimer, initialMode]);
+  }, [clearCommandUplinkTimer, effectiveCapturePolicy, initialMode]);
 
   const armCommandUplinkTimeout = useCallback(
     (commandId: string) => {
@@ -619,7 +630,7 @@ export function useVoiceSession() {
         activeCommandIdRef.current = null;
         const mode = modeStateRef.current?.active_mode ?? initialMode;
         if (
-          effectiveVoiceInteractionPolicy(mode, interactionPolicyRef.current) ===
+          effectiveCapturePolicy(mode, interactionPolicyRef.current) ===
           "wake_word"
         ) {
           setUplinkEnabledRef.current(false);
@@ -628,11 +639,12 @@ export function useVoiceSession() {
         setHintMessage("本轮唤醒已超时，麦克风上行已关闭，请再次说「小灵小灵」。");
       }, COMMAND_UPLINK_TIMEOUT_MS);
     },
-    [clearCommandUplinkTimer, initialMode],
+    [clearCommandUplinkTimer, effectiveCapturePolicy, initialMode],
   );
 
   const cleanupMedia = useCallback(() => {
     clearCommandUplinkTimer();
+    wakeWordCaptureAvailableRef.current = false;
     setUplinkEnabledRef.current = () => undefined;
     openCommandUplinkRef.current = () => undefined;
     webrtcRef.current?.close();
@@ -663,7 +675,12 @@ export function useVoiceSession() {
     saveVoiceInteractionPolicy(policy);
     if (!runningRef.current) return;
 
-    setUplinkEnabledRef.current(policy === "continuous");
+    setUplinkEnabledRef.current(
+      effectiveCapturePolicy(
+        modeStateRef.current?.active_mode ?? initialMode,
+        policy,
+      ) === "continuous",
+    );
     activeCommandIdRef.current = null;
     setCommandFeedback(null);
     setHintMessage(
@@ -671,7 +688,7 @@ export function useVoiceSession() {
         ? "已切换到常驻模式，可以直接对话。"
         : "已切换到唤醒词模式；只有说「小灵小灵」后才会开放一轮语音。",
     );
-  }, [clearCommandUplinkTimer]);
+  }, [clearCommandUplinkTimer, effectiveCapturePolicy, initialMode]);
 
   const syncAutomaticOutputStatus = useCallback(
     async (
@@ -925,6 +942,7 @@ export function useVoiceSession() {
     if (runningRef.current) return;
 
     runningRef.current = true;
+    wakeWordCaptureAvailableRef.current = false;
     const startAbort = new AbortController();
     startAbortRef.current = startAbort;
     dispatch({ type: "START" });
@@ -1133,6 +1151,7 @@ export function useVoiceSession() {
       ensureStartupActive();
       const wakeTracks = wakeRef.current?.cloneAudioTracksForPeer() ?? [];
       sessionUsesWakeUplink = wakeTracks.length > 0;
+      wakeWordCaptureAvailableRef.current = sessionUsesWakeUplink;
       openCommandUplinkRef.current = () => {
         if (sessionIdRef.current !== session.id) return;
         sessionUplinkEnabled = true;
@@ -1332,7 +1351,7 @@ export function useVoiceSession() {
         webrtcRef.current = startupResources.webrtc;
         sessionStream = startupResources.webrtc.localStream;
         setUplinkEnabledRef.current(
-          effectiveVoiceInteractionPolicy(
+          effectiveCapturePolicy(
             initialMode,
             interactionPolicyRef.current,
           ) === "continuous",
@@ -1376,7 +1395,7 @@ export function useVoiceSession() {
       );
       setHintMessage(
         wakeHint ??
-          (effectiveVoiceInteractionPolicy(
+          (effectiveCapturePolicy(
             initialMode,
             interactionPolicyRef.current,
           ) === "wake_word"
@@ -1469,6 +1488,7 @@ export function useVoiceSession() {
     closeCommandUplink,
     initialMode,
     presentRuntimeState,
+    effectiveCapturePolicy,
     refreshControlSnapshots,
     refreshModeSnapshot,
     startPolling,
@@ -1503,7 +1523,7 @@ export function useVoiceSession() {
         if (result.ok) {
           const mode = modeStateRef.current?.active_mode ?? initialMode;
           if (
-            effectiveVoiceInteractionPolicy(mode, interactionPolicyRef.current) ===
+            effectiveCapturePolicy(mode, interactionPolicyRef.current) ===
             "wake_word"
           ) {
             openCommandUplinkRef.current();
@@ -1559,7 +1579,7 @@ export function useVoiceSession() {
       wakeRef.current = null;
       listener.stop();
     };
-  }, [armCommandUplinkTimeout, initialMode]);
+  }, [armCommandUplinkTimeout, effectiveCapturePolicy, initialMode]);
 
   useEffect(
     () => () => {

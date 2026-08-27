@@ -21,6 +21,7 @@ import styles from "./auth.module.css";
 import Ferrofluid from "./ferrofluid";
 
 const RESEND_SECONDS = 60;
+const LOGIN_BACKGROUND_COLORS = ["#ffffff", "#ffffff", "#ffffff"];
 
 type AuthView = "checking" | "login" | "authenticated";
 
@@ -158,7 +159,7 @@ export function PhoneLogin({ onAuthenticated }: PhoneLoginProps) {
     <main className={styles.login}>
       <div className={styles.backgroundLayer}>
         <Ferrofluid
-          colors={["#ffffff", "#ffffff", "#ffffff"]}
+          colors={LOGIN_BACKGROUND_COLORS}
           flowDirection="down"
           fluidity={0.1}
           glow={2}

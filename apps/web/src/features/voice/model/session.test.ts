@@ -44,6 +44,63 @@ describe("sessionReducer", () => {
     expect(deduped.turns).toHaveLength(2);
   });
 
+  it("settles only active containers whose final Turn is returned by polling", () => {
+    const finalTurn = {
+      id: "turn-1",
+      sourceLanguage: "中文",
+      targetLanguage: "English",
+      source: "你好",
+      translation: "Hello",
+    };
+    const live = {
+      ...initialSession,
+      phase: "active" as const,
+      asrPartial: {
+        turnId: "turn-1",
+        text: "你好",
+        sourceLanguage: "zh-CN",
+      },
+      phraseSubtitles: [
+        {
+          utteranceId: "turn-1",
+          phraseSequence: 1,
+          sourceText: "你好",
+          translatedText: "Hello",
+          status: "translated" as const,
+        },
+        {
+          utteranceId: "turn-2",
+          phraseSequence: 1,
+          sourceText: "下一句",
+          translatedText: "",
+          status: "source_stable" as const,
+        },
+      ],
+    };
+
+    const emptyPoll = sessionReducer(live, { type: "SET_TURNS", turns: [] });
+    expect(emptyPoll.asrPartial).toEqual(live.asrPartial);
+    expect(emptyPoll.phraseSubtitles).toEqual(live.phraseSubtitles);
+
+    const settled = sessionReducer(emptyPoll, {
+      type: "SET_TURNS",
+      turns: [finalTurn],
+    });
+    expect(settled.asrPartial).toBeNull();
+    expect(settled.phraseSubtitles).toEqual([live.phraseSubtitles[1]]);
+
+    const duplicateFinal = sessionReducer(
+      {
+        ...live,
+        turns: [finalTurn],
+        phraseSubtitles: [live.phraseSubtitles[0]],
+      },
+      { type: "ADD_TURN", turn: finalTurn },
+    );
+    expect(duplicateFinal.asrPartial).toBeNull();
+    expect(duplicateFinal.phraseSubtitles).toEqual([]);
+  });
+
   it("returns to a clean idle state when the session ends", () => {
     const active = {
       ...initialSession,
@@ -180,6 +237,32 @@ describe("sessionReducer", () => {
       { utteranceId: "turn-1", phraseSequence: 2, sourceText: "世界", translatedText: "", status: "source_stable" },
     ]);
     expect(settled.phraseSubtitles).toEqual([]);
+  });
+
+  it("does not let final content events hide active browser playback", () => {
+    const playing = { ...initialSession, phase: "playing" as const };
+    const withTurn = sessionReducer(playing, {
+      type: "ADD_TURN",
+      turn: {
+        id: "turn-playing",
+        sourceLanguage: "中文",
+        targetLanguage: "English",
+        source: "你好",
+        translation: "Hello",
+      },
+    });
+    const withReply = sessionReducer(playing, {
+      type: "ADD_ASSISTANT_REPLY",
+      reply: {
+        replyId: "reply-playing",
+        turnId: "turn-playing",
+        text: "Hello",
+        language: "en-US",
+      },
+    });
+
+    expect(withTurn.phase).toBe("playing");
+    expect(withReply.phase).toBe("playing");
   });
 
   it("does not let late source events downgrade a terminal phrase", () => {

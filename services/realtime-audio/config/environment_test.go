@@ -52,6 +52,26 @@ func TestLoadProviderConfigReadsQwenSettings(t *testing.T) {
 	}
 }
 
+func TestLoadProviderConfigDisablesRawLoggingByDefault(t *testing.T) {
+	config, err := LoadProviderConfig(mapLookup(nil))
+	if err != nil {
+		t.Fatalf("LoadProviderConfig() error = %v", err)
+	}
+	if config.RawLogEnabled {
+		t.Fatal("RawLogEnabled = true, want false")
+	}
+}
+
+func TestLoadProviderConfigReadsRawLoggingFlag(t *testing.T) {
+	config, err := LoadProviderConfig(mapLookup(map[string]string{"REALTIME_RAW_LOG_ENABLED": "true"}))
+	if err != nil {
+		t.Fatalf("LoadProviderConfig() error = %v", err)
+	}
+	if !config.RawLogEnabled {
+		t.Fatal("RawLogEnabled = false, want true")
+	}
+}
+
 func TestLoadProviderConfigReadsIndependentCommandSettings(t *testing.T) {
 	values := map[string]string{
 		"LLM_API_KEY":          "shared-key",
@@ -85,6 +105,7 @@ func TestLoadProviderConfigRejectsInvalidValues(t *testing.T) {
 		{name: "silence range", values: map[string]string{"ASR_SILENCE_DURATION_MS": "100"}, want: ErrInvalidEnvironmentValue},
 		{name: "sample rate", values: map[string]string{"ASR_SAMPLE_RATE": "44100"}, want: ErrInvalidEnvironmentValue},
 		{name: "boolean", values: map[string]string{"LLM_ENABLE_THINKING": "sometimes"}, want: ErrInvalidEnvironmentValue},
+		{name: "raw log boolean", values: map[string]string{"REALTIME_RAW_LOG_ENABLED": "sometimes"}, want: ErrInvalidEnvironmentValue},
 		{name: "command timeout", values: map[string]string{"COMMAND_LLM_TIMEOUT_MS": "-1"}, want: ErrInvalidEnvironmentValue},
 		{name: "command key without endpoint", values: map[string]string{"COMMAND_LLM_API_KEY": "command-key"}, want: ErrInvalidEnvironmentValue},
 		{name: "command endpoint without key", values: map[string]string{"COMMAND_LLM_BASE_URL": "https://command.example/v1"}, want: ErrInvalidEnvironmentValue},

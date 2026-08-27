@@ -1,9 +1,8 @@
 name: Deploy Web To GitHub Pages
 
 on:
-  workflow_run:
-    workflows: [Test]
-    types: [completed]
+  push:
+    branches: [dev, main]
   workflow_dispatch:
 
 concurrency:
@@ -11,23 +10,12 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  actions: read
   contents: read
   pages: write
   id-token: write
 
 jobs:
   build:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (
-        github.event.workflow_run.event == 'push' &&
-        github.event.workflow_run.conclusion == 'success' &&
-        (
-          github.event.workflow_run.head_branch == 'main' ||
-          github.event.workflow_run.head_branch == 'dev'
-        )
-      )
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -38,8 +26,51 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          go-version: 1.26.7
+
+      - name: Download Go modules
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          for module in packages/contracts services/api services/realtime-audio; do
+            go -C "$module" mod download
+          done
+
+      - name: Install ONNX Runtime for coverage
+        shell: bash
+        working-directory: services/realtime-audio
+        run: |
+          set -euo pipefail
+          lib="third_party/onnxruntime/lib/libonnxruntime.so"
+          if [[ -f "$lib" ]]; then
+            exit 0
+          fi
+          version=1.24.1
+          mkdir -p third_party/onnxruntime
+          curl -fsSL "https://github.com/microsoft/onnxruntime/releases/download/v${version}/onnxruntime-linux-x64-${version}.tgz" -o /tmp/ort.tgz
+          mkdir -p /tmp/ort-extract
+          tar -xzf /tmp/ort.tgz -C /tmp/ort-extract
+          inner="$(find /tmp/ort-extract -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          cp -a "$inner"/. third_party/onnxruntime/
+          versioned="$(find third_party/onnxruntime/lib -maxdepth 1 -type f -name 'libonnxruntime.so.*' | head -n 1)"
+          ln -sfn "$(basename "$versioned")" "$lib"
+
+      - name: Generate coverage endpoint data
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          coverage_root="$GITHUB_WORKSPACE/coverage/current"
+          mkdir -p "$coverage_root/go-coverage-contracts" "$coverage_root/go-coverage-api" "$coverage_root/go-coverage-realtime-audio"
+          go -C packages/contracts test -count=1 -covermode=atomic -coverprofile="$coverage_root/go-coverage-contracts/coverage.out" ./...
+          go -C services/api test -count=1 -covermode=atomic -coverprofile="$coverage_root/go-coverage-api/coverage.out" ./...
+          LD_LIBRARY_PATH="$GITHUB_WORKSPACE/services/realtime-audio/third_party/onnxruntime/lib" go -C services/realtime-audio test -count=1 -covermode=atomic -coverprofile="$coverage_root/go-coverage-realtime-audio/coverage.out" ./...
+          node apps/web/scripts/generate-coverage-badge.mjs "$coverage_root" apps/web/public/coverage.json
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

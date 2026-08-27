@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 248 64" role="img" aria-labelledby="title desc">
+  <title id="title">Lingow</title>
+  <desc id="desc">Lingow AI voice assistant and interpretation system.</desc>
+  <defs>
+    <linearGradient id="lingow-logo-gradient" x1="10" y1="10" x2="54" y2="54" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0D8B78"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="18" fill="#111827"/>
+  <path d="M17 20.5c0-4.694 3.806-8.5 8.5-8.5h9.75C44.5 12 52 19.5 52 28.75S44.5 45.5 35.25 45.5H25.5L16 53v-7.5h-.5C10.806 45.5 7 41.694 7 37V29c0-4.694 3.806-8.5 8.5-8.5H17Z" fill="url(#lingow-logo-gradient)"/>
+  <path d="M47 43.5c0 4.694-3.806 8.5-8.5 8.5h-9.75C19.5 52 12 44.5 12 35.25S19.5 18.5 28.75 18.5h9.75L48 11v7.5h.5c4.694 0 8.5 3.806 8.5 8.5v8c0 4.694-3.806 8.5-8.5 8.5H47Z" fill="#F7FAFC" fill-opacity=".96"/>
+  <path d="M22 32h20" stroke="#111827" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="18" cy="32" r="2" fill="#111827"/>
+  <circle cx="46" cy="32" r="2" fill="#111827"/>
+  <text x="82" y="43" fill="#F3F4F6" font-family="Arial, Helvetica, sans-serif" font-size="36" font-weight="700" letter-spacing="-1.4">Lingow</text>
+</svg>

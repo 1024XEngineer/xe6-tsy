@@ -155,24 +155,22 @@ func TestServiceIgnoresSilenceOnlyInput(t *testing.T) {
 
 func TestServiceQuarantinesAudioAfterWakeWord(t *testing.T) {
 	base := time.Unix(31, 0)
-	readStarted := make(chan struct{})
-	signalEnqueued := make(chan struct{})
-	wakeWords := &fakeWakeWords{signal: realtimev1.WakeWordDetectedSignal{
+	wake := receivedWakeWord{signal: realtimev1.WakeWordDetectedSignal{
 		Type: realtimev1.WakeWordDetectedType, EventVersion: realtimev1.WakeWordDetectedEventVersion,
 		SignalID: "wake-1", DetectedAt: base.Add(24 * time.Hour),
-	}, readStarted: readStarted, signalEnqueued: signalEnqueued}
-	source := &wakeAwareSource{
-		readStarted: readStarted, ready: signalEnqueued,
-		frames: []audio.Frame{
-			testFrame(t, 9, base), // command audio: must never reach ordinary VAD
-			testFrame(t, 1, base.Add(100*time.Millisecond)),
-			testFrame(t, 0, base.Add(400*time.Millisecond)),
-		},
-	}
+	}, receivedAt: base}
+	source := &fakeSource{frames: []audio.Frame{
+		testFrame(t, 9, base), // command audio: must never reach ordinary VAD
+		testFrame(t, 1, base.Add(100*time.Millisecond)),
+		testFrame(t, 0, base.Add(400*time.Millisecond)),
+	}}
 	gate := &recordingGate{}
 	processor := &fakeProcessor{}
-	service := newTestServiceWithDeps(t, source, processor, gate, wakeWords, func() time.Time { return base })
+	service := newTestServiceWithDeps(t, source, processor, gate, nil, func() time.Time { return base })
 	request := Request{SessionID: "session-1", SourceLanguage: "zh-CN"}
+	if !service.openCommandWindow(t.Context(), request, wake) {
+		t.Fatal("openCommandWindow() = false, want active command window")
+	}
 
 	if err := service.Run(context.Background(), request); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -549,10 +547,8 @@ func (energyClassifier) Speech(frame audio.Frame) bool {
 }
 
 type fakeWakeWords struct {
-	signal         realtimev1.WakeWordDetectedSignal
-	readStarted    <-chan struct{}
-	signalEnqueued chan struct{}
-	sent           bool
+	signal realtimev1.WakeWordDetectedSignal
+	sent   bool
 }
 
 func (s *fakeWakeWords) Receive(ctx context.Context) (realtimev1.WakeWordDetectedSignal, error) {
@@ -560,48 +556,11 @@ func (s *fakeWakeWords) Receive(ctx context.Context) (realtimev1.WakeWordDetecte
 		return realtimev1.WakeWordDetectedSignal{}, err
 	}
 	if s.sent {
-		if s.signalEnqueued != nil {
-			close(s.signalEnqueued)
-			s.signalEnqueued = nil
-		}
 		return realtimev1.WakeWordDetectedSignal{}, io.EOF
-	}
-	if s.readStarted != nil {
-		select {
-		case <-s.readStarted:
-		case <-ctx.Done():
-			return realtimev1.WakeWordDetectedSignal{}, ctx.Err()
-		}
 	}
 	s.sent = true
 	return s.signal, nil
 }
-
-type wakeAwareSource struct {
-	readStarted chan<- struct{}
-	ready       <-chan struct{}
-	frames      []audio.Frame
-}
-
-func (s *wakeAwareSource) ReadFrame(ctx context.Context) (audio.Frame, error) {
-	if s.readStarted != nil {
-		close(s.readStarted)
-		s.readStarted = nil
-	}
-	select {
-	case <-s.ready:
-	case <-ctx.Done():
-		return audio.Frame{}, ctx.Err()
-	}
-	if len(s.frames) == 0 {
-		return audio.Frame{}, io.EOF
-	}
-	frame := s.frames[0].Clone()
-	s.frames = s.frames[1:]
-	return frame, nil
-}
-
-func (s *wakeAwareSource) Close() error { return nil }
 
 type recordingGate struct {
 	openRequest command.OpenRequest

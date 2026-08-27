@@ -179,7 +179,6 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
         <AnimatePresence>
           {settingsOpen ? (
             <SettingsPanel
-              debug={debug}
               configSyncStatus={configSyncStatus}
               logoutDisabled={state.phase !== "idle"}
               onClose={() => setSettingsOpen(false)}

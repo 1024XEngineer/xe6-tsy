@@ -8,13 +8,11 @@ import {
 } from "./interaction-policy";
 
 describe("voice interaction policy", () => {
-  it("honors the selected policy in both business modes", () => {
-    expect(effectiveVoiceInteractionPolicy("interpretation", "wake_word")).toBe(
-      "wake_word",
-    );
-    expect(effectiveVoiceInteractionPolicy("assistant", "wake_word")).toBe(
-      "wake_word",
-    );
+  it("uses wake-word capture for assistant and continuous capture for interpretation", () => {
+    expect(effectiveVoiceInteractionPolicy("assistant", "continuous")).toBe("wake_word");
+    expect(effectiveVoiceInteractionPolicy("assistant", "wake_word")).toBe("wake_word");
+    expect(effectiveVoiceInteractionPolicy("interpretation", "continuous")).toBe("continuous");
+    expect(effectiveVoiceInteractionPolicy("interpretation", "wake_word")).toBe("continuous");
   });
 
   it("keeps capture active while interpretation audio is playing", () => {

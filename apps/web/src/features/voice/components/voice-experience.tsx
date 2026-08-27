@@ -30,8 +30,6 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
     configSyncStatus,
     commandFeedback,
     interactionPolicy,
-    interactionPolicyLocked,
-    setInteractionPolicy,
     switchMode,
     toggle,
   } = useVoiceSession();
@@ -41,7 +39,7 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
     debug.modeCommandPending || debug.modeState?.phase === "switching";
   const modeLabel = activeMode === "assistant" ? "AI 助手" : "同声传译";
   const policyLabel = interactionPolicy === "continuous" ? "常驻模式" : "唤醒词模式";
-  const capsuleStatus = modeSwitching ? "切换中…" : `${modeLabel} · ${policyLabel}`;
+  const capsuleStatus = `${modeLabel} · ${policyLabel}`;
   const statusTone = state.notice || debug.lastError || debug.connectionState === "failed"
     ? "error"
     : modeSwitching
@@ -60,10 +58,6 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
   const handleModeSwitch = (mode: "assistant" | "interpretation") => {
     setModeMenuOpen(false);
     void switchMode(mode);
-  };
-
-  const toggleInteractionPolicy = () => {
-    setInteractionPolicy(interactionPolicy === "continuous" ? "wake_word" : "continuous");
   };
 
   return (
@@ -98,7 +92,9 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
               <p aria-live="polite" className={styles.capsuleStatus}>
                 {capsuleStatus}
               </p>
-              <p className={styles.capsuleDetail}>{statusMessage}</p>
+              <p aria-live="polite" className={styles.srOnly}>
+                {statusMessage}
+              </p>
             </div>
             <div className={styles.modeMenuWrap}>
               <button
@@ -130,21 +126,6 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
               ) : null}
             </div>
           </div>
-          <button
-            aria-checked={interactionPolicy === "wake_word"}
-            aria-label={`监听方式：${policyLabel}`}
-            className={styles.interactionToggle}
-            disabled={interactionPolicyLocked}
-            onClick={toggleInteractionPolicy}
-            role="switch"
-            title={
-              "切换常驻模式或唤醒词模式"
-            }
-            type="button"
-          >
-            <span>{policyLabel}</span>
-            <i aria-hidden="true" />
-          </button>
           <div className={styles.statusHints}>
             {hintMessage ? <p>{hintMessage}</p> : null}
             {automaticOutputMessage ? <p>{automaticOutputMessage}</p> : null}

@@ -73,7 +73,7 @@
   top: max(3rem, env(safe-area-inset-top));
   left: 50%;
   display: flex;
-  width: min(21rem, calc(100vw - 13rem));
+  width: min(24rem, calc(100vw - 2rem));
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
@@ -150,7 +150,6 @@
 }
 
 .capsuleStatus,
-.capsuleDetail,
 .statusHints p {
   margin: 0;
 }
@@ -165,14 +164,16 @@
   white-space: nowrap;
 }
 
-.capsuleDetail {
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
   overflow: hidden;
-  margin-top: 0.13rem;
-  color: rgb(255 255 255 / 50%);
-  font-size: clamp(0.59rem, 0.7vw, 0.66rem);
-  line-height: 1.3;
-  text-overflow: ellipsis;
+  clip: rect(0, 0, 0, 0);
   white-space: nowrap;
+  border: 0;
 }
 
 .modeMenuWrap {
@@ -200,8 +201,7 @@
   color: #fff;
 }
 
-.modeMenuTrigger:disabled,
-.interactionToggle:disabled {
+.modeMenuTrigger:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
@@ -238,61 +238,6 @@
   color: #fff;
 }
 
-.interactionToggle {
-  display: inline-flex;
-  min-height: 2.55rem;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 0.42rem;
-  padding: 0.28rem 0.52rem 0.28rem 0.62rem;
-  border: 1px solid rgb(255 255 255 / 17%);
-  border-radius: 999px;
-  background: rgb(18 20 22 / 82%);
-  color: rgb(255 255 255 / 66%);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.62rem;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.interactionToggle:hover:not(:disabled) {
-  border-color: rgb(255 255 255 / 42%);
-  color: #fff;
-}
-
-.interactionToggle i {
-  position: relative;
-  display: block;
-  width: 1.45rem;
-  height: 0.82rem;
-  border-radius: 999px;
-  background: rgb(255 255 255 / 22%);
-  transition: background 180ms ease;
-}
-
-.interactionToggle i::after {
-  position: absolute;
-  top: 50%;
-  left: 0.13rem;
-  width: 0.58rem;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: rgb(255 255 255 / 82%);
-  content: "";
-  transform: translateY(-50%);
-  transition: left 180ms ease, background 180ms ease;
-}
-
-.interactionToggle[aria-checked="true"] i {
-  background: rgb(127 200 222 / 58%);
-}
-
-.interactionToggle[aria-checked="true"] i::after {
-  left: 0.74rem;
-  background: #fff;
-}
-
 .statusHints {
   position: absolute;
   top: calc(100% + 0.48rem);
@@ -308,6 +253,7 @@
 
 .voiceStage {
   --voice-stage-offset-y: 0rem;
+  --voice-strands-offset-y: 0rem;
 
   position: absolute;
   z-index: 1;
@@ -426,14 +372,15 @@
   height: 100%;
 }
 
-/* Middle waveform controls: move it with --voice-stage-offset-y on
-   .voiceStage, then tune its footprint here. */
+/* Move only the active waveform with --voice-strands-offset-y on .voiceStage.
+   The outer orb remains controlled by --voice-stage-offset-y. */
 .strands {
   position: relative;
   display: block;
   width: clamp(18rem, 35vw, 32rem);
   height: clamp(6.5rem, 11vw, 8.75rem);
   filter: drop-shadow(0 10px 18px rgb(255 255 255 / 10%));
+  transform: translateY(var(--voice-strands-offset-y));
 }
 
 .strands::before {
@@ -636,7 +583,7 @@
   bottom: max(1rem, env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: flex-start;
   width: min(42rem, calc(100vw - 3rem));
   max-height: 38dvh;
   gap: clamp(0.72rem, 1.5dvh, 1rem);
@@ -2164,33 +2111,9 @@
     font-size: 0.65rem;
   }
 
-  .capsuleDetail {
-    font-size: 0.53rem;
-  }
-
   .modeMenuTrigger {
     width: 2.1rem;
     min-height: 2.1rem;
-  }
-
-  .interactionToggle {
-    min-height: 2.1rem;
-    gap: 0.28rem;
-    padding-inline: 0.42rem;
-    font-size: 0.52rem;
-  }
-
-  .interactionToggle i {
-    width: 1.2rem;
-    height: 0.7rem;
-  }
-
-  .interactionToggle i::after {
-    width: 0.5rem;
-  }
-
-  .interactionToggle[aria-checked="true"] i::after {
-    left: 0.59rem;
   }
 
   .statusHints {

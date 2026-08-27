@@ -12,6 +12,10 @@ write_fake_docker() {
     'set -euo pipefail' \
     'printf "%s\n" "$*" >> "${FAKE_DOCKER_LOG:-/dev/null}"' \
     'case "$*" in' \
+    '  *auth/anonymous*) printf '\''{"account":{"id":"acct_smoke"},"tokens":{"access_token":"dynamic-token","refresh_token":"refresh-token"}}'\'' ;;' \
+    '  *auth/logout*) printf '\''{}'\'' ;;' \
+    '  *voice-sessions/*/end*) printf '\''{}'\'' ;;' \
+    '  *voice-sessions) printf '\''{"id":"vs_dynamic"}'\'' ;;' \
     '  */metrics*)' \
     '    count_file="${FAKE_METRICS_COUNT_FILE:-}"' \
     '    count=0' \
@@ -24,10 +28,12 @@ write_fake_docker() {
     '    ;;' \
     '  *realtime-ticket*) printf '\''{"ticket":"ticket"}'\'' ;;' \
     '  *webrtc/config*)' \
+    '    session_id=session' \
+    '    if [[ "${FAKE_DYNAMIC:-0}" == 1 ]]; then session_id=vs_dynamic; fi' \
     '    if [[ "${FAKE_TURN:-0}" == 1 ]]; then' \
-    '      printf '\''{"session_id":"session","ice_servers":[{"urls":["turns:turn.example"]}]}'\''' \
+    '      printf '\''{"session_id":"%s","ice_servers":[{"urls":["turns:turn.example"]}]}'\'' "$session_id"' \
     '    else' \
-    '      printf '\''{"session_id":"session","ice_servers":[{"urls":["stun:stun.example"]}]}'\''' \
+    '      printf '\''{"session_id":"%s","ice_servers":[{"urls":["stun:stun.example"]}]}'\'' "$session_id"' \
     '    fi' \
     '    ;;' \
     'esac' \
@@ -60,6 +66,15 @@ run_release() {
     bash "$release_dir/deploy.sh" "$deployment_dir" "$release_dir" session
 }
 
+run_dynamic_release() {
+  local deployment_dir=$1
+  local release_dir=$2
+  : > "$test_root/docker.log"
+  FAKE_TURN=1 FAKE_DYNAMIC=1 FAKE_DOCKER_LOG="$test_root/docker.log" \
+    DEPLOY_PROJECT_NAME=lingow-development PATH="$test_root/bin:$PATH" \
+    bash "$release_dir/deploy.sh" "$deployment_dir" "$release_dir" --dynamic-smoke
+}
+
 write_fake_docker
 
 first_deployment="$test_root/first"
@@ -70,6 +85,14 @@ cmp "$first_release/.env.production" "$first_deployment/.env.production"
 cmp "$first_release/docker-compose.yml" "$first_deployment/docker-compose.yml"
 cmp "$first_release/deploy.sh" "$first_deployment/deploy.sh"
 printf 'first deployment runs the staging release\n'
+
+dynamic_deployment="$test_root/dynamic"
+dynamic_release="$dynamic_deployment/.staging/candidate"
+prepare_release "$dynamic_deployment" "$dynamic_release"
+run_dynamic_release "$dynamic_deployment" "$dynamic_release"
+grep -q -- 'auth/anonymous' "$test_root/docker.log"
+grep -q -- 'voice-sessions' "$test_root/docker.log"
+printf 'dynamic smoke creates and cleans up an isolated account/session\n'
 
 upgrade_deployment="$test_root/upgrade"
 upgrade_release="$upgrade_deployment/.staging/candidate"

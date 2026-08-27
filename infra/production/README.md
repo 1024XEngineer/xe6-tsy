@@ -22,8 +22,6 @@ Web 默认只绑定宿主机回环地址 `127.0.0.1:3000`。如需绑定其他�
    - `DEPLOY_SSH_PRIVATE_KEY`：该用户的专用 SSH 私钥。
    - `DEPLOY_KNOWN_HOSTS`：目标主机的已验证 SSH host key 行。
    - `DEPLOY_ENV_FILE`：将环境模板中的尖括号字段说明替换为真实配置后的完整环境文件，不包含三项 `LINGOW_*_IMAGE` 值。
-   - `DEPLOY_SMOKE_ACCESS_TOKEN`：部署后业务冒烟的专用账号访问令牌，缺失时发布会失败。
-   - `DEPLOY_SMOKE_SESSION_ID`：该账号预先创建且保持可用的 voice session ID，缺失时发布会失败；后续应改为每次动态创建测试会话。
    - `DEPLOY_PUBLIC_BASE_URL`：从 GitHub runner 可访问的 HTTPS Web 地址，用于真实浏览器 WebRTC 冒烟，缺失时发布会失败。
    - `DEPLOY_METRICS_TOKEN`：与环境文件中的 `REALTIME_METRICS_TOKEN` 相同的内部监控 token，用于部署后观察窗口；生产环境必填。
 
@@ -70,4 +68,4 @@ docker compose --env-file .env.production -f docker-compose.yml config --quiet
 docker compose --env-file .env.production -f docker-compose.yml up --detach --wait
 ```
 
-发布事务中的 `scripts/deploy-smoke.sh` 会验证 API/realtime 健康、用专用访问令牌获取 realtime ticket，并用该 ticket 获取 WebRTC 配置（包括 TURN 配置）。部署完成后，GitHub runner 还会使用 `apps/web/playwright.deploy.config.ts` 从外部 HTTPS 地址建立真实 PeerConnection，检查 TURN relay、DataChannel 和 realtime 状态；该检查失败会调用 `scripts/rollback.sh` 恢复上一版本。收费 provider 的真实质量仍需在发布窗口人工验收。
+发布事务中的 `scripts/deploy-smoke.sh` 会验证 API/realtime 健康、动态创建隔离的匿名账号和 voice session、获取 realtime ticket，并用该 ticket 获取 WebRTC 配置（包括 TURN 配置）；旧版传入的 token/session 参数仍兼容但不再由工作流使用。部署完成后，GitHub runner 还会使用 `apps/web/playwright.deploy.config.ts` 从外部 HTTPS 地址动态创建测试账号并建立真实 PeerConnection，检查 TURN relay、DataChannel 和 realtime 状态；该检查失败会调用 `scripts/rollback.sh` 恢复上一版本。收费 provider 的真实质量仍需在发布窗口人工验收。

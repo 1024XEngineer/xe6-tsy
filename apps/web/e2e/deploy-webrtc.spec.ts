@@ -9,8 +9,14 @@ async function expectJSON<T>(response: APIResponse, status: number): Promise<T> 
 
 test("connects an external browser through TURN and realtime", async ({ page, request }) => {
   test.setTimeout(90_000);
-  const token = process.env.DEPLOY_SMOKE_ACCESS_TOKEN;
-  if (!token) throw new Error("DEPLOY_SMOKE_ACCESS_TOKEN is required");
+  let token = process.env.DEPLOY_SMOKE_ACCESS_TOKEN ?? "";
+  let refreshToken = "";
+  if (!token) {
+    const authResponse = await request.post("/api/v1/auth/anonymous");
+    const auth = await expectJSON<{ tokens: { access_token: string; refresh_token: string } }>(authResponse, 201);
+    token = auth.tokens.access_token;
+    refreshToken = auth.tokens.refresh_token;
+  }
   const authHeaders = { Authorization: `Bearer ${token}` };
   const idempotency = () => `deploy-smoke-${crypto.randomUUID()}`;
 
@@ -248,5 +254,12 @@ test("connects an external browser through TURN and realtime", async ({ page, re
       headers: { ...authHeaders, "Idempotency-Key": idempotency() },
     });
     expect([200, 409]).toContain(endResponse.status());
+    if (refreshToken) {
+      const logoutResponse = await request.post("/api/v1/auth/logout", {
+        headers: { "Content-Type": "application/json" },
+        data: { refresh_token: refreshToken },
+      });
+      expect([204, 401]).toContain(logoutResponse.status());
+    }
   }
 });

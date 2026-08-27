@@ -4,7 +4,7 @@ set -euo pipefail
 
 if [[ $# -ne 2 && $# -ne 3 ]]; then
   printf 'usage: %s <deployment-directory> <environment-file>\n' "$0" >&2
-  printf '       %s <deployment-directory> <release-directory> <smoke-session-id|--no-smoke>\n' "$0" >&2
+  printf '       %s <deployment-directory> <release-directory> <smoke-session-id|--dynamic-smoke|--no-smoke>\n' "$0" >&2
   exit 64
 fi
 
@@ -20,14 +20,20 @@ if [[ $# -eq 3 ]]; then
       printf 'staged releases require an authenticated smoke test\n' >&2
       exit 64
     fi
+  elif [[ "$3" == "--dynamic-smoke" ]]; then
+    smoke_session_id=''
+    smoke_enabled=true
+    smoke_dynamic=true
   else
     smoke_session_id=$3
     smoke_enabled=true
+    smoke_dynamic=false
   fi
 else
   release_dir=$deployment_dir
   environment_file=$2
   smoke_enabled=false
+  smoke_dynamic=false
 fi
 previous_dir="$deployment_dir/.previous"
 proxy_dir="$deployment_dir/proxy"
@@ -70,8 +76,12 @@ if [[ "$smoke_enabled" == true && ! -f "$release_dir/deploy-smoke.sh" ]]; then
   exit 66
 fi
 if [[ "$smoke_enabled" == true ]]; then
-  smoke_access_token=$(cat)
-  if [[ -z "$smoke_access_token" ]]; then
+  if [[ "${smoke_dynamic:-false}" == true ]]; then
+    smoke_access_token=''
+  else
+    smoke_access_token=$(cat | tr -d '\r\n')
+  fi
+  if [[ "${smoke_dynamic:-false}" != true && -z "$smoke_access_token" ]]; then
     printf 'missing smoke access token\n' >&2
     exit 64
   fi
@@ -188,7 +198,11 @@ sync_proxy_release
 "${compose[@]}" ps
 
 if [[ "$smoke_enabled" == true ]]; then
-  printf '%s\n' "$smoke_access_token" | bash "$release_dir/deploy-smoke.sh" "$release_dir" "$environment_file" "$smoke_session_id"
+  if [[ "${smoke_dynamic:-false}" == true ]]; then
+    printf '\n' | bash "$release_dir/deploy-smoke.sh" "$release_dir" "$environment_file"
+  else
+    printf '%s\n' "$smoke_access_token" | bash "$release_dir/deploy-smoke.sh" "$release_dir" "$environment_file" "$smoke_session_id"
+  fi
 fi
 
 if [[ "$staged_release" == true ]]; then

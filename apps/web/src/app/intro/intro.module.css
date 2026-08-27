@@ -1201,6 +1201,89 @@
   .docsResourceGroups { gap: 38px; }
 }
 
+/* Product and about pages use full-width bands with padding owned by inner containers. */
+.subpageHero,
+.detailSection,
+.detailSectionAlt,
+.architectureSection,
+.subpageContact {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border-top-color: transparent;
+  border-bottom-color: transparent;
+}
+
+.subpageHero,
+.detailSection,
+.architectureSection,
+.subpageContact {
+  display: block;
+  background: linear-gradient(180deg, #090d14 0%, #101a29 46%, #090d14 100%);
+}
+
+.detailSectionAlt {
+  background: linear-gradient(180deg, #090d14 0%, #0d202d 48%, #090d14 100%);
+}
+
+.subpageHeroInner,
+.detailSection > .subpageSectionInner,
+.detailSectionAlt > .subpageSectionInner,
+.architectureSection > .subpageSectionInner,
+.subpageContact > .subpageSectionInner {
+  width: 100%;
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 112px 32px;
+}
+
+.subpageHeroInner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(250px, 300px);
+  gap: clamp(48px, 8vw, 120px);
+  align-items: end;
+  text-align: left;
+}
+
+.subpageHeroBody > p:last-child {
+  max-width: 560px;
+  margin: 34px 0 0;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.85;
+}
+
+.detailSectionAlt > .subpageSectionInner,
+.subpageContact > .subpageSectionInner {
+  max-width: 1360px;
+}
+
+@media (max-width: 760px) {
+  .subpageHeroInner {
+    grid-template-columns: 1fr;
+    gap: 50px;
+  }
+}
+
+@media (max-width: 620px) {
+  .subpageHeroInner,
+  .detailSection > .subpageSectionInner,
+  .detailSectionAlt > .subpageSectionInner,
+  .architectureSection > .subpageSectionInner,
+  .subpageContact > .subpageSectionInner {
+    padding: 76px 18px 84px;
+  }
+}
+
+/* Alternate solid-feeling black and deep-cyan bands while sharing a blended edge. */
+.subpageBandBlack {
+  background: #090d14;
+}
+
+.subpageBandCyan {
+  background: linear-gradient(180deg, #090d14 0%, #101a29 18%, #101a29 82%, #090d14 100%);
+}
+
 .factSection,
 .pipelineSection,
 .trustSection {
@@ -1258,7 +1341,7 @@
 .trustGrid p { margin: 11px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .contactActions { display: flex; justify-content: center; align-items: center; gap: 26px; }
 .contactActions .textButton { color: var(--ink); }
-.contactSection { padding: 0; border-top: 0; background: linear-gradient(180deg, #111927 0%, #111927 84%, #090d14 100%); }
+.contactSection:not(.subpageContact) { padding: 0; border-top: 0; background: linear-gradient(180deg, #111927 0%, #111927 84%, #090d14 100%); }
 .contactInner { max-width: 1360px; margin: 0 auto; padding: 150px 32px; }
 
 @media (max-width: 900px) {

@@ -1118,6 +1118,89 @@
   max-width: 760px;
 }
 
+.docsActions {
+  position: fixed;
+  z-index: 18;
+  top: calc(var(--nav-height) + 16px);
+  right: max(24px, calc((100vw - 1360px) / 2));
+  display: flex;
+  gap: 8px;
+}
+
+.docsActions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 11px;
+  border: 1px solid #334257;
+  border-radius: 4px;
+  background: #111927;
+  color: var(--ink);
+  font-size: 12px;
+  transition: border-color .2s ease, background-color .2s ease, color .2s ease;
+}
+
+.docsActions a:hover {
+  border-color: var(--accent);
+  background: #19333b;
+  color: var(--accent);
+}
+
+.docsSidebarHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.docsSidebarHeader > p { margin: 0 0 18px; color: var(--ink); font-size: 12px; font-weight: 700; }
+.docsMenuToggle { display: none; align-items: center; gap: 7px; min-height: 36px; padding: 0 10px; border: 1px solid #334257; border-radius: 4px; background: #111927; color: var(--ink); cursor: pointer; font: inherit; font-size: 12px; }
+.docsMenuToggle:hover { border-color: var(--accent); color: var(--accent); }
+
+.docsCodeShell { margin-top: 16px; border: 1px solid #334257; border-radius: 6px; background: #0c131e; }
+.docsCodeToolbar { display: flex; min-height: 38px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 11px 0 14px; border-bottom: 1px solid #334257; color: #8d9aae; font-family: var(--font-geist-mono), monospace; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+.docsCodeToolbar button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 7px; border: 1px solid #3b4d64; border-radius: 3px; background: transparent; color: #cbd5e1; cursor: pointer; font: inherit; font-size: 10px; letter-spacing: 0; text-transform: none; transition: border-color .2s ease, color .2s ease, background-color .2s ease; }
+.docsCodeToolbar button:hover { border-color: var(--accent); background: #19333b; color: var(--accent); }
+.docsCodeToolbar button:active { transform: translateY(1px); }
+.docsCodeBlock { margin-top: 0; border: 0; border-radius: 0 0 6px 6px; }
+
+.docsPrereqGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 28px; }
+.docsStatusTag { display: grid; gap: 7px; min-height: 100px; padding: 13px; border: 1px solid #334257; border-radius: 5px; background: #111927; }
+.docsStatusPill { justify-self: start; padding: 3px 6px; border-radius: 3px; font-family: var(--font-geist-mono), monospace; font-size: 9px; letter-spacing: .04em; }
+.docsStatusRequired { background: rgb(255 109 120 / 12%); color: #ff9ba5; }
+.docsStatusOptional { background: rgb(114 228 210 / 10%); color: var(--accent); }
+.docsStatusTag strong { color: var(--ink); font-size: 12px; font-weight: 600; }
+.docsStatusTag small { color: var(--muted); font-size: 11px; line-height: 1.4; }
+
+.docsResourceGroups { display: grid; gap: 48px; margin-top: 38px; }
+.docsResourceGroup h3 { margin: 0 0 14px; color: var(--ink); font-size: 16px; font-weight: 600; }
+.docsResourceGroup .docsResourceGrid { margin-top: 0; }
+
+.docsLayout { grid-template-columns: 230px minmax(0, 820px); max-width: 1380px; gap: clamp(48px, 7vw, 92px); }
+.docsContent { max-width: 820px; }
+.docsSection > p:not(.sectionEyebrow) { max-width: 70ch; text-wrap: pretty; }
+
+@media (max-width: 900px) {
+  .docsLayout { grid-template-columns: 190px minmax(0, 1fr); }
+  .docsActions { right: 24px; }
+  .docsPrereqGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 620px) {
+  .docsActions { position: fixed; top: auto; right: 0; bottom: 0; left: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 0; padding: 8px 18px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid #334257; background: #090d14; }
+  .docsActions a { justify-content: center; border-radius: 3px; }
+  .docsSidebarHeader > p { margin-bottom: 0; }
+  .docsMenuToggle { display: inline-flex; }
+  .docsSidebar nav { display: none; }
+  .docsSidebar nav.docsNavOpen { display: grid; }
+  .docsSidebar { padding-top: 18px; }
+  .docsLayout { padding-bottom: 112px; }
+  .docsPrereqGrid { grid-template-columns: 1fr 1fr; }
+  .docsStatusTag { min-height: 92px; }
+  .docsResourceGroups { gap: 38px; }
+}
+
 .factSection,
 .pipelineSection,
 .trustSection {

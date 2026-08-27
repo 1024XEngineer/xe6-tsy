@@ -5,14 +5,18 @@ import {
   ArrowUpRight,
   Check,
   Code,
+  Copy,
+  List,
   GlobeHemisphereWest,
   Microphone,
   Translate,
   Waveform,
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
+import { useState } from "react";
 
 import { BackToTop, Reveal, SiteFooter, SiteNav } from "./site-shell";
+import { siteHref } from "./site-paths";
 import styles from "./intro.module.css";
 
 export function ProductPage() {
@@ -42,42 +46,53 @@ export function AboutPage() {
 }
 
 export function DocumentationPage() {
+  const [directoryOpen, setDirectoryOpen] = useState(false);
+
   return (
     <SubpageFrame>
+      <div className={styles.docsActions} aria-label="文档固定操作">
+        <a href={siteHref("/")}><ArrowRight size={16} weight="bold" />返回 Web 体验</a>
+        <a href="https://github.com/jinyu918/xe6-tsy" target="_blank" rel="noreferrer"><ArrowUpRight size={16} weight="bold" />查看仓库</a>
+      </div>
       <div className={styles.docsLayout}>
         <aside className={styles.docsSidebar} aria-label="文档目录">
-          <p>文档目录</p>
-          <nav>
+          <div className={styles.docsSidebarHeader}>
+            <p>文档目录</p>
+            <button className={styles.docsMenuToggle} type="button" aria-expanded={directoryOpen} aria-controls="docs-navigation" onClick={() => setDirectoryOpen((value) => !value)}>
+              <List size={17} weight="bold" />
+              <span>{directoryOpen ? "收起目录" : "展开目录"}</span>
+            </button>
+          </div>
+          <nav id="docs-navigation" className={directoryOpen ? styles.docsNavOpen : undefined}>
             <div className={styles.docsNavGroup}>
               <strong>产品</strong>
-              <a href="#overview"><span>01</span>产品概览</a>
-              <a href="#capabilities"><span>06</span>核心能力</a>
-              <a href="#scope"><span>07</span>当前边界</a>
+              <a href="#overview" onClick={() => setDirectoryOpen(false)}>产品概览</a>
+              <a href="#capabilities" onClick={() => setDirectoryOpen(false)}>核心能力</a>
+              <a href="#scope" onClick={() => setDirectoryOpen(false)}>当前边界</a>
             </div>
             <div className={styles.docsNavGroup}>
               <strong>入门</strong>
-              <a href="#quickstart"><span>02</span>快速开始</a>
+              <a href="#quickstart" onClick={() => setDirectoryOpen(false)}>快速开始</a>
             </div>
             <div className={styles.docsNavGroup}>
               <strong>系统</strong>
-              <a href="#architecture"><span>03</span>系统架构</a>
-              <a href="#contracts"><span>04</span>协议与事件</a>
+              <a href="#architecture" onClick={() => setDirectoryOpen(false)}>系统架构</a>
+              <a href="#contracts" onClick={() => setDirectoryOpen(false)}>协议与事件</a>
             </div>
             <div className={styles.docsNavGroup}>
               <strong>扩展</strong>
-              <a href="#device-sdk"><span>05</span>Device SDK</a>
+              <a href="#device-sdk" onClick={() => setDirectoryOpen(false)}>Device SDK</a>
             </div>
             <div className={styles.docsNavGroup}>
               <strong>资源</strong>
-              <a href="#resources"><span>08</span>相关文档</a>
+              <a href="#resources" onClick={() => setDirectoryOpen(false)}>相关文档</a>
             </div>
           </nav>
-          <a className={styles.docsRepositoryLink} href="https://github.com/jinyu918/xe6-tsy" target="_blank" rel="noreferrer">查看仓库 <ArrowUpRight size={15}/></a>
         </aside>
         <div className={styles.docsContent}>
           <Reveal>
             <section className={styles.docsSection} id="overview">
-              <p className={styles.sectionEyebrow}>01 / PRODUCT OVERVIEW</p>
+              <p className={styles.sectionEyebrow}>PRODUCT OVERVIEW</p>
               <h2>产品简介</h2>
               <p>Lingow 面向同一物理空间内的临时双语交流。用户选择一组语言对，使用现有音频终端开始会话，系统在这组语言内识别当前发言、翻译成另一种语言，并通过译音或企业微信投递帮助双方继续交流。</p>
               <h3>它解决什么问题</h3>
@@ -104,7 +119,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="capabilities">
-              <p className={styles.sectionEyebrow}>06 / CAPABILITIES</p>
+              <p className={styles.sectionEyebrow}>CAPABILITIES</p>
               <h2>核心能力</h2>
               <p>Lingow 将语音入口、实时媒体链路和可扩展的设备边界组合成一条会话体验。</p>
               <div className={styles.docsCapabilityGrid}>
@@ -118,7 +133,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="scope">
-              <p className={styles.sectionEyebrow}>07 / CURRENT SCOPE</p>
+              <p className={styles.sectionEyebrow}>CURRENT SCOPE</p>
               <h2>当前边界</h2>
               <ul className={styles.docsList}>
                 <li><Check size={16} weight="bold" />Web 是当前主要可运行的联调入口，默认以 AI 助手模式创建新会话。</li>
@@ -131,10 +146,16 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="quickstart">
-              <p className={styles.sectionEyebrow}>02 / GETTING STARTED</p>
+              <p className={styles.sectionEyebrow}>GETTING STARTED</p>
               <h2>快速开始</h2>
               <p>本地联调由 API、Realtime Audio 与 Web 三部分组成。先启动后端依赖，再启动浏览器入口。</p>
               <div className={styles.docsCallout}><strong>开始之前</strong><p>需要本地可用的 Node.js 环境；完整语音会话还需要 API 与 Realtime Audio 服务。</p></div>
+              <div className={styles.docsPrereqGrid} aria-label="前置条件">
+                <StatusTag state="required" title="Node.js 22 LTS" detail="Web 入口与 npm 脚本" />
+                <StatusTag state="required" title="Go 1.26.7" detail="API 与 Realtime Audio" />
+                <StatusTag state="optional" title="Docker Desktop" detail="启动 PostgreSQL / Redis" />
+                <StatusTag state="optional" title="真实模型" detail="mock Provider 可离线运行" />
+              </div>
               <h3>准备环境</h3>
               <ul className={styles.docsList}>
                 <li><Check size={16} weight="bold" />Node.js 22 LTS、npm 与 Go 1.26.7。</li>
@@ -142,17 +163,17 @@ export function DocumentationPage() {
               </ul>
               <h3>配置根环境</h3>
               <p>从仓库根目录复制环境变量示例，并为 API 与 Realtime Audio 配置共享的票据密钥和命令服务凭证。</p>
-              <pre className={styles.docsCodeBlock}><code>{"cp .env.example .env\nLINGOW_SESSION_RUNTIME=enabled\nREALTIME_TICKET_SECRET=<至少 32 字节>\nLINGOW_COMMAND_SYSTEM_TOKEN=<至少 32 字节>\nCOMMAND_LLM_API_KEY=<Qwen API key>\nCOMMAND_LLM_BASE_URL=<Qwen compatible API base URL>"}</code></pre>
+              <CodeBlock label="根目录 · .env" code={"cp .env.example .env\nLINGOW_SESSION_RUNTIME=enabled\nREALTIME_TICKET_SECRET=<至少 32 字节>\nLINGOW_COMMAND_SYSTEM_TOKEN=<至少 32 字节>\nCOMMAND_LLM_API_KEY=<Qwen API key>\nCOMMAND_LLM_BASE_URL=<Qwen compatible API base URL>"} />
               <p className={styles.docsFootnote}>本地普通音频链路默认使用 mock ASR、翻译和 TTS；要验证真实语音命令，还需要配置 Qwen 意图识别，并将 ASR 切换为可用的真实 Provider。</p>
               <h3>启动本地服务</h3>
               <p>Windows 从仓库根目录启动 API、Realtime Audio 和 Docker 依赖：</p>
-              <pre className={styles.docsCodeBlock}><code>{".\\start-local.ps1 -UseDocker"}</code></pre>
+              <CodeBlock label="Windows · PowerShell" code={".\\start-local.ps1 -UseDocker"} />
               <p>不使用 Docker 时，脚本会优先连接 `.env` 中的本地 PostgreSQL 和 Redis；也可以通过 <code>-Service api</code> 或 <code>-Service realtime</code> 只启动一个后端服务。</p>
               <p>非 Windows 环境先导入 `.env`，再启动基础依赖和两个 Go 服务：</p>
-              <pre className={styles.docsCodeBlock}><code>{"set -a\n. ./.env\nset +a\ndocker compose -f infra/docker-compose.yml up -d\n(cd services/api && go run .)\n(cd services/realtime-audio && go run .)"}</code></pre>
+              <CodeBlock label="Linux · Shell" code={"set -a\n. ./.env\nset +a\ndocker compose -f infra/docker-compose.yml up -d\n(cd services/api && go run .)\n(cd services/realtime-audio && go run .)"} />
               <h3>启动 Web 入口</h3>
               <p>复制 Web 环境变量示例后安装依赖，并启动本地开发服务器。</p>
-              <pre className={styles.docsCodeBlock}><code>{"cd apps/web\ncp .env.example .env.local\nnpm install\nnpm run dev"}</code></pre>
+              <CodeBlock label="Web · Node.js" code={"cd apps/web\ncp .env.example .env.local\nnpm install\nnpm run dev"} />
               <h3>默认地址</h3>
               <ul className={styles.docsList}>
                 <li><Check size={16} weight="bold" /><span>Web：<code>http://localhost:3000</code></span></li>
@@ -166,7 +187,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="architecture">
-              <p className={styles.sectionEyebrow}>03 / ARCHITECTURE</p>
+              <p className={styles.sectionEyebrow}>ARCHITECTURE</p>
               <h2>系统架构</h2>
               <p>Lingow 将客户端、API 控制面和 Realtime Audio 媒体面分开：客户端只负责采集、播放和交互，API 拥有长期业务状态，Realtime Audio 拥有实时连接与运行状态。</p>
               <div className={styles.docsFlow}>
@@ -177,7 +198,7 @@ export function DocumentationPage() {
                 <div><span>05</span><strong>infra</strong><p>提供 PostgreSQL、Redis/Valkey 和可选的 realtime 会话哈希网关。</p></div>
               </div>
               <h3>一条实时链路</h3>
-              <pre className={styles.docsCodeBlock}><code>{"Web / Mobile / Device\n  -> API: account / session / language config / realtime ticket\n  -> Realtime Audio: WebRTC signaling / audio / control events\n  -> VAD -> ASR -> translation -> TTS or message delivery\n  -> API: Final Turn / usage / history / asynchronous messages"}</code></pre>
+              <CodeBlock label="Runtime flow" code={"Web / Mobile / Device\n  -> API: account / session / language config / realtime ticket\n  -> Realtime Audio: WebRTC signaling / audio / control events\n  -> VAD -> ASR -> translation -> TTS or message delivery\n  -> API: Final Turn / usage / history / asynchronous messages"} />
               <h3>一条会话的职责边界</h3>
               <ul className={styles.docsList}>
                 <li><Check size={16} weight="bold" />Web 负责用户交互、会话 API 调用与字幕、TTS 呈现。</li>
@@ -190,7 +211,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="contracts">
-              <p className={styles.sectionEyebrow}>04 / CONTRACTS</p>
+              <p className={styles.sectionEyebrow}>CONTRACTS</p>
               <h2>协议与事件</h2>
               <p>控制面与实时面使用不同契约表达各自的边界。它们由同一个会话状态连接，但不重复维护媒体运行态。</p>
               <div className={styles.docsContractGrid}>
@@ -202,7 +223,7 @@ export function DocumentationPage() {
               <p><code>packages/contracts</code> 同时维护 OpenAPI、实时事件、WebRTC 信令边界、错误码、会话状态机以及 Go/TypeScript 绑定。跨端字段先改契约，再改 API、Realtime Audio、Web 或 Device SDK。</p>
               <h3>实时连接票据</h3>
               <p>正式联调由 API 为已创建的语音会话签发实时连接票据。Web 在建立 WebRTC 连接前获取该票据。</p>
-              <pre className={styles.docsCodeBlock}><code>{"POST /api/v1/voice-sessions/{id}/realtime-ticket"}</code></pre>
+              <CodeBlock label="REST · POST" code={"POST /api/v1/voice-sessions/{id}/realtime-ticket"} />
               <h3>媒体与事件方向</h3>
               <ul className={styles.docsList}>
                 <li><Check size={16} weight="bold" />音频媒体使用 WebRTC audio track，不通过 WebSocket 传输。</li>
@@ -215,7 +236,7 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="device-sdk">
-              <p className={styles.sectionEyebrow}>05 / DEVICE SDK</p>
+              <p className={styles.sectionEyebrow}>DEVICE SDK</p>
               <h2>设备接入边界</h2>
               <p>Device SDK 是面向硬件厂商和方案商的 Go 控制核心参考实现，提供会话、模式命令、唤醒事件、状态投影与弱网重连边界；具体芯片音频 HAL、WebRTC 和 KWS 模型由设备平台适配。</p>
               <div className={styles.docsCallout}><strong>保持同一条会话</strong><p>唤醒与模式切换应复用现有 Runtime 和 WebRTC 连接，不应为每次语音命令重建连接。</p></div>
@@ -227,7 +248,7 @@ export function DocumentationPage() {
                 <li><Check size={16} weight="bold" /><span><code>DeviceAuthClient</code> 使用设备身份和 Ed25519 私钥完成挑战签名，换取短期 device token。</span></li>
               </ul>
               <h3>事件方向</h3>
-              <pre className={styles.docsCodeBlock}><code>{"device -> api:\n  device.pair / device-auth.challenge / device-auth.token\n  session.start / realtime_ticket.request / session.end\n\ndevice -> realtime-audio:\n  webrtc.offer / ice.candidate / audio track / wake_word.detected\n\nrealtime-audio -> device:\n  webrtc.answer / ice.candidate / runtime.snapshot / mode.snapshot\n  asr.partial / asr.final / translation.final\n  playback.start / playback.stop / error / command.result"}</code></pre>
+              <CodeBlock label="Device events" code={"device -> api:\n  device.pair / device-auth.challenge / device-auth.token\n  session.start / realtime_ticket.request / session.end\n\ndevice -> realtime-audio:\n  webrtc.offer / ice.candidate / audio track / wake_word.detected\n\nrealtime-audio -> device:\n  webrtc.answer / ice.candidate / runtime.snapshot / mode.snapshot\n  asr.partial / asr.final / translation.final\n  playback.start / playback.stop / error / command.result"} />
               <h3>平台适配边界</h3>
               <ul className={styles.docsList}>
                 <li><Check size={16} weight="bold" /><span>固定唤醒词“小灵小灵”命中后只发送 <code>wake_word.detected</code>，设备不解析业务命令，也不把模型名、阈值、目标模式或语言方向放进事件。</span></li>
@@ -239,18 +260,30 @@ export function DocumentationPage() {
 
           <Reveal>
             <section className={styles.docsSection} id="resources">
-              <p className={styles.sectionEyebrow}>08 / RESOURCES</p>
+              <p className={styles.sectionEyebrow}>RESOURCES</p>
               <h2>相关文档</h2>
               <p>从系统结构、开发约定到协议和产品范围，按需要打开对应的设计资料。</p>
-              <div className={styles.docsResourceGrid}>
-                <ResourceLink title="Lingow 架构总览" label="ARCHITECTURE" href="https://github.com/1024XEngineer/xe6-tsy/pull/165" />
-                <ResourceLink title="开发说明" label="DEVELOPMENT" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/docs/DEVELOPMENT.md" />
-                <ResourceLink title="Lingow 模块详细设计" label="MODULE DESIGN" href="https://github.com/1024XEngineer/xe6-tsy/pull/169" />
-                <ResourceLink title="Lingow P0 协议设计" label="P0 CONTRACTS" href="https://github.com/1024XEngineer/xe6-tsy/pull/171" />
-                <ResourceLink title="产品需求文档（PRD）" label="PRODUCT REQUIREMENTS" href="https://github.com/1024XEngineer/xe6-tsy/issues/302" />
-                <ResourceLink title="跨端契约说明" label="CONTRACTS" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/packages/contracts/README.md" />
-                <ResourceLink title="Device SDK 接入说明" label="DEVICE SDK" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/sdks/device/README.md" />
-                <ResourceLink title="本地基础设施说明" label="INFRA" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/infra/README.md" />
+              <div className={styles.docsResourceGroups}>
+                <ResourceGroup title="README / 开发说明">
+                  <ResourceLink title="仓库 README" label="README" href="https://github.com/jinyu918/xe6-tsy" />
+                  <ResourceLink title="开发说明" label="DEVELOPMENT" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/docs/DEVELOPMENT.md" />
+                  <ResourceLink title="产品需求文档（PRD）" label="PRODUCT REQUIREMENTS" href="https://github.com/1024XEngineer/xe6-tsy/issues/302" />
+                </ResourceGroup>
+                <ResourceGroup title="协议 / Contracts">
+                  <ResourceLink title="OpenAPI REST 契约" label="OPENAPI" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/packages/contracts/openapi.yaml" />
+                  <ResourceLink title="AsyncAPI 实时事件" label="ASYNCAPI" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/packages/contracts/events.yaml" />
+                  <ResourceLink title="跨端契约说明" label="CONTRACTS README" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/packages/contracts/README.md" />
+                </ResourceGroup>
+                <ResourceGroup title="设备 / 部署">
+                  <ResourceLink title="Device SDK 接入说明" label="DEVICE SDK" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/sdks/device/README.md" />
+                  <ResourceLink title="生产部署文档" label="DEPLOYMENT" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/infra/production/README.md" />
+                  <ResourceLink title="本地基础设施说明" label="INFRA" href="https://github.com/1024XEngineer/xe6-tsy/blob/main/infra/README.md" />
+                </ResourceGroup>
+                <ResourceGroup title="设计与范围">
+                  <ResourceLink title="Lingow 架构总览" label="ARCHITECTURE" href="https://github.com/1024XEngineer/xe6-tsy/pull/165" />
+                  <ResourceLink title="Lingow 模块详细设计" label="MODULE DESIGN" href="https://github.com/1024XEngineer/xe6-tsy/pull/169" />
+                  <ResourceLink title="Lingow P0 协议设计" label="P0 CONTRACTS" href="https://github.com/1024XEngineer/xe6-tsy/pull/171" />
+                </ResourceGroup>
               </div>
             </section>
           </Reveal>
@@ -278,6 +311,23 @@ function DetailPanel({ label, title, copy, items, visual }: { label: string; tit
 
 function OutputItem({ title, copy }: { title: string; copy: string }) { return <article className={styles.outputItem}><Check size={18} weight="bold"/><h3>{title}</h3><p>{copy}</p></article>; }
 function Principle({ icon: Icon, title, copy }: { icon: typeof Code; title: string; copy: string }) { return <article className={styles.principleItem}><Icon size={22}/><h3>{title}</h3><p>{copy}</p></article>; }
+function ResourceGroup({ title, children }: { title: string; children: ReactNode }) { return <section className={styles.docsResourceGroup}><h3>{title}</h3><div className={styles.docsResourceGrid}>{children}</div></section>; }
+function StatusTag({ state, title, detail }: { state: "required" | "optional"; title: string; detail: string }) { return <div className={styles.docsStatusTag}><span className={`${styles.docsStatusPill} ${state === "required" ? styles.docsStatusRequired : styles.docsStatusOptional}`}>{state === "required" ? "必需" : "可选"}</span><strong>{title}</strong><small>{detail}</small></div>; }
+function CodeBlock({ code, label }: { code: string; label: string }) {
+  const [status, setStatus] = useState<"idle" | "copied" | "error">("idle");
+
+  const copyCode = async () => {
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
+      await navigator.clipboard.writeText(code);
+      setStatus("copied");
+    } catch {
+      setStatus("error");
+    }
+  };
+
+  return <div className={styles.docsCodeShell}><div className={styles.docsCodeToolbar}><span>{label}</span><button type="button" onClick={copyCode} aria-label={status === "copied" ? `${label}已复制` : `复制${label}`}><Copy size={15} weight="bold" /><span>{status === "copied" ? "已复制" : status === "error" ? "复制失败" : "复制"}</span></button></div><pre className={styles.docsCodeBlock}><code>{code}</code></pre></div>;
+}
 function ResourceLink({ title, label, href }: { title: string; label: string; href: string }) { return <a className={styles.docsResourceLink} href={href} target="_blank" rel="noreferrer"><span>{label}</span><strong>{title}</strong><ArrowUpRight size={17}/></a>; }
 function Signal({ title, value, label }: { title: string; value: string; label: string }) { return <article className={styles.productSignal}><span>{label}</span><h3>{title}</h3><p>{value}</p></article>; }
 function ArchitectureRow({ icon: Icon, title, copy }: { icon: typeof Code; title: string; copy: string }) { return <article className={styles.aboutArchitectureRow}><Icon size={22}/><div><h3>{title}</h3><p>{copy}</p></div><ArrowRight size={18} aria-hidden="true" /></article>; }

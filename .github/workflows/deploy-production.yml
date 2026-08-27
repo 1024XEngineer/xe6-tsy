@@ -186,7 +186,7 @@ jobs:
             printf 'LINGOW_WEB_IMAGE=%s\n' '${{ steps.images.outputs.web_image }}'
           } > "$RUNNER_TEMP/.env.production"
           chmod 600 "$RUNNER_TEMP/.env.production"
-          scp -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml scripts/deploy.sh scripts/deploy-smoke.sh scripts/rollback.sh scripts/observe.sh "$RUNNER_TEMP/.env.production" "${destination}:${release_dir}/"
+          scp -r -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml infra/production/proxy scripts/deploy.sh scripts/deploy-smoke.sh scripts/rollback.sh scripts/observe.sh "$RUNNER_TEMP/.env.production" "${destination}:${release_dir}/"
           ssh -i "$HOME/.ssh/id_ed25519" "$destination" "chmod 600 '${release_dir}/.env.production' && chmod 700 '${release_dir}/deploy.sh' '${release_dir}/deploy-smoke.sh' '${release_dir}/rollback.sh' '${release_dir}/observe.sh'"
       - name: Authenticate deployment host to GHCR
         shell: bash

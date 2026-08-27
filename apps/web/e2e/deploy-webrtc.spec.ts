@@ -7,6 +7,11 @@ async function expectJSON<T>(response: APIResponse, status: number): Promise<T> 
   return (await response.json()) as T;
 }
 
+test.skip(
+  !process.env.DEPLOY_PUBLIC_BASE_URL,
+  "Deployment WebRTC smoke runs only with the deployment Playwright config",
+);
+
 test("connects an external browser through TURN and realtime", async ({ page, request }) => {
   test.setTimeout(90_000);
   let token = process.env.DEPLOY_SMOKE_ACCESS_TOKEN ?? "";

@@ -1,8 +1,8 @@
-name: Deploy production
+name: Deploy development
 
 on:
   push:
-    branches: [main, dev]
+    branches: [dev]
   workflow_dispatch:
 
 concurrency:
@@ -85,14 +85,14 @@ jobs:
         run: ${{ matrix.command }}
 
   deploy:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    if: github.ref == 'refs/heads/dev'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: ${{ github.ref_name == 'main' && 'production' || 'development' }}
+    environment: development
     env:
-      DEPLOY_ENVIRONMENT: ${{ github.ref_name == 'main' && 'production' || 'development' }}
-      DEPLOY_PROJECT_NAME: lingow-${{ github.ref_name == 'main' && 'production' || 'development' }}
+      DEPLOY_ENVIRONMENT: development
+      DEPLOY_PROJECT_NAME: lingow-development
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
@@ -182,7 +182,7 @@ jobs:
           set -euo pipefail
           destination="${DEPLOY_USER}@${DEPLOY_HOST}"
           release_dir="${DEPLOY_PATH}/.staging/${GITHUB_SHA}"
-          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "install -d -m 700 '${release_dir}/proxy'"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "install -d -m 700 '${release_dir}'"
           {
             printf '%s\n' "$DEPLOY_ENV_FILE"
             printf 'LINGOW_DEPLOY_ENV=%s\n' "$DEPLOY_ENVIRONMENT"
@@ -192,7 +192,6 @@ jobs:
           } > "$RUNNER_TEMP/.env.production"
           chmod 600 "$RUNNER_TEMP/.env.production"
           scp -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml scripts/deploy.sh scripts/deploy-smoke.sh scripts/rollback.sh scripts/observe.sh "$RUNNER_TEMP/.env.production" "${destination}:${release_dir}/"
-          scp -i "$HOME/.ssh/id_ed25519" infra/production/proxy/nginx.conf infra/production/proxy/docker-compose.yml "${destination}:${release_dir}/proxy/"
           ssh -i "$HOME/.ssh/id_ed25519" "$destination" "chmod 600 '${release_dir}/.env.production' && chmod 700 '${release_dir}/deploy.sh' '${release_dir}/deploy-smoke.sh' '${release_dir}/rollback.sh' '${release_dir}/observe.sh'"
       - name: Authenticate deployment host to GHCR
         shell: bash

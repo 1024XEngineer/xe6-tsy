@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -332,6 +334,18 @@ func TestPhrasePlaybackSchedulerDoesNotMergeDifferentStreamPhraseGroups(t *testi
 	}
 }
 
+func TestPhrasePlaybackSchedulerDoesNotMergeStreamSegmentsPastTTSWindow(t *testing.T) {
+	left := phraseRequest(TurnContext{ID: "turn-window", SessionID: "session-window"}, 1001)
+	left.Text = strings.Repeat("a", 39)
+	right := left
+	right.PhraseSequence = 1002
+	right.PlaybackID = "window-right"
+	right.Text = "b"
+	if shouldMergePhrasePlayback(left, right, false) {
+		t.Fatal("stream segments over the 40-rune TTS window were merged")
+	}
+}
+
 func TestJoinPhrasePlaybackTextPreservesJapaneseChunkBoundary(t *testing.T) {
 	if got := joinPhrasePlaybackText("これはかな", "だけです"); got != "これはかなだけです" {
 		t.Fatalf("joinPhrasePlaybackText() = %q", got)
@@ -369,6 +383,214 @@ func TestPhrasePlaybackSchedulerReportsEnqueueReasons(t *testing.T) {
 	}
 	if result := scheduler.EnqueueWithReason(phraseRequest(turn, 7)); result.Reason != PhrasePlaybackRejectPlaybackClosed {
 		t.Fatalf("closed reason = %#v", result)
+	}
+}
+
+func TestPhrasePlaybackSchedulerRetriesFailedTaskBeforeAdvancingQueue(t *testing.T) {
+	provider := &flakyPhraseTTSProvider{failures: 1}
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-retry-playback", SessionID: "session-retry-playback"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	first := phraseRequest(turn, 1)
+	second := phraseRequest(turn, 2)
+	if !scheduler.Enqueue(first) || !scheduler.Enqueue(second) {
+		t.Fatal("failed to enqueue retry test tasks")
+	}
+	if !audio.waitFor(2, time.Second) {
+		t.Fatalf("audio chunks = %d, want retry then next task", len(audio.ids()))
+	}
+	requests := provider.requestsSnapshot()
+	if len(requests) != 3 || requests[0].PlaybackID != first.PlaybackID ||
+		requests[1].PlaybackID != first.PlaybackID+"_retry_2" || requests[2].PlaybackID != second.PlaybackID {
+		t.Fatalf("TTS request order = %#v, want first, first retry, second", requests)
+	}
+}
+
+func TestPhrasePlaybackSchedulerRetriesWithFreshPlaybackIDAfterFirstChunk(t *testing.T) {
+	provider := &finishFailingAfterChunkTTSProvider{}
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-retry-after-chunk", SessionID: "session-retry-after-chunk"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	request := phraseRequest(turn, 1)
+	if !scheduler.Enqueue(request) {
+		t.Fatal("failed to enqueue retry test task")
+	}
+	if !audio.waitFor(2, time.Second) {
+		t.Fatalf("audio chunks = %#v, want failed attempt plus fresh retry", audio.ids())
+	}
+	ids := audio.ids()
+	if ids[0] != request.PlaybackID || ids[1] != request.PlaybackID+"_retry_2" {
+		t.Fatalf("audio playback IDs = %#v, want original then fresh retry ID", ids)
+	}
+	requests := provider.requestsSnapshot()
+	if len(requests) != 2 || requests[0].PlaybackID != ids[0] || requests[1].PlaybackID != ids[1] {
+		t.Fatalf("TTS requests = %#v, want lifecycle IDs %#v", requests, ids)
+	}
+}
+
+func TestPhrasePlaybackSchedulerStopWithoutWorkerRejectsLateFinal(t *testing.T) {
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: &recordingTTSProvider{}, Audio: &recordingPhraseAudio{}, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: &recordingPhraseAudio{},
+	})
+	turn := TurnContext{ID: "turn-late-final", SessionID: "session-stopped-before-reset"}
+	if err := scheduler.Stop(context.Background(), turn.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if err := scheduler.InterruptCurrent(context.Background(), turn.SessionID, "late_interrupt"); err != nil {
+		t.Fatalf("InterruptCurrent() error = %v", err)
+	}
+	request := phraseRequest(turn, finalPhrasePlaybackSequence)
+	request.Final = true
+	if result := scheduler.EnqueueWithReason(request); result.Accepted || result.Reason != PhrasePlaybackRejectPlaybackClosed {
+		t.Fatalf("late final result = %#v, want playback_closed", result)
+	}
+	scheduler.mu.Lock()
+	_, workerCreated := scheduler.sessions[turn.SessionID]
+	scheduler.mu.Unlock()
+	if workerCreated {
+		t.Fatal("late final created a worker for a stopped session")
+	}
+}
+
+func TestPhrasePlaybackSchedulerInterruptRejectsLateFinalUntilNextReset(t *testing.T) {
+	provider := &recordingTTSProvider{}
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: provider, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	turn := TurnContext{ID: "turn-interrupted", SessionID: "session-interrupted"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	if err := scheduler.InterruptCurrent(context.Background(), turn.SessionID, "wake_word_detected"); err != nil {
+		t.Fatalf("InterruptCurrent() error = %v", err)
+	}
+	lateFinal := phraseRequest(turn, finalPhrasePlaybackSequence)
+	lateFinal.Final = true
+	if result := scheduler.EnqueueWithReason(lateFinal); result.Accepted || result.Reason != PhrasePlaybackRejectGenerationSuperseded {
+		t.Fatalf("late final result = %#v, want generation_superseded", result)
+	}
+
+	nextTurn := TurnContext{ID: "turn-after-interrupt", SessionID: turn.SessionID}
+	scheduler.ResetUtterance(nextTurn.SessionID, nextTurn.ID)
+	request := phraseRequest(nextTurn, 1)
+	if result := scheduler.EnqueueWithReason(request); !result.Accepted {
+		t.Fatalf("next generation request rejected: %#v", result)
+	}
+	if !audio.waitFor(1, time.Second) {
+		t.Fatal("next generation audio did not play")
+	}
+	if result := scheduler.EnqueueWithReason(lateFinal); result.Accepted || result.Reason != PhrasePlaybackRejectGenerationSuperseded {
+		t.Fatalf("old final after reset result = %#v, want generation_superseded", result)
+	}
+	if err := scheduler.Stop(context.Background(), turn.SessionID); err != nil {
+		t.Fatalf("cleanup Stop() error = %v", err)
+	}
+}
+
+func TestPhrasePlaybackSchedulerBoundsStoppedSessionBarriers(t *testing.T) {
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{})
+	for index := 0; index < maxPhrasePlaybackSessionBarriers+25; index++ {
+		if err := scheduler.Stop(context.Background(), fmt.Sprintf("stopped-session-%d", index)); err != nil {
+			t.Fatalf("Stop(%d) error = %v", index, err)
+		}
+	}
+	scheduler.mu.Lock()
+	barriers, order := len(scheduler.barriers), len(scheduler.barrierOrder)
+	scheduler.mu.Unlock()
+	if barriers > maxPhrasePlaybackSessionBarriers || order > maxPhrasePlaybackSessionBarriers {
+		t.Fatalf("stopped session barriers = %d/%d, want both <= %d", barriers, order, maxPhrasePlaybackSessionBarriers)
+	}
+}
+
+func TestPhrasePlaybackSchedulerStopWaitsForWorkerExit(t *testing.T) {
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{})
+	turn := TurnContext{ID: "turn-worker-exit", SessionID: "session-worker-exit"}
+	scheduler.ResetUtterance(turn.SessionID, turn.ID)
+	scheduler.mu.Lock()
+	done := scheduler.sessions[turn.SessionID].done
+	scheduler.mu.Unlock()
+	if err := scheduler.Stop(context.Background(), turn.SessionID); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("Stop() returned before the session worker exited")
+	}
+	scheduler.mu.Lock()
+	_, exists := scheduler.sessions[turn.SessionID]
+	scheduler.mu.Unlock()
+	if exists {
+		t.Fatal("stopped session worker remains registered")
+	}
+}
+
+func TestPhrasePlaybackSchedulerResetDetachesSlowCanceledWorker(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	audio := &recordingPhraseAudio{}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{
+		Speech: NewSpeechOutput(SpeechOutputDependencies{
+			TTS: stubbornFinishTTSProvider{release: release}, Audio: audio, Runtime: phraseRuntimeReporter{}, Provider: "fake",
+		}),
+		Audio: audio,
+	})
+	oldTurn := TurnContext{ID: "turn-slow-stop", SessionID: "session-slow-stop"}
+	scheduler.ResetUtterance(oldTurn.SessionID, oldTurn.ID)
+	scheduler.mu.Lock()
+	oldState := scheduler.sessions[oldTurn.SessionID]
+	scheduler.mu.Unlock()
+	if !scheduler.Enqueue(phraseRequest(oldTurn, 1)) || !audio.waitFor(1, time.Second) {
+		t.Fatal("slow playback did not start")
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := scheduler.Stop(stopCtx, oldTurn.SessionID)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop() error = %v, want deadline exceeded", err)
+	}
+	nextTurn := TurnContext{ID: "turn-after-slow-stop", SessionID: oldTurn.SessionID}
+	scheduler.ResetUtterance(nextTurn.SessionID, nextTurn.ID)
+	scheduler.mu.Lock()
+	newState := scheduler.sessions[nextTurn.SessionID]
+	scheduler.mu.Unlock()
+	if newState == nil || newState == oldState || newState.closed {
+		t.Fatalf("ResetUtterance() did not create an independent worker: old=%p new=%p", oldState, newState)
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case <-oldState.done:
+	case <-time.After(time.Second):
+		t.Fatal("slow canceled worker did not exit after provider released")
+	}
+	scheduler.mu.Lock()
+	registered := scheduler.sessions[nextTurn.SessionID]
+	scheduler.mu.Unlock()
+	if registered != newState {
+		t.Fatal("old worker cleanup removed the replacement session")
+	}
+	if err := scheduler.Stop(context.Background(), nextTurn.SessionID); err != nil {
+		t.Fatalf("cleanup Stop() error = %v", err)
 	}
 }
 
@@ -732,3 +954,93 @@ func (s *firstChunkTTSStream) Finish(ctx context.Context) (tts.Result, error) {
 }
 
 func (*firstChunkTTSStream) Close() error { return nil }
+
+type stubbornFinishTTSProvider struct {
+	release <-chan struct{}
+}
+
+type flakyPhraseTTSProvider struct {
+	mu       sync.Mutex
+	failures int
+	requests []tts.Request
+}
+
+type finishFailingAfterChunkTTSProvider struct {
+	mu       sync.Mutex
+	requests []tts.Request
+}
+
+func (p *finishFailingAfterChunkTTSProvider) StartStream(_ context.Context, request tts.Request) (tts.Stream, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requests = append(p.requests, request)
+	return &finishFailingAfterChunkTTSStream{failFinish: len(p.requests) == 1}, nil
+}
+
+func (p *finishFailingAfterChunkTTSProvider) requestsSnapshot() []tts.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]tts.Request(nil), p.requests...)
+}
+
+type finishFailingAfterChunkTTSStream struct {
+	failFinish bool
+}
+
+func (*finishFailingAfterChunkTTSStream) Chunks() <-chan tts.AudioChunk {
+	chunks := make(chan tts.AudioChunk, 1)
+	chunks <- tts.AudioChunk{SequenceNo: 1, Data: []byte{1}}
+	close(chunks)
+	return chunks
+}
+
+func (s *finishFailingAfterChunkTTSStream) Finish(context.Context) (tts.Result, error) {
+	if s.failFinish {
+		return tts.Result{}, errors.New("temporary finish failure")
+	}
+	return tts.Result{Provider: "fake-provider", Model: "fake-model"}, nil
+}
+
+func (*finishFailingAfterChunkTTSStream) Close() error { return nil }
+
+func (p *flakyPhraseTTSProvider) StartStream(ctx context.Context, request tts.Request) (tts.Stream, error) {
+	p.mu.Lock()
+	p.requests = append(p.requests, request)
+	fail := p.failures > 0
+	if fail {
+		p.failures--
+	}
+	p.mu.Unlock()
+	if fail {
+		return nil, errors.New("temporary TTS failure")
+	}
+	return (&recordingTTSProvider{}).StartStream(ctx, request)
+}
+
+func (p *flakyPhraseTTSProvider) requestsSnapshot() []tts.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]tts.Request(nil), p.requests...)
+}
+
+func (p stubbornFinishTTSProvider) StartStream(context.Context, tts.Request) (tts.Stream, error) {
+	return &stubbornFinishTTSStream{release: p.release}, nil
+}
+
+type stubbornFinishTTSStream struct {
+	release <-chan struct{}
+}
+
+func (*stubbornFinishTTSStream) Chunks() <-chan tts.AudioChunk {
+	chunks := make(chan tts.AudioChunk, 1)
+	chunks <- tts.AudioChunk{SequenceNo: 1, Data: []byte{1}}
+	close(chunks)
+	return chunks
+}
+
+func (s *stubbornFinishTTSStream) Finish(context.Context) (tts.Result, error) {
+	<-s.release
+	return tts.Result{}, nil
+}
+
+func (*stubbornFinishTTSStream) Close() error { return nil }

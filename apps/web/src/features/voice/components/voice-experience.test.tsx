@@ -1414,7 +1414,8 @@ describe("VoiceExperience", () => {
     });
     turnPageResponses = new Map([
       ["", { items: [turn("turn-page-1", 1, "第一页", "First page")], next_cursor: "cursor-1" }],
-      ["cursor-1", { items: [turn("turn-page-2", 101, "最后一页", "Tail page")], next_cursor: null }],
+      ["cursor-1", { items: [turn("turn-page-2", 101, "最后一页", "Tail page")], next_cursor: "cursor-tail" }],
+      ["cursor-tail", { items: [], next_cursor: null }],
     ]);
     render(<VoiceExperience />);
 
@@ -1425,6 +1426,9 @@ describe("VoiceExperience", () => {
     const fetchMock = vi.mocked(fetch);
     expect(
       fetchMock.mock.calls.some(([input]) => String(input).includes("cursor=cursor-1")),
+    ).toBe(true);
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("cursor=cursor-tail")),
     ).toBe(true);
   });
 

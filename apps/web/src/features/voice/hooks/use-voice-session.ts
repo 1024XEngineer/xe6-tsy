@@ -209,6 +209,7 @@ async function listSessionTurnTail(
   const items: VoiceTurn[] = [];
   const seenCursors = new Set<string>();
   let pageStartCursor = startCursor;
+  let tailCursor = startCursor;
 
   while (true) {
     const page = await listSessionTurns(
@@ -219,13 +220,14 @@ async function listSessionTurnTail(
     );
     items.push(...page.items);
     if (!page.next_cursor) {
-      return { items, tailCursor: pageStartCursor };
+      return { items, tailCursor };
     }
     if (seenCursors.has(page.next_cursor)) {
       throw new Error("会话 Turn 分页游标停滞");
     }
     seenCursors.add(page.next_cursor);
-    pageStartCursor = page.next_cursor;
+    tailCursor = page.next_cursor;
+    pageStartCursor = tailCursor;
   }
 }
 

@@ -1,12 +1,12 @@
-name: Deploy production
+name: Deploy development
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
   workflow_dispatch:
 
 concurrency:
-  group: production-deploy
+  group: lingow-deploy-${{ github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -44,7 +44,7 @@ jobs:
           - name: deployment-scripts
             runtime: shell
             directory: .
-            command: bash scripts/deploy_test.sh
+            command: bash scripts/deploy_test.sh && bash scripts/check-migrations.sh
     defaults:
       run:
         working-directory: ${{ matrix.directory }}
@@ -85,12 +85,14 @@ jobs:
         run: ${{ matrix.command }}
 
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/dev'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: production
+    environment: development
     env:
+      DEPLOY_ENVIRONMENT: development
+      DEPLOY_PROJECT_NAME: lingow-development
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
@@ -98,9 +100,16 @@ jobs:
       DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
       GHCR_PULL_USERNAME: ${{ vars.GHCR_PULL_USERNAME }}
-      GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-      DEPLOY_SMOKE_ACCESS_TOKEN: ${{ secrets.DEPLOY_SMOKE_ACCESS_TOKEN }}
-      DEPLOY_SMOKE_SESSION_ID: ${{ secrets.DEPLOY_SMOKE_SESSION_ID }}
+      # The job token is scoped to this repository and expires with the run.
+      GHCR_PULL_TOKEN: ${{ github.token }}
+      DEPLOY_PUBLIC_BASE_URL: ${{ secrets.DEPLOY_PUBLIC_BASE_URL }}
+      DEPLOY_METRICS_TOKEN: ${{ secrets.DEPLOY_METRICS_TOKEN }}
+      DEPLOY_OBSERVE_SECONDS: ${{ vars.DEPLOY_OBSERVE_SECONDS }}
+      DEPLOY_OBSERVE_INTERVAL_SECONDS: ${{ vars.DEPLOY_OBSERVE_INTERVAL_SECONDS }}
+      DEPLOY_OBSERVE_MAX_PROVIDER_FAILURES: ${{ vars.DEPLOY_OBSERVE_MAX_PROVIDER_FAILURES }}
+      DEPLOY_OBSERVE_MAX_DATA_CHANNEL_FAILURES: ${{ vars.DEPLOY_OBSERVE_MAX_DATA_CHANNEL_FAILURES }}
+      DEPLOY_OBSERVE_MAX_INTERPRETATION_FAILURES: ${{ vars.DEPLOY_OBSERVE_MAX_INTERPRETATION_FAILURES }}
+      DEPLOY_DATABASE_BACKUP_CONFIRMED: ${{ vars.DEPLOY_DATABASE_BACKUP_CONFIRMED }}
     steps:
       - name: Check out code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -141,14 +150,18 @@ jobs:
           : "${DEPLOY_ENV_FILE:?DEPLOY_ENV_FILE secret is required}"
           : "${DEPLOY_PATH:?DEPLOY_PATH repository variable is required}"
           : "${GHCR_PULL_USERNAME:?GHCR_PULL_USERNAME repository variable is required}"
-          : "${GHCR_PULL_TOKEN:?GHCR_PULL_TOKEN secret is required}"
-          : "${DEPLOY_SMOKE_ACCESS_TOKEN:?DEPLOY_SMOKE_ACCESS_TOKEN secret is required}"
-          : "${DEPLOY_SMOKE_SESSION_ID:?DEPLOY_SMOKE_SESSION_ID secret is required}"
+          : "${DEPLOY_PUBLIC_BASE_URL:?DEPLOY_PUBLIC_BASE_URL secret is required}"
+          if [[ "$DEPLOY_ENVIRONMENT" == production ]]; then
+            : "${DEPLOY_METRICS_TOKEN:?DEPLOY_METRICS_TOKEN secret is required for production observation}"
+            : "${DEPLOY_OBSERVE_SECONDS:?DEPLOY_OBSERVE_SECONDS repository variable is required for production observation}"
+            [[ "$DEPLOY_OBSERVE_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "DEPLOY_OBSERVE_SECONDS must be greater than zero in production" >&2; exit 1; }
+            [[ "$DEPLOY_DATABASE_BACKUP_CONFIRMED" == true ]] || { echo "DEPLOY_DATABASE_BACKUP_CONFIRMED must be true after an external backup" >&2; exit 1; }
+          fi
           [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "DEPLOY_PATH must be an absolute safe path" >&2; exit 1; }
           [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]] || { echo "DEPLOY_HOST must be a hostname or IPv4 address" >&2; exit 1; }
           [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || { echo "DEPLOY_USER contains unsupported characters" >&2; exit 1; }
           [[ "$GHCR_PULL_USERNAME" =~ ^[A-Za-z0-9-]+$ ]] || { echo "GHCR_PULL_USERNAME contains unsupported characters" >&2; exit 1; }
-          [[ "$DEPLOY_SMOKE_SESSION_ID" =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "DEPLOY_SMOKE_SESSION_ID contains unsupported characters" >&2; exit 1; }
+          [[ "$DEPLOY_PUBLIC_BASE_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/.*)?$ ]] || { echo "DEPLOY_PUBLIC_BASE_URL must be an HTTPS URL" >&2; exit 1; }
       - name: Configure SSH
         shell: bash
         run: |
@@ -167,13 +180,14 @@ jobs:
           ssh -i "$HOME/.ssh/id_ed25519" "$destination" "install -d -m 700 '${release_dir}'"
           {
             printf '%s\n' "$DEPLOY_ENV_FILE"
+            printf 'LINGOW_DEPLOY_ENV=%s\n' "$DEPLOY_ENVIRONMENT"
             printf 'LINGOW_API_IMAGE=%s\n' '${{ steps.images.outputs.api_image }}'
             printf 'LINGOW_REALTIME_AUDIO_IMAGE=%s\n' '${{ steps.images.outputs.realtime_image }}'
             printf 'LINGOW_WEB_IMAGE=%s\n' '${{ steps.images.outputs.web_image }}'
           } > "$RUNNER_TEMP/.env.production"
           chmod 600 "$RUNNER_TEMP/.env.production"
-          scp -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml scripts/deploy.sh scripts/deploy-smoke.sh "$RUNNER_TEMP/.env.production" "${destination}:${release_dir}/"
-          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "chmod 600 '${release_dir}/.env.production' && chmod 700 '${release_dir}/deploy.sh' '${release_dir}/deploy-smoke.sh'"
+          scp -r -i "$HOME/.ssh/id_ed25519" infra/production/docker-compose.yml infra/production/proxy scripts/deploy.sh scripts/deploy-smoke.sh scripts/rollback.sh scripts/observe.sh "$RUNNER_TEMP/.env.production" "${destination}:${release_dir}/"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "chmod 600 '${release_dir}/.env.production' && chmod 700 '${release_dir}/deploy.sh' '${release_dir}/deploy-smoke.sh' '${release_dir}/rollback.sh' '${release_dir}/observe.sh'"
       - name: Authenticate deployment host to GHCR
         shell: bash
         run: |
@@ -186,4 +200,44 @@ jobs:
           set -euo pipefail
           destination="${DEPLOY_USER}@${DEPLOY_HOST}"
           release_dir="${DEPLOY_PATH}/.staging/${GITHUB_SHA}"
-          printf '%s\n' "$DEPLOY_SMOKE_ACCESS_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" "bash '${release_dir}/deploy.sh' '${DEPLOY_PATH}' '${release_dir}' '${DEPLOY_SMOKE_SESSION_ID}'"
+          ssh -i "$HOME/.ssh/id_ed25519" "$destination" "DEPLOY_EXPECTED_ENV='${DEPLOY_ENVIRONMENT}' DEPLOY_PROJECT_NAME='${DEPLOY_PROJECT_NAME}' bash '${release_dir}/deploy.sh' '${DEPLOY_PATH}' '${release_dir}' --dynamic-smoke"
+      - name: Set up Node.js for external WebRTC smoke
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Run external browser WebRTC smoke
+        shell: bash
+        working-directory: apps/web
+        env:
+          DEPLOY_PUBLIC_BASE_URL: ${{ secrets.DEPLOY_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install --with-deps chromium
+          set +e
+          npx playwright test --config=playwright.deploy.config.ts
+          smoke_status=$?
+          set -e
+          if (( smoke_status != 0 )); then
+            destination="${DEPLOY_USER}@${DEPLOY_HOST}"
+            ssh -i "$HOME/.ssh/id_ed25519" "$destination" "DEPLOY_EXPECTED_ENV='${DEPLOY_ENVIRONMENT}' DEPLOY_PROJECT_NAME='${DEPLOY_PROJECT_NAME}' ROLLBACK_CLEAN_FIRST_RELEASE=true bash '${DEPLOY_PATH}/.staging/${GITHUB_SHA}/rollback.sh' '${DEPLOY_PATH}'"
+            exit "$smoke_status"
+          fi
+      - name: Observe release and rollback on threshold
+        if: env.DEPLOY_OBSERVE_SECONDS != '' && env.DEPLOY_OBSERVE_SECONDS != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="${DEPLOY_USER}@${DEPLOY_HOST}"
+          release_dir="${DEPLOY_PATH}/.staging/${GITHUB_SHA}"
+          set +e
+          printf '%s\n' "$DEPLOY_METRICS_TOKEN" | ssh -i "$HOME/.ssh/id_ed25519" "$destination" \
+            "DEPLOY_PROJECT_NAME='${DEPLOY_PROJECT_NAME}' DEPLOY_OBSERVE_INTERVAL_SECONDS='${DEPLOY_OBSERVE_INTERVAL_SECONDS:-30}' DEPLOY_OBSERVE_MAX_PROVIDER_FAILURES='${DEPLOY_OBSERVE_MAX_PROVIDER_FAILURES:-0}' DEPLOY_OBSERVE_MAX_DATA_CHANNEL_FAILURES='${DEPLOY_OBSERVE_MAX_DATA_CHANNEL_FAILURES:-0}' DEPLOY_OBSERVE_MAX_INTERPRETATION_FAILURES='${DEPLOY_OBSERVE_MAX_INTERPRETATION_FAILURES:-0}' bash '${release_dir}/observe.sh' '${DEPLOY_PATH}' '${release_dir}' '${DEPLOY_OBSERVE_SECONDS}'"
+          observe_status=$?
+          set -e
+          if (( observe_status != 0 )); then
+            ssh -i "$HOME/.ssh/id_ed25519" "$destination" "DEPLOY_EXPECTED_ENV='${DEPLOY_ENVIRONMENT}' DEPLOY_PROJECT_NAME='${DEPLOY_PROJECT_NAME}' ROLLBACK_CLEAN_FIRST_RELEASE=true bash '${release_dir}/rollback.sh' '${DEPLOY_PATH}'"
+            exit "$observe_status"
+          fi

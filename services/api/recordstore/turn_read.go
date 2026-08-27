@@ -86,11 +86,29 @@ func (r *TurnReadRepository) ListSession(
 	}
 
 	response := recordsv1.VoiceTurnListResponse{Items: items}
-	if len(items) <= query.Limit {
+	if len(items) > query.Limit {
+		last := items[query.Limit-1]
+		response.Items = items[:query.Limit]
+		nextCursor, err := r.cursors.Encode(Cursor{
+			Kind:       CursorSessionTurns,
+			Scope:      scope,
+			SequenceNo: last.SequenceNo,
+			ID:         last.ID,
+		})
+		if err != nil {
+			return recordsv1.VoiceTurnListResponse{}, fmt.Errorf("encode session turns cursor: %w", err)
+		}
+		response.NextCursor = &nextCursor
 		return response, nil
 	}
 
-	last := items[query.Limit-1]
+	if len(items) == 0 {
+		return response, nil
+	}
+	// Keep a signed keyset position even on the final non-empty page. This lets
+	// incremental consumers advance to the end instead of polling the same tail
+	// page forever; the following request returns an empty page and a nil cursor.
+	last := items[len(items)-1]
 	nextCursor, err := r.cursors.Encode(Cursor{
 		Kind:       CursorSessionTurns,
 		Scope:      scope,
@@ -100,7 +118,6 @@ func (r *TurnReadRepository) ListSession(
 	if err != nil {
 		return recordsv1.VoiceTurnListResponse{}, fmt.Errorf("encode session turns cursor: %w", err)
 	}
-	response.Items = items[:query.Limit]
 	response.NextCursor = &nextCursor
 	return response, nil
 }

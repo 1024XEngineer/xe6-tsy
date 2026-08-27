@@ -14,6 +14,7 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH?.replace(/\/$/, "") ?? "";
 const nextConfig: NextConfig = {
   output: staticExport ? "export" : "standalone",
   devIndicators: false,
+  allowedDevOrigins: ["127.0.0.1"],
   ...(staticExport
     ? {
         trailingSlash: true,

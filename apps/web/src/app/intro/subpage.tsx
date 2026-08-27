@@ -17,6 +17,7 @@ import { useState } from "react";
 
 import { BackToTop, Reveal, SiteFooter, SiteNav } from "./site-shell";
 import { siteHref } from "./site-paths";
+import { LocaleProvider, Localized } from "./locale";
 import styles from "./intro.module.css";
 
 export function ProductPage() {
@@ -294,25 +295,25 @@ export function DocumentationPage() {
 }
 
 function SubpageFrame({ children }: { children: ReactNode }) {
-  return <main className={styles.site}><SiteNav />{children}<SiteFooter /><BackToTop /></main>;
+  return <LocaleProvider><main className={styles.site}><SiteNav /><Localized>{children}</Localized><SiteFooter /><BackToTop /></main></LocaleProvider>;
 }
 
 function SubpageHero({ eyebrow, title, copy, aside }: { eyebrow: string; title: ReactNode; copy: string; aside: ReactNode }) {
-  return <section className={`${styles.subpageHero} ${styles.subpageBandBlack}`}><div className={styles.subpageHeroInner}><div className={styles.subpageHeroBody}><p className={styles.kicker}><span className={styles.liveDot}/>{eyebrow}</p><h1>{title}</h1><p>{copy}</p></div>{aside}</div></section>;
+  return <Localized><section className={`${styles.subpageHero} ${styles.subpageBandBlack}`}><div className={styles.subpageHeroInner}><div className={styles.subpageHeroBody}><p className={styles.kicker}><span className={styles.liveDot}/>{eyebrow}</p><h1>{title}</h1><p>{copy}</p></div>{aside}</div></section></Localized>;
 }
 
 function HeroAside({ label, title, items }: { label: string; title: string; items: string[] }) {
-  return <aside className={styles.subpageHeroAside}><span>{label}</span><strong>{title}</strong><ul>{items.map(item => <li key={item}>{item}</li>)}</ul></aside>;
+  return <Localized><aside className={styles.subpageHeroAside}><span>{label}</span><strong>{title}</strong><ul>{items.map(item => <li key={item}>{item}</li>)}</ul></aside></Localized>;
 }
 
 function DetailPanel({ label, title, copy, items, visual }: { label: string; title: string; copy: string; items: string[]; visual: string }) {
-  return <article className={styles.detailPanel}><p className={styles.accentLabel}>{label}</p><h3>{title}</h3><p>{copy}</p><ul>{items.map(item=><li key={item}><Check size={16} weight="bold"/>{item}</li>)}</ul><div className={styles.detailPlaceholder}><span>{visual}</span><small>一场会话 · 一个事实来源</small></div></article>;
+  return <Localized><article className={styles.detailPanel}><p className={styles.accentLabel}>{label}</p><h3>{title}</h3><p>{copy}</p><ul>{items.map(item=><li key={item}><Check size={16} weight="bold"/>{item}</li>)}</ul><div className={styles.detailPlaceholder}><span>{visual}</span><small>一场会话 · 一个事实来源</small></div></article></Localized>;
 }
 
-function OutputItem({ title, copy }: { title: string; copy: string }) { return <article className={styles.outputItem}><Check size={18} weight="bold"/><h3>{title}</h3><p>{copy}</p></article>; }
-function Principle({ icon: Icon, title, copy }: { icon: typeof Code; title: string; copy: string }) { return <article className={styles.principleItem}><Icon size={22}/><h3>{title}</h3><p>{copy}</p></article>; }
-function ResourceGroup({ title, children }: { title: string; children: ReactNode }) { return <section className={styles.docsResourceGroup}><h3>{title}</h3><div className={styles.docsResourceGrid}>{children}</div></section>; }
-function StatusTag({ state, title, detail }: { state: "required" | "optional"; title: string; detail: string }) { return <div className={styles.docsStatusTag}><span className={`${styles.docsStatusPill} ${state === "required" ? styles.docsStatusRequired : styles.docsStatusOptional}`}>{state === "required" ? "必需" : "可选"}</span><strong>{title}</strong><small>{detail}</small></div>; }
+function OutputItem({ title, copy }: { title: string; copy: string }) { return <Localized><article className={styles.outputItem}><Check size={18} weight="bold"/><h3>{title}</h3><p>{copy}</p></article></Localized>; }
+function Principle({ icon: Icon, title, copy }: { icon: typeof Code; title: string; copy: string }) { return <Localized><article className={styles.principleItem}><Icon size={22}/><h3>{title}</h3><p>{copy}</p></article></Localized>; }
+function ResourceGroup({ title, children }: { title: string; children: ReactNode }) { return <Localized><section className={styles.docsResourceGroup}><h3>{title}</h3><div className={styles.docsResourceGrid}>{children}</div></section></Localized>; }
+function StatusTag({ state, title, detail }: { state: "required" | "optional"; title: string; detail: string }) { return <Localized><div className={styles.docsStatusTag}><span className={`${styles.docsStatusPill} ${state === "required" ? styles.docsStatusRequired : styles.docsStatusOptional}`}>{state === "required" ? "必需" : "可选"}</span><strong>{title}</strong><small>{detail}</small></div></Localized>; }
 function CodeBlock({ code, label }: { code: string; label: string }) {
   const [status, setStatus] = useState<"idle" | "copied" | "error">("idle");
 
@@ -326,9 +327,9 @@ function CodeBlock({ code, label }: { code: string; label: string }) {
     }
   };
 
-  return <div className={styles.docsCodeShell}><div className={styles.docsCodeToolbar}><span>{label}</span><button type="button" onClick={copyCode} aria-label={status === "copied" ? `${label}已复制` : `复制${label}`}><Copy size={15} weight="bold" /><span>{status === "copied" ? "已复制" : status === "error" ? "复制失败" : "复制"}</span></button></div><pre className={styles.docsCodeBlock}><code>{code}</code></pre></div>;
+  return <Localized><div className={styles.docsCodeShell}><div className={styles.docsCodeToolbar}><span>{label}</span><button type="button" onClick={copyCode} aria-label={status === "copied" ? `${label}已复制` : `复制${label}`}><Copy size={15} weight="bold" /><span>{status === "copied" ? "已复制" : status === "error" ? "复制失败" : "复制"}</span></button></div><pre className={styles.docsCodeBlock}><code>{code}</code></pre></div></Localized>;
 }
-function ResourceLink({ title, label, href }: { title: string; label: string; href: string }) { return <a className={styles.docsResourceLink} href={href} target="_blank" rel="noreferrer"><span>{label}</span><strong>{title}</strong><ArrowUpRight size={17}/></a>; }
-function Signal({ title, value, label }: { title: string; value: string; label: string }) { return <article className={styles.productSignal}><span>{label}</span><h3>{title}</h3><p>{value}</p></article>; }
-function ArchitectureRow({ icon: Icon, title, copy }: { icon: typeof Code; title: string; copy: string }) { return <article className={styles.aboutArchitectureRow}><Icon size={22}/><div><h3>{title}</h3><p>{copy}</p></div><ArrowRight size={18} aria-hidden="true" /></article>; }
-function Boundary() { return <section className={`${styles.detailSection} ${styles.subpageBandCyan}`}><div className={styles.subpageSectionInner}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>当前范围</p><h2>清楚知道<br /><span>现在能做到什么。</span></h2></div><div className={styles.boundaryGrid}><div><p>介绍页只承诺已经验证的能力，更多终端和集成会逐步开放。P0 关注的是当前这一场交流，而不是长期档案或后台工作区。</p></div><ul><li><Check size={16} weight="bold"/>临时双语会话与双向听译</li><li><Check size={16} weight="bold"/>Web 主要体验入口</li><li><Check size={16} weight="bold"/>实时语音、翻译与句末播报</li><li><Check size={16} weight="bold"/>可扩展的协议与设备控制核心</li></ul></div></div></section>; }
+function ResourceLink({ title, label, href }: { title: string; label: string; href: string }) { return <Localized><a className={styles.docsResourceLink} href={href} target="_blank" rel="noreferrer"><span>{label}</span><strong>{title}</strong><ArrowUpRight size={17}/></a></Localized>; }
+function Signal({ title, value, label }: { title: string; value: string; label: string }) { return <Localized><article className={styles.productSignal}><span>{label}</span><h3>{title}</h3><p>{value}</p></article></Localized>; }
+function ArchitectureRow({ icon: Icon, title, copy }: { icon: typeof Code; title: string; copy: string }) { return <Localized><article className={styles.aboutArchitectureRow}><Icon size={22}/><div><h3>{title}</h3><p>{copy}</p></div><ArrowRight size={18} aria-hidden="true" /></article></Localized>; }
+function Boundary() { return <Localized><section className={`${styles.detailSection} ${styles.subpageBandCyan}`}><div className={styles.subpageSectionInner}><div className={styles.detailSectionHeader}><p className={styles.sectionEyebrow}>当前范围</p><h2>清楚知道<br /><span>现在能做到什么。</span></h2></div><div className={styles.boundaryGrid}><div><p>介绍页只承诺已经验证的能力，更多终端和集成会逐步开放。P0 关注的是当前这一场交流，而不是长期档案或后台工作区。</p></div><ul><li><Check size={16} weight="bold"/>临时双语会话与双向听译</li><li><Check size={16} weight="bold"/>Web 主要体验入口</li><li><Check size={16} weight="bold"/>实时语音、翻译与句末播报</li><li><Check size={16} weight="bold"/>可扩展的协议与设备控制核心</li></ul></div></div></section></Localized>; }

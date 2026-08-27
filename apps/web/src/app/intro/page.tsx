@@ -15,6 +15,7 @@ import { useState } from "react";
 
 import { BackToTop, Reveal, SiteFooter, SiteNav } from "./site-shell";
 import { siteHref } from "./site-paths";
+import { LocaleProvider, Localized } from "./locale";
 import styles from "./intro.module.css";
 
 type Mode = "interpretation" | "assistant";
@@ -57,8 +58,10 @@ export default function IntroPage() {
   const selectedMode = modeContent[mode];
 
   return (
-    <main className={styles.site}>
+    <LocaleProvider>
+      <main className={styles.site}>
       <SiteNav />
+      <Localized>
 
       <section className={styles.hero} id="top">
         <div className={styles.heroInner}>
@@ -94,8 +97,10 @@ export default function IntroPage() {
 
       <Reveal><section className={styles.contactSection} id="contact"><div className={styles.contactInner}><p className={styles.kicker}>READY WHEN YOU ARE</p><h2>先打开一次 Web 体验，<br /><em>再决定下一步。</em></h2><div className={styles.contactActions}><a className={styles.primaryButton} href={siteHref("/")}>立即打开 Web 体验 <ArrowUpRight size={18} weight="bold" /></a><a className={styles.textButton} href={siteHref("/intro/docs")}>查看文档 <ArrowRight size={18} /></a></div></div></section></Reveal>
 
+      </Localized>
       <SiteFooter />
       <BackToTop />
-    </main>
+      </main>
+    </LocaleProvider>
   );
 }

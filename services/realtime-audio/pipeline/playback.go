@@ -124,6 +124,11 @@ func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayba
 	}()
 	ttsResult, err := s.speech.Play(ctx, SpeechOutputRequest{
 		Turn: turn, Language: input.TargetLanguage, Text: input.TranslatedText, PlaybackID: input.PlaybackID,
+		// Fallback playback is recovery audio for a completed Turn. The live
+		// runtime is normally already listening (and may have accepted a newer
+		// Turn), so it must not claim the stale fallback Turn as the runtime
+		// owner. Playback lifecycle remains tracked by the audio sink.
+		SkipRuntime: true,
 	})
 	if err != nil {
 		var notStarted speechOutputNotStartedError

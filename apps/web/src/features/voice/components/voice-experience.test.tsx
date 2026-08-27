@@ -139,7 +139,7 @@ class ControlledAudioContext {
   }
 }
 
-function chooseMode(label: "AI 助手" | "同声传译") {
+function chooseMode(label: "AI 助手模式" | "同声传译模式") {
   fireEvent.click(screen.getByRole("button", { name: "切换工作模式" }));
   fireEvent.click(screen.getByRole("menuitemradio", { name: label }));
 }
@@ -946,7 +946,7 @@ describe("VoiceExperience", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => {
-      expect(screen.getByText("AI 助手 · 唤醒词模式")).toBeInTheDocument();
+      expect(screen.getByText("AI 助手模式")).toBeInTheDocument();
       expect(languageConfigReadGate).toBeNull();
       expect(wakeHandler).toBeDefined();
     });
@@ -1027,6 +1027,9 @@ describe("VoiceExperience", () => {
       expect(screen.getByText("正在聆听")).toBeInTheDocument();
     });
     expect(screen.getByTestId("active-voice-strands")).toBeInTheDocument();
+    expect(screen.getByTestId("active-voice-strands").closest("button")).toHaveAccessibleName(
+      "停止翻译",
+    );
     expect(screen.queryByTestId("idle-voice-video")).toBeNull();
 
     await waitFor(() => {
@@ -1041,13 +1044,25 @@ describe("VoiceExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
     await waitFor(() => {
-      expect(screen.getByText("AI 助手 · 唤醒词模式")).toBeInTheDocument();
+      expect(screen.getByText("AI 助手模式")).toBeInTheDocument();
     });
-    chooseMode("同声传译");
+    chooseMode("同声传译模式");
     await waitFor(() => {
       expect(modeRequests).toBe(1);
-      expect(screen.getByText("同声传译 · 常驻模式")).toBeInTheDocument();
+      expect(screen.getByText("同声传译模式")).toBeInTheDocument();
     });
+  });
+
+  it("opens the mode menu when the capsule label is clicked", async () => {
+    render(<VoiceExperience />);
+    fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
+
+    const capsuleLabel = await screen.findByText("AI 助手模式");
+    fireEvent.click(capsuleLabel);
+
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: "AI 助手模式" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: "同声传译模式" })).toBeInTheDocument();
   });
 
   it("sends a wake signal and applies only the matching semantic command result", async () => {
@@ -1055,7 +1070,7 @@ describe("VoiceExperience", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
     await waitFor(() => {
-      expect(screen.getByText("AI 助手 · 唤醒词模式")).toBeInTheDocument();
+      expect(screen.getByText("AI 助手模式")).toBeInTheDocument();
       expect(wakeHandler).toBeDefined();
     });
 
@@ -1108,7 +1123,7 @@ describe("VoiceExperience", () => {
 
     await waitFor(() => {
       expect(screen.getByText("已进入同声传译模式")).toBeInTheDocument();
-      expect(screen.getByText("同声传译 · 常驻模式")).toBeInTheDocument();
+      expect(screen.getByText("同声传译模式")).toBeInTheDocument();
       expect(localStorage.getItem("lingow-voice-config-v2")).toContain(
         '"outputMode":"single"',
       );
@@ -1119,7 +1134,7 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => {
-      expect(screen.getByText("AI 助手 · 唤醒词模式")).toBeInTheDocument();
+      expect(screen.getByText("AI 助手模式")).toBeInTheDocument();
       expect(wakeHandler).toBeDefined();
     });
 
@@ -1171,7 +1186,7 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
 
-    await waitFor(() => expect(screen.getByText("AI 助手 · 唤醒词模式")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("AI 助手模式")).toBeInTheDocument());
     expect(screen.queryByRole("switch", { name: /监听方式/ })).not.toBeInTheDocument();
     expect(uplinkTrack.enabled).toBe(false);
 
@@ -1222,7 +1237,7 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始对话" }));
     await waitFor(() => {
-      expect(screen.getByText("AI 助手 · 唤醒词模式")).toBeInTheDocument();
+      expect(screen.getByText("AI 助手模式")).toBeInTheDocument();
     });
 
     dataMessageHandler?.({
@@ -1234,7 +1249,7 @@ describe("VoiceExperience", () => {
     });
     expect(await screen.findByText("这是切换前的助手回复。")).toBeInTheDocument();
 
-    chooseMode("同声传译");
+    chooseMode("同声传译模式");
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "停止翻译" })).toBeVisible();
@@ -1250,13 +1265,13 @@ describe("VoiceExperience", () => {
     render(<VoiceExperience />);
     fireEvent.click(screen.getByRole("button", { name: "开始翻译" }));
     await waitFor(() => {
-      expect(screen.getByText("同声传译 · 常驻模式")).toBeInTheDocument();
+      expect(screen.getByText("同声传译模式")).toBeInTheDocument();
       expect(
         screen.getByText("Hello, how can I get to the main venue?"),
       ).toBeInTheDocument();
     });
 
-    chooseMode("AI 助手");
+    chooseMode("AI 助手模式");
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "停止对话" })).toBeVisible();

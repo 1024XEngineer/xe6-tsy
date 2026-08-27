@@ -641,7 +641,10 @@ func (c *PhraseTranslationCoordinator) phraseUsageFact(turn TurnContext, phrase 
 	)
 }
 
-const phraseResidualMarker = "\x00"
+// Use a private-use Unicode rune as the in-memory placeholder. PostgreSQL
+// jsonb rejects NUL even when JSON-escaped, so a leaked marker must never make
+// the otherwise valid FinalTurn impossible to persist.
+const phraseResidualMarker = "\uE000"
 
 // Internal separator used only while passing ordered residual playback from
 // phrase settlement to the scheduler. Provider text cannot contain this

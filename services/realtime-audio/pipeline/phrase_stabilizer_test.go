@@ -34,6 +34,26 @@ func TestPhraseStabilizerCommitsStableUnpunctuatedLiveChunk(t *testing.T) {
 	}
 }
 
+func TestPhraseStabilizerKeepsWhitespaceDelimitedWordsIntact(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{
+		StableAfter:  100 * time.Millisecond,
+		LiveMinRunes: 8,
+		LiveMaxRunes: 18,
+	})
+	now := time.Unix(1700000000, 0)
+	finalText := "Today I want to tell you something important"
+
+	stabilizer.Observe(finalText, now)
+	got := stabilizer.Advance(now.Add(100 * time.Millisecond))
+	if len(got) != 1 || got[0].Text != "Today I want to" {
+		t.Fatalf("Advance() = %#v, want a complete-word live chunk", got)
+	}
+	if got := stabilizer.Flush(finalText); len(got) != 1 || got[0].Text != "tell you something important" {
+		t.Fatalf("Flush() = %#v, want the intact remaining words", got)
+	}
+}
+
 func TestPhraseStabilizerCommitsStablePrefixWhilePartialGrows(t *testing.T) {
 	t.Parallel()
 	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})

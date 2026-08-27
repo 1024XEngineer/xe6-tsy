@@ -88,7 +88,7 @@ func (s *PhraseStabilizer) Advance(now time.Time) []StablePhrase {
 	if utf8.RuneCountInString(s.candidate) < s.liveMinRunes {
 		return nil
 	}
-	cut := takeRunes(s.candidate, s.liveMaxRunes)
+	cut := takeStablePhraseRunes(s.candidate, s.liveMinRunes, s.liveMaxRunes)
 	phrases := s.consume(cut)
 	remaining := strings.TrimSpace(strings.TrimPrefix(s.candidate, cut))
 	if remaining == "" {
@@ -100,18 +100,27 @@ func (s *PhraseStabilizer) Advance(now time.Time) []StablePhrase {
 	return phrases
 }
 
-func takeRunes(value string, limit int) string {
+func takeStablePhraseRunes(value string, minimum, limit int) string {
 	if limit <= 0 {
 		return ""
 	}
-	count := 0
-	for index := range value {
-		if count == limit {
-			return value[:index]
-		}
-		count++
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
 	}
-	return value
+	// Whitespace-delimited source languages must not split a word merely to
+	// hit the live latency target. Prefer the nearest complete word within the
+	// window; CJK and other unspaced scripts keep the exact rune boundary.
+	for index := limit - 1; index >= 0; index-- {
+		if !unicode.IsSpace(runes[index]) {
+			continue
+		}
+		cut := string(runes[:index+1])
+		if utf8.RuneCountInString(strings.TrimSpace(cut)) >= minimum {
+			return cut
+		}
+	}
+	return string(runes[:limit])
 }
 
 // Flush consumes every remaining final ASR text segment. A final revision that no longer

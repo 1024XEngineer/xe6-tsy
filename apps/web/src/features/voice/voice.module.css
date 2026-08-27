@@ -73,7 +73,7 @@
   top: max(3rem, env(safe-area-inset-top));
   left: 50%;
   display: flex;
-  width: min(21rem, calc(100vw - 13rem));
+  width: min(24rem, calc(100vw - 2rem));
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
@@ -108,17 +108,58 @@
 
 .statusCapsule {
   position: relative;
-  display: flex;
+  display: grid;
   min-width: 0;
-  flex: 1 1 auto;
-  align-items: center;
-  gap: 0.58rem;
-  padding: 0.3rem 0.42rem 0.3rem 0.34rem;
+  max-width: 80%;
+  flex: 1;
+  overflow: hidden;
   border: 1px solid rgb(255 255 255 / 22%);
-  border-radius: 999px;
+  border-radius: 1.35rem;
   background: rgb(12 14 16 / 86%);
   box-shadow: 0 10px 28px rgb(0 0 0 / 22%);
   backdrop-filter: blur(18px);
+  transition: border-radius 260ms cubic-bezier(0.16, 1, 0.3, 1), background 220ms ease;
+}
+
+.statusCapsuleExpanded {
+  border-radius: 1.35rem;
+  background: rgb(16 18 20 / 94%);
+}
+
+.statusCapsuleTrigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 3.25rem;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.3rem 1rem 0.3rem 1.25rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.statusCapsuleTrigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.statusCapsuleTrigger:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 72%);
+  outline-offset: -3px;
+}
+
+.modeMenuIcon {
+  flex: 0 0 auto;
+  color: rgb(255 255 255 / 78%);
+  transition: color 160ms ease;
+}
+
+.statusCapsuleTrigger[aria-expanded="true"] .modeMenuIcon {
+  color: #fff;
 }
 
 .liquidStatusOrb {
@@ -150,7 +191,6 @@
 }
 
 .capsuleStatus,
-.capsuleDetail,
 .statusHints p {
   margin: 0;
 }
@@ -165,132 +205,56 @@
   white-space: nowrap;
 }
 
-.capsuleDetail {
-  overflow: hidden;
-  margin-top: 0.13rem;
-  color: rgb(255 255 255 / 50%);
-  font-size: clamp(0.59rem, 0.7vw, 0.66rem);
-  line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.modeMenuWrap {
-  position: relative;
-  flex: 0 0 auto;
-}
-
-.modeMenuTrigger {
-  display: inline-flex;
-  width: 2.1rem;
-  min-height: 2.1rem;
-  align-items: center;
-  justify-content: center;
-  gap: 0.04rem;
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
   padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
   border: 0;
-  border-left: 1px solid rgb(255 255 255 / 12%);
-  background: transparent;
-  color: rgb(255 255 255 / 68%);
-  cursor: pointer;
-}
-
-.modeMenuTrigger:hover:not(:disabled),
-.modeMenuTrigger[aria-expanded="true"] {
-  color: #fff;
-}
-
-.modeMenuTrigger:disabled,
-.interactionToggle:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
 }
 
 .modeMenu {
-  position: absolute;
-  top: calc(100% + 0.55rem);
-  right: 0;
   display: grid;
-  min-width: 8rem;
-  padding: 0.3rem;
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 6px;
-  background: rgb(16 18 20 / 98%);
-  box-shadow: 0 14px 30px rgb(0 0 0 / 34%);
+  gap: 0.2rem;
+  padding: 0.35rem 0.4rem 0.45rem;
+  border-top: 1px solid rgb(255 255 255 / 12%);
 }
 
 .modeMenu button {
-  min-height: 2.35rem;
-  padding: 0 0.65rem;
+  display: flex;
+  min-height: 2.65rem;
+  align-items: center;
+  gap: 0.72rem;
+  padding: 0 0.8rem;
   border: 0;
-  border-radius: 4px;
+  border-radius: 0.55rem;
   background: transparent;
   color: rgb(255 255 255 / 58%);
   cursor: pointer;
   font: inherit;
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   text-align: left;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.modeMenu button svg {
+  flex: 0 0 auto;
+  color: rgb(255 255 255 / 54%);
 }
 
 .modeMenu button:hover,
 .modeMenu button[aria-checked="true"] {
-  background: rgb(255 255 255 / 10%);
+  background: rgb(255 255 255 / 13%);
   color: #fff;
 }
 
-.interactionToggle {
-  display: inline-flex;
-  min-height: 2.55rem;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 0.42rem;
-  padding: 0.28rem 0.52rem 0.28rem 0.62rem;
-  border: 1px solid rgb(255 255 255 / 17%);
-  border-radius: 999px;
-  background: rgb(18 20 22 / 82%);
-  color: rgb(255 255 255 / 66%);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.62rem;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.interactionToggle:hover:not(:disabled) {
-  border-color: rgb(255 255 255 / 42%);
-  color: #fff;
-}
-
-.interactionToggle i {
-  position: relative;
-  display: block;
-  width: 1.45rem;
-  height: 0.82rem;
-  border-radius: 999px;
-  background: rgb(255 255 255 / 22%);
-  transition: background 180ms ease;
-}
-
-.interactionToggle i::after {
-  position: absolute;
-  top: 50%;
-  left: 0.13rem;
-  width: 0.58rem;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: rgb(255 255 255 / 82%);
-  content: "";
-  transform: translateY(-50%);
-  transition: left 180ms ease, background 180ms ease;
-}
-
-.interactionToggle[aria-checked="true"] i {
-  background: rgb(127 200 222 / 58%);
-}
-
-.interactionToggle[aria-checked="true"] i::after {
-  left: 0.74rem;
-  background: #fff;
+.modeMenu button:hover svg,
+.modeMenu button[aria-checked="true"] svg {
+  color: rgb(255 255 255 / 86%);
 }
 
 .statusHints {
@@ -308,9 +272,10 @@
 
 .voiceStage {
   --voice-stage-offset-y: 0rem;
+  --voice-strands-offset-y: 0rem;
 
   position: absolute;
-  z-index: 1;
+  z-index: 4;
   inset: 0;
   display: grid;
   place-content: center;
@@ -346,6 +311,7 @@
   cursor: pointer;
   place-items: center;
   -webkit-tap-highlight-color: transparent;
+  pointer-events: auto;
 }
 
 .experience[data-phase="idle"] .voiceButton {
@@ -354,6 +320,30 @@
 
 .voiceButton:focus-visible {
   outline-offset: 0.5rem;
+}
+
+.strandsVisual {
+  display: block;
+  pointer-events: none;
+}
+
+.strandsButton {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  left: 0;
+  display: grid;
+  width: 100%;
+  height: clamp(6.5rem, 11vw, 8.75rem);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  place-items: center;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .voiceVisual {
@@ -426,14 +416,15 @@
   height: 100%;
 }
 
-/* Middle waveform controls: move it with --voice-stage-offset-y on
-   .voiceStage, then tune its footprint here. */
+/* Move only the active waveform with --voice-strands-offset-y on .voiceStage.
+   The outer orb remains controlled by --voice-stage-offset-y. */
 .strands {
   position: relative;
   display: block;
   width: clamp(18rem, 35vw, 32rem);
   height: clamp(6.5rem, 11vw, 8.75rem);
   filter: drop-shadow(0 10px 18px rgb(255 255 255 / 10%));
+  transform: translateY(var(--voice-strands-offset-y));
 }
 
 .strands::before {
@@ -632,33 +623,57 @@
   position: absolute;
   z-index: 3;
   right: 50%;
-  top: 58%;
-  bottom: max(1rem, env(safe-area-inset-bottom));
+  top: 20%;
+  bottom: clamp(8.5rem, 22dvh, 14rem);
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: flex-start;
   width: min(42rem, calc(100vw - 3rem));
-  max-height: 38dvh;
+  max-height: 70dvh;
   gap: clamp(0.72rem, 1.5dvh, 1rem);
   overflow-x: hidden;
   overflow-y: auto;
   padding: 0.8rem 0.2rem 0.4rem;
   color: var(--text);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    rgb(0 0 0 / 100%) 2.35rem,
+    rgb(0 0 0 / 100%) calc(100% - 2.35rem),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    rgb(0 0 0 / 100%) 2.35rem,
+    rgb(0 0 0 / 100%) calc(100% - 2.35rem),
+    transparent 100%
+  );
   overscroll-behavior: contain;
-  scrollbar-color: rgb(255 255 255 / 18%) transparent;
-  scrollbar-width: thin;
+  scrollbar-width: none;
   transform: translateX(50%);
+}
+
+.transcript::-webkit-scrollbar {
+  display: none;
+}
+
+.transcriptSpacer {
+  flex: 0 0 clamp(3.5rem, 8dvh, 6rem);
+  width: 100%;
+  pointer-events: none;
 }
 
 .transcriptTurn {
   display: grid;
-  gap: 0.18rem;
+  gap: 0.5rem;
   flex: 0 0 auto;
 }
 
 .transcriptPair {
   display: grid;
-  gap: 0.18rem;
+  gap: 0.25rem;
+  margin: 0.5rem 0rem;
 }
 
 .transcriptTurn p {
@@ -667,7 +682,7 @@
   font-size: clamp(0.82rem, 1.1vw, 0.98rem);
   font-weight: 430;
   letter-spacing: 0;
-  line-height: 1.42;
+  line-height: 1.45;
 }
 
 .transcriptSource {
@@ -1072,24 +1087,41 @@
   line-height: 1;
 }
 
+.settingsDetailHeading {
+  max-width: 40rem;
+}
+
 .settingsDetailHeading h2 {
-  margin: 1rem 0 0;
+  margin: clamp(1.35rem, 3vh, 2.35rem) 0 0;
   font-size: clamp(2.1rem, 4.25vw, 4.8rem);
   font-weight: 300;
   line-height: 0.96;
 }
 
 .settingsDetailHeading p {
-  margin: 0.9rem 0 0;
+  margin: clamp(1.15rem, 2.5vh, 1.8rem) 0 0;
   color: rgb(255 255 255 / 66%);
   font-size: clamp(0.8rem, 1.1vw, 0.98rem);
   line-height: 1.45;
 }
 
 .settingsDetailControls {
-  align-self: center;
+  align-self: start;
   width: min(100%, 31rem);
-  padding-top: 1.5rem;
+  padding-top: clamp(2.25rem, 5vh, 4.5rem);
+}
+
+.languageSettings {
+  display: grid;
+  gap: 1.15rem;
+}
+
+.languageSettingsNote {
+  max-width: 34rem;
+  margin: 0;
+  color: rgb(255 255 255 / 38%);
+  font-size: 0.64rem;
+  line-height: 1.55;
 }
 
 .settingControlGroup,
@@ -1611,9 +1643,11 @@
 .deliverySettings {
   display: grid;
   max-height: min(38rem, 58dvh);
-  gap: 1.15rem;
+  gap: 1rem;
   overflow-y: auto;
   padding-right: 0.35rem;
+  padding-top: 0.35rem;
+  padding-bottom: 1rem;
   scrollbar-color: var(--hairline) transparent;
   scrollbar-width: thin;
 }
@@ -1623,9 +1657,15 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid rgb(255 255 255 / 9%);
   color: rgb(255 255 255 / 46%);
   font-size: 0.66rem;
   line-height: 1.55;
+}
+
+.deliveryIntro > span {
+  max-width: 30rem;
 }
 
 .deliveryRefresh,
@@ -1662,8 +1702,8 @@
 
 .deliverySection {
   display: grid;
-  gap: 0.85rem;
-  padding-top: 1rem;
+  gap: 0.8rem;
+  padding-top: 0.9rem;
   border-top: 1px solid rgb(255 255 255 / 11%);
 }
 
@@ -1699,8 +1739,8 @@
 
 .deliveryTargetRow,
 .deliveryMessageRow {
-  min-height: 2.8rem;
-  padding: 0.45rem 0;
+  min-height: 2.6rem;
+  padding: 0.35rem 0;
   border-bottom: 1px solid rgb(255 255 255 / 8%);
 }
 
@@ -1728,7 +1768,7 @@
 
 .deliveryForm {
   display: grid;
-  gap: 0.6rem;
+  gap: 0.5rem;
 }
 
 .deliveryForm label {
@@ -1740,7 +1780,7 @@
 
 .deliveryForm input {
   width: 100%;
-  min-height: 2.35rem;
+  min-height: 2.2rem;
   box-sizing: border-box;
   padding: 0 0.65rem;
   border: 1px solid rgb(255 255 255 / 16%);
@@ -1762,7 +1802,7 @@
 
 .deliveryAction {
   display: inline-flex;
-  min-height: 2.35rem;
+  min-height: 2.2rem;
   align-items: center;
   justify-content: center;
   gap: 0.45rem;
@@ -2151,8 +2191,13 @@
   }
 
   .statusCapsule {
-    gap: 0.55rem;
-    padding-left: 0.3rem;
+    gap: 0;
+  }
+
+  .statusCapsuleTrigger {
+    min-height: 3rem;
+    padding-right: 0.85rem;
+    padding-left: 0.9rem;
   }
 
   .liquidStatusOrb {
@@ -2164,45 +2209,16 @@
     font-size: 0.65rem;
   }
 
-  .capsuleDetail {
-    font-size: 0.53rem;
-  }
-
-  .modeMenuTrigger {
-    width: 2.1rem;
-    min-height: 2.1rem;
-  }
-
-  .interactionToggle {
-    min-height: 2.1rem;
-    gap: 0.28rem;
-    padding-inline: 0.42rem;
-    font-size: 0.52rem;
-  }
-
-  .interactionToggle i {
-    width: 1.2rem;
-    height: 0.7rem;
-  }
-
-  .interactionToggle i::after {
-    width: 0.5rem;
-  }
-
-  .interactionToggle[aria-checked="true"] i::after {
-    left: 0.59rem;
-  }
-
   .statusHints {
     top: calc(100% + 0.35rem);
     font-size: 0.56rem;
   }
 
   .transcript {
-    top: 57%;
-    bottom: max(0.8rem, env(safe-area-inset-bottom));
+    top: 13%;
+    bottom: clamp(7.5rem, 20dvh, 10rem);
     width: calc(100vw - 2rem);
-    max-height: 39dvh;
+    max-height: 56dvh;
     gap: 1rem;
   }
 
@@ -2333,26 +2349,35 @@
   }
 
   .settingsDetailHeading h2 {
-    margin-top: 0.65rem;
+    margin-top: 0.85rem;
     font-size: clamp(1.55rem, 8vw, 2.25rem);
     line-height: 1;
   }
 
   .settingsDetailHeading p {
-    margin-top: 0.55rem;
+    margin-top: 0.75rem;
     font-size: 0.65rem;
   }
 
   .settingsDetailControls {
-    align-self: center;
+    align-self: start;
     width: 100%;
-    padding-top: 0;
+    padding-top: 1.5rem;
+  }
+
+  .languageSettings {
+    gap: 0.8rem;
+  }
+
+  .languageSettingsNote {
+    font-size: 0.58rem;
   }
 
   .deliverySettings {
     max-height: 100%;
-    gap: 0.85rem;
+    gap: 1.1rem;
     padding-right: 0;
+    padding-top: 0.2rem;
   }
 
   .deliveryIntro,
@@ -2367,8 +2392,8 @@
   }
 
   .deliverySection {
-    gap: 0.6rem;
-    padding-top: 0.75rem;
+    gap: 0.8rem;
+    padding-top: 1rem;
   }
 
   .deliveryForm input,

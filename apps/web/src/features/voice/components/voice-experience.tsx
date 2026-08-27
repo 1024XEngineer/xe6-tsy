@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowsLeftRight, CaretDown, Gear } from "@phosphor-icons/react";
+import { ArrowsLeftRight, Gear, Robot, SpeakerHigh } from "@phosphor-icons/react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { useState } from "react";
 
@@ -29,9 +29,6 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
     debug,
     configSyncStatus,
     commandFeedback,
-    interactionPolicy,
-    interactionPolicyLocked,
-    setInteractionPolicy,
     switchMode,
     toggle,
   } = useVoiceSession();
@@ -39,9 +36,7 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const modeSwitching =
     debug.modeCommandPending || debug.modeState?.phase === "switching";
-  const modeLabel = activeMode === "assistant" ? "AI 助手" : "同声传译";
-  const policyLabel = interactionPolicy === "continuous" ? "常驻模式" : "唤醒词模式";
-  const capsuleStatus = modeSwitching ? "切换中…" : `${modeLabel} · ${policyLabel}`;
+  const capsuleStatus = activeMode === "assistant" ? "AI 助手模式" : "同声传译模式";
   const statusTone = state.notice || debug.lastError || debug.connectionState === "failed"
     ? "error"
     : modeSwitching
@@ -60,10 +55,6 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
   const handleModeSwitch = (mode: "assistant" | "interpretation") => {
     setModeMenuOpen(false);
     void switchMode(mode);
-  };
-
-  const toggleInteractionPolicy = () => {
-    setInteractionPolicy(interactionPolicy === "continuous" ? "wake_word" : "continuous");
   };
 
   return (
@@ -92,29 +83,39 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
         </motion.header>
 
         {state.phase !== "idle" ? <section className={styles.statusCluster} aria-label="会话状态与模式">
-          <div className={styles.statusCapsule}>
-            <LiquidStatusOrb status={statusTone} />
-            <div className={styles.statusCapsuleBody}>
-              <p aria-live="polite" className={styles.capsuleStatus}>
-                {capsuleStatus}
-              </p>
-              <p className={styles.capsuleDetail}>{statusMessage}</p>
-            </div>
-            <div className={styles.modeMenuWrap}>
-              <button
-                aria-controls="mode-switch-menu"
-                aria-expanded={modeMenuOpen}
-                aria-label="切换工作模式"
-                className={styles.modeMenuTrigger}
-                disabled={modeSwitching}
-                onClick={() => setModeMenuOpen((open) => !open)}
-                type="button"
-              >
-                <ArrowsLeftRight aria-hidden="true" size={17} weight="regular" />
-                <CaretDown aria-hidden="true" size={12} weight="bold" />
-              </button>
+          <div className={`${styles.statusCapsule} ${modeMenuOpen ? styles.statusCapsuleExpanded : ""}`}>
+            <button
+              aria-controls="mode-switch-menu"
+              aria-expanded={modeMenuOpen}
+              aria-haspopup="menu"
+              aria-label="切换工作模式"
+              className={styles.statusCapsuleTrigger}
+              disabled={modeSwitching}
+              onClick={() => setModeMenuOpen((open) => !open)}
+              type="button"
+            >
+              <LiquidStatusOrb status={statusTone} />
+              <span className={styles.statusCapsuleBody}>
+                <span aria-live="polite" className={styles.capsuleStatus}>
+                  {capsuleStatus}
+                </span>
+                <span aria-live="polite" className={styles.srOnly}>
+                  {statusMessage}
+                </span>
+              </span>
+              <ArrowsLeftRight aria-hidden="true" className={styles.modeMenuIcon} size={19} weight="regular" />
+            </button>
+            <AnimatePresence initial={false}>
               {modeMenuOpen ? (
-                <div className={styles.modeMenu} id="mode-switch-menu" role="menu">
+                <motion.div
+                  animate={{ height: "auto", opacity: 1, y: 0 }}
+                  className={styles.modeMenu}
+                  exit={{ height: 0, opacity: 0, y: -4 }}
+                  id="mode-switch-menu"
+                  initial={{ height: 0, opacity: 0, y: -4 }}
+                  role="menu"
+                  transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+                >
                   {(["assistant", "interpretation"] as const).map((mode) => (
                     <button
                       aria-checked={activeMode === mode}
@@ -123,28 +124,18 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
                       role="menuitemradio"
                       type="button"
                     >
-                      {mode === "assistant" ? "AI 助手" : "同声传译"}
+                      {mode === "assistant" ? (
+                        <Robot aria-hidden="true" size={19} weight="regular" />
+                      ) : (
+                        <SpeakerHigh aria-hidden="true" size={19} weight="regular" />
+                      )}
+                      <span>{mode === "assistant" ? "AI 助手模式" : "同声传译模式"}</span>
                     </button>
                   ))}
-                </div>
+                </motion.div>
               ) : null}
-            </div>
+            </AnimatePresence>
           </div>
-          <button
-            aria-checked={interactionPolicy === "wake_word"}
-            aria-label={`监听方式：${policyLabel}`}
-            className={styles.interactionToggle}
-            disabled={interactionPolicyLocked}
-            onClick={toggleInteractionPolicy}
-            role="switch"
-            title={
-              "切换常驻模式或唤醒词模式"
-            }
-            type="button"
-          >
-            <span>{policyLabel}</span>
-            <i aria-hidden="true" />
-          </button>
           <div className={styles.statusHints}>
             {hintMessage ? <p>{hintMessage}</p> : null}
             {automaticOutputMessage ? <p>{automaticOutputMessage}</p> : null}

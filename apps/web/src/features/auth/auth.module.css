@@ -5,7 +5,7 @@
   height: 100dvh;
   min-height: 34rem;
   overflow: hidden;
-  background: #020202;
+  background: #05080b;
 }
 
 .loading {
@@ -20,15 +20,20 @@
   animation: breathe 1.4s ease-in-out infinite alternate;
 }
 
-.backdropVideo {
+.backgroundLayer {
   position: absolute;
-  inset: 50% auto auto 57%;
-  width: min(56rem, 64vw);
-  height: min(56rem, 90dvh);
-  object-fit: contain;
-  opacity: 0.55;
+  z-index: 0;
+  inset: 0;
   pointer-events: none;
-  transform: translate(-50%, -50%) scale(1.25);
+}
+
+.backgroundLayer::after {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+  background: rgb(3 6 9 / 48%);
 }
 
 .header {
@@ -62,9 +67,14 @@
   position: absolute;
   z-index: 2;
   top: 50%;
-  left: max(clamp(1.25rem, 9vw, 9rem), env(safe-area-inset-left));
-  width: min(25rem, calc(100vw - 2.5rem));
-  transform: translateY(-47%);
+  left: 50%;
+  width: min(29rem, calc(100vw - 2rem));
+  padding: clamp(1.8rem, 4vw, 3rem);
+  border: 1px solid rgb(255 255 255 / 12%);
+  background: rgb(5 8 11 / 70%);
+  box-shadow: 0 1.5rem 4rem rgb(0 0 0 / 26%);
+  transform: translate(-50%, -50%);
+  backdrop-filter: blur(18px);
 }
 
 .formHeading > span {
@@ -217,21 +227,18 @@
     left: max(1.25rem, env(safe-area-inset-left));
   }
 
-  .backdropVideo {
-    top: 27%;
-    left: 50%;
-    width: 100vw;
-    height: 46dvh;
-    opacity: 0.32;
+  .backgroundLayer {
+    opacity: 0.8;
   }
 
   .loginContent {
-    top: auto;
-    right: max(1.25rem, env(safe-area-inset-right));
-    bottom: max(5rem, 11dvh);
-    left: max(1.25rem, env(safe-area-inset-left));
-    width: auto;
-    transform: none;
+    top: 50%;
+    right: auto;
+    bottom: auto;
+    left: 50%;
+    width: min(29rem, calc(100vw - 2rem));
+    padding: 1.5rem;
+    transform: translate(-50%, -50%);
   }
 
   .formHeading h2 {
@@ -249,7 +256,13 @@
 
 @media (max-height: 40rem) and (min-width: 42.01rem) {
   .loginContent {
-    transform: translateY(-42%) scale(0.88);
-    transform-origin: left center;
+    transform: translate(-50%, -50%) scale(0.88);
+    transform-origin: center center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backgroundLayer {
+    opacity: 0.45;
   }
 }

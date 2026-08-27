@@ -153,6 +153,7 @@ export function ConversationTranscript({
       {activeMode === "interpretation" ? (
         <LiveInterpretationTurn asrPartial={asrPartial} phraseSubtitles={phraseSubtitles} />
       ) : null}
+      <div aria-hidden="true" className={styles.transcriptSpacer} />
     </section>
   );
 }

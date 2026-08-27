@@ -762,7 +762,7 @@ describe("VoiceExperience", () => {
     expect(screen.getByRole("button", { name: "停止翻译" })).toBeVisible();
   });
 
-  it("shows account status immediately above about in settings", async () => {
+  it("shows product settings without the debug session page", async () => {
     const onLogout = vi.fn();
     render(<VoiceExperience onLogout={onLogout} />);
 
@@ -773,7 +773,7 @@ describe("VoiceExperience", () => {
       screen.getByRole("listbox", { name: "设置选项" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "语言配置" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "联调会话" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "联调会话" })).not.toBeInTheDocument();
     expect(screen.getByRole("option", { name: "历史会话" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "用量管理" })).toBeInTheDocument();
     const accountOption = screen.getByRole("option", { name: "登录状态" });
@@ -782,12 +782,21 @@ describe("VoiceExperience", () => {
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     expect(screen.getByText("01")).toBeInTheDocument();
-    expect(screen.getByText("07")).toBeInTheDocument();
+    expect(screen.getByText("06")).toBeInTheDocument();
 
     fireEvent.click(accountOption);
     expect(await screen.findByText("手机号验证账户")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
     expect(onLogout).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("option", { name: "关于" }));
+    expect(await screen.findByText("AI 语音助手 · 面对面同传")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "用自然语音与 Lingow 对话，支持 AI 助手、双向同声传译、实时字幕与语音播报。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/api\/v1|realtime\/v1|WebRTC|Start/)).not.toBeInTheDocument();
   });
 
   it("uses a localized custom drawer to choose the source language", () => {

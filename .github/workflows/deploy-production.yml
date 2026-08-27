@@ -1,6 +1,7 @@
 name: Deploy development
 
 on:
+  # Deployment trigger verification marker; behavior remains push-to-dev and manual dispatch.
   push:
     branches: [dev]
   workflow_dispatch:

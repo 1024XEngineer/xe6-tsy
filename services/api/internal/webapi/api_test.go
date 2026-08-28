@@ -45,10 +45,12 @@ type deliveryFake struct {
 	putPreferenceErr       error
 	bindAccountID          string
 	bindToken              string
+	bindWebhookURL         string
 	revokeAccountID        string
 	revokeChannel          delivery.Channel
 	revokeRef              string
 	bindEmailErr           error
+	bindWebhookErr         error
 	emailVerificationErr   error
 	listTargetsErr         error
 	revokeErr              error
@@ -195,6 +197,14 @@ func (f *deliveryFake) BindWeChatTarget(_ context.Context, accountID, code strin
 		return delivery.MessageTarget{}, f.bindEmailErr
 	}
 	return delivery.MessageTarget{DestinationRef: "primary-wechat", Channel: delivery.ChannelWeChat, Verified: true}, nil
+}
+func (f *deliveryFake) BindWebhookTarget(_ context.Context, accountID, webhookURL string) (delivery.MessageTarget, error) {
+	f.bindAccountID = accountID
+	f.bindWebhookURL = webhookURL
+	if f.bindWebhookErr != nil {
+		return delivery.MessageTarget{}, f.bindWebhookErr
+	}
+	return delivery.MessageTarget{DestinationRef: "primary-webhook", Channel: delivery.ChannelWebhook, Verified: true}, nil
 }
 func (f *deliveryFake) RevokeMessageTarget(_ context.Context, accountID string, channel delivery.Channel, destinationRef string) error {
 	f.revokeAccountID = accountID
@@ -558,6 +568,8 @@ func TestFormalRoutesReachUseCases(t *testing.T) {
 		{"unbind email target", http.MethodDelete, "/api/v1/account/message-targets/email/primary-email", "", true, false},
 		{"bind wechat target", http.MethodPost, "/api/v1/account/message-targets/wechat/bind", `{"code":"oauth-code"}`, true, false},
 		{"unbind wechat target", http.MethodDelete, "/api/v1/account/message-targets/wechat/primary-wechat", "", true, false},
+		{"bind webhook target", http.MethodPost, "/api/v1/account/message-targets/webhook/bind", `{"url":"https://example.com/events"}`, true, false},
+		{"unbind webhook target", http.MethodDelete, "/api/v1/account/message-targets/webhook/primary-webhook", "", true, false},
 	}
 
 	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
@@ -953,5 +965,77 @@ func TestUnbindWeChatTargetPassesDestinationRef(t *testing.T) {
 	}
 	if fake.revokeAccountID != "account-1" || fake.revokeChannel != delivery.ChannelWeChat || fake.revokeRef != "work-wechat" {
 		t.Fatalf("revoke input = (%q, %q, %q)", fake.revokeAccountID, fake.revokeChannel, fake.revokeRef)
+	}
+}
+
+func TestBindWebhookTargetPassesURLToService(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), fake, tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/webhook/bind", strings.NewReader(`{"url":"https://example.com/events"}`))
+	request = authenticate(request)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if fake.bindAccountID != "account-1" || fake.bindWebhookURL != "https://example.com/events" {
+		t.Fatalf("bind input = (%q, %q)", fake.bindAccountID, fake.bindWebhookURL)
+	}
+}
+
+func TestBindWebhookTargetRejectsInvalidRequestAndServiceError(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		fake *deliveryFake
+		want int
+	}{
+		{name: "blank URL", body: `{"url":" "}`, fake: &deliveryFake{}, want: http.StatusBadRequest},
+		{name: "invalid JSON", body: `{`, fake: &deliveryFake{}, want: http.StatusBadRequest},
+		{name: "invalid URL", body: `{"url":"http://example.com/events"}`, fake: &deliveryFake{bindWebhookErr: domain.ErrInvalidArgument}, want: http.StatusBadRequest},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), test.fake, tokenVerifierFake{})
+			request := authenticate(httptest.NewRequest(http.MethodPost, "/api/v1/account/message-targets/webhook/bind", strings.NewReader(test.body)))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.want, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestUnbindWebhookTargetPassesDestinationRefAndServiceError(t *testing.T) {
+	tests := []struct {
+		name string
+		fake *deliveryFake
+		want int
+	}{
+		{name: "success", fake: &deliveryFake{}, want: http.StatusNoContent},
+		{name: "not found", fake: &deliveryFake{revokeErr: domain.ErrNotFound}, want: http.StatusNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), test.fake, tokenVerifierFake{})
+			request := authenticate(httptest.NewRequest(http.MethodDelete, "/api/v1/account/message-targets/webhook/primary-webhook", nil))
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, test.want, response.Body.String())
+			}
+			if test.fake.revokeAccountID != "account-1" || test.fake.revokeChannel != delivery.ChannelWebhook || test.fake.revokeRef != "primary-webhook" {
+				t.Fatalf("revoke input = (%q, %q, %q)", test.fake.revokeAccountID, test.fake.revokeChannel, test.fake.revokeRef)
+			}
+		})
 	}
 }

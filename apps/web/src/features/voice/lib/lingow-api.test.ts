@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   bindEmailTarget,
+  bindWebhookTarget,
   bindWeChatTarget,
   createLanguageConfig,
   getAccountUsageSummary,
@@ -375,6 +376,15 @@ describe("delivery settings API", () => {
           updated_at: "2026-08-07T00:00:00Z",
         });
       }
+      if (url.includes("webhook/bind")) {
+        return jsonResponse({
+          destination_ref: "primary-webhook",
+          channel: "webhook",
+          verified: true,
+          revoked_at: null,
+          updated_at: "2026-08-07T00:00:00Z",
+        });
+      }
       return jsonResponse({}, 500);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -386,6 +396,7 @@ describe("delivery settings API", () => {
     await requestEmailBindVerification("access-1", "person@example.com");
     await bindEmailTarget("access-1", "dev:person@example.com");
     await bindWeChatTarget("access-1", "oauth-code");
+    await bindWebhookTarget("access-1", "https://example.com/webhook");
     await revokeMessageTarget("access-1", "email", "email-1");
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -399,6 +410,13 @@ describe("delivery settings API", () => {
     expect(new Headers(preferenceCall?.[1]?.headers).get("Idempotency-Key")).toMatch(
       /^preference-/,
     );
+    const webhookCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/message-targets/webhook/bind"),
+    );
+    expect(webhookCall?.[1]?.method).toBe("POST");
+    expect(JSON.parse(String(webhookCall?.[1]?.body))).toEqual({
+      url: "https://example.com/webhook",
+    });
   });
 
   it("lists automatic output recovery status for a session", async () => {

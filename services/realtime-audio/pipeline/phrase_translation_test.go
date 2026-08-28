@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +61,39 @@ func TestSplitStreamTTSKeepsValidatedChunksOrdered(t *testing.T) {
 	want := []string{"hello,", "world这是一段较长的尾部"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("splitStreamTTS() = %#v, want %#v", got, want)
+	}
+}
+
+func TestPhraseResidualMarkerIsStorageSafe(t *testing.T) {
+	if strings.ContainsRune(phraseResidualMarker, '\x00') {
+		t.Fatal("phrase residual marker contains PostgreSQL-incompatible NUL")
+	}
+}
+
+func TestSplitStreamTTSPrefersWordBoundariesInsideTargetWindow(t *testing.T) {
+	input := "alpha beta gamma delta epsilon zeta eta theta iota kappa."
+	got := splitStreamTTS(input)
+	if strings.Join(got, " ") != input {
+		t.Fatalf("splitStreamTTS() = %#v, split or removed a word boundary", got)
+	}
+	for _, chunk := range got {
+		if runes := len([]rune(chunk)); runes > 40 {
+			t.Fatalf("chunk %q has %d runes, want at most 40", chunk, runes)
+		}
+	}
+}
+
+func TestSplitStreamTTSKeepsCJKLatencyTarget(t *testing.T) {
+	input := strings.Repeat("中", 70)
+	got := splitStreamTTS(input)
+	wantLengths := []int{32, 32, 6}
+	if len(got) != len(wantLengths) {
+		t.Fatalf("splitStreamTTS() = %#v, want chunk lengths %#v", got, wantLengths)
+	}
+	for index, want := range wantLengths {
+		if length := len([]rune(got[index])); length != want {
+			t.Fatalf("chunk %d length = %d, want %d", index, length, want)
+		}
 	}
 }
 
@@ -193,6 +227,106 @@ func TestPhraseTranslationCoordinatorReusesCompletedPrefixWithPendingTail(t *tes
 	summary, residual, usage, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好，世界")
 	if err != nil || !reused || summary.Text != "helloworld" || residual != "" || len(usage) != 0 {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, %q, %#v, %v, %v", summary, residual, usage, reused, err)
+	}
+}
+
+func TestPhraseTranslationCoordinatorKeepsPrefixWhenFinalHasUnconfirmedTail(t *testing.T) {
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "en-" + request.Text, Provider: "mock", Model: "v1", InputTokens: 1}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	turn := TurnContext{ID: "turn-prefix-tail", SessionID: "session-1", AccountID: "account-1", TraceID: "trace-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好"))
+	waitForPhraseTranslation(t, coordinator, turn.ID)
+
+	summary, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好，尾段")
+	if err != nil || !reused || residual != "，尾段" {
+		t.Fatalf("FinalizePhraseSubtitleTurn() = summary=%#v residual=%q reused=%v err=%v; want prefix reuse and suffix residual", summary, residual, reused, err)
+	}
+	if summary.Text != "en-你好"+phraseResidualMarker || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "，尾段" {
+		t.Fatalf("summary = %#v, want translated prefix plus residual marker", summary)
+	}
+}
+
+func TestPhraseTranslationCoordinatorIgnoresConfirmedFillerGapsAtFinal(t *testing.T) {
+	var requestsMu sync.Mutex
+	var requests []string
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		requestsMu.Lock()
+		requests = append(requests, request.Text)
+		requestsMu.Unlock()
+		return translate.Result{Text: "en-" + request.Text, Provider: "mock", Model: "v1"}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	turn := TurnContext{ID: "turn-filler-gaps", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 1, "你好，"))
+	coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, 2, "今天天气很好，"))
+	waitForPhraseTranslation(t, coordinator, turn.ID)
+
+	summary, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "嗯，你好，啊，今天天气很好，哦。")
+	if err != nil || !reused || residual != "" {
+		t.Fatalf("FinalizePhraseSubtitleTurn() = summary=%#v residual=%q reused=%v err=%v", summary, residual, reused, err)
+	}
+	if summary.Text != "en-你好，en-今天天气很好，" || len(summary.ResidualSegments) != 0 || summary.PlaybackResidualText != "en-你好， en-今天天气很好，" {
+		t.Fatalf("summary = %#v, want translated phrases without source-language fillers", summary)
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("translation requests = %#v, want only stable phrases", requests)
+	}
+	for _, request := range requests {
+		if request == "嗯，你好，啊，今天天气很好，哦。" || isIgnorableConfirmedGap(request) {
+			t.Fatalf("unexpected filler/final translation request = %q", request)
+		}
+	}
+}
+
+func TestPhraseTranslationCoordinatorReusesLiveChunksAcrossDelayedPunctuation(t *testing.T) {
+	var requestsMu sync.Mutex
+	var requests []string
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		requestsMu.Lock()
+		requests = append(requests, request.Text)
+		requestsMu.Unlock()
+		return translate.Result{Text: "ja-" + request.Text, Provider: "mock", Model: "v1"}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	turn := TurnContext{ID: "turn-delayed-punctuation", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "ja-JP"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+	for sequence, source := range []string{
+		"将科技含金量持续",
+		"转化为发展含金量",
+		"为中国式现代化建设",
+	} {
+		coordinator.ObservePhraseSubtitle(context.Background(), stablePhraseEvent(turn, int64(sequence+1), source))
+	}
+	waitForPhraseTranslation(t, coordinator, turn.ID)
+
+	finalText := "将科技含金量持续转化为发展含金量，为中国式现代化建设，"
+	summary, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, finalText)
+	if err != nil || !reused || residual != "" {
+		t.Fatalf("FinalizePhraseSubtitleTurn() = summary=%#v residual=%q reused=%v err=%v", summary, residual, reused, err)
+	}
+	if summary.Text != "ja-将科技含金量持续ja-转化为发展含金量ja-为中国式现代化建设" || len(summary.ResidualSegments) != 0 {
+		t.Fatalf("summary = %#v, want live translations reused without whole-Turn fallback", summary)
+	}
+	requestsMu.Lock()
+	defer requestsMu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("translation requests = %#v, want only the three live chunks", requests)
+	}
+}
+
+func TestPhraseTranslationCoordinatorFallsBackToWholeFinalWhenNoPhraseMatches(t *testing.T) {
+	coordinator := NewPhraseTranslationCoordinator(phraseTranslateFunc(func(_ context.Context, request translate.Request) (translate.Result, error) {
+		return translate.Result{Text: "en-" + request.Text, Provider: "mock", Model: "v1"}, nil
+	}), "mock", &recordingPhraseSubtitleObserver{}, nil)
+	turn := TurnContext{ID: "turn-no-match", SessionID: "session-1", LanguageConfig: session.LanguageConfigSnapshot{LanguagePairs: []session.LanguagePair{{Source: "zh-CN", Target: "en-US"}}}}
+	coordinator.StartPhraseSubtitleTurn(turn, "zh-CN")
+
+	_, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "整句")
+	if err != nil || reused || residual != "整句" {
+		t.Fatalf("FinalizePhraseSubtitleTurn() = reused=%v residual=%q err=%v; want whole-source fallback", reused, residual, err)
 	}
 }
 
@@ -395,7 +529,7 @@ func TestPhraseTranslationCoordinatorReturnsCompletedPhraseUsageOnFallback(t *te
 	if err != nil || !ok || residual != "" {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = ok=%v residual=%q err=%v, want residual settlement", ok, residual, err)
 	}
-	if summary.Text != "hello\x00" || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "失败" {
+	if summary.Text != "hello"+phraseResidualMarker || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "失败" {
 		t.Fatalf("summary = %#v, want marker for 失败", summary)
 	}
 	if len(usage) != 0 {
@@ -432,7 +566,7 @@ func TestPhraseTranslationCoordinatorDoesNotRetranslateAfterMiddleFailure(t *tes
 		time.Sleep(time.Millisecond)
 	}
 	summary, residual, _, reused, err := coordinator.FinalizePhraseSubtitleTurn(context.Background(), turn, "你好失败世界")
-	if err != nil || !reused || residual != "" || summary.Text != "en-你好\x00en-世界" || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "失败" {
+	if err != nil || !reused || residual != "" || summary.Text != "en-你好"+phraseResidualMarker+"en-世界" || len(summary.ResidualSegments) != 1 || summary.ResidualSegments[0] != "失败" {
 		t.Fatalf("FinalizePhraseSubtitleTurn() = %#v, %q, %v, %v", summary, residual, reused, err)
 	}
 	requestsMu.Lock()

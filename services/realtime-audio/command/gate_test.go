@@ -453,7 +453,11 @@ func TestGateSpeechFeedbackExcludesCanceledAttemptsAndAssistantQueries(t *testin
 
 func TestExecutionFailureFeedbackDistinguishesAssistantQueries(t *testing.T) {
 	t.Parallel()
-	status, message := executionFailureFeedback(Command{Action: ActionAssistantQuery}, errors.New("assistant unavailable"))
+	status, message := executionFailureFeedback(Command{Action: ActionAssistantQuery}, ErrExecutionInterrupted)
+	if status != realtimev1.CommandResultFailed || message != "回答已中断" {
+		t.Fatalf("interrupted assistant feedback = %q/%q", status, message)
+	}
+	status, message = executionFailureFeedback(Command{Action: ActionAssistantQuery}, errors.New("assistant unavailable"))
 	if status != realtimev1.CommandResultFailed || message != "助手暂时无法回答，请重试" {
 		t.Fatalf("assistant failure feedback = %q/%q", status, message)
 	}
@@ -464,6 +468,31 @@ func TestExecutionFailureFeedbackDistinguishesAssistantQueries(t *testing.T) {
 	status, message = executionFailureFeedback(Command{Action: ActionActivateMode}, ErrDeliveryTargetRequired)
 	if status != realtimev1.CommandResultFailed || message != "请先设置可用的自动投递目标，再开启单向传译" {
 		t.Fatalf("delivery failure feedback = %q/%q", status, message)
+	}
+}
+
+func TestGateReportsInterruptedAssistantWithoutRetryMessage(t *testing.T) {
+	classifier := speechSequence{true, false}
+	executor := &recordingExecutor{err: ErrExecutionInterrupted}
+	results := &recordingResultSink{}
+	interpreter := InterpreterFunc(func(_ context.Context, request InterpretRequest) (Candidate, error) {
+		return Candidate{Text: request.Text, Action: ActionAssistantQuery, TargetMode: realtimev1.ModeAssistant}, nil
+	})
+	gate, err := NewGate(Dependencies{
+		Classifier: &classifier, ASR: asr.NewFakeProvider(asr.FakeProviderConfig{Final: asr.FinalResult{Text: "小灵小灵天气怎么样"}}),
+		Interpreter: interpreter, Validator: testGateRegistry(t), Executor: executor, Results: results,
+	}, Options{WindowTTL: time.Second, NoSpeechTimeout: 500 * time.Millisecond, MaxAudioDuration: time.Second, EndSilence: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewGate() error = %v", err)
+	}
+	if err := gate.Open(OpenRequest{SessionID: "session-1", CommandID: "command-1", OpenedAt: testStart}); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(10*time.Millisecond), 100*time.Millisecond))
+	gate.Consume(t.Context(), testFrame(t, testStart.Add(120*time.Millisecond), 100*time.Millisecond))
+	waitGateRecognition(t, gate)
+	if len(results.events) != 1 || results.events[0].Message != "回答已中断" || results.events[0].Action != string(ActionAssistantQuery) {
+		t.Fatalf("interrupted assistant result = %#v", results.events)
 	}
 }
 

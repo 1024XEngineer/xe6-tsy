@@ -278,8 +278,12 @@ func (u *UseCases) ScheduleFinalTurn(ctx context.Context, accountID string, even
 	if err != nil {
 		return err
 	}
+	webhookConfigured := hasEnabledWebhookPreference(preferences)
 	for _, preference := range preferences {
 		if !preference.Enabled || !preference.Verified || preference.DestinationRef == "" || !IsSupportedChannel(preference.Channel) {
+			continue
+		}
+		if webhookConfigured && preference.Channel != ChannelWebhook {
 			continue
 		}
 		key := fmt.Sprintf("auto:final_turn:%s:%s:%s", event.TurnID, preference.Channel, preference.DestinationRef)
@@ -327,6 +331,11 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 	if err != nil {
 		return err
 	}
+	webhookConfigured := hasEnabledWebhookPreference(preferences)
+	longSentenceChannel := ChannelWeChat
+	if webhookConfigured {
+		longSentenceChannel = ChannelWebhook
+	}
 	turns, err := u.turns.ReadFinalTurns(ctx, accountID, []string{event.TurnID})
 	if err != nil {
 		return err
@@ -340,7 +349,10 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 		if !preference.Enabled || !preference.Verified || preference.DestinationRef == "" || !IsSupportedChannel(preference.Channel) {
 			continue
 		}
-		if longSentence && (preference.Channel != ChannelWeChat || u.channelRouter == nil || !u.channelRouter.SupportsChannel(ChannelWeChat)) {
+		if webhookConfigured && preference.Channel != ChannelWebhook {
+			continue
+		}
+		if longSentence && (preference.Channel != longSentenceChannel || u.channelRouter == nil || !u.channelRouter.SupportsChannel(longSentenceChannel)) {
 			continue
 		}
 		if _, err := u.destinations.ResolveVerifiedDestination(ctx, accountID, preference.Channel, preference.DestinationRef); err != nil {
@@ -377,6 +389,15 @@ func (u *UseCases) scheduleAutomaticTurnAtomically(ctx context.Context, schedule
 		return fmt.Errorf("schedule automatic turn atomically: %w", err)
 	}
 	return nil
+}
+
+func hasEnabledWebhookPreference(preferences []Preference) bool {
+	for _, preference := range preferences {
+		if preference.Channel == ChannelWebhook && preference.Enabled && preference.Verified && preference.DestinationRef != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // RetryAutomaticTurnFailures queues the remaining failed targets for a Final Turn.
@@ -635,6 +656,42 @@ func (u *UseCases) BindWeChatTarget(ctx context.Context, accountID, code string)
 		KeyVersion:     destinationKeyVersion,
 		VerifiedAt:     now,
 	})
+}
+
+const defaultWebhookDestinationRef = "primary-webhook"
+
+// BindWebhookTarget validates and durably stores one account-owned HTTPS URL.
+// The URL is encrypted before it crosses the repository boundary and the
+// target is enabled for automatic delivery as part of the same use case.
+func (u *UseCases) BindWebhookTarget(ctx context.Context, accountID, rawURL string) (MessageTarget, error) {
+	repository := targetRepository(u.repository)
+	webhookRepository, ok := u.repository.(interface {
+		BindWebhookTarget(context.Context, BindWebhookTargetRecord) (MessageTarget, error)
+	})
+	if repository == nil || !ok || accountID == "" || len(u.destinationKey) != 32 {
+		return MessageTarget{}, domain.ErrNotImplemented
+	}
+	webhookURL, err := validateWebhookURL(rawURL)
+	if err != nil {
+		return MessageTarget{}, err
+	}
+	ciphertext, err := EncryptProviderTarget(u.destinationKey, webhookURL)
+	if err != nil {
+		return MessageTarget{}, err
+	}
+	now := time.Now().UTC()
+	target, err := webhookRepository.BindWebhookTarget(ctx, BindWebhookTargetRecord{
+		ID: "dest_" + ulid.Make().String(), AccountID: accountID,
+		DestinationRef: defaultWebhookDestinationRef, Ciphertext: ciphertext,
+		KeyVersion: destinationKeyVersion, VerifiedAt: now,
+	})
+	if err != nil {
+		return MessageTarget{}, err
+	}
+	if _, err := u.PutPreference(ctx, accountID, ChannelWebhook, defaultWebhookDestinationRef, true); err != nil {
+		return MessageTarget{}, err
+	}
+	return target, nil
 }
 
 func (u *UseCases) RevokeMessageTarget(ctx context.Context, accountID string, channel Channel, destinationRef string) error {

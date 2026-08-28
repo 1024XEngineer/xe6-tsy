@@ -124,6 +124,11 @@ func (s *PipelineService) PlayFallback(ctx context.Context, input FallbackPlayba
 	}()
 	ttsResult, err := s.speech.Play(ctx, SpeechOutputRequest{
 		Turn: turn, Language: input.TargetLanguage, Text: input.TranslatedText, PlaybackID: input.PlaybackID,
+		// Fallback playback is recovery audio for a completed Turn. The live
+		// runtime is normally already listening (and may have accepted a newer
+		// Turn), so it must not claim the stale fallback Turn as the runtime
+		// owner. Playback lifecycle remains tracked by the audio sink.
+		SkipRuntime: true,
 	})
 	if err != nil {
 		var notStarted speechOutputNotStartedError
@@ -150,6 +155,23 @@ func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (t
 		strings.TrimSpace(request.PlaybackID) == "" {
 		return tts.Result{}, speechOutputNotStartedError{err: ErrSpeechOutputRequestInvalid}
 	}
+	availability, hasAvailability := o.audio.(AudioPlaybackAvailability)
+	reservation, hasReservation := o.audio.(AudioPlaybackReservation)
+	reservationHeld := false
+	defer func() {
+		if reservationHeld && hasReservation {
+			_ = reservation.ReleaseAvailability(context.WithoutCancel(ctx), request.Turn.SessionID, request.PlaybackID)
+		}
+	}()
+	if hasAvailability {
+		if err := availability.WaitForAvailable(ctx, request.Turn.SessionID, request.PlaybackID); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return tts.Result{}, ErrSpeechOutputSuperseded
+			}
+			return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("wait for playback: %w", err)}
+		}
+		reservationHeld = hasReservation
+	}
 	if !request.SkipRuntime {
 		if err := o.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID); err != nil {
 			if runtimeUpdateSuperseded(err) {
@@ -173,6 +195,10 @@ func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (t
 	)
 	defer stream.Close()
 	played, err := o.publishChunks(ctx, request, ttsStartedAt, stream.Chunks())
+	if played {
+		// Publish atomically consumes the reservation with the first chunk.
+		reservationHeld = false
+	}
 	if err != nil {
 		return tts.Result{}, errors.Join(err, o.cancelPlayback(ctx, request.Turn.SessionID, request.PlaybackID, "tts_stream_failed", played))
 	}

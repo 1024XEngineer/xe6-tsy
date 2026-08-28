@@ -88,6 +88,80 @@ type Service struct {
 	events  EventSink
 	now     func() time.Time
 	current map[string]*playback
+	// reservations protects the gap between availability checks and the first
+	// chunk that claims the physical track.
+	reservations map[string]string
+}
+
+// WaitForAvailable serializes playback IDs that share one physical track. It
+// waits for a different active playback to settle instead of allowing its
+// first chunk to race the settlement and be rejected as not active.
+func (s *Service) WaitForAvailable(ctx context.Context, sessionID, playbackID string) error {
+	if s == nil {
+		return ErrDependencyRequired
+	}
+	if sessionID == "" {
+		return ErrSessionRequired
+	}
+	if playbackID == "" {
+		return ErrPlaybackRequired
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		current := s.current[sessionID]
+		busy := current != nil && current.snapshot.State == StatePlaying && current.snapshot.PlaybackID != playbackID
+		reserved := s.reservations[sessionID]
+		busy = busy || (reserved != "" && reserved != playbackID)
+		active := current
+		if !busy && reserved == "" && !(current != nil && current.snapshot.State == StatePlaying && current.snapshot.PlaybackID == playbackID) {
+			s.reservations[sessionID] = playbackID
+		}
+		s.mu.Unlock()
+		if !busy {
+			return nil
+		}
+		// Settlement holds opMu while publishing its terminal event and stopping
+		// the track. Waiting on it closes the exact race this method guards. A
+		// reservation may be the only state before the first chunk, so there is
+		// no playback mutex to wait on in that case.
+		if active != nil {
+			active.opMu.Lock()
+			active.opMu.Unlock()
+		}
+		timer := time.NewTimer(time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		}
+	}
+}
+
+// ReleaseAvailability releases a reservation when synthesis ends before its
+// first audio chunk. It is idempotent so cleanup can safely run on all paths.
+func (s *Service) ReleaseAvailability(ctx context.Context, sessionID, playbackID string) error {
+	if s == nil {
+		return ErrDependencyRequired
+	}
+	if sessionID == "" {
+		return ErrSessionRequired
+	}
+	if playbackID == "" {
+		return ErrPlaybackRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.reservations[sessionID] == playbackID {
+		delete(s.reservations, sessionID)
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 type playback struct {
@@ -121,7 +195,7 @@ func NewService(deps Dependencies) (*Service, error) {
 	if deps.Now == nil {
 		deps.Now = func() time.Time { return time.Now().UTC() }
 	}
-	return &Service{track: deps.Track, events: deps.Events, now: deps.Now, current: make(map[string]*playback)}, nil
+	return &Service{track: deps.Track, events: deps.Events, now: deps.Now, current: make(map[string]*playback), reservations: make(map[string]string)}, nil
 }
 
 // Publish writes one TTS chunk and starts playback on the first chunk.
@@ -134,6 +208,11 @@ func (s *Service) Publish(ctx context.Context, chunk pipeline.AudioChunk) error 
 	}
 
 	s.mu.Lock()
+	reserved := s.reservations[chunk.SessionID]
+	if reserved != "" && reserved != chunk.PlaybackID {
+		s.mu.Unlock()
+		return ErrPlaybackNotActive
+	}
 	current := s.current[chunk.SessionID]
 	if current != nil {
 		if current.snapshot.PlaybackID == chunk.PlaybackID {
@@ -147,6 +226,9 @@ func (s *Service) Publish(ctx context.Context, chunk pipeline.AudioChunk) error 
 		}
 	}
 	if current == nil || current.snapshot.State != StatePlaying {
+		if reserved == chunk.PlaybackID {
+			delete(s.reservations, chunk.SessionID)
+		}
 		current = &playback{snapshot: Snapshot{SessionID: chunk.SessionID, TurnID: chunk.TurnID, PlaybackID: chunk.PlaybackID, State: StatePlaying}}
 		s.current[chunk.SessionID] = current
 	}

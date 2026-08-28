@@ -130,6 +130,64 @@ func TestProviderRealtimeDialUsesProviderTimeout(t *testing.T) {
 	}
 }
 
+func TestProviderRealtimeUsesShortDefaultTimeout(t *testing.T) {
+	provider, err := NewProvider(Config{
+		APIKey: "test-key", BaseURL: "ws://127.0.0.1:1", Model: realtimeModel,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	if provider.config.Timeout != defaultProviderTimeout {
+		t.Fatalf("realtime default timeout = %v, want %v", provider.config.Timeout, defaultProviderTimeout)
+	}
+}
+
+func TestProviderRealtimeTimeoutUnblocksStalledRead(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for range 3 {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+		// Do not emit session.finished. The client-side provider deadline must
+		// close the socket and release the playback worker.
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(Config{
+		APIKey: "test-key", BaseURL: "ws" + strings.TrimPrefix(server.URL, "http"),
+		Model: realtimeModel, Timeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewProvider() error = %v", err)
+	}
+	stream, err := provider.StartStream(context.Background(), tts.Request{Text: "hello"})
+	if err != nil {
+		t.Fatalf("StartStream() error = %v", err)
+	}
+	closed := make(chan struct{})
+	go func() {
+		for range stream.Chunks() {
+		}
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("stalled realtime stream did not close after provider timeout")
+	}
+	if _, err := stream.Finish(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Finish() error = %v, want context deadline exceeded", err)
+	}
+}
+
 func TestProviderStreamsQwenTTSAudio(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/services/aigc/multimodal-generation/generation" {

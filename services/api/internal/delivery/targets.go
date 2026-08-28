@@ -29,6 +29,16 @@ type BindEmailTargetRecord struct {
 	VerifiedAt     time.Time
 }
 
+// BindWebhookTargetRecord persists one verified webhook URL for an account.
+type BindWebhookTargetRecord struct {
+	ID             string
+	AccountID      string
+	DestinationRef string
+	Ciphertext     []byte
+	KeyVersion     string
+	VerifiedAt     time.Time
+}
+
 // parseDevEmailBindToken accepts local-only bind tokens documented on BindEmailRequest.
 // Formats: dev:<email> or dev:<destination_ref>:<email>.
 func parseDevEmailBindToken(appEnv, token string) (destinationRef, email string, err error) {

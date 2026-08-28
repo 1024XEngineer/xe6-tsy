@@ -29,10 +29,11 @@ var (
 
 // ProviderConfig contains the vendor-neutral selection and vendor transport settings.
 type ProviderConfig struct {
-	ASR         ASRConfig
-	Translation TranslationConfig
-	TTS         TTSConfig
-	Command     CommandConfig
+	ASR           ASRConfig
+	Translation   TranslationConfig
+	TTS           TTSConfig
+	Command       CommandConfig
+	RawLogEnabled bool
 }
 
 type ASRConfig struct {
@@ -161,6 +162,10 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 		commandAPIKey = value(lookup, "LLM_API_KEY")
 		commandBaseURL = value(lookup, "LLM_BASE_URL")
 	}
+	rawLogEnabled, err := readBool(lookup, "REALTIME_RAW_LOG_ENABLED")
+	if err != nil {
+		return ProviderConfig{}, err
+	}
 
 	return ProviderConfig{
 		ASR: ASRConfig{
@@ -182,6 +187,7 @@ func LoadProviderConfig(lookup LookupEnv) (ProviderConfig, error) {
 		Command: CommandConfig{
 			APIKey: commandAPIKey, BaseURL: commandBaseURL, Model: commandModel, Timeout: commandTimeout,
 		},
+		RawLogEnabled: rawLogEnabled,
 	}, nil
 }
 

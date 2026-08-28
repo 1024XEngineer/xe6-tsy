@@ -4,10 +4,7 @@ import { ArrowsLeftRight, CaretDown, Check, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 
-import type {
-  ConfigSyncStatus,
-  SessionDebugInfo,
-} from "../hooks/use-voice-session";
+import type { ConfigSyncStatus } from "../hooks/use-voice-session";
 import { getAuthSession } from "../lib/auth-session";
 import {
   SUPPORTED_LANGUAGES,
@@ -50,12 +47,6 @@ const SETTINGS_ITEMS = [
     description: "绑定目标与查看发送状态",
   },
   {
-    id: "session",
-    label: "联调会话",
-    value: "调试信息",
-    description: "account / session / runtime",
-  },
-  {
     id: "account",
     label: "登录状态",
     value: "已登录",
@@ -64,8 +55,8 @@ const SETTINGS_ITEMS = [
   {
     id: "about",
     label: "关于",
-    value: "Lingow 联调前端",
-    description: "对接 xe6-tsy 正式协议",
+    value: "AI 语音助手",
+    description: "Lingow 产品信息",
   },
 ] as const;
 
@@ -203,7 +194,6 @@ function SettingsDetail({
   selectedId,
   voiceConfig,
   onConfigChange,
-  debug,
   languageOptions,
   languageLoading,
   languageLabels,
@@ -216,7 +206,6 @@ function SettingsDetail({
   selectedId: SettingId;
   voiceConfig: VoiceSessionConfig;
   onConfigChange: (next: VoiceSessionConfig) => void;
-  debug: SessionDebugInfo;
   languageOptions: readonly LanguageCode[];
   languageLoading: boolean;
   languageLabels: Readonly<Record<string, string>>;
@@ -233,136 +222,97 @@ function SettingsDetail({
       return <AccountSettings logoutDisabled={logoutDisabled} onLogout={onLogout} />;
     case "language":
       return (
-        <div className={styles.settingRows}>
-          <SelectRow
-            label="源语言"
-            onChange={(sourceLanguage) =>
-              onConfigChange({ ...voiceConfig, sourceLanguage })
-            }
-            options={languageOptions}
-            labels={languageLabels}
-            onOpenChange={(open) => setOpenLanguage(open ? "source" : null)}
-            open={openLanguage === "source"}
-            value={voiceConfig.sourceLanguage}
-          />
-          <SelectRow
-            label="目标语言"
-            onChange={(targetLanguage) =>
-              onConfigChange({ ...voiceConfig, targetLanguage })
-            }
-            options={languageOptions}
-            labels={languageLabels}
-            onOpenChange={(open) => setOpenLanguage(open ? "target" : null)}
-            open={openLanguage === "target"}
-            value={voiceConfig.targetLanguage}
-          />
-          <div className={styles.settingControlGroup}>
-            <span className={styles.settingControlLabel}>译音输出</span>
-            <div
-              aria-label="译音输出模式"
-              className={styles.segmentControl}
-              role="group"
-            >
-              {(["bidirectional", "single"] as const).map((mode) => (
-                <button
-                  aria-pressed={voiceConfig.outputMode === mode}
-                  className={
-                    voiceConfig.outputMode === mode ? styles.segmentActive : ""
-                  }
-                  disabled={mode === "single" && singleOutputReady !== true}
-                  key={mode}
-                  onClick={() => onConfigChange({ ...voiceConfig, outputMode: mode })}
-                  type="button"
-                >
-                  {outputModeLabel(mode)}
-                </button>
-              ))}
-            </div>
-            <p className={styles.settingsState}>
-              {voiceConfig.outputMode === "single"
-                ? "当前源语言译文播报；反向译文自动投递，并保留 Final Turn。"
-                : "两种语言的译文都播报；翻译、投递记录和 Final Turn 始终保留。"}
-            </p>
-            {voiceConfig.outputMode === "single" ? (
-              <div className={styles.outputDirectionRow}>
-                <span>播报方向</span>
-                <strong>
-                  {languageLabel(voiceConfig.sourceLanguage)} → {languageLabel(voiceConfig.targetLanguage)}
-                </strong>
-                <button
-                  aria-label="交换播报方向"
-                  className={styles.outputDirectionSwap}
-                  onClick={() =>
-                    onConfigChange({
-                      ...voiceConfig,
-                      sourceLanguage: voiceConfig.targetLanguage,
-                      targetLanguage: voiceConfig.sourceLanguage,
-                    })
-                  }
-                  title="交换播报方向"
-                  type="button"
-                >
-                  <ArrowsLeftRight aria-hidden="true" size={16} />
-                </button>
+        <div className={styles.languageSettings}>
+          <div className={styles.settingRows}>
+            <SelectRow
+              label="源语言"
+              onChange={(sourceLanguage) =>
+                onConfigChange({ ...voiceConfig, sourceLanguage })
+              }
+              options={languageOptions}
+              labels={languageLabels}
+              onOpenChange={(open) => setOpenLanguage(open ? "source" : null)}
+              open={openLanguage === "source"}
+              value={voiceConfig.sourceLanguage}
+            />
+            <SelectRow
+              label="目标语言"
+              onChange={(targetLanguage) =>
+                onConfigChange({ ...voiceConfig, targetLanguage })
+              }
+              options={languageOptions}
+              labels={languageLabels}
+              onOpenChange={(open) => setOpenLanguage(open ? "target" : null)}
+              open={openLanguage === "target"}
+              value={voiceConfig.targetLanguage}
+            />
+            <div className={styles.settingControlGroup}>
+              <span className={styles.settingControlLabel}>译音输出</span>
+              <div
+                aria-label="译音输出模式"
+                className={styles.segmentControl}
+                role="group"
+              >
+                {(["bidirectional", "single"] as const).map((mode) => (
+                  <button
+                    aria-pressed={voiceConfig.outputMode === mode}
+                    className={
+                      voiceConfig.outputMode === mode ? styles.segmentActive : ""
+                    }
+                    disabled={mode === "single" && singleOutputReady !== true}
+                    key={mode}
+                    onClick={() => onConfigChange({ ...voiceConfig, outputMode: mode })}
+                    type="button"
+                  >
+                    {outputModeLabel(mode)}
+                  </button>
+                ))}
               </div>
-            ) : null}
-            {singleOutputReady !== true ? (
               <p className={styles.settingsState}>
-                单向播报需要已启用且已验证的自动投递目标。
+                {voiceConfig.outputMode === "single"
+                  ? "当前源语言译文播报；反向译文自动投递，并保留 Final Turn。"
+                  : "两种语言的译文都播报；翻译、投递记录和 Final Turn 始终保留。"}
               </p>
-            ) : null}
-            {outputModeStatusLabel(configSyncStatus) ? (
-              <p className={styles.settingsState}>
-                {outputModeStatusLabel(configSyncStatus)}
-              </p>
-            ) : null}
+              {voiceConfig.outputMode === "single" ? (
+                <div className={styles.outputDirectionRow}>
+                  <span>播报方向</span>
+                  <strong>
+                    {languageLabel(voiceConfig.sourceLanguage)} → {languageLabel(voiceConfig.targetLanguage)}
+                  </strong>
+                  <button
+                    aria-label="交换播报方向"
+                    className={styles.outputDirectionSwap}
+                    onClick={() =>
+                      onConfigChange({
+                        ...voiceConfig,
+                        sourceLanguage: voiceConfig.targetLanguage,
+                        targetLanguage: voiceConfig.sourceLanguage,
+                      })
+                    }
+                    title="交换播报方向"
+                    type="button"
+                  >
+                    <ArrowsLeftRight aria-hidden="true" size={16} />
+                  </button>
+                </div>
+              ) : null}
+              {singleOutputReady !== true ? (
+                <p className={styles.settingsState}>
+                  单向播报需要已启用且已验证的自动投递目标。
+                </p>
+              ) : null}
+              {outputModeStatusLabel(configSyncStatus) ? (
+                <p className={styles.settingsState}>
+                  {outputModeStatusLabel(configSyncStatus)}
+                </p>
+              ) : null}
+            </div>
           </div>
-          <p>
+          <p className={styles.languageSettingsNote}>
             {languageLoading
               ? "正在同步 ASR / TTS 支持的语言..."
               : "语言与输出设置会自动保存。活动会话会从下一句开始使用新配置。"}
           </p>
-        </div>
-      );
-    case "session":
-      return (
-        <div className={styles.aboutView}>
-          <div>
-            <strong>Account</strong>
-            <span>{debug.accountId ?? "—"}</span>
-          </div>
-          <div>
-            <strong>Session</strong>
-            <span>{debug.sessionId ?? "—"}</span>
-          </div>
-          <div>
-            <strong>Runtime</strong>
-            <span>{debug.runtimeState ?? "—"}</span>
-          </div>
-          <div>
-            <strong>Connection</strong>
-            <span>{debug.connectionState ?? "—"}</span>
-          </div>
-          <div>
-            <strong>Mode</strong>
-            <span>
-              {debug.modeState
-                ? `${debug.modeState.active_mode} · gen ${debug.modeState.generation}`
-                : "传统同传 / 未连接模式控制"}
-            </span>
-          </div>
-          <div>
-            <strong>Mode phase</strong>
-            <span>{debug.modeState?.phase ?? "—"}</span>
-          </div>
-          <div>
-            <strong>Last error</strong>
-            <span>{debug.lastError ?? "—"}</span>
-          </div>
-          <div>
-            <strong>Wake</strong>
-            <span>{debug.wakeStatus ?? "—"}</span>
-          </div>
         </div>
       );
     case "history":
@@ -376,12 +326,11 @@ function SettingsDetail({
         <div className={styles.aboutView}>
           <div className={styles.aboutMark}>l</div>
           <div>
-            <strong>Lingow 联调前端</strong>
-            <span>xe6-tsy /api/v1 + /realtime/v1</span>
+            <strong>Lingow</strong>
+            <span>AI 语音助手 · 面对面同传</span>
           </div>
           <p>
-            手机号验证码登录 → 建会话 → 语言配置 → 本地签发 ticket → WebRTC → Start。
-            不含 Python 半双工后端。
+            用自然语音与 Lingow 对话，支持 AI 助手、双向同声传译、实时字幕与语音播报。
           </p>
         </div>
       );
@@ -392,7 +341,6 @@ export function SettingsPanel({
   onClose,
   voiceConfig,
   onConfigChange,
-  debug,
   configSyncStatus,
   onLogout,
   logoutDisabled = false,
@@ -400,7 +348,6 @@ export function SettingsPanel({
   onClose: () => void;
   voiceConfig: VoiceSessionConfig;
   onConfigChange: (next: VoiceSessionConfig) => void;
-  debug: SessionDebugInfo;
   configSyncStatus: ConfigSyncStatus;
   onLogout?: () => void | Promise<void>;
   logoutDisabled?: boolean;
@@ -464,11 +411,7 @@ export function SettingsPanel({
       ? `${languageLabel(voiceConfig.sourceLanguage)} / ${languageLabel(voiceConfig.targetLanguage)} · ${outputModeLabel(voiceConfig.outputMode)}`
       : selected.id === "account"
         ? "当前账户"
-        : selected.id === "session"
-          ? debug.sessionId
-            ? debug.sessionId.slice(0, 18)
-            : "未开始"
-          : selected.value;
+        : selected.value;
 
   useEffect(() => {
     closeButtonRef.current?.focus();
@@ -589,7 +532,6 @@ export function SettingsPanel({
                 </div>
                 <div className={styles.settingsDetailControls}>
                   <SettingsDetail
-                    debug={debug}
                     configSyncStatus={configSyncStatus}
                     languageLoading={languageLoading}
                     languageOptions={languageOptions}

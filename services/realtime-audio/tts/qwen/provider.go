@@ -23,6 +23,8 @@ import (
 const defaultModel = "qwen3-tts-flash"
 const realtimeModel = "qwen3-tts-flash-realtime"
 const realtimeSampleRate = 24000
+const defaultProviderTimeout = 30 * time.Second
+const realtimeReadIdleTimeout = 8 * time.Second
 
 var (
 	ErrAPIKeyRequired     = errors.New("Qwen TTS API key is required")
@@ -83,7 +85,7 @@ func NewProvider(config Config) (*Provider, error) {
 		config.Dialer = websocket.DefaultDialer
 	}
 	if config.Timeout <= 0 {
-		config.Timeout = 30 * time.Second
+		config.Timeout = defaultProviderTimeout
 	}
 	return &Provider{config: config}, nil
 }
@@ -120,13 +122,24 @@ func (p *Provider) startRealtimeStream(ctx context.Context, request tts.Request)
 	}
 	streamCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	s := &realtimeStream{ctx: streamCtx, cancel: cancel, conn: conn, config: p.config, request: request, rawLogger: p.config.RawLogger, chunks: make(chan tts.AudioChunk, 16), done: make(chan struct{})}
+	go s.closeOnContextCancellation()
 	if err := s.sendSession(); err != nil {
 		cancel()
 		_ = conn.Close()
 		return nil, fmt.Errorf("configure Qwen TTS realtime session: %w", err)
 	}
+	// gorilla/websocket ReadMessage does not observe context cancellation. Close
+	// the connection when the stream deadline or playback generation is
+	// cancelled so one stalled provider response cannot occupy the session's
+	// serial playback worker forever.
+	go s.closeOnCancellation()
 	go s.run()
 	return s, nil
+}
+
+func (s *realtimeStream) closeOnContextCancellation() {
+	<-s.ctx.Done()
+	_ = s.conn.Close()
 }
 
 type realtimeStream struct {
@@ -148,6 +161,14 @@ type realtimeStream struct {
 }
 
 func (s *realtimeStream) Chunks() <-chan tts.AudioChunk { return s.chunks }
+
+func (s *realtimeStream) closeOnCancellation() {
+	select {
+	case <-s.ctx.Done():
+		_ = s.conn.Close()
+	case <-s.done:
+	}
+}
 
 func (s *realtimeStream) sendSession() error {
 	voice := firstNonEmpty(s.request.VoiceID, s.config.Voice)
@@ -171,6 +192,11 @@ func (s *realtimeStream) write(value map[string]any) error {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
+	}
+	if deadline, ok := s.ctx.Deadline(); ok {
+		if err := s.conn.SetWriteDeadline(deadline); err != nil {
+			return err
+		}
 	}
 	if err := s.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		return err
@@ -199,11 +225,19 @@ func (s *realtimeStream) run() {
 		close(s.done)
 	}()
 	for {
+		if err := s.conn.SetReadDeadline(time.Now().Add(realtimeReadIdleTimeout)); err != nil {
+			s.setError(fmt.Errorf("set Qwen TTS realtime read deadline: %w", err))
+			return
+		}
 		_, data, err := s.conn.ReadMessage()
 		if err != nil {
 			if s.ctx.Err() == nil {
 				s.setError(fmt.Errorf("read Qwen TTS realtime event: %w", err))
 			}
+			return
+		}
+		if err := s.conn.SetReadDeadline(time.Now().Add(realtimeReadIdleTimeout)); err != nil {
+			s.setError(fmt.Errorf("refresh Qwen TTS realtime read deadline: %w", err))
 			return
 		}
 		_ = s.rawLogger.WriteJSON(s.request.SessionID, "tts", "response", rawEventType(data), data)

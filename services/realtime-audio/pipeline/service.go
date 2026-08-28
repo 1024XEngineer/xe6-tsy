@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +72,20 @@ type AudioChunkSink interface {
 	Publish(ctx context.Context, chunk AudioChunk) error
 }
 
+// AudioPlaybackAvailability is an optional serialization hook for sinks that
+// expose one physical downlink per session. A new playback waits here until a
+// previous playback has settled, avoiding a first-chunk race with its cleanup.
+type AudioPlaybackAvailability interface {
+	WaitForAvailable(ctx context.Context, sessionID, playbackID string) error
+}
+
+// AudioPlaybackReservation releases a track reservation when TTS never emits
+// its first chunk. It is separate from AudioPlaybackAvailability so existing
+// sinks that only provide the wait hook remain compatible.
+type AudioPlaybackReservation interface {
+	ReleaseAvailability(ctx context.Context, sessionID, playbackID string) error
+}
+
 // AudioPlaybackLifecycle closes the playback event sequence after chunks have started.
 // It is optional so existing sinks remain valid.
 type AudioPlaybackLifecycle interface {
@@ -130,6 +145,7 @@ type PipelineService struct {
 	settlementMu         sync.Mutex
 	settlementQueue      chan finalSettlementTask
 	settlementWorkerDone chan struct{}
+	settlementPending    map[finalSettlementScope]*finalSettlementGroup
 	settlementError      func(TurnContext, error)
 	settlementClosed     bool
 	closeOnce            sync.Once
@@ -138,6 +154,16 @@ type PipelineService struct {
 type finalSettlementTask struct {
 	turn   TurnContext
 	result asr.FinalResult
+}
+
+type finalSettlementScope struct {
+	sessionID         string
+	runtimeInstanceID string
+}
+
+type finalSettlementGroup struct {
+	pending int
+	done    chan struct{}
 }
 
 // NewPipelineService creates a provider-neutral Turn orchestrator. Translation,
@@ -166,7 +192,8 @@ func NewPipelineService(deps PipelineDependencies) *PipelineService {
 		phraseTranslations:  deps.PhraseTranslations,
 		phrasePlayback:      deps.PhrasePlayback,
 		settlementCtx:       settlementCtx, settlementCancel: settlementCancel,
-		settlementError: deps.FinalSettlementError,
+		settlementPending: make(map[finalSettlementScope]*finalSettlementGroup),
+		settlementError:   deps.FinalSettlementError,
 	}
 	service.latePhraseUsage = newLatePhraseUsageQueue(service.usage, service.latency)
 	if service.phraseTranslations != nil {
@@ -212,7 +239,7 @@ func (s *PipelineService) HandleASREvent(ctx context.Context, turn TurnContext, 
 // stage failed; callers must not rerun this method, while Usage and TTS recover
 // at their own processing boundaries.
 func (s *PipelineService) HandleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult) (returnErr error) {
-	return s.handleASRFinal(ctx, turn, result, true)
+	return s.handleASRFinal(ctx, turn, result, true, nil)
 }
 
 // HandleASRFinalAsync hands a streaming final to the service-owned settlement
@@ -244,6 +271,7 @@ func (s *PipelineService) HandleASRFinalAsync(ctx context.Context, turn TurnCont
 	}
 	select {
 	case s.settlementQueue <- finalSettlementTask{turn: turn, result: result}:
+		s.registerFinalSettlementLocked(turn)
 		s.settlementMu.Unlock()
 		return nil
 	default:
@@ -255,9 +283,61 @@ func (s *PipelineService) HandleASRFinalAsync(ctx context.Context, turn TurnCont
 func (s *PipelineService) runFinalSettlementWorker(tasks <-chan finalSettlementTask, done chan<- struct{}) {
 	defer close(done)
 	for task := range tasks {
-		if err := s.handleASRFinal(s.settlementCtx, task.turn, task.result, false); err != nil && !errors.Is(err, context.Canceled) {
+		if err := s.handleASRFinal(s.settlementCtx, task.turn, task.result, false, func() {
+			s.completeFinalSettlement(task.turn)
+		}); err != nil && !errors.Is(err, context.Canceled) {
 			s.reportFinalSettlementError(task.turn, err)
 		}
+	}
+}
+
+// WaitFinalSettlements waits only until every accepted async final for one
+// runtime has resolved its FinalTurn commit gate. Provider usage, TTS admission,
+// and playback continue independently after that durable lifecycle boundary.
+func (s *PipelineService) WaitFinalSettlements(ctx context.Context, sessionID, runtimeInstanceID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s == nil || sessionID == "" || runtimeInstanceID == "" {
+		return ErrPipelineDependencyRequired
+	}
+	scope := finalSettlementScope{sessionID: sessionID, runtimeInstanceID: runtimeInstanceID}
+	s.settlementMu.Lock()
+	group := s.settlementPending[scope]
+	s.settlementMu.Unlock()
+	if group == nil {
+		return nil
+	}
+	select {
+	case <-group.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *PipelineService) registerFinalSettlementLocked(turn TurnContext) {
+	scope := finalSettlementScope{sessionID: turn.SessionID, runtimeInstanceID: turn.Mode.RuntimeInstanceID}
+	group := s.settlementPending[scope]
+	if group == nil {
+		group = &finalSettlementGroup{done: make(chan struct{})}
+		s.settlementPending[scope] = group
+	}
+	group.pending++
+}
+
+func (s *PipelineService) completeFinalSettlement(turn TurnContext) {
+	scope := finalSettlementScope{sessionID: turn.SessionID, runtimeInstanceID: turn.Mode.RuntimeInstanceID}
+	s.settlementMu.Lock()
+	defer s.settlementMu.Unlock()
+	group := s.settlementPending[scope]
+	if group == nil {
+		return
+	}
+	group.pending--
+	if group.pending == 0 {
+		delete(s.settlementPending, scope)
+		close(group.done)
 	}
 }
 
@@ -272,7 +352,20 @@ func (s *PipelineService) reportFinalSettlementError(turn TurnContext, err error
 	s.latency.ProviderFailure("final_settlement", turn, "", "", err)
 }
 
-func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, result asr.FinalResult, reportRuntime bool) (returnErr error) {
+func (s *PipelineService) handleASRFinal(
+	ctx context.Context,
+	turn TurnContext,
+	result asr.FinalResult,
+	reportRuntime bool,
+	finalSettlementDone func(),
+) (returnErr error) {
+	var finalSettlementOnce sync.Once
+	completeFinalSettlement := func() {
+		if finalSettlementDone != nil {
+			finalSettlementOnce.Do(finalSettlementDone)
+		}
+	}
+	defer completeFinalSettlement()
 	if err := s.validate(); err != nil {
 		return err
 	}
@@ -382,6 +475,7 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 	committed, err := s.finalGate.CommitFinalTurn(ctx, turn, func(commitCtx context.Context) error {
 		return s.finalTurns.Publish(commitCtx, finalEvent)
 	})
+	completeFinalSettlement()
 	if err != nil {
 		return fmt.Errorf("commit FinalTurn: %w", err)
 	}
@@ -405,18 +499,37 @@ func (s *PipelineService) handleASRFinal(ctx context.Context, turn TurnContext, 
 	if !ttsEnabled {
 		return nil
 	}
-	if s.phrasePlayback != nil && reusedPhrases {
-		// Stable phrases have already been queued. Only the final source tail
-		// needs audio, and it must join that same per-session queue.
-		if strings.TrimSpace(residualPlaybackText) == "" {
+	if s.phrasePlayback != nil {
+		// Interpretation audio has one serialization boundary per session. When
+		// stable phrases were reused, queue only their unaccepted/final residual;
+		// otherwise queue the complete final translation. Never bypass the
+		// scheduler with SpeechOutput.Play while an earlier Turn may still be
+		// active on the same downlink.
+		playbackText := translationResult.Text
+		if reusedPhrases {
+			playbackText = residualPlaybackText
+		}
+		if strings.TrimSpace(playbackText) == "" {
 			return nil
 		}
-		if err := s.phrasePlayback.Enqueue(PhrasePlaybackRequest{
-			Turn: turn, UtteranceID: turn.ID, PhraseSequence: finalPhrasePlaybackSequence,
-			Language: target, Text: residualPlaybackText,
-			PlaybackID: "phrase_" + turn.ID + "_final", Final: true,
-		}); err != nil {
-			return finalTurnAcceptedError("enqueue final phrase playback", err)
+		playbackChunks := strings.Split(playbackText, phrasePlaybackResidualSeparator)
+		for index, chunk := range playbackChunks {
+			if strings.TrimSpace(chunk) == "" {
+				continue
+			}
+			playbackID := "phrase_" + turn.ID + "_final"
+			if len(playbackChunks) > 1 {
+				playbackID = fmt.Sprintf("%s_%d", playbackID, index+1)
+			}
+			result := enqueuePhrasePlayback(s.phrasePlayback, PhrasePlaybackRequest{
+				Turn: turn, UtteranceID: turn.ID, PhraseSequence: finalPhrasePlaybackSequence + int64(index),
+				Language: target, Text: chunk,
+				PlaybackID: playbackID, Final: index == len(playbackChunks)-1,
+			})
+			if !result.Accepted {
+				slog.Warn("phrase_tts_enqueue_failed", "session_id", turn.SessionID, "turn_id", turn.ID,
+					"phrase_sequence", finalPhrasePlaybackSequence+int64(index), "reason", result.Reason)
+			}
 		}
 		return nil
 	}
@@ -444,9 +557,6 @@ func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContex
 	}
 	for _, fact := range usage {
 		if err := s.usage.Publish(ctx, fact); err != nil {
-			if ok {
-				s.phraseTranslations.DiscardPhraseSubtitleTurn(turn.ID)
-			}
 			return translate.Result{}, "", false, "", err
 		}
 	}
@@ -454,34 +564,38 @@ func (s *PipelineService) phraseTranslation(ctx context.Context, turn TurnContex
 		return translate.Result{Text: summary.Text}, residual, false, "", nil
 	}
 	result := translate.Result{Text: summary.Text, Provider: summary.Provider, Model: summary.Model, InputTokens: summary.InputTokens, OutputTokens: summary.OutputTokens, CostAmount: summary.CostAmount, Currency: summary.Currency}
-	var residualPlayback strings.Builder
+	residualPlayback := summary.PlaybackResidualText
+	playbackSegments := append([]string(nil), summary.PlaybackResidualSegments...)
 	for _, segment := range summary.ResidualSegments {
 		residualResult, translateErr := s.translator.Translate(ctx, translate.Request{
 			SessionID: turn.SessionID, TurnID: turn.ID, Text: segment,
 			SourceLanguage: sourceLanguage, TargetLanguage: targetLanguage,
 		})
 		if translateErr != nil {
-			s.phraseTranslations.DiscardPhraseSubtitleTurn(turn.ID)
 			if usageErr := s.publishTranslationUsageIfPresent(ctx, turn, residualResult); usageErr != nil {
 				return translate.Result{}, "", false, "", errors.Join(translateErr, usageErr)
 			}
 			return translate.Result{}, "", false, "", translateErr
 		}
 		if err := mergeTranslationResult(&result, residualResult); err != nil {
-			s.phraseTranslations.DiscardPhraseSubtitleTurn(turn.ID)
 			return translate.Result{}, "", false, "", err
 		}
 		result.Text = strings.Replace(result.Text, phraseResidualMarker, residualResult.Text, 1)
-		resolved, resolveErr := s.phraseTranslations.ResolvePhraseResidualPlayback(turn.ID, segment, residualResult.Text)
-		if resolveErr != nil {
-			s.phraseTranslations.DiscardPhraseSubtitleTurn(turn.ID)
-			return translate.Result{}, "", false, "", resolveErr
-		}
-		if !resolved {
-			residualPlayback.WriteString(residualResult.Text)
+		if len(playbackSegments) > 0 {
+			for index, playbackSegment := range playbackSegments {
+				if playbackSegment == phraseResidualMarker {
+					playbackSegments[index] = residualResult.Text
+					break
+				}
+			}
+		} else {
+			residualPlayback = strings.Replace(residualPlayback, phraseResidualMarker, residualResult.Text, 1)
 		}
 	}
-	return result, "", true, residualPlayback.String(), nil
+	if len(playbackSegments) > 0 {
+		residualPlayback = strings.Join(playbackSegments, phrasePlaybackResidualSeparator)
+	}
+	return result, "", true, residualPlayback, nil
 }
 
 func mergeTranslationResult(total *translate.Result, next translate.Result) error {

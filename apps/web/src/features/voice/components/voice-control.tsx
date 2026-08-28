@@ -18,46 +18,53 @@ export function VoiceControl({
   mode: VoiceInitialMode;
 }) {
   const isIdle = phase === "idle";
+  const ariaLabel = isIdle
+    ? mode === "assistant"
+      ? "开始对话"
+      : "开始翻译"
+    : mode === "assistant"
+      ? "停止对话"
+      : "停止翻译";
 
-  return (
-    <motion.button
-      aria-label={
-        isIdle
-          ? mode === "assistant"
-            ? "开始对话"
-            : "开始翻译"
-          : mode === "assistant"
-            ? "停止对话"
-            : "停止翻译"
-      }
-      className={styles.voiceButton}
-      onClick={onActivate}
-      type="button"
-      whileTap={{ scale: 0.98 }}
-    >
-      {isIdle ? (
+  if (isIdle) {
+    return (
+      <motion.button
+        aria-label={ariaLabel}
+        className={styles.voiceButton}
+        onClick={onActivate}
+        type="button"
+        whileTap={{ scale: 0.98 }}
+      >
         <motion.span
           animate={{ opacity: 1, scale: 1 }}
           className={styles.voiceVisual}
           data-testid="idle-voice-ring"
           initial={{ opacity: 1, scale: 0.9 }}
-          key="idle"
           transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1] }}
         >
           <VideoOrb />
         </motion.span>
-      ) : (
-        <motion.span
-          animate={{ opacity: 1, scaleX: 1 }}
-          className={styles.voiceVisual}
-          data-testid="active-voice-strands"
-          initial={{ opacity: 0, scaleX: 0.24 }}
-          key="active"
-          transition={{ duration: 0.48, ease: [0.16, 1, 0.3, 1] }}
-        >
-          <AuroraStrands />
-        </motion.span>
-      )}
+      </motion.button>
+    );
+  }
+
+  return (
+    <motion.button
+      aria-label={ariaLabel}
+      className={styles.strandsButton}
+      onClick={onActivate}
+      type="button"
+      whileTap={{ scale: 0.98 }}
+    >
+      <motion.span
+        animate={{ opacity: 1, scaleX: 1 }}
+        className={styles.strandsVisual}
+        data-testid="active-voice-strands"
+        initial={{ opacity: 0, scaleX: 0.24 }}
+        transition={{ duration: 0.48, ease: [0.16, 1, 0.3, 1] }}
+      >
+        <AuroraStrands />
+      </motion.span>
     </motion.button>
   );
 }

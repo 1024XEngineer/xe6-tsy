@@ -3,12 +3,13 @@ export type VoiceBusinessMode = "assistant" | "interpretation";
 
 const STORAGE_KEY = "lingow.voice.interaction-policy";
 
-/** Interpretation keeps uplink active while assistant mode honors the saved preference. */
+/** Each business mode has one intentional capture behavior. */
 export function effectiveVoiceInteractionPolicy(
   mode: VoiceBusinessMode,
   preferred: VoiceInteractionPolicy,
 ): VoiceInteractionPolicy {
-  return mode === "interpretation" ? "continuous" : preferred;
+  void preferred;
+  return mode === "assistant" ? "wake_word" : "continuous";
 }
 
 /** Only the assistant's wake-word turn may gate capture while TTS is active. */

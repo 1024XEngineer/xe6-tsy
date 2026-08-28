@@ -30,7 +30,10 @@ type Providers struct {
 
 // BuildProviders constructs selected vendor adapters and reuses explicit offline providers.
 func BuildProviders(config ProviderConfig, offline Providers) (Providers, error) {
-	rawLogger := rawlog.Default()
+	var rawLogger *rawlog.Logger
+	if config.RawLogEnabled {
+		rawLogger = rawlog.Default()
+	}
 	recognizer, err := buildASR(config.ASR, offline.ASR, rawLogger)
 	if err != nil {
 		return Providers{}, fmt.Errorf("build ASR provider: %w", err)

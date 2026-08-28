@@ -88,7 +88,7 @@ func (s *PhraseStabilizer) Advance(now time.Time) []StablePhrase {
 	if utf8.RuneCountInString(s.candidate) < s.liveMinRunes {
 		return nil
 	}
-	cut := takeRunes(s.candidate, s.liveMaxRunes)
+	cut := takeStablePhraseRunes(s.candidate, s.liveMinRunes, s.liveMaxRunes)
 	phrases := s.consume(cut)
 	remaining := strings.TrimSpace(strings.TrimPrefix(s.candidate, cut))
 	if remaining == "" {
@@ -100,18 +100,27 @@ func (s *PhraseStabilizer) Advance(now time.Time) []StablePhrase {
 	return phrases
 }
 
-func takeRunes(value string, limit int) string {
+func takeStablePhraseRunes(value string, minimum, limit int) string {
 	if limit <= 0 {
 		return ""
 	}
-	count := 0
-	for index := range value {
-		if count == limit {
-			return value[:index]
-		}
-		count++
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
 	}
-	return value
+	// Whitespace-delimited source languages must not split a word merely to
+	// hit the live latency target. Prefer the nearest complete word within the
+	// window; CJK and other unspaced scripts keep the exact rune boundary.
+	for index := limit - 1; index >= 0; index-- {
+		if !unicode.IsSpace(runes[index]) {
+			continue
+		}
+		cut := string(runes[:index+1])
+		if utf8.RuneCountInString(strings.TrimSpace(cut)) >= minimum {
+			return cut
+		}
+	}
+	return string(runes[:limit])
 }
 
 // Flush consumes every remaining final ASR text segment. A final revision that no longer
@@ -151,7 +160,17 @@ func (s *PhraseStabilizer) consumePunctuation(text string) ([]StablePhrase, stri
 			}
 			end += size
 		}
-		phrases := s.consume(text[:end])
+		segment := text[:end]
+		phrases := s.consume(segment)
+		if len(phrases) == 0 {
+			if !isIgnorableConfirmedGap(segment) {
+				// Keep an unconsumed short but meaningful segment attached to the
+				// tail. Emitting a later phrase would otherwise move the source
+				// cursor past a prefix that it never recorded.
+				return nil, text
+			}
+			s.appendConsumed(segment)
+		}
 		remaining := text[end:]
 		more, tail := s.consumePunctuation(remaining)
 		return append(phrases, more...), tail
@@ -170,13 +189,17 @@ func (s *PhraseStabilizer) consume(text string) []StablePhrase {
 		// would make the later, longer snapshot impossible to translate.
 		return nil
 	}
-	if s.consumed == "" {
-		s.consumed = text
-	} else {
-		s.consumed += text
-	}
+	s.appendConsumed(text)
 	s.nextSeq++
 	return []StablePhrase{{SequenceNo: s.nextSeq, Text: displayText}}
+}
+
+func (s *PhraseStabilizer) appendConsumed(text string) {
+	if s.consumed == "" {
+		s.consumed = text
+		return
+	}
+	s.consumed += text
 }
 
 func (s *PhraseStabilizer) setCandidate(text string, now time.Time) {
@@ -239,6 +262,43 @@ func (s *PhraseStabilizer) stabilityDelay(now time.Time) (time.Duration, bool) {
 func phraseBoundary(value rune) bool {
 	switch value {
 	case '。', '.', '！', '!', '？', '?', '，', ',', '；', ';', '：', ':':
+		return true
+	default:
+		return false
+	}
+}
+
+// isIgnorableConfirmedGap accepts punctuation-only separators and known
+// hesitation tokens after ASR has confirmed their boundary. A separator may
+// arrive after an unpunctuated live chunk was already consumed; advancing the
+// source cursor keeps later stable phrases aligned with the final transcript.
+// Meaningful short replies such as "yes", "好", and "对" remain source text.
+func isIgnorableConfirmedGap(text string) bool {
+	var token strings.Builder
+	sawBoundary := false
+	for _, value := range text {
+		if phraseBoundary(value) {
+			confirmed := strings.TrimSpace(token.String())
+			if confirmed != "" && !isPhraseFillerToken(confirmed) {
+				return false
+			}
+			sawBoundary = true
+			token.Reset()
+			continue
+		}
+		if unicode.IsSpace(value) && token.Len() == 0 {
+			continue
+		}
+		token.WriteRune(value)
+	}
+	return sawBoundary && strings.TrimSpace(token.String()) == ""
+}
+
+func isPhraseFillerToken(text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "嗯", "嗯嗯", "啊", "呃", "额", "哎", "欸", "诶", "哦", "噢", "喔",
+		"咳", "咳咳", "嗯哼", "mm", "mmm", "mhm", "uh", "uhh", "um", "umm",
+		"ah", "oh", "hmm", "hm", "huh", "sigh", "ahem":
 		return true
 	default:
 		return false

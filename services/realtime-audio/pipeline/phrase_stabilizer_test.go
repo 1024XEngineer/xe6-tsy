@@ -34,6 +34,26 @@ func TestPhraseStabilizerCommitsStableUnpunctuatedLiveChunk(t *testing.T) {
 	}
 }
 
+func TestPhraseStabilizerKeepsWhitespaceDelimitedWordsIntact(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{
+		StableAfter:  100 * time.Millisecond,
+		LiveMinRunes: 8,
+		LiveMaxRunes: 18,
+	})
+	now := time.Unix(1700000000, 0)
+	finalText := "Today I want to tell you something important"
+
+	stabilizer.Observe(finalText, now)
+	got := stabilizer.Advance(now.Add(100 * time.Millisecond))
+	if len(got) != 1 || got[0].Text != "Today I want to" {
+		t.Fatalf("Advance() = %#v, want a complete-word live chunk", got)
+	}
+	if got := stabilizer.Flush(finalText); len(got) != 1 || got[0].Text != "tell you something important" {
+		t.Fatalf("Flush() = %#v, want the intact remaining words", got)
+	}
+}
+
 func TestPhraseStabilizerCommitsStablePrefixWhilePartialGrows(t *testing.T) {
 	t.Parallel()
 	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})
@@ -107,5 +127,102 @@ func TestPhraseStabilizerIgnoresRollbackAndNoise(t *testing.T) {
 	}
 	if got := stabilizer.Flush("你"); len(got) != 0 {
 		t.Fatalf("rollback Flush() = %#v", got)
+	}
+}
+
+func TestCommonPhrasePrefix(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		left       string
+		right      string
+		wantPrefix string
+	}{
+		{name: "shared unicode prefix", left: "今天去北京", right: "今天到上海", wantPrefix: "今天"},
+		{name: "right value is the prefix", left: "streaming", right: "stream", wantPrefix: "stream"},
+		{name: "no shared prefix", left: "hello", right: "world", wantPrefix: ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := commonPhrasePrefix(test.left, test.right); got != test.wantPrefix {
+				t.Fatalf("commonPhrasePrefix(%q, %q) = %q, want %q", test.left, test.right, got, test.wantPrefix)
+			}
+		})
+	}
+}
+
+func TestPhraseStabilizerConsumesConfirmedFillerWithoutBlockingLaterPartials(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})
+	now := time.Unix(1700000000, 0)
+
+	if got := stabilizer.Observe("嗯，", now); len(got) != 0 {
+		t.Fatalf("filler Observe() = %#v, want no phrase", got)
+	}
+	if stabilizer.consumed != "嗯，" {
+		t.Fatalf("consumed = %q, want confirmed filler prefix", stabilizer.consumed)
+	}
+	if got := stabilizer.Observe("嗯，你好，", now.Add(time.Millisecond)); len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 1, Text: "你好，"}) {
+		t.Fatalf("first translated phrase = %#v", got)
+	}
+	if got := stabilizer.Observe("嗯，你好，今天天气很好，", now.Add(2*time.Millisecond)); len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 2, Text: "今天天气很好，"}) {
+		t.Fatalf("growing partial phrase = %#v", got)
+	}
+	if got := stabilizer.Flush("嗯，你好，今天天气很好，"); len(got) != 0 {
+		t.Fatalf("final Flush() = %#v, want no duplicate", got)
+	}
+}
+
+func TestPhraseStabilizerDoesNotConsumeUnpunctuatedFillerCandidate(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})
+	now := time.Unix(1700000000, 0)
+
+	if got := stabilizer.Observe("嗯", now); len(got) != 0 {
+		t.Fatalf("Observe() = %#v, want no phrase", got)
+	}
+	if stabilizer.consumed != "" {
+		t.Fatalf("consumed = %q, want unconfirmed candidate retained", stabilizer.consumed)
+	}
+	if got := stabilizer.Advance(now.Add(defaultPhraseStableAfter)); len(got) != 0 {
+		t.Fatalf("Advance() = %#v, want no single-character phrase", got)
+	}
+}
+
+func TestPhraseStabilizerDoesNotSilentlyConsumeMeaningfulShortPrefix(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{})
+	now := time.Unix(1700000000, 0)
+
+	if got := stabilizer.Observe("我，你好，", now); len(got) != 0 {
+		t.Fatalf("Observe() = %#v, want short meaningful prefix retained", got)
+	}
+	got := stabilizer.Flush("我，你好，")
+	if len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 1, Text: "我，你好，"}) {
+		t.Fatalf("Flush() = %#v, want complete source phrase", got)
+	}
+}
+
+func TestPhraseStabilizerAdvancesPunctuationConfirmedAfterLiveChunk(t *testing.T) {
+	t.Parallel()
+	stabilizer := NewPhraseStabilizer(PhraseStabilizerOptions{StableAfter: time.Millisecond, LiveMinRunes: 4, LiveMaxRunes: 40})
+	now := time.Unix(1700000000, 0)
+
+	first := "将科技含金量持续转化为发展含金量"
+	stabilizer.Observe(first, now)
+	if got := stabilizer.Advance(now.Add(time.Millisecond)); len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 1, Text: first}) {
+		t.Fatalf("first live chunk = %#v", got)
+	}
+	if got := stabilizer.Observe(first+"，", now.Add(2*time.Millisecond)); len(got) != 0 {
+		t.Fatalf("delayed punctuation = %#v, want cursor-only advance", got)
+	}
+	if stabilizer.consumed != first+"，" {
+		t.Fatalf("consumed = %q, want delayed punctuation included", stabilizer.consumed)
+	}
+	finalText := first + "，为中国式现代化建设，"
+	if got := stabilizer.Flush(finalText); len(got) != 1 || got[0] != (StablePhrase{SequenceNo: 2, Text: "为中国式现代化建设，"}) {
+		t.Fatalf("Flush() = %#v, want only the unconsumed suffix", got)
 	}
 }

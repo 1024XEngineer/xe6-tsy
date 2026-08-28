@@ -794,17 +794,6 @@ func TestPipelineMarksPrePlaybackFallbackFailures(t *testing.T) {
 			svc:  &PipelineService{},
 		},
 		{
-			name: "runtime report failure",
-			svc: newTestPipelineService(PipelineDependencies{
-				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello"}},
-				TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
-					Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
-				}),
-				FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
-				Runtime: stateFailingRuntimeReporter{failState: session.RuntimeTTSProcessing, err: errors.New("runtime unavailable")},
-			}),
-		},
-		{
 			name: "tts start failure",
 			svc: newTestPipelineService(PipelineDependencies{
 				Translator: &translate.FakeProvider{Result: translate.Result{Text: "hello"}},
@@ -826,6 +815,26 @@ func TestPipelineMarksPrePlaybackFallbackFailures(t *testing.T) {
 				t.Fatalf("PlayFallback() error = %v, want not-started marker", err)
 			}
 		})
+	}
+}
+
+func TestPipelineFallbackDoesNotClaimStaleRuntimeTurn(t *testing.T) {
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: &translate.FakeProvider{},
+		TTS: tts.NewFakeProvider(tts.FakeProviderConfig{
+			Chunks: []tts.AudioChunk{{SequenceNo: 1, Data: []byte{1, 2}}},
+			Result: tts.Result{Provider: "mock-tts", Model: "v1"},
+		}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{}, Audio: &recordingAudioSink{},
+		// A strict runtime would reject the completed fallback Turn as an owner
+		// while the session is listening. Fallback must still play successfully.
+		Runtime: stateFailingRuntimeReporter{failState: session.RuntimeTTSProcessing, err: session.ErrRuntimeIdentityConflict},
+	})
+	if err := service.PlayFallback(t.Context(), FallbackPlayback{
+		SessionID: "session-1", TurnID: "turn-1", AccountID: "account-1", TraceID: "trace-1",
+		TargetLanguage: "zh-CN", TranslatedText: "补播译文", LanguageConfigVersion: 1, PlaybackID: "fallback-operation-1",
+	}); err != nil {
+		t.Fatalf("PlayFallback() error = %v, want successful recovery playback", err)
 	}
 }
 
@@ -983,6 +992,40 @@ func TestPipelineReusesPendingPhraseInAsyncSettlement(t *testing.T) {
 	facts := usageSink.Facts()
 	if len(facts) != 1 || facts[0].IdempotencyKey != "usage:turn-1:translation" || facts[0].InputTokens != 7 {
 		t.Fatalf("usage facts = %#v, want one reused phrase fact", facts)
+	}
+}
+
+func TestWaitFinalSettlementsDoesNotWaitForPlaybackAdmission(t *testing.T) {
+	translator := &translate.FakeProvider{Result: translate.Result{Text: "hello", Provider: "mock", Model: "v1"}}
+	phraseCoordinator := NewPhraseTranslationCoordinator(translator, "mock", &recordingPhraseSubtitleObserver{}, nil)
+	playback := newBlockingEnqueuePhrasePlaybackScheduler()
+	service := newTestPipelineService(PipelineDependencies{
+		Translator: translator, TTS: tts.NewFakeProvider(tts.FakeProviderConfig{}),
+		FinalTurns: &recordingFinalSink{}, Usage: &recordingUsageSink{},
+		Audio: &recordingAudioSink{}, Runtime: &recordingRuntimeReporter{},
+		PhraseTranslations: phraseCoordinator, PhrasePlayback: playback,
+	})
+	defer func() {
+		close(playback.releaseEnqueue)
+		service.Close()
+	}()
+	turn := testTurn()
+	turn.Mode.RuntimeInstanceID = "runtime-1"
+
+	if err := service.HandleASRFinalAsync(context.Background(), turn, asr.FinalResult{
+		Text: "你好", SourceLanguage: "zh-CN", Provider: "mock-asr", Model: "v1",
+	}); err != nil {
+		t.Fatalf("HandleASRFinalAsync() error = %v", err)
+	}
+	select {
+	case <-playback.enqueueStarted:
+	case <-time.After(time.Second):
+		t.Fatal("final settlement did not reach playback admission")
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := service.WaitFinalSettlements(waitCtx, turn.SessionID, turn.Mode.RuntimeInstanceID); err != nil {
+		t.Fatalf("WaitFinalSettlements() waited past FinalTurn commit: %v", err)
 	}
 }
 

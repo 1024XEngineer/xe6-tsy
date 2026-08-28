@@ -45,13 +45,22 @@ import {
   loadVoiceInteractionPolicy,
   saveVoiceInteractionPolicy,
   shouldSuppressMicrophoneDuringTTS,
+  type VoiceBusinessMode,
   type VoiceInteractionPolicy,
 } from "../lib/interaction-policy";
 import {
   parseCommandResult,
   type CommandResultEvent,
 } from "../lib/command-results";
-import { enqueueTTSAudio, parseTTSAudioEvent } from "../lib/tts-playback";
+import {
+  parsePlaybackLifecycleEvent,
+  PlaybackLifecycleTracker,
+} from "../lib/playback-events";
+import {
+  cancelAllTTSAudioPlayback,
+  enqueueTTSAudio,
+  parseTTSAudioEvent,
+} from "../lib/tts-playback";
 import { sendWakeWordDetectedSignal } from "../lib/wake-word-signal";
 import {
   loadVoiceConfig,
@@ -74,6 +83,8 @@ import {
 
 const POLL_INTERVAL_MS = 1200;
 const TTS_INPUT_RESUME_DELAY_MS = 300;
+const TTS_STATUS_IDLE_GRACE_MS = 180;
+const TURN_POLL_PAGE_SIZE = 100;
 export const COMMAND_UPLINK_TIMEOUT_MS = 15_000;
 export const END_REQUEST_TIMEOUT_MS = 5_000;
 
@@ -191,6 +202,36 @@ function toTranslationTurn(turn: VoiceTurn): TranslationTurn {
   };
 }
 
+async function listSessionTurnTail(
+  token: string,
+  sessionId: string,
+  startCursor: string | null,
+): Promise<{ items: VoiceTurn[]; tailCursor: string | null }> {
+  const items: VoiceTurn[] = [];
+  const seenCursors = new Set<string>();
+  let pageStartCursor = startCursor;
+  let tailCursor = startCursor;
+
+  while (true) {
+    const page = await listSessionTurns(
+      token,
+      sessionId,
+      TURN_POLL_PAGE_SIZE,
+      pageStartCursor ?? undefined,
+    );
+    items.push(...page.items);
+    if (!page.next_cursor) {
+      return { items, tailCursor };
+    }
+    if (seenCursors.has(page.next_cursor)) {
+      throw new Error("会话 Turn 分页游标停滞");
+    }
+    seenCursors.add(page.next_cursor);
+    tailCursor = page.next_cursor;
+    pageStartCursor = tailCursor;
+  }
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : fallback;
   if (
@@ -258,8 +299,9 @@ export function useVoiceSession() {
     loadVoiceConfig(DEFAULT_VOICE_CONFIG),
   );
   const [wakeStatus, setWakeStatus] = useState<WakeListenerStatus>("idle");
+  // Read localStorage after hydration so the first server/client HTML matches.
   const [interactionPolicy, setInteractionPolicyState] =
-    useState<VoiceInteractionPolicy>(loadVoiceInteractionPolicy);
+    useState<VoiceInteractionPolicy>("continuous");
   const [commandFeedback, setCommandFeedback] = useState<CommandFeedback | null>(null);
   const [debug, setDebug] = useState<SessionDebugInfo>({
     accountId: null,
@@ -284,6 +326,8 @@ export function useVoiceSession() {
   const sessionIdRef = useRef<string | null>(null);
   const webrtcRef = useRef<WebRTCSessionHandles | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollInFlightSessionRef = useRef<string | null>(null);
+  const turnPollCursorRef = useRef<string | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
   const realtimeTicketCacheRef = useRef<RealtimeTicketCache | null>(null);
   useEffect(() => {
@@ -319,15 +363,66 @@ export function useVoiceSession() {
   const pendingConfigUpdatesRef = useRef(0);
   const latestAutomaticOutputStatusRef = useRef<string | null>(null);
   const wakeRef = useRef<WakeWordListener | null>(null);
+  const wakeWordCaptureAvailableRef = useRef(false);
   const activeCommandIdRef = useRef<string | null>(null);
-  const interactionPolicyRef = useRef<VoiceInteractionPolicy>(interactionPolicy);
+  // The rendered state stays deterministic for hydration, while startup reads
+  // the persisted policy immediately if the user clicks before the effect runs.
+  const interactionPolicyRef = useRef<VoiceInteractionPolicy>(
+    loadVoiceInteractionPolicy(),
+  );
   const setUplinkEnabledRef = useRef<(enabled: boolean) => void>(() => undefined);
   const openCommandUplinkRef = useRef<() => void>(() => undefined);
+  const effectiveCapturePolicy = useCallback(
+    (mode: VoiceBusinessMode, preferred: VoiceInteractionPolicy) => {
+      const policy = effectiveVoiceInteractionPolicy(mode, preferred);
+      return policy === "wake_word" && !wakeWordCaptureAvailableRef.current
+        ? "continuous"
+        : policy;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const savedPolicy = loadVoiceInteractionPolicy();
+    const syncTimer = window.setTimeout(() => {
+      interactionPolicyRef.current = savedPolicy;
+      setInteractionPolicyState(savedPolicy);
+    }, 0);
+    return () => window.clearTimeout(syncTimer);
+  }, []);
   const commandUplinkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settledPartialTurnsRef = useRef(new Set<string>());
   const activePartialTurnRef = useRef<string | null>(null);
+  const partialTextByTurnRef = useRef(new Map<string, string>());
+  const runtimeStateRef = useRef<RuntimeState | null>(null);
+  const terminalMediaSessionRef = useRef<string | null>(null);
+  const pcmTTSPlayingRef = useRef(false);
+  const opusPlaybackTrackerRef = useRef(new PlaybackLifecycleTracker());
+  const clientTTSPlayingRef = useRef(false);
+  const clientTTSIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startRef = useRef<() => Promise<void>>(async () => undefined);
   const endRef = useRef<() => Promise<void>>(async () => undefined);
+
+  const presentRuntimeState = useCallback(
+    (runtime: RuntimeState | null) => {
+      const mode = modeStateRef.current?.active_mode ?? initialMode;
+      const mediaTerminal = terminalMediaSessionRef.current === sessionIdRef.current;
+      if (!mediaTerminal && clientTTSPlayingRef.current) {
+        dispatch({ type: "PLAYING" });
+        setStatusMessage(mapRuntimeToStatus("playing", mode));
+        return;
+      }
+      const visibleRuntime = mediaTerminal
+        ? "failed"
+        : runtime ?? (runningRef.current ? "listening" : null);
+      const phase = mapRuntimePhase(visibleRuntime);
+      if (phase === "processing") dispatch({ type: "PROCESSING" });
+      else if (phase === "playing") dispatch({ type: "PLAYING" });
+      else dispatch({ type: "ACTIVATE" });
+      setStatusMessage(mapRuntimeToStatus(visibleRuntime, mode));
+    },
+    [initialMode],
+  );
 
   const applyModeSnapshot = useCallback((snapshot: ModeStateSnapshot): boolean => {
     if (!modeSnapshotTrackerRef.current.observe(snapshot)) return false;
@@ -359,14 +454,14 @@ export function useVoiceSession() {
         commandUplinkTimerRef.current = null;
       }
       setUplinkEnabledRef.current(
-        effectiveVoiceInteractionPolicy(
+        effectiveCapturePolicy(
           snapshot.active_mode,
           interactionPolicyRef.current,
         ) === "continuous",
       );
     }
     return true;
-  }, []);
+  }, [effectiveCapturePolicy]);
 
   const refreshModeSnapshot = useCallback(async (): Promise<ModeStateSnapshot | null> => {
     const sessionId = sessionIdRef.current;
@@ -519,12 +614,12 @@ export function useVoiceSession() {
     clearCommandUplinkTimer();
     const mode = modeStateRef.current?.active_mode ?? initialMode;
     if (
-      effectiveVoiceInteractionPolicy(mode, interactionPolicyRef.current) ===
+      effectiveCapturePolicy(mode, interactionPolicyRef.current) ===
       "wake_word"
     ) {
       setUplinkEnabledRef.current(false);
     }
-  }, [clearCommandUplinkTimer, initialMode]);
+  }, [clearCommandUplinkTimer, effectiveCapturePolicy, initialMode]);
 
   const armCommandUplinkTimeout = useCallback(
     (commandId: string) => {
@@ -535,7 +630,7 @@ export function useVoiceSession() {
         activeCommandIdRef.current = null;
         const mode = modeStateRef.current?.active_mode ?? initialMode;
         if (
-          effectiveVoiceInteractionPolicy(mode, interactionPolicyRef.current) ===
+          effectiveCapturePolicy(mode, interactionPolicyRef.current) ===
           "wake_word"
         ) {
           setUplinkEnabledRef.current(false);
@@ -544,36 +639,48 @@ export function useVoiceSession() {
         setHintMessage("本轮唤醒已超时，麦克风上行已关闭，请再次说「小灵小灵」。");
       }, COMMAND_UPLINK_TIMEOUT_MS);
     },
-    [clearCommandUplinkTimer, initialMode],
+    [clearCommandUplinkTimer, effectiveCapturePolicy, initialMode],
   );
 
   const cleanupMedia = useCallback(() => {
     clearCommandUplinkTimer();
+    wakeWordCaptureAvailableRef.current = false;
     setUplinkEnabledRef.current = () => undefined;
     openCommandUplinkRef.current = () => undefined;
     webrtcRef.current?.close();
     webrtcRef.current = null;
+    cancelAllTTSAudioPlayback();
+    if (clientTTSIdleTimerRef.current) {
+      clearTimeout(clientTTSIdleTimerRef.current);
+      clientTTSIdleTimerRef.current = null;
+    }
+    pcmTTSPlayingRef.current = false;
+    opusPlaybackTrackerRef.current.reset();
+    clientTTSPlayingRef.current = false;
+    runtimeStateRef.current = null;
+    terminalMediaSessionRef.current = null;
+    pollInFlightSessionRef.current = null;
+    turnPollCursorRef.current = null;
     const activeTurn = activePartialTurnRef.current;
     if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
     activePartialTurnRef.current = null;
+    partialTextByTurnRef.current.clear();
     dispatch({ type: "CLEAR_ASR_PARTIAL" });
   }, [clearCommandUplinkTimer]);
 
   const setInteractionPolicy = useCallback((policy: VoiceInteractionPolicy) => {
-    if (
-      modeStateRef.current?.active_mode === "interpretation" &&
-      policy !== "continuous"
-    ) {
-      setHintMessage("同声传译仅支持常驻模式；仍可说「小灵小灵」发送退出指令。");
-      return;
-    }
     clearCommandUplinkTimer();
     interactionPolicyRef.current = policy;
     setInteractionPolicyState(policy);
     saveVoiceInteractionPolicy(policy);
     if (!runningRef.current) return;
 
-    setUplinkEnabledRef.current(policy === "continuous");
+    setUplinkEnabledRef.current(
+      effectiveCapturePolicy(
+        modeStateRef.current?.active_mode ?? initialMode,
+        policy,
+      ) === "continuous",
+    );
     activeCommandIdRef.current = null;
     setCommandFeedback(null);
     setHintMessage(
@@ -581,7 +688,7 @@ export function useVoiceSession() {
         ? "已切换到常驻模式，可以直接对话。"
         : "已切换到唤醒词模式；只有说「小灵小灵」后才会开放一轮语音。",
     );
-  }, [clearCommandUplinkTimer]);
+  }, [clearCommandUplinkTimer, effectiveCapturePolicy, initialMode]);
 
   const syncAutomaticOutputStatus = useCallback(
     async (
@@ -640,30 +747,33 @@ export function useVoiceSession() {
     const token = accessTokenRef.current;
     const sessionId = sessionIdRef.current;
     if (!token || !sessionId || !runningRef.current) return;
+    if (pollInFlightSessionRef.current === sessionId) return;
+    pollInFlightSessionRef.current = sessionId;
 
     try {
       const [turnsPage, snapshot, automaticOutput] = await Promise.all([
-        listSessionTurns(token, sessionId),
+        listSessionTurnTail(token, sessionId, turnPollCursorRef.current),
         getVoiceSessionState(token, sessionId),
         listAutomaticOutputStatus(token, sessionId).catch(() => null),
       ]);
+      if (sessionIdRef.current !== sessionId || !runningRef.current) return;
+      turnPollCursorRef.current = turnsPage.tailCursor;
 
+      const turns = turnsPage.items.map(toTranslationTurn);
+      for (const turn of turns) {
+        settledPartialTurnsRef.current.add(turn.id);
+        partialTextByTurnRef.current.delete(turn.id);
+        if (activePartialTurnRef.current === turn.id) {
+          activePartialTurnRef.current = null;
+        }
+      }
       dispatch({
         type: "SET_TURNS",
-        turns: turnsPage.items.map(toTranslationTurn),
+        turns,
       });
 
-      const phase = mapRuntimePhase(snapshot.runtime_state);
-      if (phase === "processing") dispatch({ type: "PROCESSING" });
-      else if (phase === "playing") dispatch({ type: "PLAYING" });
-      else dispatch({ type: "ACTIVATE" });
-
-      setStatusMessage(
-        mapRuntimeToStatus(
-          snapshot.runtime_state,
-          modeStateRef.current?.active_mode ?? initialMode,
-        ),
-      );
+      runtimeStateRef.current = snapshot.runtime_state;
+      presentRuntimeState(snapshot.runtime_state);
       setDebug((prev) => ({
         ...prev,
         runtimeState: snapshot.runtime_state,
@@ -681,9 +791,15 @@ export function useVoiceSession() {
       }
       void refreshControlSnapshots();
     } catch (error) {
-      setHintMessage(errorMessage(error, "轮询会话状态失败"));
+      if (sessionIdRef.current === sessionId && runningRef.current) {
+        setHintMessage(errorMessage(error, "轮询会话状态失败"));
+      }
+    } finally {
+      if (pollInFlightSessionRef.current === sessionId) {
+        pollInFlightSessionRef.current = null;
+      }
     }
-  }, [initialMode, refreshControlSnapshots, syncAutomaticOutputStatus]);
+  }, [presentRuntimeState, refreshControlSnapshots, syncAutomaticOutputStatus]);
 
   const startPolling = useCallback(() => {
     stopPolling();
@@ -698,6 +814,11 @@ export function useVoiceSession() {
     startAbortRef.current?.abort();
     startAbortRef.current = null;
     stopPolling();
+    // Keep the PeerConnection alive until realtime has observed the explicit
+    // stop. Closing it first turns the expected track EOF into a false runtime
+    // pipeline failure.
+    setUplinkEnabledRef.current(false);
+    wakeRef.current?.stop();
 
     const token = accessTokenRef.current;
     const sessionId = sessionIdRef.current;
@@ -725,6 +846,7 @@ export function useVoiceSession() {
     latestAutomaticOutputStatusRef.current = null;
     settledPartialTurnsRef.current = new Set();
     activePartialTurnRef.current = null;
+    partialTextByTurnRef.current.clear();
     activeCommandIdRef.current = null;
     setCommandFeedback(null);
     setAutomaticOutputMessage(null);
@@ -820,6 +942,7 @@ export function useVoiceSession() {
     if (runningRef.current) return;
 
     runningRef.current = true;
+    wakeWordCaptureAvailableRef.current = false;
     const startAbort = new AbortController();
     startAbortRef.current = startAbort;
     dispatch({ type: "START" });
@@ -828,6 +951,18 @@ export function useVoiceSession() {
     latestAutomaticOutputStatusRef.current = null;
     settledPartialTurnsRef.current = new Set();
     activePartialTurnRef.current = null;
+    runtimeStateRef.current = null;
+    terminalMediaSessionRef.current = null;
+    pollInFlightSessionRef.current = null;
+    turnPollCursorRef.current = null;
+    pcmTTSPlayingRef.current = false;
+    opusPlaybackTrackerRef.current.reset();
+    clientTTSPlayingRef.current = false;
+    if (clientTTSIdleTimerRef.current) {
+      clearTimeout(clientTTSIdleTimerRef.current);
+      clientTTSIdleTimerRef.current = null;
+    }
+    cancelAllTTSAudioPlayback();
     activeCommandIdRef.current = null;
     setCommandFeedback(null);
     setAutomaticOutputMessage(null);
@@ -974,6 +1109,37 @@ export function useVoiceSession() {
           setSessionOutputSuppressed(false);
         }, TTS_INPUT_RESUME_DELAY_MS);
       };
+      const syncClientTTSPlaying = () => {
+        if (sessionIdRef.current !== session.id || !runningRef.current) return;
+        const playing =
+          pcmTTSPlayingRef.current || opusPlaybackTrackerRef.current.playing;
+        if (clientTTSIdleTimerRef.current) {
+          clearTimeout(clientTTSIdleTimerRef.current);
+          clientTTSIdleTimerRef.current = null;
+        }
+        if (playing) {
+          setTTSOutputSuppressed(true);
+          clientTTSPlayingRef.current = true;
+          presentRuntimeState(runtimeStateRef.current);
+          return;
+        }
+        if (!clientTTSPlayingRef.current) return;
+        setTTSOutputSuppressed(false);
+        // The next Opus/PCM phrase may start just after the terminal event, and
+        // remote jitter buffers can still contain a final fraction of audio.
+        clientTTSIdleTimerRef.current = setTimeout(() => {
+          clientTTSIdleTimerRef.current = null;
+          if (sessionIdRef.current !== session.id || !runningRef.current) return;
+          if (pcmTTSPlayingRef.current || opusPlaybackTrackerRef.current.playing) return;
+          clientTTSPlayingRef.current = false;
+          presentRuntimeState(runtimeStateRef.current);
+        }, TTS_STATUS_IDLE_GRACE_MS);
+      };
+      const setPCMPlaying = (playing: boolean) => {
+        if (sessionIdRef.current !== session.id || !runningRef.current) return;
+        pcmTTSPlayingRef.current = playing;
+        syncClientTTSPlaying();
+      };
       setUplinkEnabledRef.current = (enabled) => {
         if (sessionIdRef.current !== session.id) return;
         setSessionUplinkEnabled(enabled);
@@ -985,6 +1151,7 @@ export function useVoiceSession() {
       ensureStartupActive();
       const wakeTracks = wakeRef.current?.cloneAudioTracksForPeer() ?? [];
       sessionUsesWakeUplink = wakeTracks.length > 0;
+      wakeWordCaptureAvailableRef.current = sessionUsesWakeUplink;
       openCommandUplinkRef.current = () => {
         if (sessionIdRef.current !== session.id) return;
         sessionUplinkEnabled = true;
@@ -1000,6 +1167,13 @@ export function useVoiceSession() {
           sessionId: session.id,
           audioTracks: wakeTracks.length > 0 ? wakeTracks : undefined,
           onDataMessage: (payload) => {
+            if (
+              sessionIdRef.current !== session.id ||
+              !runningRef.current ||
+              terminalMediaSessionRef.current === session.id
+            ) {
+              return;
+            }
             const phraseSubtitle = parsePhraseSubtitle(payload);
             if (phraseSubtitle && phraseSubtitle.sessionId === session.id) {
               if (settledPartialTurnsRef.current.has(phraseSubtitle.utteranceId)) return;
@@ -1019,6 +1193,7 @@ export function useVoiceSession() {
             if (partial && partial.sessionId === session.id) {
               if (settledPartialTurnsRef.current.has(partial.turnId)) return;
               activePartialTurnRef.current = partial.turnId;
+              partialTextByTurnRef.current.set(partial.turnId, `${partial.text}${partial.stash ?? ""}`);
               dispatch({
                 type: "SET_ASR_PARTIAL",
                 partial: {
@@ -1085,17 +1260,28 @@ export function useVoiceSession() {
               }
               return;
             }
+            const playbackEvent = parsePlaybackLifecycleEvent(payload);
+            if (playbackEvent) {
+              if (playbackEvent.sessionId === session.id) {
+                const playbackState = opusPlaybackTrackerRef.current.apply(playbackEvent);
+                if (playbackState.changed) syncClientTTSPlaying();
+              }
+              return;
+            }
             const audio = parseTTSAudioEvent(payload);
             if (audio) {
-              enqueueTTSAudio(audio, (playing) => {
-                setTTSOutputSuppressed(playing);
-              });
+              if (audio.sessionId !== session.id) return;
+              enqueueTTSAudio(audio, setPCMPlaying);
               return;
             }
             const assistantReply = parseAssistantReply(payload);
             if (assistantReply) {
+              const source = assistantReply.turnId
+                ? partialTextByTurnRef.current.get(assistantReply.turnId) ?? ""
+                : "";
               if (assistantReply.turnId) {
                 settledPartialTurnsRef.current.add(assistantReply.turnId);
+                partialTextByTurnRef.current.delete(assistantReply.turnId);
                 if (activePartialTurnRef.current === assistantReply.turnId) {
                   activePartialTurnRef.current = null;
                   dispatch({ type: "CLEAR_ASR_PARTIAL" });
@@ -1106,16 +1292,18 @@ export function useVoiceSession() {
                 reply: {
                   replyId: assistantReply.eventId,
                   turnId: assistantReply.turnId,
+                  source,
                   text: assistantReply.text,
                   language: assistantReply.language,
                 },
               });
-              setStatusMessage("助手已回复");
+              if (!clientTTSPlayingRef.current) setStatusMessage("助手已回复");
               return;
             }
             const event = parseTranslationFinal(payload);
             if (!event) return;
             settledPartialTurnsRef.current.add(event.turnId);
+            partialTextByTurnRef.current.delete(event.turnId);
             if (activePartialTurnRef.current === event.turnId) {
               activePartialTurnRef.current = null;
             }
@@ -1134,16 +1322,25 @@ export function useVoiceSession() {
             if (sessionIdRef.current !== session.id) return;
             setDebug((prev) => ({ ...prev, connectionState }));
             if (connectionState === "disconnected") {
-              const activeTurn = activePartialTurnRef.current;
-              if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
-              activePartialTurnRef.current = null;
-              dispatch({ type: "CLEAR_ASR_PARTIAL" });
+              // A browser transport interruption is not a VAD boundary. Keep
+              // the active utterance and its turn id so a recovered data
+              // channel can continue updating the same live container.
               setHintMessage("实时连接暂时中断，正在等待浏览器恢复媒体连接。");
             } else if (connectionState === "failed" || connectionState === "closed") {
-              const activeTurn = activePartialTurnRef.current;
-              if (activeTurn) settledPartialTurnsRef.current.add(activeTurn);
-              activePartialTurnRef.current = null;
-              dispatch({ type: "CLEAR_ASR_PARTIAL" });
+              terminalMediaSessionRef.current = session.id;
+              cancelAllTTSAudioPlayback();
+              pcmTTSPlayingRef.current = false;
+              opusPlaybackTrackerRef.current.reset();
+              if (clientTTSIdleTimerRef.current) {
+                clearTimeout(clientTTSIdleTimerRef.current);
+                clientTTSIdleTimerRef.current = null;
+              }
+              clientTTSPlayingRef.current = false;
+              setTTSOutputSuppressed(false);
+              presentRuntimeState(runtimeStateRef.current);
+              // Failed/closed is still a transport state, not proof that the
+              // server emitted a final/abort for the VAD turn. Preserve the
+              // partial until an explicit terminal event or session cleanup.
               setHintMessage("实时媒体连接已失效，请结束当前会话后重新开始。");
             } else if (connectionState === "connected") {
               void refreshControlSnapshots();
@@ -1154,7 +1351,7 @@ export function useVoiceSession() {
         webrtcRef.current = startupResources.webrtc;
         sessionStream = startupResources.webrtc.localStream;
         setUplinkEnabledRef.current(
-          effectiveVoiceInteractionPolicy(
+          effectiveCapturePolicy(
             initialMode,
             interactionPolicyRef.current,
           ) === "continuous",
@@ -1198,7 +1395,7 @@ export function useVoiceSession() {
       );
       setHintMessage(
         wakeHint ??
-          (effectiveVoiceInteractionPolicy(
+          (effectiveCapturePolicy(
             initialMode,
             interactionPolicyRef.current,
           ) === "wake_word"
@@ -1290,6 +1487,8 @@ export function useVoiceSession() {
     cleanupMedia,
     closeCommandUplink,
     initialMode,
+    presentRuntimeState,
+    effectiveCapturePolicy,
     refreshControlSnapshots,
     refreshModeSnapshot,
     startPolling,
@@ -1324,7 +1523,7 @@ export function useVoiceSession() {
         if (result.ok) {
           const mode = modeStateRef.current?.active_mode ?? initialMode;
           if (
-            effectiveVoiceInteractionPolicy(mode, interactionPolicyRef.current) ===
+            effectiveCapturePolicy(mode, interactionPolicyRef.current) ===
             "wake_word"
           ) {
             openCommandUplinkRef.current();
@@ -1380,7 +1579,7 @@ export function useVoiceSession() {
       wakeRef.current = null;
       listener.stop();
     };
-  }, [armCommandUplinkTimeout, initialMode]);
+  }, [armCommandUplinkTimeout, effectiveCapturePolicy, initialMode]);
 
   useEffect(
     () => () => {
@@ -1412,7 +1611,7 @@ export function useVoiceSession() {
       wakeStatus,
       commandFeedback,
       interactionPolicy: effectiveInteractionPolicy,
-      interactionPolicyLocked: activeMode === "interpretation",
+      interactionPolicyLocked: false,
       setInteractionPolicy,
       switchMode,
       toggle,

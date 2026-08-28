@@ -154,6 +154,12 @@ type MessageListingService interface {
 	ListMessages(context.Context, string, int) ([]Message, error)
 }
 
+// WebhookTargetBindingService is an optional extension for deployments that
+// support account-owned webhook targets.
+type WebhookTargetBindingService interface {
+	BindWebhookTarget(context.Context, string, string) (MessageTarget, error)
+}
+
 // AutomaticOutputStatusService exposes durable automatic-output recovery
 // state without expanding lightweight Service implementations.
 type AutomaticOutputStatusService interface {

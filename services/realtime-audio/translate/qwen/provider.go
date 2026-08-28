@@ -210,7 +210,7 @@ func (p *Provider) translateStreamOnce(ctx context.Context, request translate.Re
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: buildUserContent(request.Text, request.SourceLanguage, request.TargetLanguage)},
 		},
-		Stream: true, EnableThinking: p.config.EnableThinking,
+		Stream: true, StreamOptions: &streamOptions{IncludeUsage: true}, EnableThinking: p.config.EnableThinking,
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -296,10 +296,15 @@ func (p *Provider) translateStreamOnce(ctx context.Context, request translate.Re
 }
 
 type chatRequest struct {
-	Model          string        `json:"model"`
-	Messages       []chatMessage `json:"messages"`
-	Stream         bool          `json:"stream"`
-	EnableThinking bool          `json:"enable_thinking"`
+	Model          string         `json:"model"`
+	Messages       []chatMessage  `json:"messages"`
+	Stream         bool           `json:"stream"`
+	StreamOptions  *streamOptions `json:"stream_options,omitempty"`
+	EnableThinking bool           `json:"enable_thinking"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type chatMessage struct {

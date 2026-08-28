@@ -79,16 +79,25 @@ func TestBindEmailTargetRequiresConfiguredKey(t *testing.T) {
 }
 
 type targetRepositoryStub struct {
-	targets          []MessageTarget
-	listAccountID    string
-	listChannel      *Channel
-	bindRecord       BindEmailTargetRecord
-	bindWeChatRecord BindWeChatTargetRecord
-	bindErr          error
-	revokeAccount    string
-	revokeChannel    Channel
-	revokeRef        string
-	revokeErr        error
+	targets           []MessageTarget
+	listAccountID     string
+	listChannel       *Channel
+	bindRecord        BindEmailTargetRecord
+	bindWeChatRecord  BindWeChatTargetRecord
+	bindWebhookRecord BindWebhookTargetRecord
+	bindErr           error
+	putPreference     Preference
+	putPreferenceErr  error
+	revokeAccount     string
+	revokeChannel     Channel
+	revokeRef         string
+	revokeErr         error
+}
+
+type targetDestinationStub struct{}
+
+func (targetDestinationStub) ResolveVerifiedDestination(context.Context, string, Channel, string) (VerifiedDestination, error) {
+	return VerifiedDestination{}, nil
 }
 
 func (targetRepositoryStub) CreateMessage(context.Context, CreateMessageRecord) error {
@@ -119,8 +128,13 @@ func (targetRepositoryStub) SetAttemptStatus(context.Context, string, DeliveryAt
 func (targetRepositoryStub) ListPreferences(context.Context, string) ([]Preference, error) {
 	return nil, nil
 }
-func (targetRepositoryStub) PutPreference(context.Context, Preference) (Preference, error) {
-	return Preference{}, domain.ErrNotImplemented
+func (s *targetRepositoryStub) PutPreference(_ context.Context, preference Preference) (Preference, error) {
+	if s.putPreferenceErr != nil {
+		return Preference{}, s.putPreferenceErr
+	}
+	s.putPreference = preference
+	preference.Verified = true
+	return preference, nil
 }
 
 func (s *targetRepositoryStub) ListMessageTargets(_ context.Context, accountID string, channel *Channel) ([]MessageTarget, error) {
@@ -153,6 +167,21 @@ func (s *targetRepositoryStub) BindWeChatTarget(_ context.Context, record BindWe
 		Verified:       true,
 		UpdatedAt:      record.VerifiedAt,
 	}, nil
+}
+
+func (s *targetRepositoryStub) BindWebhookTarget(_ context.Context, record BindWebhookTargetRecord) (MessageTarget, error) {
+	if s.bindErr != nil {
+		return MessageTarget{}, s.bindErr
+	}
+	s.bindWebhookRecord = record
+	target := MessageTarget{
+		DestinationRef: record.DestinationRef,
+		Channel:        ChannelWebhook,
+		Verified:       true,
+		UpdatedAt:      record.VerifiedAt,
+	}
+	s.targets = []MessageTarget{target}
+	return target, nil
 }
 
 func (s *targetRepositoryStub) RevokeMessageTarget(_ context.Context, accountID string, channel Channel, destinationRef string, _ time.Time) error {
@@ -236,6 +265,75 @@ func TestBindWeChatTargetRequiresWeComClientOutsideLocal(t *testing.T) {
 	_, err := service.BindWeChatTarget(t.Context(), "account-1", "oauth-code")
 	if !errors.Is(err, domain.ErrNotImplemented) {
 		t.Fatalf("BindWeChatTarget() error = %v, want not implemented", err)
+	}
+}
+
+func TestBindWebhookTargetEncryptsURLAndEnablesPreference(t *testing.T) {
+	repository := &targetRepositoryStub{}
+	service := NewPersistentUseCases(repository, nil, targetDestinationStub{}, nil)
+	key := testDestinationKey(t)
+	service.ConfigureTargetBinding(key, "production")
+
+	target, err := service.BindWebhookTarget(t.Context(), "account-1", " https://example.com/events ")
+	if err != nil {
+		t.Fatalf("BindWebhookTarget() error = %v", err)
+	}
+	if target.Channel != ChannelWebhook || target.DestinationRef != defaultWebhookDestinationRef || !target.Verified {
+		t.Fatalf("BindWebhookTarget() = %#v", target)
+	}
+	record := repository.bindWebhookRecord
+	plaintext, err := decryptTarget(key, record.Ciphertext)
+	if err != nil {
+		t.Fatalf("decrypt webhook target: %v", err)
+	}
+	if record.AccountID != "account-1" || record.DestinationRef != defaultWebhookDestinationRef || record.KeyVersion != destinationKeyVersion || plaintext != "https://example.com/events" {
+		t.Fatalf("BindWebhookTarget() record = %#v plaintext = %q", record, plaintext)
+	}
+	preference := repository.putPreference
+	if preference.AccountID != "account-1" || preference.Channel != ChannelWebhook || preference.DestinationRef != defaultWebhookDestinationRef || !preference.Enabled {
+		t.Fatalf("BindWebhookTarget() preference = %#v", preference)
+	}
+}
+
+func TestBindWebhookTargetRejectsInvalidConfigurationAndURL(t *testing.T) {
+	tests := []struct {
+		name      string
+		service   *UseCases
+		accountID string
+		url       string
+		want      error
+	}{
+		{name: "missing repository capability", service: NewPersistentUseCases(&retryRepositoryStub{}, nil, nil, nil), accountID: "account-1", url: "https://example.com/events", want: domain.ErrNotImplemented},
+		{name: "missing account", service: NewPersistentUseCases(&targetRepositoryStub{}, nil, nil, nil), url: "https://example.com/events", want: domain.ErrNotImplemented},
+		{name: "insecure URL", service: NewPersistentUseCases(&targetRepositoryStub{}, nil, nil, nil), accountID: "account-1", url: "http://example.com/events", want: domain.ErrInvalidArgument},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.service.ConfigureTargetBinding(testDestinationKey(t), "production")
+			if _, err := test.service.BindWebhookTarget(t.Context(), test.accountID, test.url); !errors.Is(err, test.want) {
+				t.Fatalf("BindWebhookTarget() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestBindWebhookTargetReturnsPersistenceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		repository *targetRepositoryStub
+		want       error
+	}{
+		{name: "target persistence", repository: &targetRepositoryStub{bindErr: domain.ErrConflict}, want: domain.ErrConflict},
+		{name: "preference persistence", repository: &targetRepositoryStub{putPreferenceErr: domain.ErrConflict}, want: domain.ErrConflict},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := NewPersistentUseCases(test.repository, nil, targetDestinationStub{}, nil)
+			service.ConfigureTargetBinding(testDestinationKey(t), "production")
+			if _, err := service.BindWebhookTarget(t.Context(), "account-1", "https://example.com/events"); !errors.Is(err, test.want) {
+				t.Fatalf("BindWebhookTarget() error = %v, want %v", err, test.want)
+			}
+		})
 	}
 }
 

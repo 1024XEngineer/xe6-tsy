@@ -209,13 +209,19 @@ func TestProviderTranslatesWithQwenChatCompletion(t *testing.T) {
 func TestProviderTranslateStreamEmitsDeltas(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Stream bool `json:"stream"`
+			Stream        bool `json:"stream"`
+			StreamOptions struct {
+				IncludeUsage bool `json:"include_usage"`
+			} `json:"stream_options"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
 		if !request.Stream {
 			t.Errorf("stream = false, want true")
+		}
+		if !request.StreamOptions.IncludeUsage {
+			t.Errorf("stream_options.include_usage = false, want true")
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
@@ -236,7 +242,7 @@ func TestProviderTranslateStreamEmitsDeltas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateStream() error = %v", err)
 	}
-	if result.Text != "hello" || len(deltas) != 2 || deltas[0] != "hel" || deltas[1] != "lo" {
+	if result.Text != "hello" || result.InputTokens != 3 || result.OutputTokens != 2 || len(deltas) != 2 || deltas[0] != "hel" || deltas[1] != "lo" {
 		t.Fatalf("result=%#v deltas=%#v", result, deltas)
 	}
 }

@@ -3,8 +3,10 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -48,3 +50,60 @@ func TestValidateWebhookURLRequiresHTTPSAndNoCredentials(t *testing.T) {
 		t.Fatalf("validateWebhookURL() = (%q, %v)", got, err)
 	}
 }
+
+func TestNewWebhookProviderConfiguresClient(t *testing.T) {
+	provider := NewWebhookProvider()
+	if provider == nil || provider.httpClient == nil || provider.httpClient.Timeout == 0 || provider.httpClient.CheckRedirect == nil {
+		t.Fatalf("NewWebhookProvider() = %#v", provider)
+	}
+	if provider.SupportsProviderIdempotency() {
+		t.Fatal("webhook provider must not claim idempotency")
+	}
+}
+
+func TestWebhookProviderRejectsInvalidRequestAndContext(t *testing.T) {
+	provider := NewWebhookProvider()
+	if err := provider.Send(context.Background(), SendRequest{}); !errors.Is(err, ErrProviderRejected) {
+		t.Fatalf("invalid request error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := provider.Send(ctx, SendRequest{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled request error = %v", err)
+	}
+}
+
+func TestWebhookProviderHandlesProviderAndTransportErrors(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("upstream failure"))
+	}))
+	defer server.Close()
+	message := Message{ID: "msg-1", AccountID: "account-1", Channel: ChannelWebhook, DestinationRef: "primary-webhook"}
+	attempt := DeliveryAttempt{ID: "attempt-1", MessageID: message.ID}
+	request := SendRequest{Message: message, Attempt: attempt, ProviderIdempotencyKey: attempt.ID, Destination: VerifiedDestination{AccountID: message.AccountID, Channel: ChannelWebhook, DestinationRef: message.DestinationRef, ProviderTarget: server.URL}}
+	provider := &WebhookProvider{httpClient: server.Client()}
+	if err := provider.Send(context.Background(), request); !errors.Is(err, ErrProviderRejected) {
+		t.Fatalf("provider error = %v", err)
+	}
+	provider.httpClient = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("network down")
+	})}
+	if err := provider.Send(context.Background(), request); err == nil || !strings.Contains(err.Error(), "webhook transport failed") {
+		t.Fatalf("transport error = %v", err)
+	}
+}
+
+func TestWebhookProviderFallsBackToDefaultHTTPClient(t *testing.T) {
+	provider := &WebhookProvider{}
+	message := Message{ID: "msg-1", AccountID: "account-1", Channel: ChannelWebhook, DestinationRef: "primary-webhook"}
+	attempt := DeliveryAttempt{ID: "attempt-1", MessageID: message.ID}
+	request := SendRequest{Message: message, Attempt: attempt, ProviderIdempotencyKey: attempt.ID, Destination: VerifiedDestination{AccountID: message.AccountID, Channel: ChannelWebhook, DestinationRef: message.DestinationRef, ProviderTarget: "https://127.0.0.1:1/hook"}}
+	if err := provider.Send(context.Background(), request); err == nil {
+		t.Fatal("default client request error = nil")
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }

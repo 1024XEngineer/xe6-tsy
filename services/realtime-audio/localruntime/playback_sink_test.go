@@ -22,6 +22,9 @@ func TestPlaybackAudioSinkForwardsCompleteAndCancel(t *testing.T) {
 	sink := PlaybackAudioSink{Media: mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) {
 		return &playbackSinkMedia{service: service}, nil
 	})}
+	if err := sink.WaitForAvailable(context.Background(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("WaitForAvailable(first) error = %v", err)
+	}
 	first := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1, 2}}
 	if err := sink.Publish(context.Background(), first); err != nil {
 		t.Fatalf("Publish(first) error = %v", err)
@@ -33,6 +36,15 @@ func TestPlaybackAudioSinkForwardsCompleteAndCancel(t *testing.T) {
 		t.Fatalf("state after Complete = %q, want %q", got, playback.StateFinished)
 	}
 
+	if err := sink.WaitForAvailable(context.Background(), "session-1", "playback-2"); err != nil {
+		t.Fatalf("WaitForAvailable(second) error = %v", err)
+	}
+	if err := sink.ReleaseAvailability(context.Background(), "session-1", "playback-2"); err != nil {
+		t.Fatalf("ReleaseAvailability(second) error = %v", err)
+	}
+	if err := sink.WaitForAvailable(context.Background(), "session-1", "playback-2"); err != nil {
+		t.Fatalf("WaitForAvailable(second retry) error = %v", err)
+	}
 	second := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-2", PlaybackID: "playback-2", SequenceNo: 1, Data: []byte{3, 4}}
 	if err := sink.Publish(context.Background(), second); err != nil {
 		t.Fatalf("Publish(second) error = %v", err)

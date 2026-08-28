@@ -16,7 +16,7 @@ describe("DeliverySettings", () => {
   beforeEach(() => {
     localStorage.clear();
     saveAuthSession({
-      account: { id: "acc-delivery", kind: "anonymous", created_at: "2026-08-01T00:00:00Z" },
+      account: { id: "acc-delivery", kind: "registered", created_at: "2026-08-01T00:00:00Z" },
       tokens: {
         access_token: "access-delivery",
         refresh_token: "refresh-delivery",
@@ -203,5 +203,57 @@ describe("DeliverySettings", () => {
       expect(firstTarget).not.toBeChecked();
       expect(secondTarget).toBeChecked();
     });
+  });
+
+  it("binds a webhook URL and refreshes the target list", async () => {
+    let webhookBound = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/message-targets")) {
+        return jsonResponse({
+          items: webhookBound
+            ? [{
+                destination_ref: "primary-webhook",
+                channel: "webhook",
+                verified: true,
+                revoked_at: null,
+                updated_at: "2026-08-07T00:00:00Z",
+              }]
+            : [],
+        });
+      }
+      if (url.endsWith("/message-preferences")) return jsonResponse({ items: [] });
+      if (url.endsWith("/outbound-messages")) return jsonResponse({ items: [] });
+      if (url.endsWith("/message-targets/webhook/bind") && init?.method === "POST") {
+        webhookBound = true;
+        return jsonResponse({
+          destination_ref: "primary-webhook",
+          channel: "webhook",
+          verified: true,
+          revoked_at: null,
+          updated_at: "2026-08-07T00:00:00Z",
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<DeliverySettings />);
+
+    const urlInput = await screen.findByRole("textbox", { name: "Webhook URL" });
+    fireEvent.change(urlInput, { target: { value: "https://example.com/webhook" } });
+    fireEvent.click(screen.getByRole("button", { name: "绑定 Webhook" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/account/message-targets/webhook/bind",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ url: "https://example.com/webhook" }),
+        }),
+      );
+    });
+    expect(await screen.findByText("primary-webhook")).toBeInTheDocument();
+    expect(urlInput).toHaveValue("");
   });
 });

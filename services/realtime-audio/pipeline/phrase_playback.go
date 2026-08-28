@@ -491,6 +491,7 @@ func (s *PhrasePlaybackSchedulerService) interruptModeGenerationLocked(state *ph
 	state.queue = kept
 	if active := state.active; active != nil && active.request.Turn.Mode.Generation <= modeGeneration {
 		s.markSupersededUtteranceLocked(state, active.request.UtteranceID, state.generation)
+		active.status = phrasePlaybackCanceled
 		if active.cancel != nil {
 			active.cancel()
 		}
@@ -662,7 +663,8 @@ func (s *PhrasePlaybackSchedulerService) runSession(state *phrasePlaybackSession
 				state.active = nil
 			}
 			canRetry := playErr != nil && task.attempts < maxPhrasePlaybackAttempts &&
-				!state.closed && state.ctx.Err() == nil && task.generation == state.generation
+				task.status != phrasePlaybackCanceled && !state.closed && state.ctx.Err() == nil &&
+				task.generation == state.generation
 			if canRetry {
 				// SpeechOutput cancels a started playback on stream/finish failure.
 				// Playback sinks settle that ID permanently, so a retry must open a

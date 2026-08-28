@@ -87,8 +87,16 @@ func TestPhrasePlaybackSchedulerModeCleanupKeepsNewGenerationTasks(t *testing.T)
 		{request: PhrasePlaybackRequest{Turn: TurnContext{SessionID: "session-1", Mode: TurnModeSnapshot{Generation: 1}}, UtteranceID: "old-turn", PlaybackID: "old-playback"}, generation: state.generation, utterance: oldUtterance},
 		{request: PhrasePlaybackRequest{Turn: TurnContext{SessionID: "session-1", Mode: TurnModeSnapshot{Generation: 2}}, UtteranceID: "new-turn", PlaybackID: "new-playback"}, generation: state.generation, utterance: newUtterance},
 	}
+	_, activeCancel := context.WithCancel(context.Background())
+	defer activeCancel()
+	activeTask := &phrasePlaybackTask{
+		request:    PhrasePlaybackRequest{Turn: TurnContext{SessionID: "session-1", Mode: TurnModeSnapshot{Generation: 1}}, UtteranceID: "active-old", PlaybackID: "active-old-playback"},
+		generation: state.generation, status: phrasePlaybackStarted, cancel: activeCancel,
+	}
+	state.active = activeTask
 	state.utterances["old-turn"] = oldUtterance
 	state.utterances["new-turn"] = newUtterance
+	state.utterances["active-old"] = &phrasePlaybackUtterance{unfinished: 1}
 	scheduler.mu.Unlock()
 
 	if err := scheduler.InterruptPlayback(context.Background(), "session-1", "old-playback", 1, "mode_switch"); err != nil {
@@ -101,6 +109,9 @@ func TestPhrasePlaybackSchedulerModeCleanupKeepsNewGenerationTasks(t *testing.T)
 	}
 	if _, superseded := state.superseded["old-turn"]; !superseded {
 		t.Fatal("old-turn was not marked superseded")
+	}
+	if activeTask.status != phrasePlaybackCanceled {
+		t.Fatalf("active task status = %q, want canceled", activeTask.status)
 	}
 }
 

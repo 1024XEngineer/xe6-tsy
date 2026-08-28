@@ -94,6 +94,11 @@ describe("DeliverySettings", () => {
       </StrictMode>,
     );
 
+    expect(
+      await screen.findByText(
+        "单向输出的反向译文会发送到已启用的目标；启用 Webhook 后，仅投递到该 Webhook。",
+      ),
+    ).toBeInTheDocument();
     expect(await screen.findByText("person@example.com")).toBeInTheDocument();
     expect(screen.getByText("邮箱 · person@example.com")).toBeInTheDocument();
     expect(screen.getByText("已发送")).toBeInTheDocument();

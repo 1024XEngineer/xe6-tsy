@@ -280,7 +280,7 @@ export function DeliverySettings() {
   return (
     <div className={styles.deliverySettings}>
       <div className={styles.deliveryIntro}>
-        <span>单向输出的反向译文会发送到所有已启用的目标。</span>
+        <span>单向输出的反向译文会发送到已启用的目标；启用 Webhook 后，仅投递到该 Webhook。</span>
         <button
           aria-label="刷新投递设置"
           className={styles.deliveryRefresh}

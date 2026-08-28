@@ -254,22 +254,28 @@ export async function openWebRTCSession(
     let connectionId: string | null = null;
     let offerResponse: OfferResponse | null = null;
     let endOfCandidates = false;
-    const candidateQueue: Promise<unknown>[] = [];
+    let candidateQueue: Promise<unknown> = Promise.resolve();
 
     const flushCandidate = (
       candidates: RTCIceCandidate[],
       done: boolean,
     ): void => {
       if (!connectionId) return;
-      candidateQueue.push(
-        postICECandidates(
-          options.ticket,
-          options.sessionId,
-          connectionId,
-          candidates,
-          done,
-        ).catch(() => undefined),
-      );
+      const queuedCandidates = [...candidates];
+      // ICE candidates and the end marker must reach the server in order. If
+      // the end marker wins the race, subsequent candidates are rejected as
+      // "ICE candidate collection is complete" and the peer cannot connect.
+      candidateQueue = candidateQueue
+        .then(() =>
+          postICECandidates(
+            options.ticket,
+            options.sessionId,
+            connectionId!,
+            queuedCandidates,
+            done,
+          ),
+        )
+        .catch(() => undefined);
     };
 
     peerConnection.onicecandidate = (event) => {
@@ -311,7 +317,7 @@ export async function openWebRTCSession(
     if (endOfCandidates) {
       flushCandidate([], true);
     }
-    await Promise.all(candidateQueue);
+    await candidateQueue;
 
     // API /start requires realtime control-plane state === connected.
     await waitForPeerConnectionConnected(peerConnection, 20_000);

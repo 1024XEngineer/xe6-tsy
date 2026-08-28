@@ -57,6 +57,17 @@ func (s PlaybackAudioSink) WaitForAvailable(ctx context.Context, sessionID, play
 	return service.WaitForAvailable(ctx, sessionID, playbackID)
 }
 
+func (s PlaybackAudioSink) ReleaseAvailability(ctx context.Context, sessionID, playbackID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	service := s.currentPlayback(ctx, sessionID)
+	if service == nil {
+		return nil
+	}
+	return service.ReleaseAvailability(ctx, sessionID, playbackID)
+}
+
 // InterruptCurrent stops the active playback while retaining the shared
 // WebRTC track. It is used by a wake-word command before command audio starts.
 func (s PlaybackAudioSink) InterruptCurrent(ctx context.Context, sessionID, reason string) error {

@@ -359,6 +359,63 @@ func TestServiceWaitForAvailableUnblocksAfterActivePlaybackSettles(t *testing.T)
 	}
 }
 
+func TestServiceWaitForAvailableReservesTrackUntilFirstChunk(t *testing.T) {
+	service, err := NewService(Dependencies{Track: &recordingTrack{}, Events: &recordingEvents{}, Now: fixedClock})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	if err := service.WaitForAvailable(context.Background(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("WaitForAvailable(first) error = %v", err)
+	}
+
+	secondReady := make(chan error, 1)
+	go func() {
+		secondReady <- service.WaitForAvailable(context.Background(), "session-1", "playback-2")
+	}()
+	select {
+	case err := <-secondReady:
+		t.Fatalf("second reservation returned before first claimed track: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	first := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1}}
+	if err := service.Publish(context.Background(), first); err != nil {
+		t.Fatalf("Publish(first) error = %v", err)
+	}
+	if err := service.Complete(context.Background(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("Complete(first) error = %v", err)
+	}
+	select {
+	case err := <-secondReady:
+		if err != nil {
+			t.Fatalf("second reservation error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second reservation did not unblock after first playback settled")
+	}
+
+	second := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-2", PlaybackID: "playback-2", SequenceNo: 1, Data: []byte{2}}
+	if err := service.Publish(context.Background(), second); err != nil {
+		t.Fatalf("Publish(second) error = %v", err)
+	}
+}
+
+func TestServiceReleaseAvailabilityAllowsNextReservation(t *testing.T) {
+	service, err := NewService(Dependencies{Track: &recordingTrack{}, Events: &recordingEvents{}, Now: fixedClock})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	if err := service.WaitForAvailable(context.Background(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("WaitForAvailable(first) error = %v", err)
+	}
+	if err := service.ReleaseAvailability(context.Background(), "session-1", "playback-1"); err != nil {
+		t.Fatalf("ReleaseAvailability() error = %v", err)
+	}
+	if err := service.WaitForAvailable(context.Background(), "session-1", "playback-2"); err != nil {
+		t.Fatalf("WaitForAvailable(second) error = %v", err)
+	}
+}
+
 func TestServiceDoesNotHoldStateLockWhilePublishingEvent(t *testing.T) {
 	events := &blockingEvents{started: make(chan struct{}), release: make(chan struct{})}
 	service, err := NewService(Dependencies{Track: &recordingTrack{}, Events: events, Now: fixedClock})

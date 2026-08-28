@@ -90,6 +90,45 @@ type Service struct {
 	current map[string]*playback
 }
 
+// WaitForAvailable serializes playback IDs that share one physical track. It
+// waits for a different active playback to settle instead of allowing its
+// first chunk to race the settlement and be rejected as not active.
+func (s *Service) WaitForAvailable(ctx context.Context, sessionID, playbackID string) error {
+	if s == nil {
+		return ErrDependencyRequired
+	}
+	if sessionID == "" {
+		return ErrSessionRequired
+	}
+	if playbackID == "" {
+		return ErrPlaybackRequired
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		current := s.current[sessionID]
+		busy := current != nil && current.snapshot.State == StatePlaying && current.snapshot.PlaybackID != playbackID
+		active := current
+		s.mu.Unlock()
+		if !busy {
+			return nil
+		}
+		// Settlement holds opMu while publishing its terminal event and stopping
+		// the track. Waiting on it closes the exact race this method guards.
+		active.opMu.Lock()
+		active.opMu.Unlock()
+		timer := time.NewTimer(time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		}
+	}
+}
+
 type playback struct {
 	opMu       sync.Mutex
 	snapshot   Snapshot

@@ -330,6 +330,35 @@ func TestServiceRejectsSecondPlaybackWhileOneIsActive(t *testing.T) {
 	}
 }
 
+func TestServiceWaitForAvailableUnblocksAfterActivePlaybackSettles(t *testing.T) {
+	service, err := NewService(Dependencies{Track: &recordingTrack{}, Events: &recordingEvents{}, Now: fixedClock})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	first := pipeline.AudioChunk{SessionID: "session-1", TurnID: "turn-1", PlaybackID: "playback-1", SequenceNo: 1, Data: []byte{1}}
+	if err := service.Publish(context.Background(), first); err != nil {
+		t.Fatalf("Publish(first) error = %v", err)
+	}
+	available := make(chan error, 1)
+	go func() { available <- service.WaitForAvailable(context.Background(), "session-1", "playback-2") }()
+	select {
+	case err := <-available:
+		t.Fatalf("WaitForAvailable returned before settlement: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	if err := service.Interrupt(context.Background(), "session-1", "playback-1", "mode_switch"); err != nil {
+		t.Fatalf("Interrupt() error = %v", err)
+	}
+	select {
+	case err := <-available:
+		if err != nil {
+			t.Fatalf("WaitForAvailable() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitForAvailable did not unblock after settlement")
+	}
+}
+
 func TestServiceDoesNotHoldStateLockWhilePublishingEvent(t *testing.T) {
 	events := &blockingEvents{started: make(chan struct{}), release: make(chan struct{})}
 	service, err := NewService(Dependencies{Track: &recordingTrack{}, Events: events, Now: fixedClock})

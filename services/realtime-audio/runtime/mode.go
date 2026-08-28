@@ -366,9 +366,15 @@ func (m *Manager) SwitchMode(
 		return realtimev1.SwitchModeResult{}, err
 	}
 	if runCtx == nil {
+		changed := command.TargetMode != coordinator.Snapshot().ActiveMode
 		unlock()
-		return coordinator.Switch(ctx, command)
+		result, err := coordinator.Switch(ctx, command)
+		if err == nil && changed && result.Status == realtimev1.ModeSwitchApplied {
+			m.interruptPlaybackAfterModeSwitch(command.SessionID)
+		}
+		return result, err
 	}
+	changed := command.TargetMode != coordinator.Snapshot().ActiveMode
 	switchCtx, cancel := context.WithCancel(ctx)
 	stopCancellation := context.AfterFunc(runCtx, cancel)
 	unlock()
@@ -376,7 +382,28 @@ func (m *Manager) SwitchMode(
 		stopCancellation()
 		cancel()
 	}()
-	return coordinator.Switch(switchCtx, command)
+	result, err = coordinator.Switch(switchCtx, command)
+	if err == nil && changed && result.Status == realtimev1.ModeSwitchApplied {
+		m.interruptPlaybackAfterModeSwitch(command.SessionID)
+	}
+	return result, err
+}
+
+// interruptPlaybackAfterModeSwitch closes the previous mode's playback before
+// the new mode can enqueue its first TTS chunk. Playback cleanup is best effort:
+// the mode event is already durably committed and must not be rolled back when
+// a transport is concurrently closing.
+func (m *Manager) interruptPlaybackAfterModeSwitch(sessionID string) {
+	interrupter := m.playbackInterrupter()
+	if interrupter == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := interrupter.InterruptCurrent(ctx, sessionID, "mode_switch"); err != nil && m.logger != nil {
+		m.logger.Warn("realtime mode switch playback cleanup failed",
+			"session_id", sessionID, "error", err)
+	}
 }
 
 // logModeSwitch records control-plane correlation after the coordinator has

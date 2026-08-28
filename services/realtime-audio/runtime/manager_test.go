@@ -203,8 +203,10 @@ func TestManagerWiresCommandResultsAndObserverIntoGate(t *testing.T) {
 func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) {
 	var output bytes.Buffer
 	source := &fakeFrameSource{waitForClose: true}
+	interrupter := &recordingPlaybackInterrupter{}
 	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
 	deps.AssistantReplies = &recordingAssistantReplySink{}
+	deps.PlaybackInterrupter = interrupter
 	deps.NewRuntimeInstanceID = func() (string, error) { return "runtime-1", nil }
 	deps.Logger = slog.New(slog.NewJSONHandler(&output, nil))
 	manager, err := newManager(config.Providers{
@@ -236,6 +238,12 @@ func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) 
 	result, err := manager.SwitchMode(t.Context(), command)
 	if err != nil || result.State.ActiveMode != realtimev1.ModeAssistant || result.State.Generation != 2 {
 		t.Fatalf("SwitchMode() = %#v, %v", result, err)
+	}
+	interrupter.mu.Lock()
+	interruptSession, interruptReason := interrupter.sessionID, interrupter.reason
+	interrupter.mu.Unlock()
+	if interruptSession != snapshot.SessionID || interruptReason != "mode_switch" {
+		t.Fatalf("mode switch playback cleanup = %q/%q, want %q/mode_switch", interruptSession, interruptReason, snapshot.SessionID)
 	}
 	command.OperationID = "switch-stale"
 	if _, err := manager.SwitchMode(t.Context(), command); !errors.Is(err, ErrModeGenerationConflict) {

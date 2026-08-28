@@ -72,6 +72,13 @@ type AudioChunkSink interface {
 	Publish(ctx context.Context, chunk AudioChunk) error
 }
 
+// AudioPlaybackAvailability is an optional serialization hook for sinks that
+// expose one physical downlink per session. A new playback waits here until a
+// previous playback has settled, avoiding a first-chunk race with its cleanup.
+type AudioPlaybackAvailability interface {
+	WaitForAvailable(ctx context.Context, sessionID, playbackID string) error
+}
+
 // AudioPlaybackLifecycle closes the playback event sequence after chunks have started.
 // It is optional so existing sinks remain valid.
 type AudioPlaybackLifecycle interface {

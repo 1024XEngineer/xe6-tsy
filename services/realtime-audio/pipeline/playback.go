@@ -155,6 +155,14 @@ func (o *SpeechOutput) Play(ctx context.Context, request SpeechOutputRequest) (t
 		strings.TrimSpace(request.PlaybackID) == "" {
 		return tts.Result{}, speechOutputNotStartedError{err: ErrSpeechOutputRequestInvalid}
 	}
+	if availability, ok := o.audio.(AudioPlaybackAvailability); ok {
+		if err := availability.WaitForAvailable(ctx, request.Turn.SessionID, request.PlaybackID); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return tts.Result{}, ErrSpeechOutputSuperseded
+			}
+			return tts.Result{}, speechOutputNotStartedError{err: fmt.Errorf("wait for playback: %w", err)}
+		}
+	}
 	if !request.SkipRuntime {
 		if err := o.reportRuntime(ctx, request.Turn, session.RuntimeTTSProcessing, request.PlaybackID); err != nil {
 			if runtimeUpdateSuperseded(err) {

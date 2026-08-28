@@ -124,6 +124,10 @@ func (e commandExecutor) executeAssistantQuery(ctx context.Context, request comm
 		Text: request.Command.Text, SourceLanguage: asr.NormalizeLanguage(request.Language),
 	}
 	if err := e.manager.router.HandleASRFinal(ctx, turn, result); err != nil {
+		if errors.Is(err, pipeline.ErrSpeechOutputSuperseded) || errors.Is(err, pipeline.ErrTurnSuperseded) || errors.Is(err, context.Canceled) {
+			return command.ExecutionResult{}, errors.Join(command.ErrExecutionInterrupted,
+				fmt.Errorf("handle assistant command: %w", err))
+		}
 		return command.ExecutionResult{}, fmt.Errorf("handle assistant command: %w", err)
 	}
 	state, err = e.manager.GetModeState(ctx, request.SessionID)

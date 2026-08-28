@@ -54,6 +54,8 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	mux.Handle("DELETE /api/v1/account/message-targets/email/{destination_ref}", a.authenticate(http.HandlerFunc(a.unbindEmailTarget)))
 	mux.Handle("POST /api/v1/account/message-targets/wechat/bind", a.authenticate(http.HandlerFunc(a.bindWeChatTarget)))
 	mux.Handle("DELETE /api/v1/account/message-targets/wechat/{destination_ref}", a.authenticate(http.HandlerFunc(a.unbindWeChatTarget)))
+	mux.Handle("POST /api/v1/account/message-targets/webhook/bind", a.authenticate(http.HandlerFunc(a.bindWebhookTarget)))
+	mux.Handle("DELETE /api/v1/account/message-targets/webhook/{destination_ref}", a.authenticate(http.HandlerFunc(a.unbindWebhookTarget)))
 	return mux
 }
 
@@ -592,6 +594,50 @@ func (a *API) unbindWeChatTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.delivery.RevokeMessageTarget(r.Context(), id, delivery.ChannelWeChat, destinationRef); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) bindWebhookTarget(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var request struct {
+		URL string `json:"url"`
+	}
+	if decodeJSON(r, &request) != nil || strings.TrimSpace(request.URL) == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	binder, ok := a.delivery.(delivery.WebhookTargetBindingService)
+	if !ok {
+		writeError(w, r, domain.ErrNotImplemented)
+		return
+	}
+	result, err := binder.BindWebhookTarget(r.Context(), id, request.URL)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) unbindWebhookTarget(w http.ResponseWriter, r *http.Request) {
+	id, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	destinationRef := strings.TrimSpace(r.PathValue("destination_ref"))
+	if destinationRef == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	if err := a.delivery.RevokeMessageTarget(r.Context(), id, delivery.ChannelWebhook, destinationRef); err != nil {
 		writeError(w, r, err)
 		return
 	}

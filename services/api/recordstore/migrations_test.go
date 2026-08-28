@@ -10,8 +10,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("embeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 31 {
-		t.Fatalf("len(embeddedMigrations()) = %d, want 31", len(migrations))
+	if len(migrations) != 32 {
+		t.Fatalf("len(embeddedMigrations()) = %d, want 32", len(migrations))
 	}
 
 	longSentenceTrigger := migrations[28]
@@ -34,6 +34,10 @@ func TestEmbeddedMigrations(t *testing.T) {
 	challengeRetention := migrations[30]
 	if challengeRetention.Version != 31 || challengeRetention.Name != "device_auth_challenge_retention" {
 		t.Fatalf("migration = %#v, want version 31 named device_auth_challenge_retention", challengeRetention)
+	}
+	webhookTargets := migrations[31]
+	if webhookTargets.Version != 32 || webhookTargets.Name != "webhook_message_targets" {
+		t.Fatalf("migration = %#v, want version 32 named webhook_message_targets", webhookTargets)
 	}
 	voiceRecords := migrations[0]
 	if voiceRecords.Version != 1 || voiceRecords.Name != "voice_records" {

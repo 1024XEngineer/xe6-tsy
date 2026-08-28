@@ -7,12 +7,17 @@ import (
 
 // ChannelRouter delegates outbound delivery to a channel-specific provider.
 type ChannelRouter struct {
-	email  Provider
-	wechat Provider
+	email   Provider
+	wechat  Provider
+	webhook Provider
 }
 
-func NewChannelRouter(emailProvider, wechatProvider Provider) *ChannelRouter {
-	return &ChannelRouter{email: emailProvider, wechat: wechatProvider}
+func NewChannelRouter(emailProvider, wechatProvider Provider, webhookProvider ...Provider) *ChannelRouter {
+	var webhook Provider
+	if len(webhookProvider) > 0 {
+		webhook = webhookProvider[0]
+	}
+	return &ChannelRouter{email: emailProvider, wechat: wechatProvider, webhook: webhook}
 }
 
 func (r *ChannelRouter) Send(ctx context.Context, request SendRequest) error {
@@ -24,6 +29,8 @@ func (r *ChannelRouter) Send(ctx context.Context, request SendRequest) error {
 		return r.send(ctx, r.email, request)
 	case ChannelWeChat:
 		return r.send(ctx, r.wechat, request)
+	case ChannelWebhook:
+		return r.send(ctx, r.webhook, request)
 	default:
 		return fmt.Errorf("%w: unsupported channel %q", ErrProviderNotConfigured, request.Message.Channel)
 	}
@@ -41,6 +48,8 @@ func (r *ChannelRouter) SupportsChannel(channel Channel) bool {
 		return providerConfigured(r.email)
 	case ChannelWeChat:
 		return providerConfigured(r.wechat)
+	case ChannelWebhook:
+		return providerConfigured(r.webhook)
 	default:
 		return false
 	}

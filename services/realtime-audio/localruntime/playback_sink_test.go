@@ -57,6 +57,35 @@ func TestPlaybackAudioSinkForwardsCompleteAndCancel(t *testing.T) {
 	}
 }
 
+func TestPlaybackAudioSinkTargetsCurrentPlayback(t *testing.T) {
+	service, err := playback.NewService(playback.Dependencies{
+		Track:  &playbackSinkTrack{},
+		Events: playbackSinkEvents{},
+	})
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+	sink := PlaybackAudioSink{Media: mediaLookupFunc(func(context.Context, string) (webrtc.MediaTransport, error) {
+		return &playbackSinkMedia{service: service}, nil
+	})}
+	chunk := pipeline.AudioChunk{SessionID: "session-target", TurnID: "turn-1", PlaybackID: "playback-target", SequenceNo: 1, Data: []byte{1}}
+	if err := sink.Publish(context.Background(), chunk); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if got := sink.CurrentPlaybackID(context.Background(), chunk.SessionID); got != chunk.PlaybackID {
+		t.Fatalf("CurrentPlaybackID() = %q, want %q", got, chunk.PlaybackID)
+	}
+	if err := sink.InterruptPlayback(context.Background(), chunk.SessionID, chunk.PlaybackID, "mode_switch"); err != nil {
+		t.Fatalf("InterruptPlayback() error = %v", err)
+	}
+	if got := service.Snapshot(chunk.SessionID).State; got != playback.StateInterrupted {
+		t.Fatalf("state after InterruptPlayback = %q, want %q", got, playback.StateInterrupted)
+	}
+	if got := sink.CurrentPlaybackID(context.Background(), chunk.SessionID); got != "" {
+		t.Fatalf("CurrentPlaybackID() after interrupt = %q, want empty", got)
+	}
+}
+
 type playbackSinkTrack struct{}
 
 func (*playbackSinkTrack) Write(context.Context, pipeline.AudioChunk) error { return nil }

@@ -385,6 +385,27 @@ func joinPhrasePlaybackText(left, right string) string {
 }
 
 func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, sessionID, reason string) error {
+	return s.interrupt(ctx, sessionID, "", reason, false)
+}
+
+// CurrentPlaybackID exposes the physical playback owner to mode cleanup.
+func (s *PhrasePlaybackSchedulerService) CurrentPlaybackID(ctx context.Context, sessionID string) string {
+	owner, ok := s.audio.(interface {
+		CurrentPlaybackID(context.Context, string) string
+	})
+	if !ok {
+		return ""
+	}
+	return owner.CurrentPlaybackID(ctx, sessionID)
+}
+
+// InterruptPlayback resets queued phrase work while interrupting only the
+// playback owner captured before a mode transition.
+func (s *PhrasePlaybackSchedulerService) InterruptPlayback(ctx context.Context, sessionID, playbackID, reason string) error {
+	return s.interrupt(ctx, sessionID, playbackID, reason, true)
+}
+
+func (s *PhrasePlaybackSchedulerService) interrupt(ctx context.Context, sessionID, playbackID, reason string, targeted bool) error {
 	if s == nil || sessionID == "" {
 		return nil
 	}
@@ -421,6 +442,17 @@ func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, s
 		s.signalCapacityLocked(state)
 	}
 	s.mu.Unlock()
+	if targeted {
+		if playbackID == "" {
+			return nil
+		}
+		if interrupter, ok := s.audio.(interface {
+			InterruptPlayback(context.Context, string, string, string) error
+		}); ok {
+			return interrupter.InterruptPlayback(ctx, sessionID, playbackID, reason)
+		}
+		return nil
+	}
 	if interrupter, ok := s.audio.(interface {
 		InterruptCurrent(context.Context, string, string) error
 	}); ok {

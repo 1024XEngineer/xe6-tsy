@@ -59,6 +59,23 @@ func TestPhrasePlaybackSchedulerPreservesOrderAndUsesIndependentIDs(t *testing.T
 	}
 }
 
+func TestPhrasePlaybackSchedulerTargetsPlaybackOwner(t *testing.T) {
+	audio := &recordingPhraseAudio{currentPlaybackID: "old-playback"}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{Audio: audio})
+	if got := scheduler.CurrentPlaybackID(context.Background(), "session-1"); got != "old-playback" {
+		t.Fatalf("CurrentPlaybackID() = %q, want old-playback", got)
+	}
+	if err := scheduler.InterruptPlayback(context.Background(), "session-1", "old-playback", "mode_switch"); err != nil {
+		t.Fatalf("InterruptPlayback() error = %v", err)
+	}
+	audio.mu.Lock()
+	interruptedID := audio.interruptedID
+	audio.mu.Unlock()
+	if interruptedID != "old-playback" {
+		t.Fatalf("audio interrupted ID = %q, want old-playback", interruptedID)
+	}
+}
+
 func TestPhrasePlaybackSchedulerRetriesUsageAndReportsPermanentFailure(t *testing.T) {
 	provider := &recordingTTSProvider{}
 	audio := &recordingPhraseAudio{}
@@ -766,8 +783,10 @@ func (phraseRuntimeReporter) SetProcessingState(context.Context, session.Process
 }
 
 type recordingPhraseAudio struct {
-	mu   sync.Mutex
-	idsV []string
+	mu                sync.Mutex
+	idsV              []string
+	currentPlaybackID string
+	interruptedID     string
 }
 
 func (a *recordingPhraseAudio) Publish(_ context.Context, chunk AudioChunk) error {
@@ -778,6 +797,18 @@ func (a *recordingPhraseAudio) Publish(_ context.Context, chunk AudioChunk) erro
 }
 func (*recordingPhraseAudio) Complete(context.Context, string, string) error       { return nil }
 func (*recordingPhraseAudio) Cancel(context.Context, string, string, string) error { return nil }
+func (a *recordingPhraseAudio) CurrentPlaybackID(context.Context, string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.currentPlaybackID
+}
+func (a *recordingPhraseAudio) InterruptPlayback(_ context.Context, _, playbackID, _ string) error {
+	a.mu.Lock()
+	a.interruptedID = playbackID
+	a.currentPlaybackID = ""
+	a.mu.Unlock()
+	return nil
+}
 func (a *recordingPhraseAudio) ids() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()

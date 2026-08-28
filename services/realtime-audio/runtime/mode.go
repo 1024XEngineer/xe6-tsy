@@ -365,12 +365,13 @@ func (m *Manager) SwitchMode(
 		unlock()
 		return realtimev1.SwitchModeResult{}, err
 	}
+	previousPlaybackID, canTargetPlayback := m.previousPlaybackID(ctx, command.SessionID)
 	if runCtx == nil {
 		changed := command.TargetMode != coordinator.Snapshot().ActiveMode
 		unlock()
 		result, err := coordinator.Switch(ctx, command)
 		if err == nil && changed && result.Status == realtimev1.ModeSwitchApplied {
-			m.interruptPlaybackAfterModeSwitch(command.SessionID)
+			m.interruptPlaybackAfterModeSwitch(command.SessionID, previousPlaybackID, canTargetPlayback)
 		}
 		return result, err
 	}
@@ -384,7 +385,7 @@ func (m *Manager) SwitchMode(
 	}()
 	result, err = coordinator.Switch(switchCtx, command)
 	if err == nil && changed && result.Status == realtimev1.ModeSwitchApplied {
-		m.interruptPlaybackAfterModeSwitch(command.SessionID)
+		m.interruptPlaybackAfterModeSwitch(command.SessionID, previousPlaybackID, canTargetPlayback)
 	}
 	return result, err
 }
@@ -393,9 +394,33 @@ func (m *Manager) SwitchMode(
 // the new mode can enqueue its first TTS chunk. Playback cleanup is best effort:
 // the mode event is already durably committed and must not be rolled back when
 // a transport is concurrently closing.
-func (m *Manager) interruptPlaybackAfterModeSwitch(sessionID string) {
+func (m *Manager) previousPlaybackID(ctx context.Context, sessionID string) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	for _, candidate := range []any{m.deps.PlaybackInterrupter, m.deps.Audio} {
+		owner, ok := candidate.(PlaybackOwner)
+		if ok {
+			return owner.CurrentPlaybackID(ctx, sessionID), true
+		}
+	}
+	return "", false
+}
+
+func (m *Manager) interruptPlaybackAfterModeSwitch(sessionID, previousPlaybackID string, canTargetPlayback bool) {
 	interrupter := m.playbackInterrupter()
 	if interrupter == nil {
+		return
+	}
+	if canTargetPlayback {
+		if owner, ok := interrupter.(PlaybackOwner); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if err := owner.InterruptPlayback(ctx, sessionID, previousPlaybackID, "mode_switch"); err != nil && m.logger != nil {
+				m.logger.Warn("realtime mode switch playback cleanup failed",
+					"session_id", sessionID, "playback_id", previousPlaybackID, "error", err)
+			}
+		}
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

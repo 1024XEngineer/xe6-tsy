@@ -203,7 +203,7 @@ func TestManagerWiresCommandResultsAndObserverIntoGate(t *testing.T) {
 func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) {
 	var output bytes.Buffer
 	source := &fakeFrameSource{waitForClose: true}
-	interrupter := &recordingPlaybackInterrupter{}
+	interrupter := &recordingPlaybackInterrupter{currentPlaybackID: "previous-playback"}
 	deps := testDependencies(source, &fakeLanguageReader{snapshot: activeConfig("session-1")})
 	deps.AssistantReplies = &recordingAssistantReplySink{}
 	deps.PlaybackInterrupter = interrupter
@@ -245,6 +245,12 @@ func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) 
 	if interruptSession != snapshot.SessionID || interruptReason != "mode_switch" {
 		t.Fatalf("mode switch playback cleanup = %q/%q, want %q/mode_switch", interruptSession, interruptReason, snapshot.SessionID)
 	}
+	interrupter.mu.Lock()
+	interruptPlaybackID := interrupter.interruptedID
+	interrupter.mu.Unlock()
+	if interruptPlaybackID != "previous-playback" {
+		t.Fatalf("mode switch playback cleanup targeted %q, want previous-playback", interruptPlaybackID)
+	}
 	command.OperationID = "switch-stale"
 	if _, err := manager.SwitchMode(t.Context(), command); !errors.Is(err, ErrModeGenerationConflict) {
 		t.Fatalf("stale SwitchMode() error = %v, want generation conflict", err)
@@ -273,6 +279,45 @@ func TestManagerRegistersAssistantWithoutReplacingRealtimeRuntime(t *testing.T) 
 	}
 	if source.CloseCalls() != 0 {
 		t.Fatalf("mode switch closed shared audio source %d times", source.CloseCalls())
+	}
+}
+
+func TestModeSwitchCleanupTargetsCapturedPlaybackOwner(t *testing.T) {
+	owner := &recordingPlaybackInterrupter{currentPlaybackID: "old-playback"}
+	manager := &Manager{deps: Dependencies{PlaybackInterrupter: owner}}
+	previous, ok := manager.previousPlaybackID(context.Background(), "session-1")
+	if !ok || previous != "old-playback" {
+		t.Fatalf("captured playback = %q/%v, want old-playback/true", previous, ok)
+	}
+	owner.mu.Lock()
+	owner.currentPlaybackID = "new-playback"
+	owner.mu.Unlock()
+	manager.interruptPlaybackAfterModeSwitch("session-1", previous, ok)
+	owner.mu.Lock()
+	interrupted := owner.interruptedID
+	owner.mu.Unlock()
+	if interrupted != "old-playback" {
+		t.Fatalf("cleanup interrupted %q, want old-playback", interrupted)
+	}
+}
+
+func TestPlaybackInterrupterChainTargetsBothOwners(t *testing.T) {
+	phrase := &recordingPlaybackInterrupter{currentPlaybackID: "phrase-playback"}
+	fallback := &recordingPlaybackInterrupter{currentPlaybackID: "fallback-playback"}
+	chain := playbackInterrupterChain{phrase: phrase, fallback: fallback}
+	if got := chain.CurrentPlaybackID(context.Background(), "session-1"); got != "fallback-playback" {
+		t.Fatalf("chain current playback = %q, want fallback-playback", got)
+	}
+	if err := chain.InterruptPlayback(context.Background(), "session-1", "old-playback", "mode_switch"); err != nil {
+		t.Fatalf("chain InterruptPlayback() error = %v", err)
+	}
+	for name, owner := range map[string]*recordingPlaybackInterrupter{"phrase": phrase, "fallback": fallback} {
+		owner.mu.Lock()
+		got := owner.interruptedID
+		owner.mu.Unlock()
+		if got != "old-playback" {
+			t.Errorf("%s owner interrupted %q, want old-playback", name, got)
+		}
 	}
 }
 

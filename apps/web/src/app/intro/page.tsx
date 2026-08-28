@@ -15,7 +15,7 @@ import Image from "next/image";
 import { useState } from "react";
 
 import { BackToTop, Reveal, SiteFooter, SiteNav } from "./site-shell";
-import { siteHref } from "./site-paths";
+import { siteHref, webExperienceHref } from "./site-paths";
 import { LocaleProvider, Localized } from "./locale";
 import styles from "./intro.module.css";
 
@@ -71,7 +71,7 @@ export default function IntroPage() {
           <h1><span>让两种语言，</span><span>在同一场对话里</span><em>自然来回。</em></h1>
           <p className={styles.heroLead}>Lingow 把语音识别、翻译和播报连接在同一条实时会话中，也支持通过声音完成命令和模式切换。</p>
           <div className={styles.heroActions}>
-            <a className={styles.primaryButton} href={siteHref("/")}>立即打开 Web 体验 <ArrowUpRight size={18} weight="bold" /></a>
+            <a className={styles.primaryButton} href={webExperienceHref}>立即打开 Web 体验 <ArrowUpRight size={18} weight="bold" /></a>
             <a className={styles.textButton} href={siteHref("/intro/docs")}>查看文档 <ArrowRight size={18} /></a>
           </div>
           </div>
@@ -100,7 +100,7 @@ export default function IntroPage() {
 
       <Reveal><section className={styles.trustSection} id="privacy" aria-labelledby="privacy-title"><div className={styles.trustInner}><div className={styles.trustHeading}><p className={styles.sectionEyebrow}>PRIVACY & DATA</p><h2 id="privacy-title">把数据边界，<span>提前说清楚。</span></h2></div><div className={styles.trustGrid}><div><strong>P0 不保存原始音频</strong><p>实时处理完成后，不把原始语音作为长期档案保存。</p></div><div><strong>保存文本与用量事实</strong><p>长期保存的是文本 Final Turn 和用于统计的用量事实。</p></div><div><strong>字幕和企业微信按配置启用</strong><p>字幕展示与消息投递都是可选输出，不默认打开。</p></div><div><strong>会话是临时会话</strong><p>参与者无需登记，创建会话即可开始面对面交流。</p></div></div></div></section></Reveal>
 
-      <Reveal><section className={styles.contactSection} id="contact"><div className={styles.contactInner}><p className={styles.kicker}>READY WHEN YOU ARE</p><h2>先打开一次 Web 体验，<br /><em>再决定下一步。</em></h2><div className={styles.contactActions}><a className={styles.primaryButton} href={siteHref("/")}>立即打开 Web 体验 <ArrowUpRight size={18} weight="bold" /></a><a className={styles.textButton} href={siteHref("/intro/docs")}>查看文档 <ArrowRight size={18} /></a></div></div></section></Reveal>
+      <Reveal><section className={styles.contactSection} id="contact"><div className={styles.contactInner}><p className={styles.kicker}>READY WHEN YOU ARE</p><h2>先打开一次 Web 体验，<br /><em>再决定下一步。</em></h2><div className={styles.contactActions}><a className={styles.primaryButton} href={webExperienceHref}>立即打开 Web 体验 <ArrowUpRight size={18} weight="bold" /></a><a className={styles.textButton} href={siteHref("/intro/docs")}>查看文档 <ArrowRight size={18} /></a></div></div></section></Reveal>
 
       </Localized>
       <SiteFooter />

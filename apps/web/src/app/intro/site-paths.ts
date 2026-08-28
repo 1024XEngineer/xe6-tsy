@@ -1,5 +1,7 @@
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH?.replace(/\/$/, "") ?? "";
 
+export const webExperienceHref = "http://124.222.230.176";
+
 export const siteNavItems = [
   { href: "/intro", label: "首页" },
   { href: "/intro/product", label: "产品" },

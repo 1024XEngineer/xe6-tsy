@@ -5,7 +5,7 @@ import { ArrowUp, ArrowUpRight, CaretDown } from "@phosphor-icons/react";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { currentSiteNavItem, siteHref, siteNavItems, siteNavItemsEn } from "./site-paths";
+import { currentSiteNavItem, siteHref, siteNavItems, siteNavItemsEn, webExperienceHref } from "./site-paths";
 import { useLocale } from "./locale";
 import styles from "./intro.module.css";
 
@@ -28,7 +28,7 @@ export function SiteNav() {
           <button className={styles.languageButton} type="button" aria-label={locale === "en" ? "Switch to Chinese" : "切换到英文"} onClick={() => setLocale(locale === "en" ? "zh" : "en")}>
             <span className={styles.languageLabel}>{locale === "en" ? "中文" : "English"}</span>
           </button>
-          <a className={styles.navCta} href={siteHref("/intro#contact")}>
+          <a className={styles.navCta} href={webExperienceHref}>
             {locale === "en" ? "Try Lingow" : "预约体验"} <ArrowUpRight size={16} weight="bold" />
           </a>
         </div>

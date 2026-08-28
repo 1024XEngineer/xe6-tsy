@@ -45,20 +45,17 @@ func (p *WebhookProvider) Send(ctx context.Context, request SendRequest) error {
 	if err != nil {
 		return domainErrInvalidDeliveryRequest()
 	}
-	payload, err := json.Marshal(struct {
+	// A struct containing only a string cannot fail JSON marshaling.
+	payload, _ := json.Marshal(struct {
 		Text string `json:"text"`
 	}{Text: formatDeliveryTurns(request.Message.Turns)})
-	if err != nil {
-		return err
-	}
 	client := p.httpClient
 	if client == nil {
 		client = http.DefaultClient
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
+	// endpoint has just passed validateWebhookURL, so request construction is
+	// guaranteed for the fixed method and parsed URL.
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {

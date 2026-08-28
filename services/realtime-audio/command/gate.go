@@ -538,6 +538,9 @@ func (g *Gate) runRecognition(
 	}
 	execution, err := g.deps.Executor.ExecuteCommand(processingCtx, executeRequest)
 	if err != nil {
+		if errors.Is(err, ErrExecutionInterrupted) {
+			return failureOutcome(request, FailureCanceled, realtimev1.CommandResultFailed, "回答已中断", parsed, g.now())
+		}
 		status, message := executionFailureFeedback(parsed, err)
 		return failureOutcome(request, classifyAttemptFailure(caller, processingCtx, FailureExecution), status, message, parsed, g.now())
 	}
@@ -725,6 +728,9 @@ func spokenLanguageName(code string) string {
 }
 
 func executionFailureFeedback(parsed Command, err error) (realtimev1.CommandResultStatus, string) {
+	if errors.Is(err, ErrExecutionInterrupted) {
+		return realtimev1.CommandResultFailed, "回答已中断"
+	}
 	if errors.Is(err, ErrDeliveryTargetRequired) {
 		return realtimev1.CommandResultFailed, "请先设置可用的自动投递目标，再开启单向传译"
 	}

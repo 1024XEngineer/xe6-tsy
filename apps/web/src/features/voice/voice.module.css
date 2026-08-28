@@ -280,6 +280,9 @@
   display: grid;
   place-content: center;
   place-items: center;
+  /* The stage fills the viewport for positioning, but must not block the
+     transcript underneath. Interactive controls opt back in below. */
+  pointer-events: none;
   transform: translateY(var(--voice-stage-offset-y));
 }
 

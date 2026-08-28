@@ -59,6 +59,62 @@ func TestPhrasePlaybackSchedulerPreservesOrderAndUsesIndependentIDs(t *testing.T
 	}
 }
 
+func TestPhrasePlaybackSchedulerTargetsPlaybackOwner(t *testing.T) {
+	audio := &recordingPhraseAudio{currentPlaybackID: "old-playback"}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{Audio: audio})
+	if got := scheduler.CurrentPlaybackID(context.Background(), "session-1"); got != "old-playback" {
+		t.Fatalf("CurrentPlaybackID() = %q, want old-playback", got)
+	}
+	if err := scheduler.InterruptPlayback(context.Background(), "session-1", "old-playback", 1, "mode_switch"); err != nil {
+		t.Fatalf("InterruptPlayback() error = %v", err)
+	}
+	audio.mu.Lock()
+	interruptedID := audio.interruptedID
+	audio.mu.Unlock()
+	if interruptedID != "old-playback" {
+		t.Fatalf("audio interrupted ID = %q, want old-playback", interruptedID)
+	}
+}
+
+func TestPhrasePlaybackSchedulerModeCleanupKeepsNewGenerationTasks(t *testing.T) {
+	audio := &recordingPhraseAudio{currentPlaybackID: "old-playback"}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{Audio: audio})
+	scheduler.mu.Lock()
+	state := scheduler.sessionLocked("session-1")
+	oldUtterance := &phrasePlaybackUtterance{unfinished: 1}
+	newUtterance := &phrasePlaybackUtterance{unfinished: 1}
+	state.queue = []*phrasePlaybackTask{
+		{request: PhrasePlaybackRequest{Turn: TurnContext{SessionID: "session-1", Mode: TurnModeSnapshot{Generation: 1}}, UtteranceID: "old-turn", PlaybackID: "old-playback"}, generation: state.generation, utterance: oldUtterance},
+		{request: PhrasePlaybackRequest{Turn: TurnContext{SessionID: "session-1", Mode: TurnModeSnapshot{Generation: 2}}, UtteranceID: "new-turn", PlaybackID: "new-playback"}, generation: state.generation, utterance: newUtterance},
+	}
+	_, activeCancel := context.WithCancel(context.Background())
+	defer activeCancel()
+	activeTask := &phrasePlaybackTask{
+		request:    PhrasePlaybackRequest{Turn: TurnContext{SessionID: "session-1", Mode: TurnModeSnapshot{Generation: 1}}, UtteranceID: "active-old", PlaybackID: "active-old-playback"},
+		generation: state.generation, status: phrasePlaybackStarted, cancel: activeCancel,
+	}
+	state.active = activeTask
+	state.utterances["old-turn"] = oldUtterance
+	state.utterances["new-turn"] = newUtterance
+	state.utterances["active-old"] = &phrasePlaybackUtterance{unfinished: 1}
+	scheduler.mu.Unlock()
+
+	if err := scheduler.InterruptPlayback(context.Background(), "session-1", "old-playback", 1, "mode_switch"); err != nil {
+		t.Fatalf("InterruptPlayback() error = %v", err)
+	}
+	scheduler.mu.Lock()
+	defer scheduler.mu.Unlock()
+	if len(state.queue) != 1 || state.queue[0].request.UtteranceID != "new-turn" {
+		t.Fatalf("queue after mode cleanup = %#v, want only new-turn", state.queue)
+	}
+	if _, superseded := state.superseded["old-turn"]; !superseded {
+		t.Fatal("old-turn was not marked superseded")
+	}
+	if activeTask.status != phrasePlaybackCanceled {
+		t.Fatalf("active task status = %q, want canceled", activeTask.status)
+	}
+}
+
 func TestPhrasePlaybackSchedulerRetriesUsageAndReportsPermanentFailure(t *testing.T) {
 	provider := &recordingTTSProvider{}
 	audio := &recordingPhraseAudio{}
@@ -766,8 +822,10 @@ func (phraseRuntimeReporter) SetProcessingState(context.Context, session.Process
 }
 
 type recordingPhraseAudio struct {
-	mu   sync.Mutex
-	idsV []string
+	mu                sync.Mutex
+	idsV              []string
+	currentPlaybackID string
+	interruptedID     string
 }
 
 func (a *recordingPhraseAudio) Publish(_ context.Context, chunk AudioChunk) error {
@@ -778,6 +836,18 @@ func (a *recordingPhraseAudio) Publish(_ context.Context, chunk AudioChunk) erro
 }
 func (*recordingPhraseAudio) Complete(context.Context, string, string) error       { return nil }
 func (*recordingPhraseAudio) Cancel(context.Context, string, string, string) error { return nil }
+func (a *recordingPhraseAudio) CurrentPlaybackID(context.Context, string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.currentPlaybackID
+}
+func (a *recordingPhraseAudio) InterruptPlayback(_ context.Context, _, playbackID string, _ int64, _ string) error {
+	a.mu.Lock()
+	a.interruptedID = playbackID
+	a.currentPlaybackID = ""
+	a.mu.Unlock()
+	return nil
+}
 func (a *recordingPhraseAudio) ids() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()

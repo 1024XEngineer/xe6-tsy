@@ -695,15 +695,30 @@ func commandRegistryForTest(t *testing.T) *command.Registry {
 }
 
 type recordingPlaybackInterrupter struct {
-	mu        sync.Mutex
-	sessionID string
-	reason    string
+	mu                sync.Mutex
+	sessionID         string
+	reason            string
+	currentPlaybackID string
+	interruptedID     string
 }
 
 func (r *recordingPlaybackInterrupter) InterruptCurrent(_ context.Context, sessionID, reason string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sessionID, r.reason = sessionID, reason
+	return nil
+}
+
+func (r *recordingPlaybackInterrupter) CurrentPlaybackID(context.Context, string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.currentPlaybackID
+}
+
+func (r *recordingPlaybackInterrupter) InterruptPlayback(_ context.Context, sessionID, playbackID string, _ int64, reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sessionID, r.reason, r.interruptedID = sessionID, reason, playbackID
 	return nil
 }
 

@@ -85,6 +85,13 @@ type PlaybackInterrupter interface {
 	InterruptCurrent(context.Context, string, string) error
 }
 
+// PlaybackOwner allows mode cleanup to target the playback that existed before
+// the mode commit. Implementations must treat an empty ID as no active owner.
+type PlaybackOwner interface {
+	CurrentPlaybackID(context.Context, string) string
+	InterruptPlayback(context.Context, string, string, int64, string) error
+}
+
 // RuntimeReporter combines the narrow processing and terminal-failure ports
 // required by a complete manager lifecycle.
 type RuntimeReporter interface {
@@ -728,6 +735,27 @@ func (m *Manager) playbackInterrupter() PlaybackInterrupter {
 type playbackInterrupterChain struct {
 	phrase   PlaybackInterrupter
 	fallback PlaybackInterrupter
+}
+
+func (c playbackInterrupterChain) CurrentPlaybackID(ctx context.Context, sessionID string) string {
+	if owner, ok := c.fallback.(PlaybackOwner); ok {
+		return owner.CurrentPlaybackID(ctx, sessionID)
+	}
+	if owner, ok := c.phrase.(PlaybackOwner); ok {
+		return owner.CurrentPlaybackID(ctx, sessionID)
+	}
+	return ""
+}
+
+func (c playbackInterrupterChain) InterruptPlayback(ctx context.Context, sessionID, playbackID string, modeGeneration int64, reason string) error {
+	var err error
+	if owner, ok := c.phrase.(PlaybackOwner); ok {
+		err = owner.InterruptPlayback(ctx, sessionID, playbackID, modeGeneration, reason)
+	}
+	if owner, ok := c.fallback.(PlaybackOwner); ok && playbackID != "" {
+		err = errors.Join(err, owner.InterruptPlayback(ctx, sessionID, playbackID, modeGeneration, reason))
+	}
+	return err
 }
 
 func (c playbackInterrupterChain) InterruptCurrent(ctx context.Context, sessionID, reason string) error {

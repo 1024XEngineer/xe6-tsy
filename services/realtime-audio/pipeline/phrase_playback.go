@@ -385,6 +385,27 @@ func joinPhrasePlaybackText(left, right string) string {
 }
 
 func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, sessionID, reason string) error {
+	return s.interrupt(ctx, sessionID, "", 0, reason, false)
+}
+
+// CurrentPlaybackID exposes the physical playback owner to mode cleanup.
+func (s *PhrasePlaybackSchedulerService) CurrentPlaybackID(ctx context.Context, sessionID string) string {
+	owner, ok := s.audio.(interface {
+		CurrentPlaybackID(context.Context, string) string
+	})
+	if !ok {
+		return ""
+	}
+	return owner.CurrentPlaybackID(ctx, sessionID)
+}
+
+// InterruptPlayback cancels phrase work from the mode being replaced while
+// interrupting only the playback owner captured before the transition.
+func (s *PhrasePlaybackSchedulerService) InterruptPlayback(ctx context.Context, sessionID, playbackID string, modeGeneration int64, reason string) error {
+	return s.interrupt(ctx, sessionID, playbackID, modeGeneration, reason, true)
+}
+
+func (s *PhrasePlaybackSchedulerService) interrupt(ctx context.Context, sessionID, playbackID string, modeGeneration int64, reason string, targeted bool) error {
 	if s == nil || sessionID == "" {
 		return nil
 	}
@@ -393,6 +414,19 @@ func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, s
 	}
 	s.mu.Lock()
 	state := s.sessions[sessionID]
+	if targeted && modeGeneration > 0 {
+		s.interruptModeGenerationLocked(state, modeGeneration)
+		s.mu.Unlock()
+		if playbackID == "" {
+			return nil
+		}
+		if interrupter, ok := s.audio.(interface {
+			InterruptPlayback(context.Context, string, string, int64, string) error
+		}); ok {
+			return interrupter.InterruptPlayback(ctx, sessionID, playbackID, modeGeneration, reason)
+		}
+		return nil
+	}
 	generation := s.allocateGenerationLocked()
 	s.setBarrierLocked(sessionID, PhrasePlaybackRejectGenerationSuperseded, generation)
 	if state != nil {
@@ -421,12 +455,48 @@ func (s *PhrasePlaybackSchedulerService) InterruptCurrent(ctx context.Context, s
 		s.signalCapacityLocked(state)
 	}
 	s.mu.Unlock()
+	if targeted {
+		if playbackID == "" {
+			return nil
+		}
+		if interrupter, ok := s.audio.(interface {
+			InterruptPlayback(context.Context, string, string, int64, string) error
+		}); ok {
+			return interrupter.InterruptPlayback(ctx, sessionID, playbackID, modeGeneration, reason)
+		}
+		return nil
+	}
 	if interrupter, ok := s.audio.(interface {
 		InterruptCurrent(context.Context, string, string) error
 	}); ok {
 		return interrupter.InterruptCurrent(ctx, sessionID, reason)
 	}
 	return nil
+}
+
+func (s *PhrasePlaybackSchedulerService) interruptModeGenerationLocked(state *phrasePlaybackSession, modeGeneration int64) {
+	if state == nil {
+		return
+	}
+	kept := state.queue[:0]
+	for _, task := range state.queue {
+		if task.request.Turn.Mode.Generation > modeGeneration {
+			kept = append(kept, task)
+			continue
+		}
+		task.status = phrasePlaybackCanceled
+		s.markSupersededUtteranceLocked(state, task.request.UtteranceID, state.generation)
+		s.decrementLocked(state, task)
+	}
+	state.queue = kept
+	if active := state.active; active != nil && active.request.Turn.Mode.Generation <= modeGeneration {
+		s.markSupersededUtteranceLocked(state, active.request.UtteranceID, state.generation)
+		active.status = phrasePlaybackCanceled
+		if active.cancel != nil {
+			active.cancel()
+		}
+	}
+	s.signalCapacityLocked(state)
 }
 
 func (s *PhrasePlaybackSchedulerService) Stop(ctx context.Context, sessionID string) error {
@@ -593,7 +663,8 @@ func (s *PhrasePlaybackSchedulerService) runSession(state *phrasePlaybackSession
 				state.active = nil
 			}
 			canRetry := playErr != nil && task.attempts < maxPhrasePlaybackAttempts &&
-				!state.closed && state.ctx.Err() == nil && task.generation == state.generation
+				task.status != phrasePlaybackCanceled && !state.closed && state.ctx.Err() == nil &&
+				task.generation == state.generation
 			if canRetry {
 				// SpeechOutput cancels a started playback on stream/finish failure.
 				// Playback sinks settle that ID permanently, so a retry must open a

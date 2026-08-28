@@ -75,7 +75,7 @@ func TestPlaybackAudioSinkTargetsCurrentPlayback(t *testing.T) {
 	if got := sink.CurrentPlaybackID(context.Background(), chunk.SessionID); got != chunk.PlaybackID {
 		t.Fatalf("CurrentPlaybackID() = %q, want %q", got, chunk.PlaybackID)
 	}
-	if err := sink.InterruptPlayback(context.Background(), chunk.SessionID, chunk.PlaybackID, "mode_switch"); err != nil {
+	if err := sink.InterruptPlayback(context.Background(), chunk.SessionID, chunk.PlaybackID, 1, "mode_switch"); err != nil {
 		t.Fatalf("InterruptPlayback() error = %v", err)
 	}
 	if got := service.Snapshot(chunk.SessionID).State; got != playback.StateInterrupted {

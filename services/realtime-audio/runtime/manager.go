@@ -89,7 +89,7 @@ type PlaybackInterrupter interface {
 // the mode commit. Implementations must treat an empty ID as no active owner.
 type PlaybackOwner interface {
 	CurrentPlaybackID(context.Context, string) string
-	InterruptPlayback(context.Context, string, string, string) error
+	InterruptPlayback(context.Context, string, string, int64, string) error
 }
 
 // RuntimeReporter combines the narrow processing and terminal-failure ports
@@ -747,13 +747,13 @@ func (c playbackInterrupterChain) CurrentPlaybackID(ctx context.Context, session
 	return ""
 }
 
-func (c playbackInterrupterChain) InterruptPlayback(ctx context.Context, sessionID, playbackID, reason string) error {
+func (c playbackInterrupterChain) InterruptPlayback(ctx context.Context, sessionID, playbackID string, modeGeneration int64, reason string) error {
 	var err error
 	if owner, ok := c.phrase.(PlaybackOwner); ok {
-		err = owner.InterruptPlayback(ctx, sessionID, playbackID, reason)
+		err = owner.InterruptPlayback(ctx, sessionID, playbackID, modeGeneration, reason)
 	}
 	if owner, ok := c.fallback.(PlaybackOwner); ok && playbackID != "" {
-		err = errors.Join(err, owner.InterruptPlayback(ctx, sessionID, playbackID, reason))
+		err = errors.Join(err, owner.InterruptPlayback(ctx, sessionID, playbackID, modeGeneration, reason))
 	}
 	return err
 }

@@ -366,12 +366,13 @@ func (m *Manager) SwitchMode(
 		return realtimev1.SwitchModeResult{}, err
 	}
 	previousPlaybackID, canTargetPlayback := m.previousPlaybackID(ctx, command.SessionID)
+	previousModeGeneration := coordinator.Snapshot().Generation
 	if runCtx == nil {
 		changed := command.TargetMode != coordinator.Snapshot().ActiveMode
 		unlock()
 		result, err := coordinator.Switch(ctx, command)
 		if err == nil && changed && result.Status == realtimev1.ModeSwitchApplied {
-			m.interruptPlaybackAfterModeSwitch(command.SessionID, previousPlaybackID, canTargetPlayback)
+			m.interruptPlaybackAfterModeSwitch(command.SessionID, previousPlaybackID, previousModeGeneration, canTargetPlayback)
 		}
 		return result, err
 	}
@@ -385,7 +386,7 @@ func (m *Manager) SwitchMode(
 	}()
 	result, err = coordinator.Switch(switchCtx, command)
 	if err == nil && changed && result.Status == realtimev1.ModeSwitchApplied {
-		m.interruptPlaybackAfterModeSwitch(command.SessionID, previousPlaybackID, canTargetPlayback)
+		m.interruptPlaybackAfterModeSwitch(command.SessionID, previousPlaybackID, previousModeGeneration, canTargetPlayback)
 	}
 	return result, err
 }
@@ -407,7 +408,7 @@ func (m *Manager) previousPlaybackID(ctx context.Context, sessionID string) (str
 	return "", false
 }
 
-func (m *Manager) interruptPlaybackAfterModeSwitch(sessionID, previousPlaybackID string, canTargetPlayback bool) {
+func (m *Manager) interruptPlaybackAfterModeSwitch(sessionID, previousPlaybackID string, previousModeGeneration int64, canTargetPlayback bool) {
 	interrupter := m.playbackInterrupter()
 	if interrupter == nil {
 		return
@@ -416,7 +417,7 @@ func (m *Manager) interruptPlaybackAfterModeSwitch(sessionID, previousPlaybackID
 		if owner, ok := interrupter.(PlaybackOwner); ok {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			if err := owner.InterruptPlayback(ctx, sessionID, previousPlaybackID, "mode_switch"); err != nil && m.logger != nil {
+			if err := owner.InterruptPlayback(ctx, sessionID, previousPlaybackID, previousModeGeneration, "mode_switch"); err != nil && m.logger != nil {
 				m.logger.Warn("realtime mode switch playback cleanup failed",
 					"session_id", sessionID, "playback_id", previousPlaybackID, "error", err)
 			}

@@ -715,7 +715,7 @@ func (r *recordingPlaybackInterrupter) CurrentPlaybackID(context.Context, string
 	return r.currentPlaybackID
 }
 
-func (r *recordingPlaybackInterrupter) InterruptPlayback(_ context.Context, sessionID, playbackID, reason string) error {
+func (r *recordingPlaybackInterrupter) InterruptPlayback(_ context.Context, sessionID, playbackID string, _ int64, reason string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sessionID, r.reason, r.interruptedID = sessionID, reason, playbackID

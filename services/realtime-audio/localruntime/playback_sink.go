@@ -80,7 +80,7 @@ func (s PlaybackAudioSink) CurrentPlaybackID(ctx context.Context, sessionID stri
 	return snapshot.PlaybackID
 }
 
-func (s PlaybackAudioSink) InterruptPlayback(ctx context.Context, sessionID, playbackID, reason string) error {
+func (s PlaybackAudioSink) InterruptPlayback(ctx context.Context, sessionID, playbackID string, _ int64, reason string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}

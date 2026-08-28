@@ -65,7 +65,7 @@ func TestPhrasePlaybackSchedulerTargetsPlaybackOwner(t *testing.T) {
 	if got := scheduler.CurrentPlaybackID(context.Background(), "session-1"); got != "old-playback" {
 		t.Fatalf("CurrentPlaybackID() = %q, want old-playback", got)
 	}
-	if err := scheduler.InterruptPlayback(context.Background(), "session-1", "old-playback", "mode_switch"); err != nil {
+	if err := scheduler.InterruptPlayback(context.Background(), "session-1", "old-playback", 1, "mode_switch"); err != nil {
 		t.Fatalf("InterruptPlayback() error = %v", err)
 	}
 	audio.mu.Lock()
@@ -73,6 +73,34 @@ func TestPhrasePlaybackSchedulerTargetsPlaybackOwner(t *testing.T) {
 	audio.mu.Unlock()
 	if interruptedID != "old-playback" {
 		t.Fatalf("audio interrupted ID = %q, want old-playback", interruptedID)
+	}
+}
+
+func TestPhrasePlaybackSchedulerModeCleanupKeepsNewGenerationTasks(t *testing.T) {
+	audio := &recordingPhraseAudio{currentPlaybackID: "old-playback"}
+	scheduler := NewPhrasePlaybackScheduler(PhrasePlaybackSchedulerDependencies{Audio: audio})
+	scheduler.mu.Lock()
+	state := scheduler.sessionLocked("session-1")
+	oldUtterance := &phrasePlaybackUtterance{unfinished: 1}
+	newUtterance := &phrasePlaybackUtterance{unfinished: 1}
+	state.queue = []*phrasePlaybackTask{
+		{request: PhrasePlaybackRequest{Turn: TurnContext{SessionID: "session-1", Mode: TurnModeSnapshot{Generation: 1}}, UtteranceID: "old-turn", PlaybackID: "old-playback"}, generation: state.generation, utterance: oldUtterance},
+		{request: PhrasePlaybackRequest{Turn: TurnContext{SessionID: "session-1", Mode: TurnModeSnapshot{Generation: 2}}, UtteranceID: "new-turn", PlaybackID: "new-playback"}, generation: state.generation, utterance: newUtterance},
+	}
+	state.utterances["old-turn"] = oldUtterance
+	state.utterances["new-turn"] = newUtterance
+	scheduler.mu.Unlock()
+
+	if err := scheduler.InterruptPlayback(context.Background(), "session-1", "old-playback", 1, "mode_switch"); err != nil {
+		t.Fatalf("InterruptPlayback() error = %v", err)
+	}
+	scheduler.mu.Lock()
+	defer scheduler.mu.Unlock()
+	if len(state.queue) != 1 || state.queue[0].request.UtteranceID != "new-turn" {
+		t.Fatalf("queue after mode cleanup = %#v, want only new-turn", state.queue)
+	}
+	if _, superseded := state.superseded["old-turn"]; !superseded {
+		t.Fatal("old-turn was not marked superseded")
 	}
 }
 
@@ -802,7 +830,7 @@ func (a *recordingPhraseAudio) CurrentPlaybackID(context.Context, string) string
 	defer a.mu.Unlock()
 	return a.currentPlaybackID
 }
-func (a *recordingPhraseAudio) InterruptPlayback(_ context.Context, _, playbackID, _ string) error {
+func (a *recordingPhraseAudio) InterruptPlayback(_ context.Context, _, playbackID string, _ int64, _ string) error {
 	a.mu.Lock()
 	a.interruptedID = playbackID
 	a.currentPlaybackID = ""

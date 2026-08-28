@@ -292,7 +292,7 @@ func TestModeSwitchCleanupTargetsCapturedPlaybackOwner(t *testing.T) {
 	owner.mu.Lock()
 	owner.currentPlaybackID = "new-playback"
 	owner.mu.Unlock()
-	manager.interruptPlaybackAfterModeSwitch("session-1", previous, ok)
+	manager.interruptPlaybackAfterModeSwitch("session-1", previous, 1, ok)
 	owner.mu.Lock()
 	interrupted := owner.interruptedID
 	owner.mu.Unlock()
@@ -308,7 +308,7 @@ func TestPlaybackInterrupterChainTargetsBothOwners(t *testing.T) {
 	if got := chain.CurrentPlaybackID(context.Background(), "session-1"); got != "fallback-playback" {
 		t.Fatalf("chain current playback = %q, want fallback-playback", got)
 	}
-	if err := chain.InterruptPlayback(context.Background(), "session-1", "old-playback", "mode_switch"); err != nil {
+	if err := chain.InterruptPlayback(context.Background(), "session-1", "old-playback", 1, "mode_switch"); err != nil {
 		t.Fatalf("chain InterruptPlayback() error = %v", err)
 	}
 	for name, owner := range map[string]*recordingPlaybackInterrupter{"phrase": phrase, "fallback": fallback} {

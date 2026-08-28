@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -25,12 +26,16 @@ func TestWebhookProviderPostsAccountPayload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := &WebhookProvider{httpClient: server.Client()}
+	provider := &WebhookProvider{httpClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		forwarded := request.Clone(request.Context())
+		forwarded.URL = mustWebhookTestURL(server.URL)
+		return server.Client().Transport.RoundTrip(forwarded)
+	})}}
 	message := Message{ID: "msg-1", AccountID: "account-1", Channel: ChannelWebhook, DestinationRef: "primary-webhook", Turns: []FinalTurnSnapshot{{SourceText: "hello", TranslatedText: "你好"}}}
 	attempt := DeliveryAttempt{ID: "attempt-1", MessageID: message.ID}
 	err := provider.Send(context.Background(), SendRequest{
 		Message: message, Attempt: attempt, ProviderIdempotencyKey: attempt.ID,
-		Destination: VerifiedDestination{AccountID: message.AccountID, Channel: ChannelWebhook, DestinationRef: message.DestinationRef, ProviderTarget: server.URL},
+		Destination: VerifiedDestination{AccountID: message.AccountID, Channel: ChannelWebhook, DestinationRef: message.DestinationRef, ProviderTarget: "https://webhook.example.test/events"},
 	})
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
@@ -41,7 +46,7 @@ func TestWebhookProviderPostsAccountPayload(t *testing.T) {
 }
 
 func TestValidateWebhookURLRequiresHTTPSAndNoCredentials(t *testing.T) {
-	for _, raw := range []string{"", "http://example.com/hook", "https://user:pass@example.com/hook", "https://example.com/hook#fragment"} {
+	for _, raw := range []string{"", "http://example.com/hook", "https://user:pass@example.com/hook", "https://example.com/hook#fragment", "https://127.0.0.1/hook", "https://10.0.0.8/hook", "https://169.254.169.254/latest", "https://[::1]/hook", "https://[ff02::1]/hook", "https://0.0.0.0/hook"} {
 		if _, err := validateWebhookURL(raw); err == nil {
 			t.Fatalf("validateWebhookURL(%q) error = nil", raw)
 		}
@@ -51,9 +56,15 @@ func TestValidateWebhookURLRequiresHTTPSAndNoCredentials(t *testing.T) {
 	}
 }
 
+func TestDialPublicWebhookContextRejectsPrivateAddress(t *testing.T) {
+	if _, err := dialPublicWebhookContext(t.Context(), "tcp", "127.0.0.1:443"); err == nil {
+		t.Fatal("dialPublicWebhookContext() error = nil for loopback address")
+	}
+}
+
 func TestNewWebhookProviderConfiguresClient(t *testing.T) {
 	provider := NewWebhookProvider()
-	if provider == nil || provider.httpClient == nil || provider.httpClient.Timeout == 0 || provider.httpClient.CheckRedirect == nil {
+	if provider == nil || provider.httpClient == nil || provider.httpClient.Timeout == 0 || provider.httpClient.Transport == nil || provider.httpClient.CheckRedirect == nil {
 		t.Fatalf("NewWebhookProvider() = %#v", provider)
 	}
 	if provider.SupportsProviderIdempotency() {
@@ -104,8 +115,12 @@ func TestWebhookProviderHandlesProviderAndTransportErrors(t *testing.T) {
 	defer server.Close()
 	message := Message{ID: "msg-1", AccountID: "account-1", Channel: ChannelWebhook, DestinationRef: "primary-webhook"}
 	attempt := DeliveryAttempt{ID: "attempt-1", MessageID: message.ID}
-	request := SendRequest{Message: message, Attempt: attempt, ProviderIdempotencyKey: attempt.ID, Destination: VerifiedDestination{AccountID: message.AccountID, Channel: ChannelWebhook, DestinationRef: message.DestinationRef, ProviderTarget: server.URL}}
-	provider := &WebhookProvider{httpClient: server.Client()}
+	request := SendRequest{Message: message, Attempt: attempt, ProviderIdempotencyKey: attempt.ID, Destination: VerifiedDestination{AccountID: message.AccountID, Channel: ChannelWebhook, DestinationRef: message.DestinationRef, ProviderTarget: "https://webhook.example.test/events"}}
+	provider := &WebhookProvider{httpClient: &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		forwarded := req.Clone(req.Context())
+		forwarded.URL = mustWebhookTestURL(server.URL)
+		return server.Client().Transport.RoundTrip(forwarded)
+	})}}
 	if err := provider.Send(context.Background(), request); !errors.Is(err, ErrProviderRejected) {
 		t.Fatalf("provider error = %v", err)
 	}
@@ -130,3 +145,11 @@ func TestWebhookProviderFallsBackToDefaultHTTPClient(t *testing.T) {
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
+func mustWebhookTestURL(raw string) *url.URL {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
+}

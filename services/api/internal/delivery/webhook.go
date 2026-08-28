@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -24,6 +25,7 @@ type WebhookProvider struct {
 func NewWebhookProvider() *WebhookProvider {
 	return &WebhookProvider{httpClient: &http.Client{
 		Timeout:       15 * time.Second,
+		Transport:     webhookTransport(),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}}
 }
@@ -80,7 +82,57 @@ func validateWebhookURL(raw string) (string, error) {
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
 		return "", fmt.Errorf("%w: webhook URL is invalid", domain.ErrInvalidArgument)
 	}
+	if ip := net.ParseIP(parsed.Hostname()); ip != nil && !isPublicWebhookIP(ip) {
+		return "", fmt.Errorf("%w: webhook URL targets a private network", domain.ErrInvalidArgument)
+	}
 	return parsed.String(), nil
+}
+
+func webhookTransport() http.RoundTripper {
+	return &http.Transport{
+		DialContext:         dialPublicWebhookContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+}
+
+// dialPublicWebhookContext resolves the host itself, rejects non-public
+// addresses, and connects to the checked IP. This prevents a DNS answer from
+// changing between validation and connection (DNS rebinding).
+func dialPublicWebhookContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !isPublicWebhookIP(ip) {
+			return nil, fmt.Errorf("webhook address targets a private network")
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve webhook host: %w", err)
+	}
+	for _, ip := range ips {
+		if !isPublicWebhookIP(ip) {
+			continue
+		}
+		conn, dialErr := (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if dialErr == nil {
+			return conn, nil
+		}
+	}
+	return nil, fmt.Errorf("webhook host resolved only to private or unreachable addresses")
+}
+
+func isPublicWebhookIP(ip net.IP) bool {
+	return ip != nil &&
+		!ip.IsLoopback() &&
+		!ip.IsPrivate() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsUnspecified() &&
+		!ip.IsMulticast()
 }
 
 var _ Provider = (*WebhookProvider)(nil)

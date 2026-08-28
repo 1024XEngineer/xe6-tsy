@@ -63,6 +63,7 @@ func TestMigrateRecordsSchema(t *testing.T) {
 		{29, "long_sentence_delivery_trigger"},
 		{30, "devices"},
 		{31, "device_auth_challenge_retention"},
+		{32, "webhook_message_targets"},
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("len(AppliedMigrations()) = %d, want %d", len(statuses), len(want))

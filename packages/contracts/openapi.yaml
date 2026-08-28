@@ -523,6 +523,27 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/webhook/bind:
+    post:
+      operationId: bindWebhookTarget
+      security: [{ accountContext: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/BindWebhookRequest' } } } }
+      responses:
+        '200': { description: Bound target, content: { application/json: { schema: { $ref: '#/components/schemas/MessageTarget' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
+  /account/message-targets/webhook/{destination_ref}:
+    delete:
+      operationId: unbindWebhookTarget
+      security: [{ accountContext: [] }]
+      parameters: [{ name: destination_ref, in: path, required: true, schema: { type: string } }]
+      responses:
+        '204': { description: Target revoked }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '501': { $ref: '#/components/responses/NotImplemented' }
   /realtime/v1/sessions/{session_id}/start:
     servers:
       - url: /
@@ -1286,7 +1307,7 @@ components:
               audio_duration_ms: { type: integer, format: int64, minimum: 0 }
               cost_amount: { type: string }
               currency: { type: string }
-    Channel: { type: string, enum: [email, wechat] }
+    Channel: { type: string, enum: [email, wechat, webhook] }
     CreateMessageRequest:
       type: object
       additionalProperties: false
@@ -1392,6 +1413,12 @@ components:
       required: [token]
       properties:
         token: { type: string, minLength: 1, description: 'One-time email verification token; dev mode accepts dev: prefixed addresses' }
+    BindWebhookRequest:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url: { type: string, minLength: 1, format: uri, description: 'HTTPS endpoint receiving single-output translations for this account' }
     Error:
       type: object
       required: [error]

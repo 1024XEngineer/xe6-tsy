@@ -139,6 +139,9 @@ playback，即使 `LINGOW_SESSION_RUNTIME` 未启用也必须配置。enabled �
 并配置 `LINGOW_SMTP_*`。WeChat Work 通道通过 `POST /api/v1/account/message-targets/wechat/bind`
 绑定 OAuth code（local/test 支持 `dev:<userid>` 或 `dev:<destination_ref>:<userid>`），
 出站投递在配置 `LINGOW_WECOM_*` 后由 `WeComProvider` 发送应用消息。
+账户还可通过 `POST /api/v1/account/message-targets/webhook/bind` 绑定一个 HTTPS webhook URL；URL
+以加密形式持久化在 `account_destinations`，固定引用为 `primary-webhook`，绑定后自动启用该目标的单向投递。
+单向输出在存在已验证 webhook 时只投递到该 webhook，不会同时复制到 email 或企业微信目标。
 语言配置的单向输出只有在 delivery runtime 已启用且目标 channel provider 已配置时才会接受；
 否则返回 `delivery_target_required`，保持反向译文不被静默丢弃。
 
@@ -146,7 +149,7 @@ FinalTurn 的长句降级复用同一套 Message、Attempt、delivery outbox 和
 `delivery_trigger=long_sentence` 建立长句自动投递 run；为兼容旧 realtime，缺少 trigger 但同时为
 `tts_enabled=false`、`delivery_enabled=true` 且正文超过 50 字或音频至少 20 秒的事件，也按长句处理。
 其他缺少 trigger 的旧事件保持原有 `delivery_enabled` 路由。长句 run 只选择已启用、已验证且
-Provider 已配置的企业微信目标，不创建 Email 消息。未绑定、未配置、目标已失效或企业微信最终
+Provider 已配置的企业微信或 webhook 目标，不创建 Email 消息。未绑定、未配置、目标已失效或提供方最终
 投递失败时，fallback worker 请求 realtime 回放 TTS；长句恢复完成后不会调用双向输出恢复器，
 因此不会改变会话输出配置。投递成功的 run 不进入 fallback 候选。
 

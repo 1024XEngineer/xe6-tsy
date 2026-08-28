@@ -13,6 +13,8 @@ const (
 	ChannelEmail Channel = "email"
 	// ChannelWeChat sends a message to a verified WeChat Work userid.
 	ChannelWeChat Channel = "wechat"
+	// ChannelWebhook sends a message to the account-owned HTTPS webhook URL.
+	ChannelWebhook Channel = "webhook"
 )
 
 func automaticTurnRunStatus(targetCount, settledCount, succeededCount, failedCount int) AutomaticTurnRunStatus {
@@ -33,7 +35,7 @@ func automaticTurnRunStatus(targetCount, settledCount, succeededCount, failedCou
 // delivery contract. Keep this central so HTTP and use cases cannot drift.
 func IsSupportedChannel(channel Channel) bool {
 	switch channel {
-	case ChannelEmail, ChannelWeChat:
+	case ChannelEmail, ChannelWeChat, ChannelWebhook:
 		return true
 	default:
 		return false

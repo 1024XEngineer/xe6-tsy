@@ -319,7 +319,7 @@ func configuredProvider(processConfig config.Config, smtpMailer *delivery.SMTPMa
 	if err != nil {
 		return nil, err
 	}
-	return delivery.NewChannelRouter(emailProvider, wechatProvider), nil
+	return delivery.NewChannelRouter(emailProvider, wechatProvider, delivery.NewWebhookProvider()), nil
 }
 
 func configuredEmailProvider(processConfig config.Config, smtpMailer *delivery.SMTPMailer) (delivery.Provider, error) {

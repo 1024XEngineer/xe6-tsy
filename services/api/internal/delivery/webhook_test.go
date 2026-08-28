@@ -59,12 +59,35 @@ func TestNewWebhookProviderConfiguresClient(t *testing.T) {
 	if provider.SupportsProviderIdempotency() {
 		t.Fatal("webhook provider must not claim idempotency")
 	}
+	if err := provider.httpClient.CheckRedirect(nil, nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("CheckRedirect() error = %v", err)
+	}
 }
 
 func TestWebhookProviderRejectsInvalidRequestAndContext(t *testing.T) {
 	provider := NewWebhookProvider()
 	if err := provider.Send(context.Background(), SendRequest{}); !errors.Is(err, ErrProviderRejected) {
 		t.Fatalf("invalid request error = %v", err)
+	}
+	base := SendRequest{
+		Message: Message{ID: "msg-1", AccountID: "account-1", Channel: ChannelWebhook, DestinationRef: "primary-webhook"},
+		Attempt: DeliveryAttempt{ID: "attempt-1", MessageID: "msg-1"}, ProviderIdempotencyKey: "attempt-1",
+		Destination: VerifiedDestination{AccountID: "account-1", Channel: ChannelWebhook, DestinationRef: "primary-webhook", ProviderTarget: "https://example.com/hook"},
+	}
+	invalid := []SendRequest{
+		func() SendRequest { r := base; r.ProviderIdempotencyKey = "other"; return r }(),
+		func() SendRequest { r := base; r.Message.ID = ""; return r }(),
+		func() SendRequest { r := base; r.Message.AccountID = ""; return r }(),
+		func() SendRequest { r := base; r.Attempt.MessageID = "other"; return r }(),
+		func() SendRequest { r := base; r.Message.Channel = ChannelEmail; return r }(),
+		func() SendRequest { r := base; r.Destination.AccountID = "other"; return r }(),
+		func() SendRequest { r := base; r.Destination.Channel = ChannelEmail; return r }(),
+		func() SendRequest { r := base; r.Destination.DestinationRef = "other"; return r }(),
+	}
+	for index, request := range invalid {
+		if err := provider.Send(context.Background(), request); !errors.Is(err, ErrProviderRejected) {
+			t.Errorf("invalid request %d error = %v", index, err)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

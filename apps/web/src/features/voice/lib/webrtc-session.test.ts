@@ -199,6 +199,85 @@ describe("openWebRTCSession", () => {
     expect(track.stop).toHaveBeenCalledTimes(1);
   });
 
+  it("serializes ICE candidates before the end-of-candidates marker", async () => {
+    const track = fakeTrack("candidate-order");
+    mockSuccessfulSignaling();
+
+    const requests: Array<{
+      candidates: RTCIceCandidate[];
+      endOfCandidates: boolean;
+    }> = [];
+    let notifyFirstRequest!: () => void;
+    let resolveFirstRequest!: () => void;
+    const firstRequestStarted = new Promise<void>((resolve) => {
+      notifyFirstRequest = resolve;
+    });
+    postICECandidates.mockImplementation(
+      async (
+        _ticket: string,
+        _sessionId: string,
+        _connectionId: string,
+        candidates: RTCIceCandidate[],
+        endOfCandidates: boolean,
+      ) => {
+        requests.push({ candidates, endOfCandidates });
+        if (requests.length === 1) {
+          notifyFirstRequest();
+          await new Promise<void>((release) => {
+            resolveFirstRequest = release;
+          });
+        }
+        return {
+          connection_id: "conn-1",
+          accepted_candidate_ids: [],
+          deduplicated_candidate_ids: [],
+          end_of_candidates: endOfCandidates,
+        };
+      },
+    );
+
+    postWebRTCOffer.mockImplementation(async () => {
+      const peer = latestPeerConnection();
+      peer.onicecandidate?.({
+        candidate: {
+          candidate: "candidate:1",
+          sdpMid: "0",
+          sdpMLineIndex: 0,
+          usernameFragment: "ufrag",
+        } as RTCIceCandidate,
+      } as RTCPeerConnectionIceEvent);
+      peer.onicecandidate?.({ candidate: null } as RTCPeerConnectionIceEvent);
+      return {
+        sdp: "v=0",
+        type: "answer",
+        session_id: "vs-1",
+        connection_id: "conn-1",
+        data_channel_label: "translation-events",
+        tts_track_id: "tts-1",
+        connection_state: "connecting",
+      };
+    });
+
+    const opening = openWebRTCSession({
+      ticket: "ticket",
+      sessionId: "vs-1",
+      audioTracks: [track],
+    });
+
+    await firstRequestStarted;
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.candidates).toHaveLength(1);
+    expect(requests[0]?.endOfCandidates).toBe(false);
+
+    resolveFirstRequest();
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[1]?.candidates).toHaveLength(0);
+    expect(requests[1]?.endOfCandidates).toBe(true);
+
+    const session = await opening;
+    session.close();
+  });
+
   it("waits until both negotiated data channels are open", async () => {
     dataChannelInitialState = "connecting";
     const track = fakeTrack("clone-3");

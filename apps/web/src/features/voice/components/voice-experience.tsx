@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { ArrowsLeftRight, Gear, Robot, SpeakerHigh } from "@phosphor-icons/react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import { useState } from "react";
@@ -67,7 +68,8 @@ export function VoiceExperience({ onLogout }: VoiceExperienceProps = {}) {
           transition={{ duration: 0.58, ease: [0.16, 1, 0.3, 1] }}
         >
           <h1 className={styles.wordmark} translate="no">
-            lingow
+            <Image alt="Lingow" className={styles.wordmarkLogo} height={40} priority src="/lingow-mark.png" width={40} />
+            <span className={styles.visuallyHidden}>lingow</span>
           </h1>
           <button
             aria-controls="settings-panel"

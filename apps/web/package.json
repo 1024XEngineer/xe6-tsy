@@ -8,6 +8,7 @@
     "postinstall": "node ./scripts/sync-kws-models.mjs --optional",
     "dev": "next dev",
     "build": "next build",
+    "build:pages": "next build",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",

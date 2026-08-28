@@ -1,0 +1,115 @@
+name: Deploy Web To GitHub Pages
+
+on:
+  push:
+    branches: [dev]
+  workflow_run:
+    workflows: [Coverage Comment]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == github.event.repository.default_branch
+      )
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      NEXT_STATIC_EXPORT: "1"
+      NEXT_PUBLIC_BASE_PATH: /xe6-tsy
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download coverage endpoint
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-endpoint
+          path: ${{ runner.temp }}/coverage-endpoint
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Validate and add coverage endpoint
+        if: github.event_name == 'workflow_run'
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/coverage-endpoint/coverage.json
+          COVERAGE_OUTPUT: ${{ github.workspace }}/apps/web/public/coverage.json
+        run: |
+          node <<'NODE'
+          const fs = require("fs");
+
+          const input = JSON.parse(fs.readFileSync(process.env.COVERAGE_FILE, "utf8"));
+          if (
+            input?.schemaVersion !== 1 ||
+            input.label !== "coverage" ||
+            typeof input.message !== "string" ||
+            !/^\d+\.\d%$/.test(input.message) ||
+            input.cacheSeconds !== 300
+          ) {
+            throw new Error("invalid coverage endpoint artifact");
+          }
+
+          const percent = Number.parseFloat(input.message);
+          if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+            throw new Error("coverage percentage is out of range");
+          }
+
+          const color = percent >= 80 ? "brightgreen"
+            : percent >= 60 ? "yellow"
+            : "red";
+          fs.writeFileSync(process.env.COVERAGE_OUTPUT, JSON.stringify({
+            schemaVersion: 1,
+            label: "coverage",
+            message: percent.toFixed(1) + "%",
+            color,
+            cacheSeconds: 300,
+          }));
+          NODE
+
+      - name: Build static site
+        run: npm run build:pages
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: intro-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

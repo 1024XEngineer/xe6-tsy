@@ -5,6 +5,7 @@ import {
   Buildings,
   Check,
   EnvelopeSimple,
+  Globe,
   PaperPlaneTilt,
   Trash,
 } from "@phosphor-icons/react";
@@ -14,6 +15,7 @@ import { getAuthSession } from "../lib/auth-session";
 import { ApiError } from "../lib/http";
 import {
   bindEmailTarget,
+  bindWebhookTarget,
   bindWeChatTarget,
   listMessagePreferences,
   listMessageTargets,
@@ -28,7 +30,7 @@ import {
 } from "../lib/lingow-api";
 import styles from "../voice.module.css";
 
-const CHANNELS: readonly DeliveryChannel[] = ["email", "wechat"];
+const CHANNELS: readonly DeliveryChannel[] = ["email", "wechat", "webhook"];
 
 const DELIVERY_STATUS_CLASSES: Record<OutboundMessage["status"], string> = {
   queued: styles.deliveryStatusQueued,
@@ -40,7 +42,9 @@ const DELIVERY_STATUS_CLASSES: Record<OutboundMessage["status"], string> = {
 };
 
 function channelLabel(channel: DeliveryChannel): string {
-  return channel === "email" ? "邮箱" : "企业微信";
+  if (channel === "email") return "邮箱";
+  if (channel === "wechat") return "企业微信";
+  return "Webhook";
 }
 
 function statusLabel(status: OutboundMessage["status"]): string {
@@ -80,6 +84,7 @@ export function DeliverySettings() {
   const [emailToken, setEmailToken] = useState("");
   const [emailVerificationSent, setEmailVerificationSent] = useState(false);
   const [wechatCode, setWechatCode] = useState("");
+  const [webhookURL, setWebhookURL] = useState("");
   const [busyOperations, setBusyOperations] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -234,6 +239,23 @@ export function DeliverySettings() {
     }
   };
 
+  const bindWebhook = async () => {
+    if (!webhookURL.trim()) return;
+    const busyKey = "webhook:bind";
+    startOperation(busyKey);
+    setError(null);
+    try {
+      const auth = await getAuthSession();
+      await bindWebhookTarget(auth.tokens.access_token, webhookURL.trim());
+      setWebhookURL("");
+      await load();
+    } catch (bindError) {
+      setError(requestError(bindError));
+    } finally {
+      finishOperation(busyKey);
+    }
+  };
+
   const revoke = async (target: MessageTarget) => {
     const busyKey = `revoke:${target.channel}:${target.destination_ref}`;
     startOperation(busyKey);
@@ -277,7 +299,7 @@ export function DeliverySettings() {
         const enabledTargetCount = channelTargets.filter(
           (target) => preferenceForTarget(channel, target.destination_ref)?.enabled,
         ).length;
-        const Icon = channel === "email" ? EnvelopeSimple : Buildings;
+        const Icon = channel === "email" ? EnvelopeSimple : channel === "wechat" ? Buildings : Globe;
         return (
           <section className={styles.deliverySection} key={channel}>
             <div className={styles.deliverySectionHeader}>
@@ -363,7 +385,7 @@ export function DeliverySettings() {
                   {emailVerificationSent ? "绑定邮箱" : "发送验证码"}
                 </button>
               </div>
-            ) : (
+            ) : channel === "wechat" ? (
               <div className={styles.deliveryForm}>
                 <label>
                   企业微信 OAuth code
@@ -381,6 +403,28 @@ export function DeliverySettings() {
                 >
                   <Buildings aria-hidden="true" size={15} />
                   绑定企业微信
+                </button>
+              </div>
+            ) : (
+              <div className={styles.deliveryForm}>
+                <label>
+                  Webhook URL
+                  <input
+                    autoComplete="url"
+                    onChange={(event) => setWebhookURL(event.target.value)}
+                    placeholder="https://example.com/webhook"
+                    type="url"
+                    value={webhookURL}
+                  />
+                </label>
+                <button
+                  className={styles.deliveryAction}
+                  disabled={hasBusyOperation || !webhookURL.trim()}
+                  onClick={() => void bindWebhook()}
+                  type="button"
+                >
+                  <Globe aria-hidden="true" size={15} />
+                  绑定 Webhook
                 </button>
               </div>
             )}

@@ -152,7 +152,7 @@ export type UsageSummary = {
   totals: UsageStageTotal[];
 };
 
-export type DeliveryChannel = "email" | "wechat";
+export type DeliveryChannel = "email" | "wechat" | "webhook";
 
 export type MessageTarget = {
   destination_ref: string;
@@ -523,6 +523,18 @@ export async function bindWeChatTarget(
     method: "POST",
     headers: { ...authHeaders(accessToken), "Content-Type": "application/json" },
     body: JSON.stringify({ code }),
+  });
+  return parseJson<MessageTarget>(response);
+}
+
+export async function bindWebhookTarget(
+  accessToken: string,
+  url: string,
+): Promise<MessageTarget> {
+  const response = await fetch("/api/v1/account/message-targets/webhook/bind", {
+    method: "POST",
+    headers: { ...authHeaders(accessToken), "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
   });
   return parseJson<MessageTarget>(response);
 }

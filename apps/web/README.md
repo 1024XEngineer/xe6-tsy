@@ -106,3 +106,5 @@ realtime-audio 和 Web，再执行 `npm run test:e2e:system`。该场景使用 m
 实时音频编排仍由 `services/realtime-audio` 负责。
 
 语言设置支持双向播报和单向输出。单向输出只播报当前源语言的译文，反向译文自动投递并保留 Final Turn；活动会话切换后从下一句开始生效，配置更新使用语言配置版本进行并发保护。
+
+投递管理支持绑定一个账户专属的 HTTPS Webhook URL；绑定后单向输出优先投递到该 Webhook，并可在同一面板启用或撤销目标。

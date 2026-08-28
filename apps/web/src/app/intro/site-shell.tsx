@@ -15,7 +15,7 @@ export function SiteNav() {
   return (
     <header className={styles.nav}>
       <a className={styles.wordmark} href={siteHref("/intro")} aria-label="Lingow 首页">
-        <Image alt="Lingow" className={styles.wordmarkLogo} height={32} priority src={siteHref("/brand/lingow-logo.svg")} width={124} />
+        <Image alt="Lingow" className={styles.wordmarkLogo} height={40} priority src={siteHref("/lingow-mark.png")} width={40} />
       </a>
       <div className={styles.navRight}>
         <nav className={styles.navLinks} aria-label={locale === "en" ? "Main navigation" : "主导航"}>
@@ -107,7 +107,7 @@ export function SiteFooter() {
   return (
     <footer className={styles.footer}>
       <a className={styles.wordmark} href={siteHref("/intro")} aria-label={locale === "en" ? "Lingow home" : "Lingow 首页"}>
-        <Image alt="Lingow" className={styles.wordmarkLogo} height={32} src={siteHref("/brand/lingow-logo.svg")} width={124} />
+        <Image alt="Lingow" className={styles.wordmarkLogo} height={40} src={siteHref("/lingow-mark.png")} width={40} />
       </a>
       <p>{locale === "en" ? "Real-time voice assistant and face-to-face interpreting system." : "实时语音助手与面对面同传系统。"}</p>
       <div>

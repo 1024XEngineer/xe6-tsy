@@ -11,6 +11,7 @@ import {
   Translate,
   Waveform,
 } from "@phosphor-icons/react";
+import Image from "next/image";
 import { useState } from "react";
 
 import { BackToTop, Reveal, SiteFooter, SiteNav } from "./site-shell";
@@ -78,9 +79,13 @@ export default function IntroPage() {
           <div className={styles.heroVisual} aria-label="双语实时会话示意">
           <div className={styles.visualHeader}><span className={styles.status}><span className={styles.liveDot} />LIVE SESSION</span><span className={styles.visualCode}>WEBRTC / P0</span></div>
           <div className={styles.placeholderFrame}>
-            <div className={styles.sessionSignal}><span className={styles.signalLabel}>同一场对话</span><span className={styles.signalLine} /><span className={styles.signalLabel}>两种语言</span></div>
-            <div className={styles.speechCard}><div className={styles.speechTop}><span>中文 · 输入</span><span>00:08</span></div><p>我们可以从今天的议程开始吗？</p><div className={styles.wave}><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></div></div>
-            <div className={`${styles.speechCard} ${styles.translatedCard}`}><div className={styles.speechTop}><span>English · 输出</span><Check size={14} weight="bold" /></div><p>Shall we start with today&apos;s agenda?</p><span className={styles.playback}>正在播报 <span className={styles.playbackLine} /></span></div>
+            <Image
+              alt="Lingow 同声传译会话正在监听的真实界面"
+              className={styles.realScreenshot}
+              height={1356}
+              src={siteHref("/media/voice-interpretation-listening.png")}
+              width={2864}
+            />
           </div>
           <div className={styles.visualFooter}><span>LISTENING</span><span>TRANSLATING</span><span>SPEAKING</span></div>
           </div>
